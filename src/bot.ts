@@ -274,8 +274,8 @@ export class BotApplication {
         }
 
         const groupId = groupConfig.groupId;
-        const delayMinutes = groupConfig.liveChatDelayMinutes ?? 5;
-        const delayMs = delayMinutes * 60 * 1000;
+        const delaySeconds = getLiveChatDelaySeconds(groupConfig);
+        const delayMs = delaySeconds * 1000;
         const lastBotActivity = this.liveChatService.getLastBotActivity(groupId);
         const idleDeadline = lastBotActivity + delayMs;
 
@@ -336,7 +336,7 @@ export class BotApplication {
             groupId,
             userId: candidate.userId,
             messageCount: candidate.messages.length,
-            delayMinutes,
+            delaySeconds,
           });
         } catch (error) {
           logError("Live chat tick failed.", {
@@ -474,11 +474,12 @@ export class BotApplication {
       normalized === `${LIVE_CHAT_PREFIX} 查看`
     ) {
       const liveUsers = groupConfig.liveChatUserIds;
+      const delayLabel = formatLiveChatDelay(groupConfig);
       await this.sendText(
         groupId,
         liveUsers.length > 0
-          ? `当前已开启实时对话的 QQ：${liveUsers.join("、")}\n当前倒计时：${groupConfig.liveChatDelayMinutes ?? 5} 分钟`
-          : `当前还没有开启实时对话的 QQ\n当前倒计时：${groupConfig.liveChatDelayMinutes ?? 5} 分钟`,
+          ? `当前已开启实时对话的 QQ：${liveUsers.join("、")}\n当前倒计时：${delayLabel}`
+          : `当前还没有开启实时对话的 QQ\n当前倒计时：${delayLabel}`,
       );
       return;
     }
@@ -498,7 +499,7 @@ export class BotApplication {
       const updatedGroup = await this.groupConfigService.addLiveChatUser(groupId, targetQq);
       await this.sendText(
         groupId,
-        `已将 ${targetQq} 加入实时对话名单，机器人会在安静 ${groupConfig.liveChatDelayMinutes ?? 5} 分钟后再尝试主动接话`,
+        `已将 ${targetQq} 加入实时对话名单，机器人会在安静 ${formatLiveChatDelay(groupConfig)} 后再尝试主动接话`,
       );
       logInfo("Added live chat user.", {
         groupId,
@@ -531,21 +532,24 @@ export class BotApplication {
 
     const delayMatch = normalized.match(delayRegex);
     if (delayMatch) {
-      const delayMinutes = Number(delayMatch[1].trim());
-      if (!Number.isFinite(delayMinutes) || delayMinutes <= 0) {
-        await this.sendText(groupId, "请提供有效的分钟数，最少 1 分钟");
+      const parsedDelay = parseLiveChatDelay(delayMatch[1]);
+      if (!parsedDelay) {
+        await this.sendText(groupId, "请提供有效的间隔，例如 30秒、30s 或 1分钟");
         return;
       }
 
-      const updatedGroup = await this.groupConfigService.updateLiveChatDelay(groupId, delayMinutes);
+      const updatedGroup =
+        parsedDelay.unit === "seconds"
+          ? await this.groupConfigService.updateLiveChatDelaySeconds(groupId, parsedDelay.value)
+          : await this.groupConfigService.updateLiveChatDelay(groupId, parsedDelay.value);
       await this.sendText(
         groupId,
-        `已将实时对话倒计时改为 ${updatedGroup.liveChatDelayMinutes} 分钟，之后会从机器人最后一次发言后开始计时`,
+        `已将实时对话倒计时改为 ${formatLiveChatDelay(updatedGroup)}，之后会从机器人最后一次发言后开始计时`,
       );
       logInfo("Updated live chat delay.", {
         groupId,
         adminId: userId,
-        delayMinutes: updatedGroup.liveChatDelayMinutes,
+        delaySeconds: getLiveChatDelaySeconds(updatedGroup),
       });
       return;
     }
@@ -557,7 +561,7 @@ export class BotApplication {
         `${LIVE_CHAT_PREFIX} 列表`,
         `${LIVE_CHAT_PREFIX} 添加 <QQ号>`,
         `${LIVE_CHAT_PREFIX} 移除 <QQ号>`,
-        `${LIVE_CHAT_PREFIX} 间隔 <分钟>`,
+        `${LIVE_CHAT_PREFIX} 间隔 <秒数|分钟>`,
       ].join("\n"),
     );
   }
@@ -1369,6 +1373,43 @@ function sleep(ms: number): Promise<void> {
     const timer = setTimeout(resolve, ms);
     timer.unref();
   });
+}
+
+function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
+  if (
+    typeof groupConfig.liveChatDelaySeconds === "number" &&
+    Number.isFinite(groupConfig.liveChatDelaySeconds) &&
+    groupConfig.liveChatDelaySeconds > 0
+  ) {
+    return groupConfig.liveChatDelaySeconds;
+  }
+
+  return (groupConfig.liveChatDelayMinutes ?? 5) * 60;
+}
+
+function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
+  const seconds = getLiveChatDelaySeconds(groupConfig);
+  return seconds % 60 === 0 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
+}
+
+function parseLiveChatDelay(raw: string): { unit: "seconds" | "minutes"; value: number } | undefined {
+  const normalized = raw.trim().toLowerCase();
+  const match = normalized.match(/^(\d+(?:\.\d+)?)\s*(秒|s|sec|secs|second|seconds|分钟|分|m|min|mins|minute|minutes)?$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const numericValue = Number(match[1]);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    return undefined;
+  }
+
+  const unit = match[2];
+  if (unit === "秒" || unit === "s" || unit === "sec" || unit === "secs" || unit === "second" || unit === "seconds") {
+    return { unit: "seconds", value: Math.floor(numericValue) };
+  }
+
+  return { unit: "minutes", value: numericValue };
 }
 
 function scheduleCleanup(cleanup: () => Promise<void>): void {

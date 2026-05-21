@@ -82,6 +82,23 @@ export class GroupConfigService {
     return group;
   }
 
+  async updateLiveChatDelaySeconds(groupId: string, delaySeconds: number): Promise<GroupBotConfig> {
+    const data = await this.readConfig();
+    const index = data.groups.findIndex((group) => group.groupId === groupId);
+    if (index === -1) {
+      throw new Error(`Group ${groupId} is not configured.`);
+    }
+
+    const group = normalizeGroupConfig({
+      ...data.groups[index],
+      liveChatDelaySeconds: delaySeconds,
+    });
+    data.groups[index] = group;
+
+    await this.writeConfig(data);
+    return group;
+  }
+
   async updateDailyReportEnabled(groupId: string, enabled: boolean): Promise<GroupBotConfig> {
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
@@ -215,6 +232,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     allowedSkillIds: Array.from(new Set(group.allowedSkillIds ?? [])),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
+    liveChatDelaySeconds: normalizeDelaySeconds(group.liveChatDelaySeconds),
     liveChatDelayMinutes: normalizeDelayMinutes(group.liveChatDelayMinutes),
     dailyReportEnabled: group.dailyReportEnabled !== false,
     dailyReportTime: normalizeDailyReportTime(group.dailyReportTime),
@@ -222,6 +240,14 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     holidayCountdownEnabled: group.holidayCountdownEnabled !== false,
     holidayCountdownTime: normalizeHolidayCountdownTime(group.holidayCountdownTime),
   };
+}
+
+function normalizeDelaySeconds(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+
+  return Math.max(15, Math.min(24 * 60 * 60, Math.floor(value)));
 }
 
 function normalizeDelayMinutes(value: number | undefined): number {

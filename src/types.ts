@@ -70,6 +70,7 @@ export interface GroupBotConfig {
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
+  liveChatDelaySeconds?: number;
   liveChatDelayMinutes?: number;
   dailyReportEnabled?: boolean;
   dailyReportTime?: string;

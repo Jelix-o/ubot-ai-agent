@@ -97,6 +97,12 @@ class FakeGroupConfigService {
     return cloneGroup(group);
   }
 
+  async updateLiveChatDelaySeconds(groupId: string, delaySeconds: number): Promise<GroupBotConfig> {
+    const group = this.requireGroup(groupId);
+    group.liveChatDelaySeconds = delaySeconds;
+    return cloneGroup(group);
+  }
+
   async updateDailyReportEnabled(groupId: string, enabled: boolean): Promise<GroupBotConfig> {
     const group = this.requireGroup(groupId);
     group.dailyReportEnabled = enabled;
