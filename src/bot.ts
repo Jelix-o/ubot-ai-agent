@@ -12,6 +12,7 @@ import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
+import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
 import type { SkillService } from "./services/skill-service.js";
@@ -24,6 +25,7 @@ import type {
   GroupMemberIdentity,
   GroupBotConfig,
   MessageImageInput,
+  NapcatGroupMember,
   NapcatGroupMessageEvent,
   ReferencedMessage,
   SkillDefinition,
@@ -97,6 +99,7 @@ export interface MessageTransport {
   sendGroupRecord(groupId: string, recordFile: string): Promise<void>;
   sendGroupAiRecord(groupId: string, text: string): Promise<void>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
+  listGroupMembers?(groupId: string): Promise<NapcatGroupMember[]>;
   resolveMentionTargets?(groupId: string, candidates: string[]): Promise<string[]>;
   resolveMemberIdentities?(groupId: string, candidates: string[]): Promise<GroupMemberIdentity[]>;
   getMessage?(messageId: string): Promise<ReferencedMessage | undefined>;
@@ -1703,7 +1706,7 @@ export class BotApplication {
     const skill = await this.resolveSkill(groupConfig);
     const history = await this.conversationStore.getTurns(groupConfig.groupId, userId);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
-    const [groupMemories, knowledgeHits] = await Promise.all([
+    const [groupMemories, knowledgeHits, napcatMembers] = await Promise.all([
       this.groupMemoryStore?.listEnabled(groupConfig.groupId, 20) ?? Promise.resolve([]),
       this.knowledgeBaseStore?.search(
         groupConfig.groupId,
@@ -1714,7 +1717,15 @@ export class BotApplication {
         ].join(" "),
         3,
       ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
+      this.safeListGroupMembers(groupConfig.groupId),
     ]);
+    const memberProfiles = groupMemories.length > 0
+      ? buildGroupMemberProfiles({
+          groupConfig,
+          napcatMembers,
+          memories: groupMemories,
+        })
+      : [];
     const allImages = [
       ...images,
       ...(messageContext.replyContext?.images ?? []),
@@ -1734,6 +1745,7 @@ export class BotApplication {
           currentUserId: userId,
           botUserId: this.botQq,
           manualIdentities: groupConfig.manualIdentities,
+          ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
           ...(groupMemories.length > 0 ? { groupMemories } : {}),
           ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
           ...(messageContext.interactionTargets.length > 0
@@ -1760,6 +1772,7 @@ export class BotApplication {
                 currentUserId: userId,
                 botUserId: this.botQq,
                 manualIdentities: groupConfig.manualIdentities,
+                ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
                 ...(groupMemories.length > 0 ? { groupMemories } : {}),
                 ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
                 ...(messageContext.interactionTargets.length > 0
@@ -2112,6 +2125,22 @@ export class BotApplication {
         ok: false,
         detail: `自检失败：${(error as Error).message}`,
       };
+    }
+  }
+
+  private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+    if (!this.transport.listGroupMembers) {
+      return [];
+    }
+
+    try {
+      return await this.transport.listGroupMembers(groupId);
+    } catch (error) {
+      logWarn("Failed to list group members for AI context.", {
+        groupId,
+        error: (error as Error).message,
+      });
+      return [];
     }
   }
 

@@ -12,6 +12,7 @@ import { GroupMemoryCandidateService } from "./services/group-memory-candidate-s
 import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import type { NapcatGroupMember } from "./types.js";
 
 test("admin http server protects APIs and serves authenticated dashboard data", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-http-"));
@@ -36,6 +37,20 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
   );
 
   const groupMemoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+  await groupMemoryStore.create({
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "20001",
+    title: "Tester preference",
+    content: "Tester likes concise answers.",
+  });
+  const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+  const orphanCandidate = await candidateStore.addCandidate({
+    groupId: "67890",
+    type: "member_profile",
+    title: "Unknown member profile",
+    content: "Someone likes late-night chats.",
+  });
   const service = new AdminHttpServer({
     host: "127.0.0.1",
     port: 0,
@@ -46,7 +61,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     groupConfigService: new GroupConfigService(groupsPath),
     groupMemoryStore,
     groupMemoryCandidateService: new GroupMemoryCandidateService(
-      new GroupMemoryCandidateStore(path.join(dir, "candidates.json")),
+      candidateStore,
       groupMemoryStore,
       {
         async extractGroupMemoryCandidates() {
@@ -58,6 +73,12 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     adminOperationLogService: new AdminOperationLogService(path.join(dir, "ops.jsonl")),
     async getTransportHealthStatus() {
       return { ok: true, detail: "ok" };
+    },
+    async listGroupMembers(): Promise<NapcatGroupMember[]> {
+      return [
+        { user_id: 20001, card: "TesterCard", nickname: "TesterNick", role: "member" },
+        { user_id: 30002, nickname: "Newbie", role: "member" },
+      ];
     },
   });
 
@@ -93,6 +114,59 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(groups.status, 200);
     assert.equal(((await groups.json()) as { groups: unknown[] }).groups.length, 1);
+
+    const unauthorizedMembers = await fetch(`${baseUrl}/api/groups/67890/members`);
+    assert.equal(unauthorizedMembers.status, 401);
+
+    const members = await fetch(`${baseUrl}/api/groups/67890/members`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(members.status, 200);
+    const memberBody = await members.json() as { members: Array<{ userId: string; displayName: string; memoryCount: number; pendingCandidateCount: number }> };
+    assert.equal(memberBody.members.some((member) => member.userId === "20001" && member.displayName === "TesterCard" && member.memoryCount === 1), true);
+
+    const updateIdentity = await fetch(`${baseUrl}/api/groups/67890/members/30002/identity`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ names: ["新人"], note: "测试备注" }),
+    });
+    assert.equal(updateIdentity.status, 200);
+    const updatedGroups = await fetch(`${baseUrl}/api/groups`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    const updatedGroupBody = await updatedGroups.json() as { groups: Array<{ manualIdentities?: Array<{ userIds: string[]; names: string[]; note?: string }> }> };
+    assert.deepEqual(updatedGroupBody.groups[0]?.manualIdentities?.find((identity) => identity.userIds.includes("30002")), {
+      userIds: ["30002"],
+      names: ["新人"],
+      note: "测试备注",
+    });
+
+    const memories = await fetch(`${baseUrl}/api/memories?groupId=67890`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    const memoryBody = await memories.json() as { memories: Array<{ subjectLabel?: { label: string } }> };
+    assert.equal(memoryBody.memories[0]?.subjectLabel?.label.includes("TesterCard / QQ 20001"), true);
+
+    const directApprove = await fetch(`${baseUrl}/api/memory-candidates/${orphanCandidate.id}/approve`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(directApprove.status, 400);
+
+    const approveAsFact = await fetch(`${baseUrl}/api/memory-candidates/${orphanCandidate.id}/approve`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "group_fact", subjectUserId: null }),
+    });
+    assert.equal(approveAsFact.status, 200);
+
+    const deleteIdentity = await fetch(`${baseUrl}/api/groups/67890/members/30002/identity`, {
+      method: "DELETE",
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(deleteIdentity.status, 200);
+    assert.equal((await groupMemoryStore.list("67890")).length, 2);
   } finally {
     service.close();
     await rm(dir, { recursive: true, force: true });

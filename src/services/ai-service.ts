@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
+import { buildSubjectLabel } from "./member-profile-service.js";
 import type {
   ControlledMentionDecision,
   AiIdentityContext,
@@ -257,6 +258,7 @@ export class AiService {
           "你是 QQ 群长期记忆候选提炼器。",
           "只提炼稳定、可长期帮助机器人理解群聊的信息。",
           "允许类型：member_profile 表示成员画像、偏好、稳定身份；group_fact 表示群规则、固定梗、长期事实。",
+          "member_profile 必须使用聊天记录行里真实出现的 QQ 作为 subjectUserId；如果无法确认归属到某个 QQ，就改为 group_fact。",
           "不要记录短期情绪、临时闲聊、隐私敏感信息、辱骂攻击、未经确认的严重指控。",
           "只输出 JSON，不要输出 markdown。",
           '格式：{"candidates":[{"type":"member_profile","subjectUserId":"123","title":"简短标题","content":"稳定事实","confidence":0.7}]}',
@@ -894,7 +896,19 @@ function buildGroupMemoryContext(identityContext?: AiIdentityContext): string {
     "- 如果记忆和当前用户发言冲突，以当前明确上下文为准；不要把记忆说成系统配置。",
   ];
   for (const memory of memories.slice(0, 20)) {
-    const subject = memory.subjectUserId ? ` QQ ${memory.subjectUserId}` : "群整体";
+    const subject = buildSubjectLabel(
+      {
+        groupId: identityContext?.groupId ?? memory.groupId,
+        currentSkillId: "",
+        allowedSkillIds: [],
+        switcherUserIds: [],
+        liveChatUserIds: [],
+        manualIdentities: identityContext?.manualIdentities,
+      },
+      memory.subjectUserId,
+      identityContext?.memberProfiles ?? [],
+      memory.type,
+    ).label;
     lines.push(`  - [${memory.type}]${subject}：${memory.title}：${memory.content}`);
   }
   return lines.join("\n");

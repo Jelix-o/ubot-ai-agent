@@ -292,6 +292,62 @@ export class GroupConfigService {
     return group;
   }
 
+  async updateManualIdentity(
+    groupId: string,
+    userId: string,
+    input: { names: string[]; note?: string },
+  ): Promise<GroupBotConfig> {
+    const data = await this.readConfig();
+    const index = data.groups.findIndex((group) => group.groupId === groupId);
+    if (index === -1) {
+      throw new Error(`Group ${groupId} is not configured.`);
+    }
+
+    const group = normalizeGroupConfig(data.groups[index]);
+    const identities = group.manualIdentities ? [...group.manualIdentities] : [];
+    const identityIndex = identities.findIndex((identity) => identity.userIds.includes(userId));
+    const names = normalizeNames(input.names);
+    if (names.length === 0) {
+      names.push(userId);
+    }
+    const note = input.note?.trim();
+
+    if (identityIndex >= 0) {
+      const current = identities[identityIndex]!;
+      identities[identityIndex] = {
+        userIds: normalizeUserIds([...current.userIds, userId]),
+        names,
+        ...(note ? { note } : {}),
+      };
+    } else {
+      identities.push({
+        userIds: [userId],
+        names,
+        ...(note ? { note } : {}),
+      });
+    }
+
+    group.manualIdentities = normalizeManualIdentities(identities);
+    data.groups[index] = group;
+    await this.writeConfig(data);
+    return group;
+  }
+
+  async removeManualIdentity(groupId: string, userId: string): Promise<GroupBotConfig> {
+    const data = await this.readConfig();
+    const index = data.groups.findIndex((group) => group.groupId === groupId);
+    if (index === -1) {
+      throw new Error(`Group ${groupId} is not configured.`);
+    }
+
+    const group = normalizeGroupConfig(data.groups[index]);
+    group.manualIdentities = group.manualIdentities
+      ?.filter((identity) => !identity.userIds.includes(userId));
+    data.groups[index] = normalizeGroupConfig(group);
+    await this.writeConfig(data);
+    return data.groups[index]!;
+  }
+
   private async readConfig(): Promise<GroupsConfigFile> {
     if (this.cachedConfig) {
       return this.cachedConfig;
@@ -350,6 +406,20 @@ function normalizeUserIds(value: string[] | undefined): string[] {
   );
 }
 
+function normalizeNames(value: string[] | undefined): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((name) => String(name).trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 function normalizeManualIdentities(value: GroupManualIdentity[] | undefined): GroupManualIdentity[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -364,13 +434,7 @@ function normalizeManualIdentities(value: GroupManualIdentity[] | undefined): Gr
             .filter((userId) => /^\d+$/.test(userId)),
         ),
       );
-      const names = Array.from(
-        new Set(
-          (identity.names ?? [])
-            .map((name) => String(name).trim())
-            .filter(Boolean),
-        ),
-      );
+      const names = normalizeNames(identity.names);
       const note = identity.note?.trim();
 
       if (userIds.length === 0 || names.length === 0) {

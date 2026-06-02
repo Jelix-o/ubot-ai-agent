@@ -71,6 +71,24 @@ test("buildSystemPrompt includes approved group memory and matched knowledge", (
   const prompt = buildSystemPrompt(skill, {
     groupId: "67890",
     currentUserId: "20001",
+    manualIdentities: [
+      {
+        userIds: ["20001"],
+        names: ["Tester"],
+        note: "核心测试成员",
+      },
+    ],
+    memberProfiles: [
+      {
+        userId: "20001",
+        displayName: "Tester",
+        aliases: ["Tester"],
+        note: "核心测试成员",
+        hasManualIdentity: true,
+        memoryCount: 1,
+        pendingCandidateCount: 0,
+      },
+    ],
     groupMemories: [
       {
         id: "mem-1",
@@ -102,6 +120,7 @@ test("buildSystemPrompt includes approved group memory and matched knowledge", (
   });
 
   assert.match(prompt, /Approved group memory/);
+  assert.match(prompt, /Tester \/ QQ 20001 \/ 核心测试成员/);
   assert.match(prompt, /Tester 喜欢简短回答/);
   assert.match(prompt, /Matched group knowledge/);
   assert.match(prompt, /先贴发票/);

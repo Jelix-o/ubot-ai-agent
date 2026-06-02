@@ -397,6 +397,8 @@ pnpm test
 - 群记忆长期数据保存在 `data/group-memory.json`；自动提炼候选保存在 `data/group-memory-candidates.json`，候选必须在后台批准后才会进入 AI 上下文。
 - 文本 FAQ 知识库保存在 `data/knowledge-base.json`，机器人对话前会按关键词检索当前群启用 FAQ，最多注入 Top 3 条。
 - `manualIdentities` 仍然是身份识别最高优先级；群记忆只补充偏好、稳定事实、群规则和固定梗，不覆盖 QQ 身份表。
+- 后台“成员管理”会合并 NapCat 群成员、`manualIdentities` 和已有记忆归属，展示 QQ、群名片、昵称、系统备注、长期记忆数和待审候选数。
+- 成员备注和别名仍写入当前群 `manualIdentities`；成员画像候选必须选择具体 QQ 后才能按成员画像批准，也可以转为群事实后批准。
 
 ## 黑名单
 

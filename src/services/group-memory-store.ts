@@ -70,10 +70,11 @@ export class GroupMemoryStore {
     }
 
     const current = data.memories[index]!;
+    const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
     const updated = normalizeMemory({
       ...current,
       ...patch,
-      subjectUserId: patch.subjectUserId === undefined ? current.subjectUserId : patch.subjectUserId,
+      subjectUserId: hasSubjectUserId ? patch.subjectUserId : current.subjectUserId,
       updatedAt: new Date().toISOString(),
     });
     data.memories[index] = updated;

@@ -82,10 +82,11 @@ export class GroupMemoryCandidateStore {
     }
 
     const current = data.candidates[index]!;
+    const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
     const updated = normalizeCandidate({
       ...current,
       ...patch,
-      subjectUserId: patch.subjectUserId === undefined ? current.subjectUserId : patch.subjectUserId,
+      subjectUserId: hasSubjectUserId ? patch.subjectUserId : current.subjectUserId,
       updatedAt: new Date().toISOString(),
     });
     data.candidates[index] = updated;
@@ -104,9 +105,11 @@ export class GroupMemoryCandidateStore {
       return undefined;
     }
 
+    const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
     const updatedCandidate = normalizeCandidate({
       ...candidate,
       ...patch,
+      subjectUserId: hasSubjectUserId ? patch.subjectUserId : candidate.subjectUserId,
       status: "approved",
       updatedAt: new Date().toISOString(),
     });

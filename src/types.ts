@@ -127,6 +127,19 @@ export interface GroupMemberIdentity {
   names: string[];
 }
 
+export interface GroupMemberProfile {
+  userId: string;
+  displayName: string;
+  card?: string;
+  nickname?: string;
+  role?: string;
+  aliases: string[];
+  note?: string;
+  hasManualIdentity: boolean;
+  memoryCount: number;
+  pendingCandidateCount: number;
+}
+
 export interface AiInteractionTarget {
   userId?: string;
   names: string[];
@@ -146,6 +159,7 @@ export interface AiIdentityContext {
   currentUserId: string;
   botUserId?: string;
   manualIdentities?: GroupManualIdentity[];
+  memberProfiles?: GroupMemberProfile[];
   groupMemories?: GroupMemory[];
   knowledgeHits?: KnowledgeBaseEntry[];
   interactionTargets?: AiInteractionTarget[];

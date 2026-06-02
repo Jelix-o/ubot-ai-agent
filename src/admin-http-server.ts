@@ -9,7 +9,8 @@ import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
-import type { GroupMemoryCandidateStatus, GroupMemoryType } from "./types.js";
+import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
+import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryType, NapcatGroupMember } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -24,6 +25,7 @@ interface AdminHttpServerOptions {
   knowledgeBaseStore: KnowledgeBaseStore;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
+  listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
 }
 
 type RouteParams = Record<string, string>;
@@ -55,7 +57,7 @@ export class AdminHttpServer {
       const pathname = trimTrailingSlash(url.pathname);
 
       if (req.method === "GET" && (pathname === "" || pathname === "/login")) {
-        this.sendHtml(res, this.isAuthenticated(req) ? ADMIN_APP_HTML : LOGIN_HTML);
+        this.sendHtml(res, this.isAuthenticated(req) ? ADMIN_APP_HTML_V2 : LOGIN_HTML);
         return;
       }
 
@@ -125,6 +127,18 @@ export class AdminHttpServer {
       return;
     }
 
+    const membersRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members$/);
+    if (membersRoute && req.method === "GET") {
+      await this.handleGroupMembers(res, membersRoute.groupId);
+      return;
+    }
+
+    const identityRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members\/([^/]+)\/identity$/);
+    if (identityRoute?.userId) {
+      await this.handleMemberIdentity(req, res, { groupId: identityRoute.groupId, userId: identityRoute.userId });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/health") {
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
@@ -166,7 +180,19 @@ export class AdminHttpServer {
     const approveRoute = matchRoute(pathname, /^\/api\/memory-candidates\/([^/]+)\/approve$/);
     if (approveRoute && req.method === "POST") {
       const body = await readJsonBody(req);
-      const result = await this.options.groupMemoryCandidateService.approve(approveRoute.id, normalizeCandidatePatch(body));
+      const patch = normalizeCandidatePatch(body);
+      const current = await this.findCandidate(approveRoute.id);
+      if (!current) {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
+      const nextType = patch.type ?? current.type;
+      const nextSubjectUserId = patch.subjectUserId === undefined ? current.subjectUserId : patch.subjectUserId;
+      if (nextType === "member_profile" && !nextSubjectUserId) {
+        this.sendJson(res, { error: "member_profile_requires_subject_user_id" }, 400);
+        return;
+      }
+      const result = await this.options.groupMemoryCandidateService.approve(approveRoute.id, patch);
       this.sendJson(res, result ?? { error: "not_found" }, result ? 200 : 404);
       return;
     }
@@ -196,7 +222,7 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET") {
-      this.sendHtml(res, ADMIN_APP_HTML);
+      this.sendHtml(res, ADMIN_APP_HTML_V2);
       return;
     }
 
@@ -219,7 +245,12 @@ export class AdminHttpServer {
 
   private async handleMemories(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     if (req.method === "GET") {
-      this.sendJson(res, { memories: await this.options.groupMemoryStore.list(url.searchParams.get("groupId") ?? undefined) });
+      const groupId = url.searchParams.get("groupId") ?? undefined;
+      const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
+      const memories = await this.enrichMemories(await this.options.groupMemoryStore.list(groupId), groupId);
+      this.sendJson(res, {
+        memories: subjectUserId ? memories.filter((memory) => memory.subjectUserId === subjectUserId) : memories,
+      });
       return;
     }
 
@@ -257,11 +288,18 @@ export class AdminHttpServer {
     }
 
     const status = normalizeStatus(url.searchParams.get("status") ?? undefined);
+    const groupId = url.searchParams.get("groupId") ?? undefined;
+    const type = normalizeOptionalMemoryType(url.searchParams.get("type") ?? undefined);
+    const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
+    const rawCandidates = await this.options.groupMemoryCandidateService.list({
+      groupId,
+      ...(status ? { status } : {}),
+    });
+    const candidates = await this.enrichCandidates(rawCandidates, groupId);
     this.sendJson(res, {
-      candidates: await this.options.groupMemoryCandidateService.list({
-        groupId: url.searchParams.get("groupId") ?? undefined,
-        ...(status ? { status } : {}),
-      }),
+      candidates: candidates
+        .filter((candidate) => !type || candidate.type === type)
+        .filter((candidate) => !subjectUserId || candidate.subjectUserId === subjectUserId),
     });
   }
 
@@ -280,6 +318,133 @@ export class AdminHttpServer {
     }
 
     this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async handleGroupMembers(res: ServerResponse, groupId: string): Promise<void> {
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+
+    const [memories, candidates, napcatMembers] = await Promise.all([
+      this.options.groupMemoryStore.list(groupId),
+      this.options.groupMemoryCandidateService.list({ groupId }),
+      this.safeListGroupMembers(groupId),
+    ]);
+    this.sendJson(res, {
+      members: buildGroupMemberProfiles({
+        groupConfig,
+        napcatMembers,
+        memories,
+        candidates,
+      }),
+    });
+  }
+
+  private async handleMemberIdentity(
+    req: IncomingMessage,
+    res: ServerResponse,
+    route: { groupId: string; userId: string },
+  ): Promise<void> {
+    if (!/^\d+$/.test(route.userId)) {
+      this.sendJson(res, { error: "invalid_user_id" }, 400);
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const body = await readJsonBody(req);
+      const group = await this.options.groupConfigService.updateManualIdentity(route.groupId, route.userId, {
+        names: normalizeNames(body.names),
+        note: optionalString(body.note),
+      });
+      this.sendJson(res, { group });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const group = await this.options.groupConfigService.removeManualIdentity(route.groupId, route.userId);
+      this.sendJson(res, { group });
+      return;
+    }
+
+    this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async enrichMemories(
+    memories: GroupMemory[],
+    preferredGroupId?: string,
+  ): Promise<Array<GroupMemory & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
+    const membersByGroup = await this.loadMemberProfilesByGroup(memories.map((memory) => memory.groupId), preferredGroupId);
+    return memories.map((memory) => ({
+      ...memory,
+      subjectLabel: buildSubjectLabel(
+        membersByGroup.get(memory.groupId)?.groupConfig ?? fallbackGroupConfig(memory.groupId),
+        memory.subjectUserId,
+        membersByGroup.get(memory.groupId)?.members ?? [],
+        memory.type,
+      ),
+    }));
+  }
+
+  private async enrichCandidates(
+    candidates: GroupMemoryCandidate[],
+    preferredGroupId?: string,
+  ): Promise<Array<GroupMemoryCandidate & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
+    const membersByGroup = await this.loadMemberProfilesByGroup(candidates.map((candidate) => candidate.groupId), preferredGroupId);
+    return candidates.map((candidate) => ({
+      ...candidate,
+      subjectLabel: buildSubjectLabel(
+        membersByGroup.get(candidate.groupId)?.groupConfig ?? fallbackGroupConfig(candidate.groupId),
+        candidate.subjectUserId,
+        membersByGroup.get(candidate.groupId)?.members ?? [],
+        candidate.type,
+      ),
+    }));
+  }
+
+  private async loadMemberProfilesByGroup(
+    groupIds: string[],
+    preferredGroupId?: string,
+  ): Promise<Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>> {
+    const uniqueGroupIds = [...new Set([preferredGroupId, ...groupIds].filter((groupId): groupId is string => Boolean(groupId)))];
+    const result = new Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>();
+    await Promise.all(uniqueGroupIds.map(async (groupId) => {
+      const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+      if (!groupConfig) {
+        return;
+      }
+      const [memories, candidates, napcatMembers] = await Promise.all([
+        this.options.groupMemoryStore.list(groupId),
+        this.options.groupMemoryCandidateService.list({ groupId }),
+        this.safeListGroupMembers(groupId),
+      ]);
+      result.set(groupId, {
+        groupConfig,
+        members: buildGroupMemberProfiles({ groupConfig, napcatMembers, memories, candidates }),
+      });
+    }));
+    return result;
+  }
+
+  private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+    if (!this.options.listGroupMembers) {
+      return [];
+    }
+    try {
+      return await this.options.listGroupMembers(groupId);
+    } catch (error) {
+      logWarn("Failed to list group members for admin.", {
+        groupId,
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
+
+  private async findCandidate(id: string): Promise<GroupMemoryCandidate | undefined> {
+    const candidates = await this.options.groupMemoryCandidateService.list();
+    return candidates.find((candidate) => candidate.id === id);
   }
 
   private async handleKnowledge(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -387,7 +552,7 @@ function normalizeMemoryInput(body: Record<string, unknown>) {
   return {
     groupId: requiredString(body.groupId),
     type: normalizeMemoryType(body.type),
-    subjectUserId: optionalUserId(body.subjectUserId),
+    subjectUserId: subjectUserIdField(body),
     title: requiredString(body.title),
     content: requiredString(body.content),
     confidence: optionalNumber(body.confidence),
@@ -400,7 +565,7 @@ function normalizeMemoryPatch(body: Record<string, unknown>) {
   return {
     ...(body.groupId !== undefined ? { groupId: requiredString(body.groupId) } : {}),
     ...(body.type !== undefined ? { type: normalizeMemoryType(body.type) } : {}),
-    ...(body.subjectUserId !== undefined ? { subjectUserId: optionalUserId(body.subjectUserId) } : {}),
+    ...(body.subjectUserId !== undefined ? { subjectUserId: subjectUserIdField(body) } : {}),
     ...(body.title !== undefined ? { title: requiredString(body.title) } : {}),
     ...(body.content !== undefined ? { content: requiredString(body.content) } : {}),
     ...(body.confidence !== undefined ? { confidence: optionalNumber(body.confidence) } : {}),
@@ -412,7 +577,7 @@ function normalizeMemoryPatch(body: Record<string, unknown>) {
 function normalizeCandidatePatch(body: Record<string, unknown>) {
   return {
     ...(body.type !== undefined ? { type: normalizeMemoryType(body.type) } : {}),
-    ...(body.subjectUserId !== undefined ? { subjectUserId: optionalUserId(body.subjectUserId) } : {}),
+    ...(body.subjectUserId !== undefined ? { subjectUserId: subjectUserIdField(body) } : {}),
     ...(body.title !== undefined ? { title: requiredString(body.title) } : {}),
     ...(body.content !== undefined ? { content: requiredString(body.content) } : {}),
     ...(body.confidence !== undefined ? { confidence: optionalNumber(body.confidence) } : {}),
@@ -465,6 +630,10 @@ function normalizeMemoryType(value: unknown): GroupMemoryType {
   return value === "member_profile" ? "member_profile" : "group_fact";
 }
 
+function normalizeOptionalMemoryType(value: string | undefined): GroupMemoryType | undefined {
+  return value === "member_profile" || value === "group_fact" ? value : undefined;
+}
+
 function normalizeStatus(value: string | undefined): GroupMemoryCandidateStatus | undefined {
   return value === "approved" || value === "rejected" || value === "pending" ? value : undefined;
 }
@@ -496,6 +665,22 @@ function optionalUserId(value: unknown): string | undefined {
   return normalized && /^\d+$/.test(normalized) ? normalized : undefined;
 }
 
+function subjectUserIdField(body: Record<string, unknown>): string | undefined {
+  if (body.subjectUserId === null || body.subjectUserId === "") {
+    return undefined;
+  }
+  return optionalUserId(body.subjectUserId);
+}
+
+function normalizeNames(value: unknown): string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,\s，、]+/)
+      : [];
+  return Array.from(new Set(raw.map((item) => String(item).trim()).filter(Boolean)));
+}
+
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -507,6 +692,26 @@ function optionalBoolean(value: unknown): boolean | undefined {
 function matchRoute(pathname: string, regex: RegExp): RouteParams | undefined {
   const match = pathname.match(regex);
   return match?.[1] ? { id: decodeURIComponent(match[1]) } : undefined;
+}
+
+function matchGroupMemberRoute(pathname: string, regex: RegExp): { groupId: string; userId?: string } | undefined {
+  const match = pathname.match(regex);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  return match[2]
+    ? { groupId: decodeURIComponent(match[1]), userId: decodeURIComponent(match[2]) }
+    : { groupId: decodeURIComponent(match[1]) };
+}
+
+function fallbackGroupConfig(groupId: string): GroupBotConfig {
+  return {
+    groupId,
+    currentSkillId: "",
+    allowedSkillIds: [],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+  };
 }
 
 function trimTrailingSlash(pathname: string): string {
@@ -535,22 +740,25 @@ export function createAdminSessionSecret(): string {
 }
 
 const ADMIN_CSS = `
-:root { color-scheme: light; --ink: oklch(22% 0.012 238); --muted: oklch(50% 0.012 238); --line: oklch(86% 0.012 238); --paper: oklch(98% 0.006 238); --panel: oklch(96% 0.008 238); --accent: oklch(55% 0.16 168); --accent-soft: oklch(92% 0.045 168); --danger: oklch(52% 0.16 28); }
+:root { color-scheme: light; --ink: oklch(22% 0.012 238); --muted: oklch(50% 0.012 238); --line: oklch(86% 0.012 238); --paper: oklch(98% 0.006 238); --panel: oklch(96% 0.008 238); --accent: oklch(55% 0.16 168); --accent-soft: oklch(92% 0.045 168); --danger: oklch(52% 0.16 28); --warn: oklch(78% 0.13 78); }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.5 Inter, "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--paper); }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { min-height: 36px; border: 1px solid var(--accent); background: var(--accent); color: oklch(98% 0.006 168); padding: 0 14px; border-radius: 6px; cursor: pointer; }
 button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+button.danger { background: var(--danger); border-color: var(--danger); }
 .login-page { min-height: 100vh; display: grid; place-items: center; }
 .login-shell { width: min(420px, calc(100vw - 32px)); }
 .login-panel { border: 1px solid var(--line); background: var(--panel); padding: 28px; border-radius: 8px; }
 .eyebrow { margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 12px; }
-h1, h2 { margin: 0; letter-spacing: 0; }
+h1, h2, h3 { margin: 0; letter-spacing: 0; }
 h1 { font-size: 28px; }
 h2 { font-size: 18px; margin-bottom: 14px; }
+h3 { font-size: 15px; }
 .stack { display: grid; gap: 14px; margin-top: 22px; }
 label { display: grid; gap: 6px; color: var(--muted); }
-input, select { min-height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; background: oklch(99% 0.004 238); color: var(--ink); }
+input, select, textarea { min-height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; background: oklch(99% 0.004 238); color: var(--ink); }
+textarea { min-height: 72px; padding: 8px 10px; resize: vertical; }
 .message { min-height: 20px; color: var(--danger); }
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 240px 1fr; }
 aside { border-right: 1px solid var(--line); background: oklch(94% 0.012 238); padding: 18px; display: grid; grid-template-rows: auto 1fr auto; gap: 24px; }
@@ -567,13 +775,21 @@ header select { width: 180px; }
 .metric-row b { font-size: 26px; line-height: 1; }
 .metric-row span { color: var(--muted); }
 .panel { border: 1px solid var(--line); background: oklch(99% 0.004 238); padding: 18px; border-radius: 8px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
+.toolbar input { width: min(280px, 100%); }
 .list { display: grid; gap: 10px; }
-article { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 8px; }
+article { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
 article span { color: var(--muted); overflow-wrap: anywhere; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 8px; margin-bottom: 14px; }
+.grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 8px; margin-bottom: 14px; align-items: start; }
+.candidate-form { display: grid; grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1.2fr) 170px; gap: 8px; align-items: start; }
+.member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.member-meta, .meta { color: var(--muted); overflow-wrap: anywhere; }
+.badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
+.badge.warn { background: oklch(94% 0.06 78); color: oklch(42% 0.09 78); }
+.group-block { display: grid; gap: 8px; margin-bottom: 18px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
+@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form, .candidate-form { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
 `;
 
 const LOGIN_HTML = `<!doctype html>
@@ -605,6 +821,197 @@ const LOGIN_HTML = `<!doctype html>
       if (res.ok) location.href = '/';
       else document.querySelector('#message').textContent = '账号或密码错误';
     });
+  </script>
+</body>
+</html>`;
+
+const ADMIN_APP_HTML_V2 = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI-Project Bot Admin</title>
+  <style>${ADMIN_CSS}</style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside>
+      <div class="brand"><span>AI</span><strong>Bot Admin</strong></div>
+      <nav>
+        <button data-view="overview" class="active">Overview</button>
+        <button data-view="groups">Groups</button>
+        <button data-view="members">Members</button>
+        <button data-view="candidates">Candidates</button>
+        <button data-view="memories">Memories</button>
+        <button data-view="knowledge">Knowledge</button>
+        <button data-view="health">Health</button>
+      </nav>
+      <button id="logout" class="ghost">Logout</button>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Public console</p>
+          <h1 id="viewTitle">Overview</h1>
+        </div>
+        <select id="groupFilter"></select>
+      </header>
+      <section id="content"></section>
+    </main>
+  </div>
+  <script>
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', pendingDelete: '' };
+    const titleByView = { overview: 'Overview', groups: 'Groups', members: 'Member Center', candidates: 'Memory Candidates', memories: 'Long-term Memories', knowledge: 'Knowledge Base', health: 'Health' };
+    const content = () => document.querySelector('#content');
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const selected = (left, right) => left === right ? ' selected' : '';
+    const api = async (url, options = {}) => {
+      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
+      if (res.status === 401) location.href = '/login';
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    };
+    async function loadGroups() {
+      const data = await api('/api/groups');
+      state.groups = data.groups || [];
+      state.groupId = state.groupId || state.groups[0]?.groupId || '';
+      document.querySelector('#groupFilter').innerHTML = state.groups.map(g => '<option value="' + esc(g.groupId) + '">' + esc(g.groupId) + '</option>').join('');
+      document.querySelector('#groupFilter').value = state.groupId;
+    }
+    async function loadMembers(force = false) {
+      if (!state.groupId) return [];
+      if (!force && state.members.length > 0) return state.members;
+      const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members');
+      state.members = data.members || [];
+      return state.members;
+    }
+    function memberOptions(includeAll = false) {
+      const base = includeAll ? '<option value="">All members</option>' : '<option value="">Group overall</option>';
+      return base + state.members.map(m => '<option value="' + esc(m.userId) + '">' + esc(m.displayName) + ' / QQ ' + esc(m.userId) + (m.note ? ' / ' + esc(m.note) : '') + '</option>').join('');
+    }
+    async function render() {
+      document.querySelector('#viewTitle').textContent = titleByView[state.view];
+      document.querySelectorAll('nav button').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view));
+      state.pendingDelete = '';
+      if (state.view === 'overview') return renderOverview();
+      if (state.view === 'groups') return renderGroups();
+      if (state.view === 'members') return renderMembers();
+      if (state.view === 'candidates') return renderCandidates();
+      if (state.view === 'memories') return renderMemories();
+      if (state.view === 'knowledge') return renderKnowledge();
+      return renderHealth();
+    }
+    async function renderOverview() {
+      const data = await api('/api/overview');
+      content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>Groups</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>Pending memories</span></div><div><b>' + data.stats.memoryCount + '</b><span>Approved memories</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>FAQ</span></div></div><section class="panel"><h2>Transport</h2><p>' + esc(data.transportHealth.detail) + '</p></section>';
+    }
+    async function renderGroups() {
+      await loadGroups();
+      content().innerHTML = '<section class="panel"><h2>Group Config</h2><div class="list">' + state.groups.map(g => '<article><b>' + esc(g.groupId) + '</b><span>skill ' + esc(g.currentSkillId) + ', admins ' + g.switcherUserIds.length + ', live chat ' + g.liveChatUserIds.length + ', manual identities ' + (g.manualIdentities || []).length + '</span></article>').join('') + '</div></section>';
+    }
+    async function renderMembers() {
+      await loadMembers(true);
+      const query = state.memberQuery.trim().toLowerCase();
+      const members = state.members.filter(m => !query || [m.userId, m.displayName, m.card, m.nickname, m.note, ...(m.aliases || [])].some(v => String(v || '').toLowerCase().includes(query)));
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="Search QQ, name, alias, note"><button data-refresh-members>Refresh</button></div><div class="member-grid">' + members.map(rowMember).join('') + '</div></section>';
+      document.querySelector('#memberSearch')?.addEventListener('input', event => { state.memberQuery = event.target.value; renderMembers(); });
+    }
+    function rowMember(m) {
+      return '<article><h3>' + esc(m.displayName) + '</h3><div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · card ' + esc(m.card) : '') + (m.nickname ? ' · nick ' + esc(m.nickname) : '') + (m.role ? ' · ' + esc(m.role) : '') + '</div><div><span class="badge">' + m.memoryCount + ' memories</span> <span class="badge warn">' + m.pendingCandidateCount + ' pending</span></div><form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="Aliases, comma separated"><input name="note" value="' + esc(m.note || '') + '" placeholder="System note"><div class="actions"><button>Save note</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">View memories</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">Delete note</button>' : '') + '</div></form></article>';
+    }
+    async function renderCandidates() {
+      await loadMembers();
+      const query = new URLSearchParams({ groupId: state.groupId });
+      if (state.candidateStatus) query.set('status', state.candidateStatus);
+      if (state.candidateType) query.set('type', state.candidateType);
+      if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
+      const data = await api('/api/memory-candidates?' + query.toString());
+      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>Pending</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>Approved</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>Rejected</option><option value=""' + selected(state.candidateStatus, '') + '>All</option></select><select id="candidateType"><option value="">All types</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>Member profile</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>Group fact</option></select><select id="subjectFilter">' + memberOptions(true) + '</select><button data-bulk-approve>Approve visible</button></div><div class="list">' + (data.candidates || []).map(rowCandidate).join('') + '</div></section>';
+      document.querySelector('#subjectFilter').value = state.subjectUserId;
+      document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; renderCandidates(); });
+      document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; renderCandidates(); });
+      document.querySelector('#subjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; renderCandidates(); });
+    }
+    function rowCandidate(c) {
+      const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
+      return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>Member profile</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>Group fact</option></select><input name="title" value="' + esc(c.title) + '" placeholder="Title"><textarea name="content" placeholder="Content">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false) + '</select></div><div class="meta">Owner: ' + esc(c.subjectLabel?.label || 'Group overall') + ' · status ' + esc(c.status) + ' · confidence ' + esc(c.confidence) + (needsOwner ? ' · needs member or convert to group fact' : '') + '</div><div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">Save</button><button type="button" data-approve="' + esc(c.id) + '">Approve</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">Approve as group fact</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">Reject</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? 'Confirm delete' : 'Delete') + '</button></div></form></article>';
+    }
+    async function renderMemories() {
+      await loadMembers();
+      const query = new URLSearchParams({ groupId: state.groupId });
+      if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
+      const data = await api('/api/memories?' + query.toString());
+      const groups = groupMemories(data.memories || []);
+      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true) + '</select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + '</section>';
+      document.querySelector('#memorySubjectFilter').value = state.subjectUserId;
+      document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; renderMemories(); });
+    }
+    function memoryForm() {
+      return '<form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">Group fact</option><option value="member_profile">Member profile</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="Title"><input name="content" placeholder="Content"><button>Add</button></form>';
+    }
+    function groupMemories(memories) {
+      const map = new Map();
+      for (const memory of memories) {
+        const label = memory.subjectLabel?.label || 'Group overall';
+        if (!map.has(label)) map.set(label, []);
+        map.get(label).push(memory);
+      }
+      return [...map.entries()].map(([label, items]) => ({ label, items }));
+    }
+    function rowMemory(m) {
+      return '<article><b>' + esc(m.title) + '</b><span>' + (m.enabled ? 'enabled' : 'disabled') + ' · ' + esc(m.type) + ' · ' + esc(m.content) + '</span><div class="meta">Owner: ' + esc(m.subjectLabel?.label || 'Group overall') + '</div><div class="actions"><button data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? 'Disable' : 'Enable') + '</button><button data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? 'Confirm delete' : 'Delete') + '</button></div></article>';
+    }
+    async function renderKnowledge() {
+      const data = await api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId));
+      content().innerHTML = '<section class="panel"><h2>FAQ</h2>' + knowledgeForm() + '<div class="list">' + (data.entries || []).map(k => '<article><b>' + esc(k.title) + '</b><span>Q: ' + esc(k.question) + '<br>A: ' + esc(k.answer) + '<br>Keywords: ' + esc(k.keywords.join(', ')) + '</span><div class="actions"><button data-toggle-knowledge="' + esc(k.id) + '" data-enabled="' + (!k.enabled) + '">' + (k.enabled ? 'Disable' : 'Enable') + '</button><button data-delete-knowledge="' + esc(k.id) + '" class="ghost">' + (state.pendingDelete === k.id ? 'Confirm delete' : 'Delete') + '</button></div></article>').join('') + '</div></section>';
+    }
+    function knowledgeForm() {
+      return '<form id="knowledgeForm" class="grid-form"><input name="title" placeholder="Title"><input name="question" placeholder="Question"><input name="answer" placeholder="Answer"><input name="keywords" placeholder="Keywords, comma separated"><button>Add</button></form>';
+    }
+    async function renderHealth() {
+      const data = await api('/api/health');
+      content().innerHTML = '<section class="panel"><h2>Health</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
+    }
+    function candidatePayload(id) {
+      const form = document.querySelector('.candidateForm[data-candidate-id="' + CSS.escape(id) + '"]');
+      const data = Object.fromEntries(new FormData(form).entries());
+      return { type: data.type, title: data.title, content: data.content, subjectUserId: data.subjectUserId || null };
+    }
+    document.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) return;
+      if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; await render(); }
+      if (target.dataset.refreshMembers !== undefined) { await loadMembers(true); await renderMembers(); }
+      if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; await render(); }
+      if (target.dataset.deleteIdentity) { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.members = []; await renderMembers(); }
+      if (target.dataset.saveCandidate) { await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); await renderCandidates(); }
+      if (target.dataset.approve) { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }
+      if (target.dataset.approveAsFact) { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }
+      if (target.dataset.reject) { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await renderCandidates(); }
+      if (target.dataset.bulkApprove !== undefined) { for (const form of document.querySelectorAll('.candidateForm')) { const id = form.dataset.candidateId; try { await api('/api/memory-candidates/' + id + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(id)) }); } catch {} } await renderCandidates(); }
+      if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }
+      if (target.dataset.toggleMemory) { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }
+      if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }
+      if (target.dataset.toggleKnowledge) { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderKnowledge(); }
+      if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; await renderKnowledge(); return; } await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await renderKnowledge(); }
+    });
+    document.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.target;
+      const data = Object.fromEntries(new FormData(form).entries());
+      if (form.classList.contains('memberForm')) {
+        await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });
+        state.members = [];
+        await renderMembers();
+        return;
+      }
+      if (form.id === 'memoryForm') await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) });
+      if (form.id === 'knowledgeForm') await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[,，、]+/) }) });
+      await render();
+    });
+    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; await render(); });
+    document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
+    loadGroups().then(render);
   </script>
 </body>
 </html>`;

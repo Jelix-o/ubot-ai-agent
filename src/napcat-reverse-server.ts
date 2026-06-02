@@ -158,6 +158,10 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
     return resolveMentionTargetsFromMembers(members, candidates);
   }
 
+  async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+    return this.getGroupMembers(groupId);
+  }
+
   async resolveMemberIdentities(
     groupId: string,
     candidates: string[],

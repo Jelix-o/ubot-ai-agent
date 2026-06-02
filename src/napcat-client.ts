@@ -141,6 +141,10 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     return resolveMentionTargetsFromMembers(members, candidates);
   }
 
+  async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+    return this.getGroupMembers(groupId);
+  }
+
   async resolveMemberIdentities(
     groupId: string,
     candidates: string[],
