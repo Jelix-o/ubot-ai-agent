@@ -6,11 +6,15 @@ import type { AppConfig } from "./types.js";
 dotenv.config();
 
 function requireEnv(name: string): string {
-  const value = process.env[name];
+  const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+function optionalEnv(name: string): string | undefined {
+  return process.env[name]?.trim() || undefined;
 }
 
 export function loadConfig(): AppConfig {
@@ -44,20 +48,20 @@ export function loadConfig(): AppConfig {
   return {
     napcatMode,
     napcatWsUrl,
-    napcatAccessToken: process.env.NAPCAT_ACCESS_TOKEN,
-    napcatReverseWsHost: process.env.NAPCAT_REVERSE_WS_HOST ?? "127.0.0.1",
+    napcatAccessToken: optionalEnv("NAPCAT_ACCESS_TOKEN"),
+    napcatReverseWsHost: optionalEnv("NAPCAT_REVERSE_WS_HOST") ?? "127.0.0.1",
     napcatReverseWsPort: reversePort,
-    napcatReverseWsPath: process.env.NAPCAT_REVERSE_WS_PATH ?? "/onebot/ws",
+    napcatReverseWsPath: optionalEnv("NAPCAT_REVERSE_WS_PATH") ?? "/onebot/ws",
     openAiBaseUrl,
     openAiApiKey,
     openAiModel,
-    profileAiBaseUrl: process.env.PROFILE_AI_BASE_URL ?? openAiBaseUrl,
-    profileAiApiKey: process.env.PROFILE_AI_API_KEY ?? openAiApiKey,
-    profileAiModel: process.env.PROFILE_AI_MODEL ?? openAiModel,
-    ttsBaseUrl: process.env.TTS_BASE_URL ?? openAiBaseUrl,
-    ttsApiKey: process.env.TTS_API_KEY ?? openAiApiKey,
-    ttsModel: process.env.TTS_MODEL ?? "mimo-v2-tts",
-    ttsVoice: process.env.TTS_VOICE ?? "mimo_default",
+    profileAiBaseUrl: optionalEnv("PROFILE_AI_BASE_URL") ?? openAiBaseUrl,
+    profileAiApiKey: optionalEnv("PROFILE_AI_API_KEY") ?? openAiApiKey,
+    profileAiModel: optionalEnv("PROFILE_AI_MODEL") ?? openAiModel,
+    ttsBaseUrl: optionalEnv("TTS_BASE_URL") ?? openAiBaseUrl,
+    ttsApiKey: optionalEnv("TTS_API_KEY") ?? openAiApiKey,
+    ttsModel: optionalEnv("TTS_MODEL") ?? "mimo-v2-tts",
+    ttsVoice: optionalEnv("TTS_VOICE") ?? "mimo_default",
     ttsAudioFormat: ttsAudioFormat as AppConfig["ttsAudioFormat"],
     ttsStyleHint: process.env.TTS_STYLE_HINT?.trim() || undefined,
     ttsAllowNapCatAiFallback,
@@ -75,11 +79,11 @@ export function loadConfig(): AppConfig {
     dailyProfileReviewPath: path.join(cwd, "data", "daily-profile-review.json"),
     knowledgeBasePath: path.join(cwd, "data", "knowledge-base.json"),
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
-    adminHttpHost: process.env.ADMIN_HTTP_HOST ?? "127.0.0.1",
+    adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,
-    adminPublicBaseUrl: process.env.ADMIN_PUBLIC_BASE_URL ?? "https://bot.9958.uk",
-    adminUsername: process.env.ADMIN_USERNAME,
-    adminPassword: process.env.ADMIN_PASSWORD,
-    adminSessionSecret: process.env.ADMIN_SESSION_SECRET,
+    adminPublicBaseUrl: optionalEnv("ADMIN_PUBLIC_BASE_URL") ?? "https://bot.9958.uk",
+    adminUsername: optionalEnv("ADMIN_USERNAME"),
+    adminPassword: optionalEnv("ADMIN_PASSWORD"),
+    adminSessionSecret: optionalEnv("ADMIN_SESSION_SECRET"),
   };
 }

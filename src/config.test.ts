@@ -23,6 +23,15 @@ test("profile ai config falls back to openai config and supports overrides", () 
     assert.equal(fallback.profileAiApiKey, "reply-key");
     assert.equal(fallback.profileAiModel, "reply-model");
 
+    process.env.PROFILE_AI_BASE_URL = "";
+    process.env.PROFILE_AI_API_KEY = " ";
+    process.env.PROFILE_AI_MODEL = "";
+
+    const emptyFallback = loadConfig();
+    assert.equal(emptyFallback.profileAiBaseUrl, "https://reply.example/v1");
+    assert.equal(emptyFallback.profileAiApiKey, "reply-key");
+    assert.equal(emptyFallback.profileAiModel, "reply-model");
+
     process.env.PROFILE_AI_BASE_URL = "https://profile.example/v1";
     process.env.PROFILE_AI_API_KEY = "profile-key";
     process.env.PROFILE_AI_MODEL = "profile-model";

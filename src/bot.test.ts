@@ -510,9 +510,15 @@ class FakeKnowledgeBaseStore {
 class FakeGroupMemoryCandidateService {
   queued: Array<{ groupId: string; userId: string; userName: string; text: string; timestamp: string }> = [];
   candidates: GroupMemoryCandidate[] = [];
+  flushAllCalls = 0;
 
   queueMessage(message: { groupId: string; userId: string; userName: string; text: string; timestamp: string }): void {
     this.queued.push(message);
+  }
+
+  async flushAll(): Promise<Array<{ groupId: string; messageCount: number; candidateCount: number; autoApprovedCount: number; pendingCount: number }>> {
+    this.flushAllCalls += 1;
+    return [];
   }
 
   async list(): Promise<GroupMemoryCandidate[]> {
@@ -3115,6 +3121,15 @@ test("queues ordinary messages for memory candidates but skips commands", async 
 
   assert.equal(groupMemoryCandidateService.queued.length, 1);
   assert.equal(groupMemoryCandidateService.queued[0]?.text, "我以后喜欢简短回答");
+});
+
+test("periodically flushes queued memory candidate messages", async () => {
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const { app } = createApp({ groupMemoryCandidateService });
+
+  await (app as unknown as { runMemoryCandidateFlushTick(): Promise<void> }).runMemoryCandidateFlushTick();
+
+  assert.equal(groupMemoryCandidateService.flushAllCalls, 1);
 });
 
 test("profile commands allow self and admin queries with member aliases", async () => {

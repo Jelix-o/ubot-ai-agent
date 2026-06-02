@@ -67,6 +67,7 @@ const HOLIDAY_COUNTDOWN_TICK_MS = 30 * 1000;
 const SCHEDULED_REMINDER_TICK_MS = 30 * 1000;
 const OPS_ALERT_TICK_MS = 30 * 1000;
 const DAILY_PROFILE_REVIEW_TICK_MS = 30 * 1000;
+const MEMORY_CANDIDATE_FLUSH_TICK_MS = 2 * 60 * 1000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
@@ -144,12 +145,14 @@ export class BotApplication {
   private scheduledReminderTimer?: NodeJS.Timeout;
   private opsAlertTimer?: NodeJS.Timeout;
   private dailyProfileReviewTimer?: NodeJS.Timeout;
+  private memoryCandidateFlushTimer?: NodeJS.Timeout;
   private liveChatTickRunning = false;
   private dailyReportTickRunning = false;
   private holidayCountdownTickRunning = false;
   private scheduledReminderTickRunning = false;
   private opsAlertTickRunning = false;
   private dailyProfileReviewTickRunning = false;
+  private memoryCandidateFlushTickRunning = false;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -188,7 +191,8 @@ export class BotApplication {
       this.holidayCountdownTimer ||
       this.scheduledReminderTimer ||
       this.opsAlertTimer ||
-      this.dailyProfileReviewTimer
+      this.dailyProfileReviewTimer ||
+      this.memoryCandidateFlushTimer
     ) {
       return;
     }
@@ -223,6 +227,11 @@ export class BotApplication {
     }, DAILY_PROFILE_REVIEW_TICK_MS);
     this.dailyProfileReviewTimer.unref();
 
+    this.memoryCandidateFlushTimer = setInterval(() => {
+      void this.runMemoryCandidateFlushTick();
+    }, MEMORY_CANDIDATE_FLUSH_TICK_MS);
+    this.memoryCandidateFlushTimer.unref();
+
     void this.runOpsAlertTick({ includeStartup: true });
   }
 
@@ -255,6 +264,11 @@ export class BotApplication {
     if (this.dailyProfileReviewTimer) {
       clearInterval(this.dailyProfileReviewTimer);
       this.dailyProfileReviewTimer = undefined;
+    }
+
+    if (this.memoryCandidateFlushTimer) {
+      clearInterval(this.memoryCandidateFlushTimer);
+      this.memoryCandidateFlushTimer = undefined;
     }
   }
 
@@ -833,6 +847,26 @@ export class BotApplication {
       });
     } finally {
       this.dailyProfileReviewTickRunning = false;
+    }
+  }
+
+  private async runMemoryCandidateFlushTick(): Promise<void> {
+    if (this.memoryCandidateFlushTickRunning || !this.groupMemoryCandidateService) {
+      return;
+    }
+
+    this.memoryCandidateFlushTickRunning = true;
+    try {
+      const results = await this.groupMemoryCandidateService.flushAll();
+      for (const result of results) {
+        logInfo("Flushed buffered group memory messages.", { ...result });
+      }
+    } catch (error) {
+      logWarn("Memory candidate flush tick failed.", {
+        error: (error as Error).message,
+      });
+    } finally {
+      this.memoryCandidateFlushTickRunning = false;
     }
   }
 

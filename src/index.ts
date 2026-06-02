@@ -35,6 +35,13 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
   const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
+  logInfo("AI services configured.", {
+    replyBaseUrl: config.openAiBaseUrl,
+    replyModel: config.openAiModel,
+    profileBaseUrl: config.profileAiBaseUrl,
+    profileModel: config.profileAiModel,
+    profileAiConfigured: config.profileAiBaseUrl !== config.openAiBaseUrl || config.profileAiModel !== config.openAiModel,
+  });
   const groupConfigService = new GroupConfigService(config.groupsConfigPath);
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
   const dailyProfileReviewService = new DailyProfileReviewService(

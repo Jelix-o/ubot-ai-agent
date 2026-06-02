@@ -1,4 +1,4 @@
-import { logWarn } from "../logger.js";
+import { logInfo, logWarn } from "../logger.js";
 import type { GroupMemoryCandidate, GroupMemoryCandidateStatus } from "../types.js";
 import type { AiService, MemoryCandidateExtractionMessage } from "./ai-service.js";
 import type { GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
@@ -12,6 +12,14 @@ interface BufferedMemoryMessage {
   userName: string;
   text: string;
   timestamp: string;
+}
+
+export interface GroupMemoryCandidateFlushStats {
+  groupId: string;
+  messageCount: number;
+  candidateCount: number;
+  autoApprovedCount: number;
+  pendingCount: number;
 }
 
 export class GroupMemoryCandidateService {
@@ -68,11 +76,12 @@ export class GroupMemoryCandidateService {
     }
   }
 
-  async flushAll(): Promise<void> {
-    await Promise.all([...this.buffers.keys()].map((groupId) => this.flushGroup(groupId)));
+  async flushAll(): Promise<GroupMemoryCandidateFlushStats[]> {
+    const results = await Promise.all([...this.buffers.keys()].map((groupId) => this.flushGroup(groupId)));
+    return results.filter((result): result is GroupMemoryCandidateFlushStats => Boolean(result));
   }
 
-  async flushGroup(groupId: string): Promise<void> {
+  async flushGroup(groupId: string): Promise<GroupMemoryCandidateFlushStats | undefined> {
     const buffer = this.buffers.get(groupId) ?? [];
     if (buffer.length === 0) {
       return;
@@ -87,6 +96,8 @@ export class GroupMemoryCandidateService {
         timestamp: message.timestamp,
       }));
       const candidates = await this.aiService.extractGroupMemoryCandidates({ groupId, messages });
+      let autoApprovedCount = 0;
+      let pendingCount = 0;
       for (const candidate of candidates) {
         const result = await this.candidateStore.addCandidateWithResult({
           groupId,
@@ -99,8 +110,20 @@ export class GroupMemoryCandidateService {
         });
         if (shouldAutoApprove(result.candidate) && (result.created || result.candidate.status === "pending")) {
           await this.candidateStore.approve(result.candidate.id, this.memoryStore);
+          autoApprovedCount += 1;
+        } else if (result.candidate.status === "pending") {
+          pendingCount += 1;
         }
       }
+      const stats = {
+        groupId,
+        messageCount: buffer.length,
+        candidateCount: candidates.length,
+        autoApprovedCount,
+        pendingCount,
+      };
+      logInfo("Extracted group memory candidates.", stats);
+      return stats;
     } catch (error) {
       logWarn("Failed to extract group memory candidates.", {
         groupId,

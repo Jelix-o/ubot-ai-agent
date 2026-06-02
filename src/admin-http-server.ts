@@ -247,7 +247,7 @@ export class AdminHttpServer {
     if (req.method === "GET") {
       const groupId = url.searchParams.get("groupId") ?? undefined;
       const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
-      const memories = await this.enrichMemories(await this.options.groupMemoryStore.list(groupId), groupId);
+      const memories = await this.enrichMemories(sortMemoriesNewestFirst(await this.options.groupMemoryStore.list(groupId)), groupId);
       this.sendJson(res, {
         memories: subjectUserId ? memories.filter((memory) => memory.subjectUserId === subjectUserId) : memories,
       });
@@ -559,6 +559,14 @@ function normalizeMemoryInput(body: Record<string, unknown>) {
     source: optionalString(body.source) ?? "admin",
     enabled: optionalBoolean(body.enabled) ?? true,
   };
+}
+
+function sortMemoriesNewestFirst(memories: GroupMemory[]): GroupMemory[] {
+  return [...memories].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt) ||
+    right.updatedAt.localeCompare(left.updatedAt) ||
+    right.id.localeCompare(left.id),
+  );
 }
 
 function normalizeMemoryPatch(body: Record<string, unknown>) {
@@ -959,6 +967,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + memoryPagination(pageInfo, totalPages) + '</section>';
       document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; state.memoryPage = 1; renderMemories(); });
       document.querySelector('#memoryPageSize').addEventListener('change', event => { state.memoryPageSize = Number(event.target.value) || 20; state.memoryPage = 1; renderMemories(); });
+      document.querySelector('#memoryPageJump').addEventListener('submit', event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target).entries()); state.memoryPage = Number(data.page) || 1; renderMemories(); });
     }
     function memoryForm() {
       return '<form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form>';
@@ -976,7 +985,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       return '<article><b>' + esc(m.title) + '</b><span>' + enabledText(m.enabled) + ' · ' + esc(typeText(m.type)) + ' · ' + esc(m.content) + '</span><div class="meta">归属：' + esc(ownerLabel(m)) + '</div><div class="actions"><button data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? '停用' : '启用') + '</button><button data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
     }
     function memoryPagination(pageInfo, totalPages) {
-      return '<div class="pagination"><span>' + esc(pageInfo) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (state.memoryPage <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + state.memoryPage + ' / ' + totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (state.memoryPage >= totalPages ? ' disabled' : '') + '>下一页</button></div></div>';
+      return '<div class="pagination"><span>' + esc(pageInfo) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (state.memoryPage <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + state.memoryPage + ' / ' + totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (state.memoryPage >= totalPages ? ' disabled' : '') + '>下一页</button><form id="memoryPageJump" class="pagination-controls"><input name="page" type="number" min="1" max="' + totalPages + '" value="' + state.memoryPage + '" aria-label="页码" style="width:86px"><button class="ghost">跳转</button></form></div></div>';
     }
     async function renderKnowledge() {
       const data = await api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId));

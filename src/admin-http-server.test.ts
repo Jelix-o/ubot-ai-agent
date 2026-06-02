@@ -43,6 +43,14 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     subjectUserId: "20001",
     title: "Tester preference",
     content: "Tester likes concise answers.",
+    createdAt: "2026-06-01T10:00:00.000Z",
+  });
+  await groupMemoryStore.create({
+    groupId: "67890",
+    type: "group_fact",
+    title: "Latest fact",
+    content: "Latest memory should be shown first.",
+    createdAt: "2026-06-02T10:00:00.000Z",
   });
   const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
   const orphanCandidate = await candidateStore.addCandidate({
@@ -144,8 +152,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const memories = await fetch(`${baseUrl}/api/memories?groupId=67890`, {
       headers: { Cookie: cookie ?? "" },
     });
-    const memoryBody = await memories.json() as { memories: Array<{ subjectLabel?: { label: string } }> };
-    assert.equal(memoryBody.memories[0]?.subjectLabel?.label.includes("TesterCard / QQ 20001"), true);
+    const memoryBody = await memories.json() as { memories: Array<{ title: string; subjectLabel?: { label: string } }> };
+    assert.equal(memoryBody.memories[0]?.title, "Latest fact");
+    assert.equal(memoryBody.memories[1]?.subjectLabel?.label.includes("TesterCard / QQ 20001"), true);
 
     const directApprove = await fetch(`${baseUrl}/api/memory-candidates/${orphanCandidate.id}/approve`, {
       method: "POST",
@@ -166,7 +175,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(deleteIdentity.status, 200);
-    assert.equal((await groupMemoryStore.list("67890")).length, 2);
+    assert.equal((await groupMemoryStore.list("67890")).length, 3);
   } finally {
     service.close();
     await rm(dir, { recursive: true, force: true });
