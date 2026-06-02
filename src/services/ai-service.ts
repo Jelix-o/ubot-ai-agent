@@ -288,7 +288,7 @@ export class AiService {
         model: this.model,
         temperature: 0.1,
         messages,
-        max_tokens: 700,
+        max_tokens: 2000,
       });
       const text = completion.choices[0]?.message?.content?.trim() ?? "";
       return parseMemoryCandidateExtraction(text);
@@ -340,7 +340,7 @@ export class AiService {
         model: this.model,
         temperature: 0.2,
         messages,
-        max_tokens: 260,
+        max_tokens: 1200,
       });
       return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
     } catch {
@@ -390,7 +390,7 @@ export class AiService {
         model: this.model,
         temperature: 0.2,
         messages,
-        max_tokens: 320,
+        max_tokens: 1400,
       });
       return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
     } catch {

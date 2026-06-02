@@ -308,3 +308,38 @@ test("evaluateControlledMention falls back to no mention when model output is in
 
   assert.equal(decision.shouldMention, false);
 });
+
+test("extractGroupMemoryCandidates leaves room for reasoning model output", async () => {
+  const calls: unknown[] = [];
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create(args: unknown) {
+      calls.push(args);
+      return {
+        choices: [
+          {
+            message: {
+              content:
+                "{\"candidates\":[{\"type\":\"member_profile\",\"subjectUserId\":\"20001\",\"title\":\"Tester preference\",\"content\":\"Tester prefers concise answers.\",\"confidence\":0.8}]}",
+            },
+          },
+        ],
+      };
+    },
+  } as never);
+
+  const candidates = await service.extractGroupMemoryCandidates({
+    groupId: "67890",
+    messages: [
+      {
+        userId: "20001",
+        userName: "Tester",
+        text: "I prefer concise answers.",
+        timestamp: "2026-06-02T09:00:00.000Z",
+      },
+    ],
+  });
+
+  const request = calls[0] as { max_tokens?: number };
+  assert.equal(request.max_tokens, 2000);
+  assert.equal(candidates[0]?.subjectUserId, "20001");
+});
