@@ -797,14 +797,14 @@ const LOGIN_HTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project Bot Admin</title>
+  <title>AI-Project 机器人后台</title>
   <style>${ADMIN_CSS}</style>
 </head>
 <body class="login-page">
   <main class="login-shell">
     <section class="login-panel">
       <p class="eyebrow">AI-Project</p>
-      <h1>Bot Admin</h1>
+      <h1>机器人后台</h1>
       <form id="loginForm" class="stack">
         <label>账号<input name="username" autocomplete="username" required></label>
         <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
@@ -830,29 +830,29 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project Bot Admin</title>
+  <title>AI-Project 机器人后台</title>
   <style>${ADMIN_CSS}</style>
 </head>
 <body>
   <div class="app-shell">
     <aside>
-      <div class="brand"><span>AI</span><strong>Bot Admin</strong></div>
+      <div class="brand"><span>AI</span><strong>机器人后台</strong></div>
       <nav>
-        <button data-view="overview" class="active">Overview</button>
-        <button data-view="groups">Groups</button>
-        <button data-view="members">Members</button>
-        <button data-view="candidates">Candidates</button>
-        <button data-view="memories">Memories</button>
-        <button data-view="knowledge">Knowledge</button>
-        <button data-view="health">Health</button>
+        <button data-view="overview" class="active">总览</button>
+        <button data-view="groups">群配置</button>
+        <button data-view="members">成员管理</button>
+        <button data-view="candidates">候选记忆</button>
+        <button data-view="memories">长期记忆</button>
+        <button data-view="knowledge">知识库</button>
+        <button data-view="health">健康状态</button>
       </nav>
-      <button id="logout" class="ghost">Logout</button>
+      <button id="logout" class="ghost">退出登录</button>
     </aside>
     <main>
       <header>
         <div>
-          <p class="eyebrow">Public console</p>
-          <h1 id="viewTitle">Overview</h1>
+          <p class="eyebrow">运维控制台</p>
+          <h1 id="viewTitle">总览</h1>
         </div>
         <select id="groupFilter"></select>
       </header>
@@ -860,11 +860,15 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', pendingDelete: '' };
-    const titleByView = { overview: 'Overview', groups: 'Groups', members: 'Member Center', candidates: 'Memory Candidates', memories: 'Long-term Memories', knowledge: 'Knowledge Base', health: 'Health' };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', pendingDelete: '', notice: '' };
+    const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     const selected = (left, right) => left === right ? ' selected' : '';
+    const typeText = (value) => value === 'member_profile' ? '成员画像' : '群事实';
+    const statusText = (value) => ({ pending: '待审', approved: '已批准', rejected: '已拒绝' }[value] || value);
+    const enabledText = (value) => value ? '启用' : '停用';
+    const ownerLabel = (item) => item.subjectLabel?.label || (item.type === 'member_profile' && !item.subjectUserId ? '未归属' : '群整体');
     const api = async (url, options = {}) => {
       const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
       if (res.status === 401) location.href = '/login';
@@ -885,9 +889,10 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       state.members = data.members || [];
       return state.members;
     }
-    function memberOptions(includeAll = false) {
-      const base = includeAll ? '<option value="">All members</option>' : '<option value="">Group overall</option>';
-      return base + state.members.map(m => '<option value="' + esc(m.userId) + '">' + esc(m.displayName) + ' / QQ ' + esc(m.userId) + (m.note ? ' / ' + esc(m.note) : '') + '</option>').join('');
+    function memberOptions(includeAll = false, selectedUserId = '') {
+      const baseLabel = includeAll ? '全部成员' : '群整体';
+      const base = '<option value=""' + selected(selectedUserId, '') + '>' + baseLabel + '</option>';
+      return base + state.members.map(m => '<option value="' + esc(m.userId) + '"' + selected(m.userId, selectedUserId) + '>' + esc(m.displayName) + ' / QQ ' + esc(m.userId) + (m.note ? ' / 备注：' + esc(m.note) : '') + '</option>').join('');
     }
     async function render() {
       document.querySelector('#viewTitle').textContent = titleByView[state.view];
@@ -903,21 +908,21 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     }
     async function renderOverview() {
       const data = await api('/api/overview');
-      content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>Groups</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>Pending memories</span></div><div><b>' + data.stats.memoryCount + '</b><span>Approved memories</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>FAQ</span></div></div><section class="panel"><h2>Transport</h2><p>' + esc(data.transportHealth.detail) + '</p></section>';
+      content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>群数量</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>FAQ 条目</span></div></div><section class="panel"><h2>连接状态</h2><p>' + esc(data.transportHealth.detail) + '</p></section>';
     }
     async function renderGroups() {
       await loadGroups();
-      content().innerHTML = '<section class="panel"><h2>Group Config</h2><div class="list">' + state.groups.map(g => '<article><b>' + esc(g.groupId) + '</b><span>skill ' + esc(g.currentSkillId) + ', admins ' + g.switcherUserIds.length + ', live chat ' + g.liveChatUserIds.length + ', manual identities ' + (g.manualIdentities || []).length + '</span></article>').join('') + '</div></section>';
+      content().innerHTML = '<section class="panel"><h2>群配置</h2><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
     }
     async function renderMembers() {
       await loadMembers(true);
       const query = state.memberQuery.trim().toLowerCase();
       const members = state.members.filter(m => !query || [m.userId, m.displayName, m.card, m.nickname, m.note, ...(m.aliases || [])].some(v => String(v || '').toLowerCase().includes(query)));
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="Search QQ, name, alias, note"><button data-refresh-members>Refresh</button></div><div class="member-grid">' + members.map(rowMember).join('') + '</div></section>';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><button data-refresh-members>刷新</button></div><div class="member-grid">' + members.map(rowMember).join('') + '</div></section>';
       document.querySelector('#memberSearch')?.addEventListener('input', event => { state.memberQuery = event.target.value; renderMembers(); });
     }
     function rowMember(m) {
-      return '<article><h3>' + esc(m.displayName) + '</h3><div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · card ' + esc(m.card) : '') + (m.nickname ? ' · nick ' + esc(m.nickname) : '') + (m.role ? ' · ' + esc(m.role) : '') + '</div><div><span class="badge">' + m.memoryCount + ' memories</span> <span class="badge warn">' + m.pendingCandidateCount + ' pending</span></div><form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="Aliases, comma separated"><input name="note" value="' + esc(m.note || '') + '" placeholder="System note"><div class="actions"><button>Save note</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">View memories</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">Delete note</button>' : '') + '</div></form></article>';
+      return '<article><h3>' + esc(m.displayName) + '</h3><div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · 群名片 ' + esc(m.card) : '') + (m.nickname ? ' · 昵称 ' + esc(m.nickname) : '') + (m.role ? ' · 角色 ' + esc(m.role) : '') + '</div><div><span class="badge">' + m.memoryCount + ' 条记忆</span> <span class="badge warn">' + m.pendingCandidateCount + ' 条待审</span></div><form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">删除备注</button>' : '') + '</div></form></article>';
     }
     async function renderCandidates() {
       await loadMembers();
@@ -926,15 +931,16 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (state.candidateType) query.set('type', state.candidateType);
       if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
       const data = await api('/api/memory-candidates?' + query.toString());
-      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>Pending</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>Approved</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>Rejected</option><option value=""' + selected(state.candidateStatus, '') + '>All</option></select><select id="candidateType"><option value="">All types</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>Member profile</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>Group fact</option></select><select id="subjectFilter">' + memberOptions(true) + '</select><button data-bulk-approve>Approve visible</button></div><div class="list">' + (data.candidates || []).map(rowCandidate).join('') + '</div></section>';
-      document.querySelector('#subjectFilter').value = state.subjectUserId;
+      const notice = state.notice ? '<p class="message">' + esc(state.notice) + '</p>' : '';
+      state.notice = '';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select><select id="subjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><button data-bulk-approve>批量批准当前列表</button></div>' + notice + '<div class="list">' + (data.candidates || []).map(rowCandidate).join('') + '</div></section>';
       document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; renderCandidates(); });
       document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; renderCandidates(); });
       document.querySelector('#subjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; renderCandidates(); });
     }
     function rowCandidate(c) {
       const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
-      return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>Member profile</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>Group fact</option></select><input name="title" value="' + esc(c.title) + '" placeholder="Title"><textarea name="content" placeholder="Content">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false) + '</select></div><div class="meta">Owner: ' + esc(c.subjectLabel?.label || 'Group overall') + ' · status ' + esc(c.status) + ' · confidence ' + esc(c.confidence) + (needsOwner ? ' · needs member or convert to group fact' : '') + '</div><div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">Save</button><button type="button" data-approve="' + esc(c.id) + '">Approve</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">Approve as group fact</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">Reject</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? 'Confirm delete' : 'Delete') + '</button></div></form></article>';
+      return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false, c.subjectUserId || '') + '</select></div><div class="meta">归属：' + esc(ownerLabel(c)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 需要选择成员或转为群事实' : '') + '</div><div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
     }
     async function renderMemories() {
       await loadMembers();
@@ -942,35 +948,34 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
       const data = await api('/api/memories?' + query.toString());
       const groups = groupMemories(data.memories || []);
-      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true) + '</select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + '</section>';
-      document.querySelector('#memorySubjectFilter').value = state.subjectUserId;
+      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + '</section>';
       document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; renderMemories(); });
     }
     function memoryForm() {
-      return '<form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">Group fact</option><option value="member_profile">Member profile</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="Title"><input name="content" placeholder="Content"><button>Add</button></form>';
+      return '<form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form>';
     }
     function groupMemories(memories) {
       const map = new Map();
       for (const memory of memories) {
-        const label = memory.subjectLabel?.label || 'Group overall';
+        const label = ownerLabel(memory);
         if (!map.has(label)) map.set(label, []);
         map.get(label).push(memory);
       }
       return [...map.entries()].map(([label, items]) => ({ label, items }));
     }
     function rowMemory(m) {
-      return '<article><b>' + esc(m.title) + '</b><span>' + (m.enabled ? 'enabled' : 'disabled') + ' · ' + esc(m.type) + ' · ' + esc(m.content) + '</span><div class="meta">Owner: ' + esc(m.subjectLabel?.label || 'Group overall') + '</div><div class="actions"><button data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? 'Disable' : 'Enable') + '</button><button data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? 'Confirm delete' : 'Delete') + '</button></div></article>';
+      return '<article><b>' + esc(m.title) + '</b><span>' + enabledText(m.enabled) + ' · ' + esc(typeText(m.type)) + ' · ' + esc(m.content) + '</span><div class="meta">归属：' + esc(ownerLabel(m)) + '</div><div class="actions"><button data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? '停用' : '启用') + '</button><button data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
     }
     async function renderKnowledge() {
       const data = await api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId));
-      content().innerHTML = '<section class="panel"><h2>FAQ</h2>' + knowledgeForm() + '<div class="list">' + (data.entries || []).map(k => '<article><b>' + esc(k.title) + '</b><span>Q: ' + esc(k.question) + '<br>A: ' + esc(k.answer) + '<br>Keywords: ' + esc(k.keywords.join(', ')) + '</span><div class="actions"><button data-toggle-knowledge="' + esc(k.id) + '" data-enabled="' + (!k.enabled) + '">' + (k.enabled ? 'Disable' : 'Enable') + '</button><button data-delete-knowledge="' + esc(k.id) + '" class="ghost">' + (state.pendingDelete === k.id ? 'Confirm delete' : 'Delete') + '</button></div></article>').join('') + '</div></section>';
+      content().innerHTML = '<section class="panel"><h2>文本 FAQ</h2>' + knowledgeForm() + '<div class="list">' + (data.entries || []).map(k => '<article><b>' + esc(k.title) + '</b><span>问：' + esc(k.question) + '<br>答：' + esc(k.answer) + '<br>关键词：' + esc(k.keywords.join('、')) + '</span><div class="actions"><button data-toggle-knowledge="' + esc(k.id) + '" data-enabled="' + (!k.enabled) + '">' + (k.enabled ? '停用' : '启用') + '</button><button data-delete-knowledge="' + esc(k.id) + '" class="ghost">' + (state.pendingDelete === k.id ? '确认删除' : '删除') + '</button></div></article>').join('') + '</div></section>';
     }
     function knowledgeForm() {
-      return '<form id="knowledgeForm" class="grid-form"><input name="title" placeholder="Title"><input name="question" placeholder="Question"><input name="answer" placeholder="Answer"><input name="keywords" placeholder="Keywords, comma separated"><button>Add</button></form>';
+      return '<form id="knowledgeForm" class="grid-form"><input name="title" placeholder="标题"><input name="question" placeholder="问题"><input name="answer" placeholder="答案"><input name="keywords" placeholder="关键词，用逗号分隔"><button>新增</button></form>';
     }
     async function renderHealth() {
       const data = await api('/api/health');
-      content().innerHTML = '<section class="panel"><h2>Health</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
+      content().innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
     }
     function candidatePayload(id) {
       const form = document.querySelector('.candidateForm[data-candidate-id="' + CSS.escape(id) + '"]');
@@ -988,7 +993,15 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.approve) { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }
       if (target.dataset.approveAsFact) { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }
       if (target.dataset.reject) { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await renderCandidates(); }
-      if (target.dataset.bulkApprove !== undefined) { for (const form of document.querySelectorAll('.candidateForm')) { const id = form.dataset.candidateId; try { await api('/api/memory-candidates/' + id + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(id)) }); } catch {} } await renderCandidates(); }
+      if (target.dataset.bulkApprove !== undefined) {
+        let skipped = 0;
+        for (const form of document.querySelectorAll('.candidateForm')) {
+          const id = form.dataset.candidateId;
+          try { await api('/api/memory-candidates/' + id + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(id)) }); } catch { skipped += 1; }
+        }
+        state.notice = skipped ? '有 ' + skipped + ' 条候选未满足批准条件，已跳过。成员画像必须先选择归属成员。' : '';
+        await renderCandidates();
+      }
       if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }
       if (target.dataset.toggleMemory) { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }
       if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }
