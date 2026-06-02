@@ -76,6 +76,13 @@ export interface ExtractedGroupMemoryCandidate {
   confidence: number;
 }
 
+export interface MemberProfileMemoryInput {
+  title: string;
+  content: string;
+  createdAt?: string;
+  confidence?: number;
+}
+
 export class AiService {
   private readonly client: OpenAI;
   private readonly chatCompletions: ChatCompletionsClient;
@@ -287,6 +294,107 @@ export class AiService {
       return parseMemoryCandidateExtraction(text);
     } catch {
       return [];
+    }
+  }
+
+  async summarizeDailyMemberProfile(args: {
+    groupId: string;
+    userId: string;
+    displayName: string;
+    dateKey: string;
+    memories: MemberProfileMemoryInput[];
+  }): Promise<string | null> {
+    if (args.memories.length === 0) {
+      return null;
+    }
+
+    const memoryLines = args.memories
+      .slice(0, 30)
+      .map((memory, index) => `${index + 1}. ${memory.title}：${memory.content}`)
+      .join("\n");
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: [
+          "你是 QQ 群成员画像审查助手。",
+          "只能根据提供的新增长期记忆总结，不要编造新事实。",
+          "输出 2 到 4 句完整中文，概括这个成员昨日新增画像。",
+          "不要 markdown，不要编号，不要标题，不要提到置信度。",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `群号：${args.groupId}`,
+          `成员：${args.displayName}（QQ ${args.userId}）`,
+          `日期：${args.dateKey}`,
+          "昨日新增长期画像记忆：",
+          memoryLines,
+          "请汇总成几句完整的话。",
+        ].join("\n\n"),
+      },
+    ];
+
+    try {
+      const completion = await this.chatCompletions.create({
+        model: this.model,
+        temperature: 0.2,
+        messages,
+        max_tokens: 260,
+      });
+      return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
+    } catch {
+      return null;
+    }
+  }
+
+  async summarizeOverallMemberProfile(args: {
+    groupId: string;
+    userId: string;
+    displayName: string;
+    memories: MemberProfileMemoryInput[];
+  }): Promise<string | null> {
+    if (args.memories.length === 0) {
+      return null;
+    }
+
+    const memoryLines = args.memories
+      .slice(0, 60)
+      .map((memory, index) => `${index + 1}. ${memory.title}：${memory.content}`)
+      .join("\n");
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: [
+          "你是 QQ 群成员整体画像汇总助手。",
+          "只能根据提供的长期记忆总结，不要编造不存在的身份、关系、性格或事件。",
+          "输出一段完整中文，概括这个成员在群里的稳定画像、偏好和互动特点。",
+          "语气自然客观，控制在 180 字以内。",
+          "不要 markdown，不要编号，不要标题。",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `群号：${args.groupId}`,
+          `成员：${args.displayName}（QQ ${args.userId}）`,
+          "长期画像记忆：",
+          memoryLines,
+          "请汇总成一段整体画像。",
+        ].join("\n\n"),
+      },
+    ];
+
+    try {
+      const completion = await this.chatCompletions.create({
+        model: this.model,
+        temperature: 0.2,
+        messages,
+        max_tokens: 320,
+      });
+      return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
+    } catch {
+      return null;
     }
   }
 
@@ -751,6 +859,19 @@ function normalizeChatPeriodSummary(text: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim()
     .slice(0, 220);
+}
+
+function normalizeProfileSummary(text: string): string | null {
+  const normalized = text
+    .replace(/\r/g, "")
+    .replace(/```(?:text)?|```/gi, "")
+    .replace(/^#+\s*/gm, "")
+    .replace(/^[\s-]*画像总结[:：]\s*/i, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim()
+    .slice(0, 260);
+  return normalized || null;
 }
 
 export function buildSystemPrompt(skill: SkillDefinition, identityContext?: AiIdentityContext): string {

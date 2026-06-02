@@ -454,6 +454,41 @@ class FakeGroupMemoryStore {
   async listEnabled(groupId: string): Promise<GroupMemory[]> {
     return this.memories.filter((memory) => memory.groupId === groupId && memory.enabled);
   }
+
+  async create(input: Omit<GroupMemory, "id" | "createdAt" | "updatedAt">): Promise<GroupMemory> {
+    const now = new Date().toISOString();
+    const memory: GroupMemory = {
+      id: `memory-${this.memories.length + 1}`,
+      ...input,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.memories.push(memory);
+    return memory;
+  }
+}
+
+class FakeDailyProfileReviewService {
+  dailySummaries = new Map<string, GroupMemory>();
+  overallSummary: string | null = "整体画像总结";
+  getOrCreateCalls: Array<{ groupId: string; userId: string; dateKey: string }> = [];
+  overallCalls: Array<{ groupId: string; userId: string }> = [];
+  reviewCalls: Array<{ groupId: string; dateKey: string }> = [];
+
+  async reviewGroup(args: { groupConfig: GroupBotConfig; dateKey: string }): Promise<{ reviewedDate: string; createdCount: number }> {
+    this.reviewCalls.push({ groupId: args.groupConfig.groupId, dateKey: args.dateKey });
+    return { reviewedDate: args.dateKey, createdCount: 1 };
+  }
+
+  async getOrCreateYesterdaySummary(args: { groupConfig: GroupBotConfig; userId: string; dateKey: string }): Promise<GroupMemory | undefined> {
+    this.getOrCreateCalls.push({ groupId: args.groupConfig.groupId, userId: args.userId, dateKey: args.dateKey });
+    return this.dailySummaries.get(`${args.groupConfig.groupId}:${args.userId}:${args.dateKey}`);
+  }
+
+  async summarizeOverallProfile(args: { groupConfig: GroupBotConfig; userId: string }): Promise<string | null> {
+    this.overallCalls.push({ groupId: args.groupConfig.groupId, userId: args.userId });
+    return this.overallSummary;
+  }
 }
 
 class FakeKnowledgeBaseStore {
@@ -544,6 +579,23 @@ async function withMockedNow<T>(value: number, run: () => Promise<T>): Promise<T
   }
 }
 
+async function withMockedMemoryUsage<T>(args: { total: number; free: number }, run: () => Promise<T>): Promise<T> {
+  const mutableOs = os as unknown as {
+    totalmem(): number;
+    freemem(): number;
+  };
+  const originalTotalmem = mutableOs.totalmem;
+  const originalFreemem = mutableOs.freemem;
+  mutableOs.totalmem = () => args.total;
+  mutableOs.freemem = () => args.free;
+  try {
+    return await run();
+  } finally {
+    mutableOs.totalmem = originalTotalmem;
+    mutableOs.freemem = originalFreemem;
+  }
+}
+
 async function withTestScheduledReminderService<T>(
   aiService: FakeAiService,
   run: (service: ScheduledReminderService) => Promise<T>,
@@ -616,6 +668,7 @@ function createApp(options?: {
   groupMemoryStore?: FakeGroupMemoryStore;
   knowledgeBaseStore?: FakeKnowledgeBaseStore;
   groupMemoryCandidateService?: FakeGroupMemoryCandidateService;
+  dailyProfileReviewService?: FakeDailyProfileReviewService;
   allowNapCatAiVoiceFallback?: boolean;
   skills?: SkillDefinition[];
 }): {
@@ -632,6 +685,7 @@ function createApp(options?: {
   groupMemoryStore: FakeGroupMemoryStore;
   knowledgeBaseStore: FakeKnowledgeBaseStore;
   groupMemoryCandidateService: FakeGroupMemoryCandidateService;
+  dailyProfileReviewService: FakeDailyProfileReviewService;
 } {
   const transport = options?.transport ?? new FakeTransport();
   const groupConfigService =
@@ -681,6 +735,8 @@ function createApp(options?: {
   const knowledgeBaseStore = options?.knowledgeBaseStore ?? new FakeKnowledgeBaseStore();
   const groupMemoryCandidateService =
     options?.groupMemoryCandidateService ?? new FakeGroupMemoryCandidateService();
+  const dailyProfileReviewService =
+    options?.dailyProfileReviewService ?? new FakeDailyProfileReviewService();
 
   const app = new BotApplication(
     transport,
@@ -700,6 +756,7 @@ function createApp(options?: {
     groupMemoryStore as never,
     knowledgeBaseStore as never,
     groupMemoryCandidateService as never,
+    dailyProfileReviewService as never,
     "https://bot.9958.uk",
   );
 
@@ -717,6 +774,7 @@ function createApp(options?: {
     groupMemoryStore,
     knowledgeBaseStore,
     groupMemoryCandidateService,
+    dailyProfileReviewService,
   };
 }
 
@@ -954,24 +1012,26 @@ test("ops alert tick sends startup and napcat transition alerts with cooldown", 
     runOpsAlertTick(options?: { now?: Date; includeStartup?: boolean }): Promise<void>;
   };
 
-  await runOpsAlertTick.runOpsAlertTick({
-    now: new Date("2026-06-02T09:00:00.000Z"),
-    includeStartup: true,
+  await withMockedMemoryUsage({ total: 1000, free: 500 }, async () => {
+    await runOpsAlertTick.runOpsAlertTick({
+      now: new Date("2026-06-02T09:00:00.000Z"),
+      includeStartup: true,
+    });
+    assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】服务已启动/);
+    assert.match(transport.sent.at(-1)?.text ?? "", /\[CQ:at,qq=99999\]/);
+
+    transport.healthStatus = { ok: false, detail: "反向 WebSocket 未连接" };
+    await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:01:00.000Z") });
+    assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接异常/);
+
+    const countAfterDown = transport.sent.length;
+    await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:02:00.000Z") });
+    assert.equal(transport.sent.length, countAfterDown);
+
+    transport.healthStatus = { ok: true, detail: "反向 WebSocket 已连接" };
+    await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:03:00.000Z") });
+    assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接已恢复/);
   });
-  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】服务已启动/);
-  assert.match(transport.sent.at(-1)?.text ?? "", /\[CQ:at,qq=99999\]/);
-
-  transport.healthStatus = { ok: false, detail: "反向 WebSocket 未连接" };
-  await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:01:00.000Z") });
-  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接异常/);
-
-  const countAfterDown = transport.sent.length;
-  await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:02:00.000Z") });
-  assert.equal(transport.sent.length, countAfterDown);
-
-  transport.healthStatus = { ok: true, detail: "反向 WebSocket 已连接" };
-  await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:03:00.000Z") });
-  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接已恢复/);
 });
 
 test("ops alert disabled groups do not receive automatic alerts", async () => {
@@ -3052,4 +3112,86 @@ test("queues ordinary messages for memory candidates but skips commands", async 
 
   assert.equal(groupMemoryCandidateService.queued.length, 1);
   assert.equal(groupMemoryCandidateService.queued[0]?.text, "我以后喜欢简短回答");
+});
+
+test("profile commands allow self and admin queries with member aliases", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      manualIdentities: [
+        {
+          userIds: ["20001"],
+          names: ["Tester"],
+          note: "测试同学",
+        },
+      ],
+    },
+  ]);
+  const dailyProfileReviewService = new FakeDailyProfileReviewService();
+  dailyProfileReviewService.dailySummaries.set("67890:20001:2026-06-01", {
+    id: "m1",
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "20001",
+    title: "2026-06-01 昨日画像总结",
+    content: "Tester 昨日新增画像总结",
+    confidence: 0.8,
+    source: "daily_profile_review:2026-06-01",
+    createdAt: "2026-06-02T00:01:00.000Z",
+    updatedAt: "2026-06-02T00:01:00.000Z",
+    enabled: true,
+  });
+  const { app, transport } = createApp({ groupConfigService, dailyProfileReviewService });
+
+  await withMockedNow(Date.parse("2026-06-02T00:10:00+08:00"), async () => {
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#昨日画像" } }], 20001));
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#群聊画像 测试同学" } }], 99999));
+  });
+
+  assert.match(transport.sent[0]?.text ?? "", /Tester 昨日新增画像总结/);
+  assert.match(transport.sent[1]?.text ?? "", /整体画像总结/);
+  assert.equal(dailyProfileReviewService.getOrCreateCalls[0]?.userId, "20001");
+  assert.equal(dailyProfileReviewService.overallCalls[0]?.userId, "20001");
+});
+
+test("profile commands reject non-admin queries for other members and report ambiguous targets", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      manualIdentities: [
+        { userIds: ["20001"], names: ["张三"], note: "项目经理" },
+        { userIds: ["20002"], names: ["张三二号"], note: "项目助理" },
+      ],
+    },
+  ]);
+  const { app, transport } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#群聊画像 20002" } }], 20001));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#群聊画像 项目" } }], 99999));
+
+  assert.match(transport.sent[0]?.text ?? "", /只能查询自己的画像/);
+  assert.match(transport.sent[1]?.text ?? "", /匹配到多个人/);
+});
+
+test("daily profile review tick runs at Hong Kong midnight", async () => {
+  const dailyProfileReviewService = new FakeDailyProfileReviewService();
+  const { app } = createApp({ dailyProfileReviewService });
+
+  await (app as unknown as { runDailyProfileReviewTick(now?: Date): Promise<void> }).runDailyProfileReviewTick(
+    new Date("2026-06-01T23:59:00+08:00"),
+  );
+  await (app as unknown as { runDailyProfileReviewTick(now?: Date): Promise<void> }).runDailyProfileReviewTick(
+    new Date("2026-06-02T00:00:10+08:00"),
+  );
+
+  assert.equal(dailyProfileReviewService.reviewCalls.length, 1);
+  assert.equal(dailyProfileReviewService.reviewCalls[0]?.dateKey, "2026-06-01");
 });

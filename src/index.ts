@@ -6,6 +6,7 @@ import { BotApplication } from "./bot.js";
 import { AiService } from "./services/ai-service.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
+import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { GroupConfigService } from "./services/group-config-service.js";
@@ -32,13 +33,19 @@ type NapCatRuntime = MessageTransport & {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const aiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
+  const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
+  const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
   const groupConfigService = new GroupConfigService(config.groupsConfigPath);
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
+  const dailyProfileReviewService = new DailyProfileReviewService(
+    config.dailyProfileReviewPath,
+    groupMemoryStore,
+    profileAiService,
+  );
   const groupMemoryCandidateService = new GroupMemoryCandidateService(
     new GroupMemoryCandidateStore(config.groupMemoryCandidatesPath),
     groupMemoryStore,
-    aiService,
+    profileAiService,
   );
   const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath);
   const napcatRuntime: NapCatRuntime =
@@ -59,7 +66,7 @@ async function main(): Promise<void> {
     groupConfigService,
     new SkillService(config.skillsDir),
     new ConversationStore(config.conversationsPath),
-    aiService,
+    replyAiService,
     new TtsService(
       config.ttsBaseUrl,
       config.ttsApiKey,
@@ -71,15 +78,15 @@ async function main(): Promise<void> {
     ),
     new DailyReportService(
       new DailyReportStore(config.dailyReportStorePath),
-      aiService,
+      replyAiService,
     ),
     new HolidayCountdownService(
       new HolidayCountdownStore(config.holidayCountdownStorePath),
-      aiService,
+      replyAiService,
     ),
     new ScheduledReminderService(
       new ScheduledReminderStore(config.scheduledReminderStorePath),
-      aiService,
+      replyAiService,
     ),
     new AdminOperationLogService(config.adminOperationLogPath),
     new GroupLock(),
@@ -89,6 +96,7 @@ async function main(): Promise<void> {
     groupMemoryStore,
     knowledgeBaseStore,
     groupMemoryCandidateService,
+    dailyProfileReviewService,
     config.adminPublicBaseUrl,
   );
 

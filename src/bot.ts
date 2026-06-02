@@ -4,6 +4,8 @@ import { logError, logInfo, logWarn } from "./logger.js";
 import type { AiService } from "./services/ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { ConversationStore } from "./services/conversation-store.js";
+import type { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
+import { getYesterdayDateKey } from "./services/daily-profile-review-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupLock } from "./services/group-lock.js";
@@ -22,6 +24,7 @@ import type {
   AiReplyContext,
   ControlledMentionDecision,
   ConversationTurn,
+  GroupMemberProfile,
   GroupMemberIdentity,
   GroupBotConfig,
   MessageImageInput,
@@ -55,12 +58,15 @@ const SERVER_PREFIX = "#服务器";
 const OPS_ALERT_PREFIX = "#告警";
 const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
+const YESTERDAY_PROFILE_PREFIX = "#昨日画像";
+const GROUP_PROFILE_PREFIX = "#群聊画像";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const LIVE_CHAT_TICK_MS = 15 * 1000;
 const DAILY_REPORT_TICK_MS = 30 * 1000;
 const HOLIDAY_COUNTDOWN_TICK_MS = 30 * 1000;
 const SCHEDULED_REMINDER_TICK_MS = 30 * 1000;
 const OPS_ALERT_TICK_MS = 30 * 1000;
+const DAILY_PROFILE_REVIEW_TICK_MS = 30 * 1000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
@@ -88,6 +94,14 @@ const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限"
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
+const MSG_PROFILE_NO_PERMISSION = "你只能查询自己的画像，管理员可以查询所有人";
+
+interface ProfileTargetResolution {
+  status: "ok" | "ambiguous" | "not_found";
+  userId?: string;
+  label?: string;
+  matches?: string[];
+}
 
 export interface TransportHealthStatus {
   ok: boolean;
@@ -129,11 +143,13 @@ export class BotApplication {
   private holidayCountdownTimer?: NodeJS.Timeout;
   private scheduledReminderTimer?: NodeJS.Timeout;
   private opsAlertTimer?: NodeJS.Timeout;
+  private dailyProfileReviewTimer?: NodeJS.Timeout;
   private liveChatTickRunning = false;
   private dailyReportTickRunning = false;
   private holidayCountdownTickRunning = false;
   private scheduledReminderTickRunning = false;
   private opsAlertTickRunning = false;
+  private dailyProfileReviewTickRunning = false;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -161,6 +177,7 @@ export class BotApplication {
     private readonly groupMemoryStore?: GroupMemoryStore,
     private readonly knowledgeBaseStore?: KnowledgeBaseStore,
     private readonly groupMemoryCandidateService?: GroupMemoryCandidateService,
+    private readonly dailyProfileReviewService?: DailyProfileReviewService,
     private readonly adminPublicBaseUrl?: string,
   ) {}
 
@@ -170,7 +187,8 @@ export class BotApplication {
       this.dailyReportTimer ||
       this.holidayCountdownTimer ||
       this.scheduledReminderTimer ||
-      this.opsAlertTimer
+      this.opsAlertTimer ||
+      this.dailyProfileReviewTimer
     ) {
       return;
     }
@@ -200,6 +218,11 @@ export class BotApplication {
     }, OPS_ALERT_TICK_MS);
     this.opsAlertTimer.unref();
 
+    this.dailyProfileReviewTimer = setInterval(() => {
+      void this.runDailyProfileReviewTick();
+    }, DAILY_PROFILE_REVIEW_TICK_MS);
+    this.dailyProfileReviewTimer.unref();
+
     void this.runOpsAlertTick({ includeStartup: true });
   }
 
@@ -227,6 +250,11 @@ export class BotApplication {
     if (this.opsAlertTimer) {
       clearInterval(this.opsAlertTimer);
       this.opsAlertTimer = undefined;
+    }
+
+    if (this.dailyProfileReviewTimer) {
+      clearInterval(this.dailyProfileReviewTimer);
+      this.dailyProfileReviewTimer = undefined;
     }
   }
 
@@ -303,6 +331,16 @@ export class BotApplication {
 
     if (isKnowledgeStatusCommand(commandText)) {
       await this.handleKnowledgeStatusCommand(groupConfig, event);
+      return;
+    }
+
+    if (commandText.startsWith(YESTERDAY_PROFILE_PREFIX)) {
+      await this.handleYesterdayProfileCommand(groupConfig, event, commandText);
+      return;
+    }
+
+    if (commandText.startsWith(GROUP_PROFILE_PREFIX)) {
+      await this.handleGroupProfileCommand(groupConfig, event, commandText);
       return;
     }
 
@@ -748,6 +786,53 @@ export class BotApplication {
       });
     } finally {
       this.scheduledReminderTickRunning = false;
+    }
+  }
+
+  private async runDailyProfileReviewTick(now = new Date()): Promise<void> {
+    if (this.dailyProfileReviewTickRunning || !this.dailyProfileReviewService) {
+      return;
+    }
+
+    if (!isScheduledMinute(now, 0, 0)) {
+      return;
+    }
+
+    this.dailyProfileReviewTickRunning = true;
+    const dateKey = getYesterdayDateKey(now);
+
+    try {
+      const groups = await this.groupConfigService.getAll();
+      for (const groupConfig of groups) {
+        try {
+          const members = await this.buildMemberProfiles(groupConfig);
+          const result = await this.dailyProfileReviewService.reviewGroup({
+            groupConfig,
+            dateKey,
+            members,
+          });
+          if (result.createdCount > 0) {
+            logInfo("Reviewed daily member profiles.", {
+              groupId: groupConfig.groupId,
+              dateKey,
+              createdCount: result.createdCount,
+            });
+          }
+        } catch (error) {
+          logError("Daily profile review tick failed.", {
+            groupId: groupConfig.groupId,
+            dateKey,
+            error: (error as Error).message,
+          });
+        }
+      }
+    } catch (error) {
+      logError("Daily profile review scheduler failed.", {
+        dateKey,
+        error: (error as Error).message,
+      });
+    } finally {
+      this.dailyProfileReviewTickRunning = false;
     }
   }
 
@@ -2023,6 +2108,86 @@ export class BotApplication {
     );
   }
 
+  private async handleYesterdayProfileCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    commandText: string,
+  ): Promise<void> {
+    if (!this.dailyProfileReviewService || !this.groupMemoryStore) {
+      await this.sendText(groupConfig.groupId, "画像功能未启用");
+      return;
+    }
+
+    const requesterUserId = String(event.user_id);
+    const target = await this.resolveProfileCommandTarget(groupConfig, requesterUserId, commandText, YESTERDAY_PROFILE_PREFIX);
+    if (!target.userId) {
+      await this.sendText(groupConfig.groupId, target.label ?? "没有找到这个成员，请用 QQ 号查询");
+      return;
+    }
+    if (target.userId !== requesterUserId && !(await this.isAdmin(groupConfig, requesterUserId))) {
+      await this.sendText(groupConfig.groupId, MSG_PROFILE_NO_PERMISSION);
+      return;
+    }
+
+    const members = await this.buildMemberProfiles(groupConfig);
+    const dateKey = getYesterdayDateKey(new Date());
+    const summary = await this.dailyProfileReviewService.getOrCreateYesterdaySummary({
+      groupConfig,
+      userId: target.userId,
+      dateKey,
+      members,
+    });
+    const label = buildProfileDisplayLabel(groupConfig, target.userId, members);
+    if (!summary) {
+      await this.sendText(groupConfig.groupId, `${label} 昨日没有新增画像记忆`);
+      return;
+    }
+
+    await this.sendText(
+      groupConfig.groupId,
+      [`${label} 的昨日画像（${dateKey}）：`, summary.content].join("\n"),
+    );
+  }
+
+  private async handleGroupProfileCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    commandText: string,
+  ): Promise<void> {
+    if (!this.dailyProfileReviewService || !this.groupMemoryStore) {
+      await this.sendText(groupConfig.groupId, "画像功能未启用");
+      return;
+    }
+
+    const requesterUserId = String(event.user_id);
+    const target = await this.resolveProfileCommandTarget(groupConfig, requesterUserId, commandText, GROUP_PROFILE_PREFIX);
+    if (!target.userId) {
+      await this.sendText(groupConfig.groupId, target.label ?? "没有找到这个成员，请用 QQ 号查询");
+      return;
+    }
+    if (target.userId !== requesterUserId && !(await this.isAdmin(groupConfig, requesterUserId))) {
+      await this.sendText(groupConfig.groupId, MSG_PROFILE_NO_PERMISSION);
+      return;
+    }
+
+    const members = await this.buildMemberProfiles(groupConfig);
+    const label = buildProfileDisplayLabel(groupConfig, target.userId, members);
+    const summary = await this.dailyProfileReviewService.summarizeOverallProfile({
+      groupConfig,
+      userId: target.userId,
+      members,
+    });
+    if (!summary) {
+      await this.sendText(groupConfig.groupId, `${label} 暂无群聊画像`);
+      return;
+    }
+
+    await this.sendText(
+      groupConfig.groupId,
+      [`${label} 的群聊画像：`, summary].join("\n"),
+    );
+  }
+
   private async recordDailyReportMessage(
     groupConfig: GroupBotConfig,
     event: NapcatGroupMessageEvent,
@@ -2142,6 +2307,48 @@ export class BotApplication {
       });
       return [];
     }
+  }
+
+  private async buildMemberProfiles(groupConfig: GroupBotConfig) {
+    const [napcatMembers, memories, candidates] = await Promise.all([
+      this.safeListGroupMembers(groupConfig.groupId),
+      this.groupMemoryStore ? this.groupMemoryStore.list(groupConfig.groupId) : Promise.resolve([]),
+      this.groupMemoryCandidateService ? this.groupMemoryCandidateService.list({ groupId: groupConfig.groupId }) : Promise.resolve([]),
+    ]);
+    return buildGroupMemberProfiles({
+      groupConfig,
+      napcatMembers,
+      memories,
+      candidates,
+    });
+  }
+
+  private async resolveProfileCommandTarget(
+    groupConfig: GroupBotConfig,
+    requesterUserId: string,
+    commandText: string,
+    prefix: string,
+  ): Promise<ProfileTargetResolution> {
+    const rawTarget = commandText.slice(prefix.length).trim();
+    if (!rawTarget) {
+      return { status: "ok", userId: requesterUserId };
+    }
+
+    const members = await this.buildMemberProfiles(groupConfig);
+    const resolution = resolveProfileTarget(groupConfig, members, rawTarget);
+    if (resolution.status === "ambiguous") {
+      return {
+        ...resolution,
+        label: `匹配到多个人：${(resolution.matches ?? []).join("、")}，请用 QQ 号查询`,
+      };
+    }
+    if (resolution.status === "not_found") {
+      return {
+        ...resolution,
+        label: "没有找到这个成员，请用 QQ 号查询",
+      };
+    }
+    return resolution;
   }
 
   private async logAdminOperation(
@@ -2519,6 +2726,95 @@ function isKnowledgeStatusCommand(commandText: string): boolean {
   return normalized === KNOWLEDGE_PREFIX || normalized === `${KNOWLEDGE_PREFIX} 状态` || normalized === `${KNOWLEDGE_PREFIX} 查看`;
 }
 
+function resolveProfileTarget(
+  groupConfig: GroupBotConfig,
+  members: GroupMemberProfile[],
+  target: string,
+): ProfileTargetResolution {
+  const normalized = normalizeProfileQuery(target);
+  if (!normalized) {
+    return { status: "not_found" };
+  }
+
+  const userIds = new Set<string>();
+  for (const member of members) {
+    userIds.add(member.userId);
+  }
+  for (const identity of groupConfig.manualIdentities ?? []) {
+    for (const userId of identity.userIds) {
+      userIds.add(userId);
+    }
+  }
+
+  if (/^\d+$/.test(target.trim()) && userIds.has(target.trim())) {
+    return { status: "ok", userId: target.trim() };
+  }
+
+  const candidates = [...userIds].map((userId) => {
+    const member = members.find((item) => item.userId === userId);
+    const identities = (groupConfig.manualIdentities ?? []).filter((identity) => identity.userIds.includes(userId));
+    const texts = [
+      userId,
+      member?.displayName,
+      member?.card,
+      member?.nickname,
+      member?.note,
+      ...(member?.aliases ?? []),
+      ...identities.flatMap((identity) => [identity.note, ...identity.names]),
+    ].filter((value): value is string => Boolean(value?.trim()));
+    return {
+      userId,
+      label: member ? buildMemberDisplayLabel(member) : `QQ ${userId}`,
+      normalizedTexts: Array.from(new Set(texts.map(normalizeProfileQuery).filter(Boolean))),
+    };
+  });
+
+  const exactMatches = candidates.filter((candidate) => candidate.normalizedTexts.includes(normalized));
+  if (exactMatches.length === 1) {
+    return { status: "ok", userId: exactMatches[0]!.userId };
+  }
+  if (exactMatches.length > 1) {
+    return { status: "ambiguous", matches: exactMatches.map((match) => match.label) };
+  }
+
+  const fuzzyMatches = candidates.filter((candidate) =>
+    candidate.normalizedTexts.some((text) => text.includes(normalized) || normalized.includes(text)),
+  );
+  if (fuzzyMatches.length === 1) {
+    return { status: "ok", userId: fuzzyMatches[0]!.userId };
+  }
+  if (fuzzyMatches.length > 1) {
+    return { status: "ambiguous", matches: fuzzyMatches.slice(0, 5).map((match) => match.label) };
+  }
+
+  return { status: "not_found" };
+}
+
+function buildProfileDisplayLabel(
+  groupConfig: GroupBotConfig,
+  userId: string,
+  members: GroupMemberProfile[],
+): string {
+  const member = members.find((item) => item.userId === userId);
+  if (member) {
+    return buildMemberDisplayLabel(member);
+  }
+
+  const identity = groupConfig.manualIdentities?.find((item) => item.userIds.includes(userId));
+  const name = identity?.names[0] ?? userId;
+  return identity?.note ? `${name}（QQ ${userId}，备注：${identity.note}）` : `${name}（QQ ${userId}）`;
+}
+
+function buildMemberDisplayLabel(member: GroupMemberProfile): string {
+  return member.note
+    ? `${member.displayName}（QQ ${member.userId}，备注：${member.note}）`
+    : `${member.displayName}（QQ ${member.userId}）`;
+}
+
+function normalizeProfileQuery(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
 function formatOpsAlertMentions(userIds: string[]): string {
   const mentions = userIds
     .map((userId) => userId.trim())
@@ -2796,6 +3092,17 @@ function resolveSenderName(event: NapcatGroupMessageEvent): string {
 
 function formatClockTime(date: Date): string {
   return `${`${date.getHours()}`.padStart(2, "0")}:${`${date.getMinutes()}`.padStart(2, "0")}`;
+}
+
+function isScheduledMinute(date: Date, hour: number, minute: number): boolean {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Hong_Kong",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? "0");
+  return get("hour") === hour && get("minute") === minute;
 }
 
 function formatLocalDateTime(date: Date): string {

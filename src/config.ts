@@ -20,6 +20,7 @@ export function loadConfig(): AppConfig {
   const adminHttpPort = Number(process.env.ADMIN_HTTP_PORT ?? "6200");
   const openAiBaseUrl = requireEnv("OPENAI_BASE_URL");
   const openAiApiKey = requireEnv("OPENAI_API_KEY");
+  const openAiModel = requireEnv("OPENAI_MODEL");
   const ttsAudioFormat = (process.env.TTS_AUDIO_FORMAT ?? "wav").trim().toLowerCase();
   const ttsAllowNapCatAiFallback =
     (process.env.TTS_ALLOW_NAPCAT_AI_FALLBACK ?? "false").trim().toLowerCase() === "true";
@@ -49,7 +50,10 @@ export function loadConfig(): AppConfig {
     napcatReverseWsPath: process.env.NAPCAT_REVERSE_WS_PATH ?? "/onebot/ws",
     openAiBaseUrl,
     openAiApiKey,
-    openAiModel: requireEnv("OPENAI_MODEL"),
+    openAiModel,
+    profileAiBaseUrl: process.env.PROFILE_AI_BASE_URL ?? openAiBaseUrl,
+    profileAiApiKey: process.env.PROFILE_AI_API_KEY ?? openAiApiKey,
+    profileAiModel: process.env.PROFILE_AI_MODEL ?? openAiModel,
     ttsBaseUrl: process.env.TTS_BASE_URL ?? openAiBaseUrl,
     ttsApiKey: process.env.TTS_API_KEY ?? openAiApiKey,
     ttsModel: process.env.TTS_MODEL ?? "mimo-v2-tts",
@@ -68,6 +72,7 @@ export function loadConfig(): AppConfig {
     adminOperationLogPath: path.join(cwd, "data", "admin-operations.jsonl"),
     groupMemoryPath: path.join(cwd, "data", "group-memory.json"),
     groupMemoryCandidatesPath: path.join(cwd, "data", "group-memory-candidates.json"),
+    dailyProfileReviewPath: path.join(cwd, "data", "daily-profile-review.json"),
     knowledgeBasePath: path.join(cwd, "data", "knowledge-base.json"),
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: process.env.ADMIN_HTTP_HOST ?? "127.0.0.1",

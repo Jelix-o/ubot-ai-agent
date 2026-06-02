@@ -241,6 +241,9 @@ export interface AppConfig {
   openAiBaseUrl: string;
   openAiApiKey: string;
   openAiModel: string;
+  profileAiBaseUrl: string;
+  profileAiApiKey: string;
+  profileAiModel: string;
   ttsBaseUrl: string;
   ttsApiKey: string;
   ttsModel: string;
@@ -259,6 +262,7 @@ export interface AppConfig {
   adminOperationLogPath: string;
   groupMemoryPath: string;
   groupMemoryCandidatesPath: string;
+  dailyProfileReviewPath: string;
   knowledgeBasePath: string;
   adminHttpEnabled: boolean;
   adminHttpHost: string;

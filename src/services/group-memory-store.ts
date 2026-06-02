@@ -18,6 +18,7 @@ export type GroupMemoryInput = {
   confidence?: number;
   source?: string;
   enabled?: boolean;
+  createdAt?: string;
 };
 
 export class GroupMemoryStore {
@@ -43,6 +44,7 @@ export class GroupMemoryStore {
   async create(input: GroupMemoryInput): Promise<GroupMemory> {
     const data = await this.readData();
     const now = new Date().toISOString();
+    const createdAt = input.createdAt ?? now;
     const memory = normalizeMemory({
       id: randomUUID(),
       groupId: input.groupId,
@@ -52,8 +54,8 @@ export class GroupMemoryStore {
       content: input.content,
       confidence: input.confidence ?? 0.7,
       source: input.source ?? "admin",
-      createdAt: now,
-      updatedAt: now,
+      createdAt,
+      updatedAt: createdAt,
       enabled: input.enabled ?? true,
     });
 
