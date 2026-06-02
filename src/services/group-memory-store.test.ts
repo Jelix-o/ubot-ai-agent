@@ -56,7 +56,7 @@ test("candidate service deduplicates and approves candidates into long term memo
             type: "group_fact",
             title: "固定群规",
             content: "提问前先贴上下文。",
-            confidence: 0.75,
+            confidence: 0.55,
           },
         ];
       },
@@ -88,6 +88,109 @@ test("candidate service deduplicates and approves candidates into long term memo
 
     const rejected = await service.reject(pending[0]!.id);
     assert.equal(rejected?.status, "rejected");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service auto-approves confident candidates and keeps unsafe member profiles pending", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-auto-approve-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "group_fact",
+            title: "固定群规",
+            content: "问题解决后要回填结论。",
+            confidence: 0.6,
+          },
+          {
+            type: "member_profile",
+            subjectUserId: "20001",
+            title: "Tester 偏好",
+            content: "Tester 喜欢直接给结论。",
+            confidence: 0.72,
+          },
+          {
+            type: "member_profile",
+            title: "未归属偏好",
+            content: "有人喜欢长回答。",
+            confidence: 0.95,
+          },
+          {
+            type: "group_fact",
+            title: "低置信规则",
+            content: "可能每周五复盘。",
+            confidence: 0.59,
+          },
+        ];
+      },
+    });
+
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: "问题解决后要回填结论",
+      timestamp: new Date().toISOString(),
+    });
+    await service.flushAll();
+
+    const memories = await memoryStore.listEnabled("67890");
+    assert.equal(memories.length, 2);
+    assert.deepEqual(
+      memories.map((memory) => memory.title).sort(),
+      ["Tester 偏好", "固定群规"],
+    );
+
+    const pending = await service.list({ groupId: "67890", status: "pending" });
+    assert.equal(pending.length, 2);
+    assert.deepEqual(
+      pending.map((candidate) => candidate.title).sort(),
+      ["低置信规则", "未归属偏好"],
+    );
+
+    const approved = await service.list({ groupId: "67890", status: "approved" });
+    assert.equal(approved.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service does not duplicate memories for repeated auto-approved candidates", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-auto-dedupe-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "group_fact",
+            title: "固定群规",
+            content: "问题解决后要回填结论。",
+            confidence: 0.82,
+          },
+        ];
+      },
+    });
+
+    for (let index = 0; index < 2; index += 1) {
+      service.queueMessage({
+        groupId: "67890",
+        userId: "20001",
+        userName: "Tester",
+        text: "问题解决后要回填结论",
+        timestamp: new Date().toISOString(),
+      });
+      await service.flushAll();
+    }
+
+    assert.equal((await memoryStore.listEnabled("67890")).length, 1);
+    assert.equal((await service.list({ groupId: "67890", status: "approved" })).length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

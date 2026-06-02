@@ -4,6 +4,8 @@ import type { AiService, MemoryCandidateExtractionMessage } from "./ai-service.j
 import type { GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
 import type { GroupMemoryStore } from "./group-memory-store.js";
 
+const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.6;
+
 interface BufferedMemoryMessage {
   groupId: string;
   userId: string;
@@ -86,7 +88,7 @@ export class GroupMemoryCandidateService {
       }));
       const candidates = await this.aiService.extractGroupMemoryCandidates({ groupId, messages });
       for (const candidate of candidates) {
-        await this.candidateStore.addCandidate({
+        const result = await this.candidateStore.addCandidateWithResult({
           groupId,
           type: candidate.type,
           subjectUserId: candidate.subjectUserId,
@@ -95,6 +97,9 @@ export class GroupMemoryCandidateService {
           confidence: candidate.confidence,
           source: "auto",
         });
+        if (shouldAutoApprove(result.candidate) && (result.created || result.candidate.status === "pending")) {
+          await this.candidateStore.approve(result.candidate.id, this.memoryStore);
+        }
       }
     } catch (error) {
       logWarn("Failed to extract group memory candidates.", {
@@ -103,4 +108,11 @@ export class GroupMemoryCandidateService {
       });
     }
   }
+}
+
+function shouldAutoApprove(candidate: GroupMemoryCandidate): boolean {
+  if (candidate.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD) {
+    return false;
+  }
+  return candidate.type === "group_fact" || Boolean(candidate.subjectUserId);
 }

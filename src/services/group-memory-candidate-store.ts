@@ -20,6 +20,11 @@ export type GroupMemoryCandidateInput = {
   source?: string;
 };
 
+export interface GroupMemoryCandidateAddResult {
+  candidate: GroupMemoryCandidate;
+  created: boolean;
+}
+
 export class GroupMemoryCandidateStore {
   private cachedData?: GroupMemoryCandidateFile;
 
@@ -35,6 +40,11 @@ export class GroupMemoryCandidateStore {
   }
 
   async addCandidate(input: GroupMemoryCandidateInput): Promise<GroupMemoryCandidate> {
+    const result = await this.addCandidateWithResult(input);
+    return result.candidate;
+  }
+
+  async addCandidateWithResult(input: GroupMemoryCandidateInput): Promise<GroupMemoryCandidateAddResult> {
     const data = await this.readData();
     const normalizedKey = buildCandidateKey(input);
     const existing = data.candidates.find((candidate) => buildCandidateKey(candidate) === normalizedKey);
@@ -46,11 +56,11 @@ export class GroupMemoryCandidateStore {
       existing.confidence = normalizeConfidence(input.confidence ?? existing.confidence);
       existing.source = input.source?.trim().slice(0, 80) || existing.source;
       existing.updatedAt = now;
-      if (existing.status !== "pending") {
+      if (existing.status === "rejected") {
         existing.status = "pending";
       }
       await this.writeData(data);
-      return cloneCandidate(existing);
+      return { candidate: cloneCandidate(existing), created: false };
     }
 
     const candidate = normalizeCandidate({
@@ -68,7 +78,7 @@ export class GroupMemoryCandidateStore {
     });
     data.candidates.push(candidate);
     await this.writeData(data);
-    return cloneCandidate(candidate);
+    return { candidate: cloneCandidate(candidate), created: true };
   }
 
   async update(
