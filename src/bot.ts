@@ -125,7 +125,7 @@ interface MessageInteractionContext {
   replyContext?: AiReplyContext;
 }
 
-type OpsAlertType = "startup" | "napcat-down" | "napcat-recovered" | "memory-high" | "send-failure" | "send-recovered";
+type OpsAlertType = "startup" | "napcat-down" | "memory-high" | "send-failure" | "send-recovered";
 
 interface OpsAlertRuntimeState {
   startupSent: boolean;
@@ -861,14 +861,16 @@ export class BotApplication {
         });
       }
 
-      if (this.opsAlertState.lastTransportOk !== undefined && this.opsAlertState.lastTransportOk !== transportHealth.ok) {
+      if (
+        this.opsAlertState.lastTransportOk !== undefined &&
+        this.opsAlertState.lastTransportOk !== transportHealth.ok &&
+        !transportHealth.ok
+      ) {
         await this.sendOpsAlertToGroups({
           groups: enabledGroups,
-          type: transportHealth.ok ? "napcat-recovered" : "napcat-down",
+          type: "napcat-down",
           now,
-          message: transportHealth.ok
-            ? `NapCat 连接已恢复：${transportHealth.detail}`
-            : `NapCat 连接异常：${transportHealth.detail}`,
+          message: `NapCat 连接异常：${transportHealth.detail}`,
         });
       }
       this.opsAlertState.lastTransportOk = transportHealth.ok;

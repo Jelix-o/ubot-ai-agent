@@ -1005,7 +1005,7 @@ test("ops alert command requires admin permission", async () => {
   assert.match(transport.sent[0]?.text ?? "", /没有管理运维告警的权限/);
 });
 
-test("ops alert tick sends startup and napcat transition alerts with cooldown", async () => {
+test("ops alert tick sends startup and napcat down alerts without automatic recovery alert", async () => {
   const transport = new FakeTransport();
   const { app } = createApp({ transport });
   const runOpsAlertTick = app as unknown as {
@@ -1030,7 +1030,10 @@ test("ops alert tick sends startup and napcat transition alerts with cooldown", 
 
     transport.healthStatus = { ok: true, detail: "反向 WebSocket 已连接" };
     await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:03:00.000Z") });
-    assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接已恢复/);
+    assert.equal(transport.sent.length, countAfterDown);
+
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 状态" } }], 99999));
+    assert.match(transport.sent.at(-1)?.text ?? "", /NapCat：正常，反向 WebSocket 已连接/);
   });
 });
 
