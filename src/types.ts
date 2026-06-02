@@ -78,6 +78,50 @@ export interface GroupManualIdentity {
   note?: string;
 }
 
+export type GroupMemoryType = "member_profile" | "group_fact";
+
+export interface GroupMemory {
+  id: string;
+  groupId: string;
+  type: GroupMemoryType;
+  subjectUserId?: string;
+  title: string;
+  content: string;
+  confidence: number;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+  enabled: boolean;
+}
+
+export type GroupMemoryCandidateStatus = "pending" | "approved" | "rejected";
+
+export interface GroupMemoryCandidate {
+  id: string;
+  groupId: string;
+  type: GroupMemoryType;
+  subjectUserId?: string;
+  title: string;
+  content: string;
+  confidence: number;
+  source: string;
+  status: GroupMemoryCandidateStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeBaseEntry {
+  id: string;
+  groupId: string;
+  title: string;
+  question: string;
+  answer: string;
+  keywords: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface GroupMemberIdentity {
   userId: string;
   names: string[];
@@ -102,6 +146,8 @@ export interface AiIdentityContext {
   currentUserId: string;
   botUserId?: string;
   manualIdentities?: GroupManualIdentity[];
+  groupMemories?: GroupMemory[];
+  knowledgeHits?: KnowledgeBaseEntry[];
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
 }
@@ -123,6 +169,7 @@ export interface GroupBotConfig {
   botMuted?: boolean;
   scheduledRemindersEnabled?: boolean;
   blacklistedUserIds?: string[];
+  opsAlertsEnabled?: boolean;
 }
 
 export interface GroupsConfigFile {
@@ -196,4 +243,14 @@ export interface AppConfig {
   holidayCountdownStorePath: string;
   scheduledReminderStorePath: string;
   adminOperationLogPath: string;
+  groupMemoryPath: string;
+  groupMemoryCandidatesPath: string;
+  knowledgeBasePath: string;
+  adminHttpEnabled: boolean;
+  adminHttpHost: string;
+  adminHttpPort: number;
+  adminPublicBaseUrl: string;
+  adminUsername?: string;
+  adminPassword?: string;
+  adminSessionSecret?: string;
 }

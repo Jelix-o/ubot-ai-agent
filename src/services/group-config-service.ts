@@ -203,6 +203,23 @@ export class GroupConfigService {
     return group;
   }
 
+  async updateOpsAlertsEnabled(groupId: string, enabled: boolean): Promise<GroupBotConfig> {
+    const data = await this.readConfig();
+    const index = data.groups.findIndex((group) => group.groupId === groupId);
+    if (index === -1) {
+      throw new Error(`Group ${groupId} is not configured.`);
+    }
+
+    const group = normalizeGroupConfig({
+      ...data.groups[index],
+      opsAlertsEnabled: enabled,
+    });
+    data.groups[index] = group;
+
+    await this.writeConfig(data);
+    return group;
+  }
+
   async addBlacklistedUser(groupId: string, userId: string): Promise<GroupBotConfig> {
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
@@ -315,6 +332,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     botMuted: group.botMuted === true,
     scheduledRemindersEnabled: group.scheduledRemindersEnabled !== false,
     blacklistedUserIds: normalizeUserIds(group.blacklistedUserIds),
+    opsAlertsEnabled: group.opsAlertsEnabled !== false,
   };
 }
 

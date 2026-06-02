@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import os from "node:os";
 import { rm } from "node:fs/promises";
 import test from "node:test";
 
@@ -15,6 +16,9 @@ import type {
   ControlledMentionDecision,
   ConversationTurn,
   GroupBotConfig,
+  GroupMemory,
+  GroupMemoryCandidate,
+  KnowledgeBaseEntry,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
   ReferencedMessage,
@@ -27,6 +31,8 @@ class FakeTransport implements MessageTransport {
   readonly aiRecords: Array<{ groupId: string; text: string }> = [];
   messagesById: Record<string, ReferencedMessage> = {};
   getMessageError?: Error;
+  sendGroupMessageError?: Error;
+  allowOpsAlertWhenSendFails = false;
   memberDirectoryByGroup: Record<string, NapcatGroupMember[]> = {
     "67890": [
       { user_id: 67890, nickname: "小王", card: "项目经理" },
@@ -37,6 +43,9 @@ class FakeTransport implements MessageTransport {
   healthStatus = { ok: true, detail: "测试传输层已连接" };
 
   async sendGroupMessage(groupId: string, text: string): Promise<void> {
+    if (this.sendGroupMessageError && !(this.allowOpsAlertWhenSendFails && text.includes("【运维告警】"))) {
+      throw this.sendGroupMessageError;
+    }
     this.sent.push({ groupId, text });
   }
 
@@ -173,6 +182,12 @@ class FakeGroupConfigService {
   async updateScheduledRemindersEnabled(groupId: string, enabled: boolean): Promise<GroupBotConfig> {
     const group = this.requireGroup(groupId);
     group.scheduledRemindersEnabled = enabled;
+    return cloneGroup(group);
+  }
+
+  async updateOpsAlertsEnabled(groupId: string, enabled: boolean): Promise<GroupBotConfig> {
+    const group = this.requireGroup(groupId);
+    group.opsAlertsEnabled = enabled;
     return cloneGroup(group);
   }
 
@@ -429,6 +444,47 @@ class FakeAdminOperationLogService {
   }
 }
 
+class FakeGroupMemoryStore {
+  memories: GroupMemory[] = [];
+
+  async list(groupId?: string): Promise<GroupMemory[]> {
+    return this.memories.filter((memory) => !groupId || memory.groupId === groupId);
+  }
+
+  async listEnabled(groupId: string): Promise<GroupMemory[]> {
+    return this.memories.filter((memory) => memory.groupId === groupId && memory.enabled);
+  }
+}
+
+class FakeKnowledgeBaseStore {
+  entries: KnowledgeBaseEntry[] = [];
+  queries: Array<{ groupId: string; query: string }> = [];
+
+  async list(groupId?: string): Promise<KnowledgeBaseEntry[]> {
+    return this.entries.filter((entry) => !groupId || entry.groupId === groupId);
+  }
+
+  async search(groupId: string, query: string): Promise<Array<{ entry: KnowledgeBaseEntry; score: number }>> {
+    this.queries.push({ groupId, query });
+    return this.entries
+      .filter((entry) => entry.groupId === groupId && entry.enabled)
+      .map((entry) => ({ entry, score: 10 }));
+  }
+}
+
+class FakeGroupMemoryCandidateService {
+  queued: Array<{ groupId: string; userId: string; userName: string; text: string; timestamp: string }> = [];
+  candidates: GroupMemoryCandidate[] = [];
+
+  queueMessage(message: { groupId: string; userId: string; userName: string; text: string; timestamp: string }): void {
+    this.queued.push(message);
+  }
+
+  async list(): Promise<GroupMemoryCandidate[]> {
+    return this.candidates;
+  }
+}
+
 const assistantSkill: SkillDefinition = {
   id: "assistant",
   name: "assistant",
@@ -452,6 +508,7 @@ function cloneGroup(group: GroupBotConfig): GroupBotConfig {
     switcherUserIds: [...group.switcherUserIds],
     liveChatUserIds: [...group.liveChatUserIds],
     blacklistedUserIds: [...(group.blacklistedUserIds ?? [])],
+    opsAlertsEnabled: group.opsAlertsEnabled !== false,
     manualIdentities: group.manualIdentities?.map((identity) => ({
       ...identity,
       userIds: [...identity.userIds],
@@ -556,6 +613,9 @@ function createApp(options?: {
   holidayCountdownService?: FakeHolidayCountdownService;
   scheduledReminderService?: ScheduledReminderService;
   adminOperationLogService?: FakeAdminOperationLogService;
+  groupMemoryStore?: FakeGroupMemoryStore;
+  knowledgeBaseStore?: FakeKnowledgeBaseStore;
+  groupMemoryCandidateService?: FakeGroupMemoryCandidateService;
   allowNapCatAiVoiceFallback?: boolean;
   skills?: SkillDefinition[];
 }): {
@@ -569,6 +629,9 @@ function createApp(options?: {
   holidayCountdownService: FakeHolidayCountdownService;
   scheduledReminderService: ScheduledReminderService;
   adminOperationLogService: FakeAdminOperationLogService;
+  groupMemoryStore: FakeGroupMemoryStore;
+  knowledgeBaseStore: FakeKnowledgeBaseStore;
+  groupMemoryCandidateService: FakeGroupMemoryCandidateService;
 } {
   const transport = options?.transport ?? new FakeTransport();
   const groupConfigService =
@@ -614,6 +677,10 @@ function createApp(options?: {
       aiService as never,
     );
   const adminOperationLogService = options?.adminOperationLogService ?? new FakeAdminOperationLogService();
+  const groupMemoryStore = options?.groupMemoryStore ?? new FakeGroupMemoryStore();
+  const knowledgeBaseStore = options?.knowledgeBaseStore ?? new FakeKnowledgeBaseStore();
+  const groupMemoryCandidateService =
+    options?.groupMemoryCandidateService ?? new FakeGroupMemoryCandidateService();
 
   const app = new BotApplication(
     transport,
@@ -630,6 +697,10 @@ function createApp(options?: {
     new LiveChatService(),
     "12345",
     options?.allowNapCatAiVoiceFallback ?? false,
+    groupMemoryStore as never,
+    knowledgeBaseStore as never,
+    groupMemoryCandidateService as never,
+    "https://bot.9958.uk",
   );
 
   return {
@@ -643,6 +714,9 @@ function createApp(options?: {
     holidayCountdownService,
     scheduledReminderService,
     adminOperationLogService,
+    groupMemoryStore,
+    knowledgeBaseStore,
+    groupMemoryCandidateService,
   };
 }
 
@@ -818,6 +892,172 @@ test("operation log command requires admin permission", async () => {
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#操作日志" } }], 20001));
 
   assert.match(transport.sent[0]?.text ?? "", /没有查看机器人操作日志的权限/);
+});
+
+test("admin server command reports runtime details while muted", async () => {
+  const transport = new FakeTransport();
+  transport.healthStatus = { ok: true, detail: "测试传输层已连接" };
+  const { app } = createApp({ transport });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#服务器" } }], 99999));
+
+  const status = transport.sent.at(-1)?.text ?? "";
+  assert.match(status, /服务器状态：/);
+  assert.match(status, /主机：/);
+  assert.match(status, /Node：/);
+  assert.match(status, /进程运行：/);
+  assert.match(status, /系统运行：/);
+  assert.match(status, /CPU：/);
+  assert.match(status, /内存：/);
+  assert.match(status, /进程内存：/);
+  assert.match(status, /工作目录：/);
+  assert.match(status, /NapCat：正常，测试传输层已连接/);
+});
+
+test("server command requires admin permission", async () => {
+  const { app, transport } = createApp();
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#服务器" } }], 20001));
+
+  assert.match(transport.sent[0]?.text ?? "", /没有查看服务器状态的权限/);
+});
+
+test("admin ops alert command manages current group setting while muted", async () => {
+  const { app, transport, groupConfigService } = createApp();
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 状态" } }], 99999));
+  assert.match(transport.sent.at(-1)?.text ?? "", /运维告警：已开启/);
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 关闭" } }], 99999));
+  assert.equal(groupConfigService.groups[0]?.opsAlertsEnabled, false);
+  assert.match(transport.sent.at(-1)?.text ?? "", /已关闭当前群运维告警/);
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 开启" } }], 99999));
+  assert.equal(groupConfigService.groups[0]?.opsAlertsEnabled, true);
+  assert.match(transport.sent.at(-1)?.text ?? "", /已开启当前群运维告警/);
+});
+
+test("ops alert command requires admin permission", async () => {
+  const { app, transport } = createApp();
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 状态" } }], 20001));
+
+  assert.match(transport.sent[0]?.text ?? "", /没有管理运维告警的权限/);
+});
+
+test("ops alert tick sends startup and napcat transition alerts with cooldown", async () => {
+  const transport = new FakeTransport();
+  const { app } = createApp({ transport });
+  const runOpsAlertTick = app as unknown as {
+    runOpsAlertTick(options?: { now?: Date; includeStartup?: boolean }): Promise<void>;
+  };
+
+  await runOpsAlertTick.runOpsAlertTick({
+    now: new Date("2026-06-02T09:00:00.000Z"),
+    includeStartup: true,
+  });
+  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】服务已启动/);
+  assert.match(transport.sent.at(-1)?.text ?? "", /\[CQ:at,qq=99999\]/);
+
+  transport.healthStatus = { ok: false, detail: "反向 WebSocket 未连接" };
+  await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:01:00.000Z") });
+  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接异常/);
+
+  const countAfterDown = transport.sent.length;
+  await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:02:00.000Z") });
+  assert.equal(transport.sent.length, countAfterDown);
+
+  transport.healthStatus = { ok: true, detail: "反向 WebSocket 已连接" };
+  await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:03:00.000Z") });
+  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】NapCat 连接已恢复/);
+});
+
+test("ops alert disabled groups do not receive automatic alerts", async () => {
+  const transport = new FakeTransport();
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      opsAlertsEnabled: false,
+    },
+  ]);
+  const { app } = createApp({ transport, groupConfigService });
+
+  await (app as unknown as {
+    runOpsAlertTick(options?: { now?: Date; includeStartup?: boolean }): Promise<void>;
+  }).runOpsAlertTick({
+    now: new Date("2026-06-02T09:00:00.000Z"),
+    includeStartup: true,
+  });
+
+  assert.equal(transport.sent.length, 0);
+});
+
+test("ops alert sends failure alert after consecutive send failures and recovery on success", async () => {
+  const transport = new FakeTransport();
+  transport.allowOpsAlertWhenSendFails = true;
+  const { app } = createApp({ transport });
+  transport.sendGroupMessageError = new Error("send failed");
+
+  for (let index = 0; index < 3; index += 1) {
+    await assert.rejects(
+      app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#状态" } }], 99999)),
+      /send failed/,
+    );
+  }
+
+  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】消息发送连续失败 3 次/);
+
+  transport.sendGroupMessageError = undefined;
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#状态" } }], 99999));
+
+  assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】消息发送已恢复/);
+});
+
+test("ops alert tick sends memory high alert and allows another alert after recovery", async () => {
+  const originalMemoryUsage = process.memoryUsage;
+  const mutableOs = os as unknown as {
+    totalmem(): number;
+    freemem(): number;
+  };
+  const originalOsTotalmem = mutableOs.totalmem;
+  const originalOsFreemem = mutableOs.freemem;
+  const transport = new FakeTransport();
+  const { app } = createApp({ transport });
+  const runOpsAlertTick = app as unknown as {
+    runOpsAlertTick(options?: { now?: Date }): Promise<void>;
+  };
+
+  try {
+    mutableOs.totalmem = () => 1000;
+    mutableOs.freemem = () => 100;
+    process.memoryUsage = (() => ({
+      rss: 100,
+      heapTotal: 100,
+      heapUsed: 50,
+      external: 0,
+      arrayBuffers: 0,
+    })) as typeof process.memoryUsage;
+
+    await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:00:00.000Z") });
+    assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】内存占用偏高/);
+
+    mutableOs.freemem = () => 300;
+    await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:01:00.000Z") });
+
+    mutableOs.freemem = () => 100;
+    await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:11:00.000Z") });
+    assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】内存占用偏高/);
+  } finally {
+    process.memoryUsage = originalMemoryUsage;
+    mutableOs.totalmem = originalOsTotalmem;
+    mutableOs.freemem = originalOsFreemem;
+  }
 });
 
 test("admin blacklist suppresses replies until unblocked while still recording reports", async () => {
@@ -2756,4 +2996,60 @@ test("sends scheduled holiday countdown once tick condition is met", async () =>
 
   assert.equal(transport.sent.at(-1)?.text, "节假日倒计时\n1. 劳动节：还有 16 天");
   assert.equal(holidayCountdownService.marked.length, 1);
+});
+
+test("injects approved group memory and keyword knowledge into AI replies", async () => {
+  const groupMemoryStore = new FakeGroupMemoryStore();
+  groupMemoryStore.memories = [
+    {
+      id: "mem-1",
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Tester 偏好",
+      content: "Tester 喜欢简短回答。",
+      confidence: 0.8,
+      source: "admin",
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+      enabled: true,
+    },
+  ];
+  const knowledgeBaseStore = new FakeKnowledgeBaseStore();
+  knowledgeBaseStore.entries = [
+    {
+      id: "faq-1",
+      groupId: "67890",
+      title: "报销规则",
+      question: "怎么报销",
+      answer: "先贴发票，再找管理员登记。",
+      keywords: ["报销"],
+      enabled: true,
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    },
+  ];
+  const { app, aiService } = createApp({ groupMemoryStore, knowledgeBaseStore });
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " 我要报销" } },
+    ]),
+  );
+
+  assert.equal(aiService.calls[0]?.identityContext?.groupMemories?.[0]?.content, "Tester 喜欢简短回答。");
+  assert.equal(aiService.calls[0]?.identityContext?.knowledgeHits?.[0]?.answer, "先贴发票，再找管理员登记。");
+  assert.match(knowledgeBaseStore.queries[0]?.query ?? "", /我要报销/);
+});
+
+test("queues ordinary messages for memory candidates but skips commands", async () => {
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const { app } = createApp({ groupMemoryCandidateService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "我以后喜欢简短回答" } }]));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#状态" } }], 99999));
+
+  assert.equal(groupMemoryCandidateService.queued.length, 1);
+  assert.equal(groupMemoryCandidateService.queued[0]?.text, "我以后喜欢简短回答");
 });

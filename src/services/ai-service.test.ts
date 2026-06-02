@@ -67,6 +67,46 @@ test("buildSystemPrompt includes manual group identity memory", () => {
   assert.equal(prompt.includes("你拥有受控 @ 配置人员的能力"), true);
 });
 
+test("buildSystemPrompt includes approved group memory and matched knowledge", () => {
+  const prompt = buildSystemPrompt(skill, {
+    groupId: "67890",
+    currentUserId: "20001",
+    groupMemories: [
+      {
+        id: "mem-1",
+        groupId: "67890",
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "Tester 偏好",
+        content: "Tester 喜欢简短回答。",
+        confidence: 0.8,
+        source: "admin",
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+        enabled: true,
+      },
+    ],
+    knowledgeHits: [
+      {
+        id: "faq-1",
+        groupId: "67890",
+        title: "报销规则",
+        question: "怎么报销发票",
+        answer: "先贴发票，再找管理员登记。",
+        keywords: ["报销", "发票"],
+        enabled: true,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      },
+    ],
+  });
+
+  assert.match(prompt, /Approved group memory/);
+  assert.match(prompt, /Tester 喜欢简短回答/);
+  assert.match(prompt, /Matched group knowledge/);
+  assert.match(prompt, /先贴发票/);
+});
+
 test("buildChatMessages injects examples before conversation history", () => {
   const history: ConversationTurn[] = [
     {

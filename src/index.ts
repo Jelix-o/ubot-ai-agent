@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { AdminHttpServer } from "./admin-http-server.js";
 import { NapCatClient } from "./napcat-client.js";
 import { NapCatReverseServer } from "./napcat-reverse-server.js";
 import { BotApplication } from "./bot.js";
@@ -9,8 +10,12 @@ import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupLock } from "./services/group-lock.js";
+import { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
+import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
+import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import { HolidayCountdownStore } from "./services/holiday-countdown-store.js";
+import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
@@ -28,6 +33,14 @@ type NapCatRuntime = MessageTransport & {
 async function main(): Promise<void> {
   const config = loadConfig();
   const aiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
+  const groupConfigService = new GroupConfigService(config.groupsConfigPath);
+  const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
+  const groupMemoryCandidateService = new GroupMemoryCandidateService(
+    new GroupMemoryCandidateStore(config.groupMemoryCandidatesPath),
+    groupMemoryStore,
+    aiService,
+  );
+  const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath);
   const napcatRuntime: NapCatRuntime =
     config.napcatMode === "reverse"
       ? new NapCatReverseServer({
@@ -43,7 +56,7 @@ async function main(): Promise<void> {
 
   const app = new BotApplication(
     napcatRuntime,
-    new GroupConfigService(config.groupsConfigPath),
+    groupConfigService,
     new SkillService(config.skillsDir),
     new ConversationStore(config.conversationsPath),
     aiService,
@@ -73,7 +86,15 @@ async function main(): Promise<void> {
     new LiveChatService(),
     config.botQq,
     config.ttsAllowNapCatAiFallback,
+    groupMemoryStore,
+    knowledgeBaseStore,
+    groupMemoryCandidateService,
+    config.adminPublicBaseUrl,
   );
+
+  const adminHttpServer = config.adminHttpEnabled
+    ? createAdminHttpServer(config, groupConfigService, groupMemoryStore, groupMemoryCandidateService, knowledgeBaseStore, app)
+    : undefined;
 
   napcatRuntime.on("groupMessage", async (event) => {
     try {
@@ -89,8 +110,37 @@ async function main(): Promise<void> {
 
   app.start();
   napcatRuntime.start();
+  adminHttpServer?.start();
   logInfo("NapCat QQ skill bot started.", {
     mode: config.napcatMode,
+  });
+}
+
+function createAdminHttpServer(
+  config: ReturnType<typeof loadConfig>,
+  groupConfigService: GroupConfigService,
+  groupMemoryStore: GroupMemoryStore,
+  groupMemoryCandidateService: GroupMemoryCandidateService,
+  knowledgeBaseStore: KnowledgeBaseStore,
+  app: BotApplication,
+): AdminHttpServer {
+  if (!config.adminUsername || !config.adminPassword || !config.adminSessionSecret) {
+    throw new Error("ADMIN_USERNAME, ADMIN_PASSWORD and ADMIN_SESSION_SECRET are required when ADMIN_HTTP_ENABLED=true.");
+  }
+
+  return new AdminHttpServer({
+    host: config.adminHttpHost,
+    port: config.adminHttpPort,
+    publicBaseUrl: config.adminPublicBaseUrl,
+    username: config.adminUsername,
+    password: config.adminPassword,
+    sessionSecret: config.adminSessionSecret,
+    groupConfigService,
+    groupMemoryStore,
+    groupMemoryCandidateService,
+    knowledgeBaseStore,
+    adminOperationLogService: new AdminOperationLogService(config.adminOperationLogPath),
+    getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),
   });
 }
 

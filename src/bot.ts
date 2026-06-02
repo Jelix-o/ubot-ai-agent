@@ -1,3 +1,5 @@
+import os from "node:os";
+
 import { logError, logInfo, logWarn } from "./logger.js";
 import type { AiService } from "./services/ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -5,7 +7,10 @@ import type { ConversationStore } from "./services/conversation-store.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupLock } from "./services/group-lock.js";
+import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
+import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
+import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
@@ -44,16 +49,26 @@ const STATUS_PREFIX = "#状态";
 const HEALTH_PREFIX = "#健康检查";
 const SHORT_HEALTH_PREFIX = "#健康";
 const OPERATION_LOG_PREFIX = "#操作日志";
+const SERVER_PREFIX = "#服务器";
+const OPS_ALERT_PREFIX = "#告警";
+const MEMORY_PREFIX = "#记忆";
+const KNOWLEDGE_PREFIX = "#知识库";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const LIVE_CHAT_TICK_MS = 15 * 1000;
 const DAILY_REPORT_TICK_MS = 30 * 1000;
 const HOLIDAY_COUNTDOWN_TICK_MS = 30 * 1000;
 const SCHEDULED_REMINDER_TICK_MS = 30 * 1000;
+const OPS_ALERT_TICK_MS = 30 * 1000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
 const REPEAT_THRESHOLD = 4;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
+const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
+const SEND_FAILURE_ALERT_THRESHOLD = 3;
+const MEMORY_PERCENT_ALERT_THRESHOLD = 85;
+const MEMORY_PERCENT_RECOVERY_THRESHOLD = 75;
+const PROCESS_RSS_ALERT_BYTES = 1024 * 1024 * 1024;
 
 const MSG_AI_FAIL = "我刚刚思考超时了，请稍后再试一次";
 const MSG_VOICE_FAIL = "语音发送失败，我先用文字回复你";
@@ -69,6 +84,8 @@ const MSG_BLACKLIST_NO_PERMISSION = "你没有管理机器人黑名单的权限"
 const MSG_STATUS_NO_PERMISSION = "你没有查看机器人状态的权限";
 const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限";
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
+const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
+const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 
 export interface TransportHealthStatus {
   ok: boolean;
@@ -91,16 +108,37 @@ interface MessageInteractionContext {
   replyContext?: AiReplyContext;
 }
 
+type OpsAlertType = "startup" | "napcat-down" | "napcat-recovered" | "memory-high" | "send-failure" | "send-recovered";
+
+interface OpsAlertRuntimeState {
+  startupSent: boolean;
+  lastTransportOk?: boolean;
+  memoryAlertActive: boolean;
+  consecutiveSendFailures: number;
+  sendFailureAlertActive: boolean;
+  lastAlertAtByType: Map<OpsAlertType, number>;
+  lastAlertSummary?: string;
+}
+
 export class BotApplication {
   private liveChatTimer?: NodeJS.Timeout;
   private dailyReportTimer?: NodeJS.Timeout;
   private holidayCountdownTimer?: NodeJS.Timeout;
   private scheduledReminderTimer?: NodeJS.Timeout;
+  private opsAlertTimer?: NodeJS.Timeout;
   private liveChatTickRunning = false;
   private dailyReportTickRunning = false;
   private holidayCountdownTickRunning = false;
   private scheduledReminderTickRunning = false;
+  private opsAlertTickRunning = false;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
+  private readonly opsAlertState: OpsAlertRuntimeState = {
+    startupSent: false,
+    memoryAlertActive: false,
+    consecutiveSendFailures: 0,
+    sendFailureAlertActive: false,
+    lastAlertAtByType: new Map(),
+  };
 
   constructor(
     private readonly transport: MessageTransport,
@@ -117,10 +155,20 @@ export class BotApplication {
     private readonly liveChatService: LiveChatService,
     private readonly botQq: string,
     private readonly allowNapCatAiVoiceFallback = false,
+    private readonly groupMemoryStore?: GroupMemoryStore,
+    private readonly knowledgeBaseStore?: KnowledgeBaseStore,
+    private readonly groupMemoryCandidateService?: GroupMemoryCandidateService,
+    private readonly adminPublicBaseUrl?: string,
   ) {}
 
   start(): void {
-    if (this.liveChatTimer || this.dailyReportTimer || this.holidayCountdownTimer || this.scheduledReminderTimer) {
+    if (
+      this.liveChatTimer ||
+      this.dailyReportTimer ||
+      this.holidayCountdownTimer ||
+      this.scheduledReminderTimer ||
+      this.opsAlertTimer
+    ) {
       return;
     }
 
@@ -143,6 +191,13 @@ export class BotApplication {
       void this.runScheduledReminderTick();
     }, SCHEDULED_REMINDER_TICK_MS);
     this.scheduledReminderTimer.unref();
+
+    this.opsAlertTimer = setInterval(() => {
+      void this.runOpsAlertTick();
+    }, OPS_ALERT_TICK_MS);
+    this.opsAlertTimer.unref();
+
+    void this.runOpsAlertTick({ includeStartup: true });
   }
 
   stop(): void {
@@ -164,6 +219,11 @@ export class BotApplication {
     if (this.scheduledReminderTimer) {
       clearInterval(this.scheduledReminderTimer);
       this.scheduledReminderTimer = undefined;
+    }
+
+    if (this.opsAlertTimer) {
+      clearInterval(this.opsAlertTimer);
+      this.opsAlertTimer = undefined;
     }
   }
 
@@ -225,6 +285,26 @@ export class BotApplication {
 
     if (isOperationLogCommand(commandText)) {
       await this.handleOperationLogCommand(groupConfig, event);
+      return;
+    }
+
+    if (isServerCommand(commandText)) {
+      await this.handleServerCommand(groupConfig, event);
+      return;
+    }
+
+    if (isMemoryStatusCommand(commandText)) {
+      await this.handleMemoryStatusCommand(groupConfig, event);
+      return;
+    }
+
+    if (isKnowledgeStatusCommand(commandText)) {
+      await this.handleKnowledgeStatusCommand(groupConfig, event);
+      return;
+    }
+
+    if (commandText.startsWith(OPS_ALERT_PREFIX)) {
+      await this.handleOpsAlertCommand(groupConfig, event, commandText);
       return;
     }
 
@@ -370,6 +450,7 @@ export class BotApplication {
     }
 
     await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
+    this.queueMemoryCandidateMessage(groupConfig, event, parsedMessage);
 
     if (this.shouldTriggerChengfeng(groupId, userId, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
       await this.groupLock.run(groupId, async () => {
@@ -413,6 +494,10 @@ export class BotApplication {
         true,
       );
     });
+  }
+
+  async getPublicTransportHealthStatus(): Promise<TransportHealthStatus> {
+    return this.getTransportHealthStatus();
   }
 
   private shouldTriggerChengfeng(
@@ -663,6 +748,66 @@ export class BotApplication {
     }
   }
 
+  private async runOpsAlertTick(options: { now?: Date; includeStartup?: boolean } = {}): Promise<void> {
+    if (this.opsAlertTickRunning) {
+      return;
+    }
+
+    this.opsAlertTickRunning = true;
+    const now = options.now ?? new Date();
+
+    try {
+      const [groups, transportHealth] = await Promise.all([
+        this.groupConfigService.getAll(),
+        this.getTransportHealthStatus(),
+      ]);
+      const enabledGroups = groups.filter((group) => group.opsAlertsEnabled !== false);
+
+      if (options.includeStartup && !this.opsAlertState.startupSent) {
+        this.opsAlertState.startupSent = true;
+        await this.sendOpsAlertToGroups({
+          groups: enabledGroups,
+          type: "startup",
+          now,
+          message: `服务已启动，进程 PID ${process.pid}，Node ${process.version}`,
+        });
+      }
+
+      if (this.opsAlertState.lastTransportOk !== undefined && this.opsAlertState.lastTransportOk !== transportHealth.ok) {
+        await this.sendOpsAlertToGroups({
+          groups: enabledGroups,
+          type: transportHealth.ok ? "napcat-recovered" : "napcat-down",
+          now,
+          message: transportHealth.ok
+            ? `NapCat 连接已恢复：${transportHealth.detail}`
+            : `NapCat 连接异常：${transportHealth.detail}`,
+        });
+      }
+      this.opsAlertState.lastTransportOk = transportHealth.ok;
+
+      const memory = getMemoryStatus();
+      const rss = process.memoryUsage().rss;
+      const memoryHigh = memory.percent >= MEMORY_PERCENT_ALERT_THRESHOLD || rss >= PROCESS_RSS_ALERT_BYTES;
+      if (memoryHigh && !this.opsAlertState.memoryAlertActive) {
+        this.opsAlertState.memoryAlertActive = true;
+        await this.sendOpsAlertToGroups({
+          groups: enabledGroups,
+          type: "memory-high",
+          now,
+          message: `内存占用偏高：系统 ${formatBytes(memory.used)} / ${formatBytes(memory.total)}（${memory.percent}%），进程 RSS ${formatBytes(rss)}`,
+        });
+      } else if (!memoryHigh && this.opsAlertState.memoryAlertActive && memory.percent <= MEMORY_PERCENT_RECOVERY_THRESHOLD) {
+        this.opsAlertState.memoryAlertActive = false;
+      }
+    } catch (error) {
+      logError("Ops alert scheduler failed.", {
+        error: (error as Error).message,
+      });
+    } finally {
+      this.opsAlertTickRunning = false;
+    }
+  }
+
   private async handleLiveChatCommand(
     groupConfig: GroupBotConfig,
     event: NapcatGroupMessageEvent,
@@ -899,6 +1044,90 @@ export class BotApplication {
             entry.detail ?? "",
           ].filter(Boolean).join(" "),
         ),
+      ].join("\n"),
+    );
+  }
+
+  private async handleServerCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+
+    if (!(await this.isAdmin(groupConfig, userId))) {
+      await this.sendText(groupId, MSG_SERVER_NO_PERMISSION);
+      return;
+    }
+
+    const transportHealth = await this.getTransportHealthStatus();
+    const memory = getMemoryStatus();
+    const processMemory = process.memoryUsage();
+    const loadAverage = os.loadavg();
+
+    await this.sendText(
+      groupId,
+      [
+        "服务器状态：",
+        `主机：${os.hostname()}（${os.platform()} ${os.release()} ${os.arch()}）`,
+        `Node：${process.version}，PID ${process.pid}`,
+        `进程运行：${formatDuration(process.uptime())}`,
+        `系统运行：${formatDuration(os.uptime())}`,
+        `CPU：${os.cpus().length} 核，负载 ${loadAverage.map((value) => value.toFixed(2)).join(" / ")}`,
+        `内存：${formatBytes(memory.used)} / ${formatBytes(memory.total)}（${memory.percent}%）`,
+        `进程内存：RSS ${formatBytes(processMemory.rss)}，Heap ${formatBytes(processMemory.heapUsed)} / ${formatBytes(processMemory.heapTotal)}`,
+        `工作目录：${process.cwd()}`,
+        `NapCat：${transportHealth.ok ? "正常" : "异常"}，${transportHealth.detail}`,
+      ].join("\n"),
+    );
+  }
+
+  private async handleOpsAlertCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    commandText: string,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+    const normalized = commandText.replace(/\s+/g, " ").trim();
+
+    if (!(await this.isAdmin(groupConfig, userId))) {
+      await this.sendText(groupId, MSG_OPS_ALERT_NO_PERMISSION);
+      return;
+    }
+
+    if (
+      normalized === OPS_ALERT_PREFIX ||
+      normalized === `${OPS_ALERT_PREFIX} 状态` ||
+      normalized === `${OPS_ALERT_PREFIX} 查看`
+    ) {
+      const transportHealth = await this.getTransportHealthStatus();
+      const memory = getMemoryStatus();
+      await this.sendText(
+        groupId,
+        [
+          `运维告警：${groupConfig.opsAlertsEnabled === false ? "已关闭" : "已开启"}`,
+          `NapCat：${transportHealth.ok ? "正常" : "异常"}，${transportHealth.detail}`,
+          `内存：${formatBytes(memory.used)} / ${formatBytes(memory.total)}（${memory.percent}%）`,
+          `发送失败：连续 ${this.opsAlertState.consecutiveSendFailures} 次${this.opsAlertState.sendFailureAlertActive ? "，已告警" : ""}`,
+          `最近告警：${this.opsAlertState.lastAlertSummary ?? "暂无"}`,
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (normalized === `${OPS_ALERT_PREFIX} 开启` || normalized === `${OPS_ALERT_PREFIX} 关闭`) {
+      const enabled = normalized === `${OPS_ALERT_PREFIX} 开启`;
+      const updated = await this.groupConfigService.updateOpsAlertsEnabled(groupId, enabled);
+      await this.logAdminOperation(groupId, userId, enabled ? "告警开启" : "告警关闭");
+      await this.sendText(groupId, updated.opsAlertsEnabled === false ? "已关闭当前群运维告警" : "已开启当前群运维告警");
+      return;
+    }
+
+    await this.sendText(
+      groupId,
+      [
+        "告警命令格式：",
+        `${OPS_ALERT_PREFIX} 状态`,
+        `${OPS_ALERT_PREFIX} 开启`,
+        `${OPS_ALERT_PREFIX} 关闭`,
       ].join("\n"),
     );
   }
@@ -1474,6 +1703,18 @@ export class BotApplication {
     const skill = await this.resolveSkill(groupConfig);
     const history = await this.conversationStore.getTurns(groupConfig.groupId, userId);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
+    const [groupMemories, knowledgeHits] = await Promise.all([
+      this.groupMemoryStore?.listEnabled(groupConfig.groupId, 20) ?? Promise.resolve([]),
+      this.knowledgeBaseStore?.search(
+        groupConfig.groupId,
+        [
+          normalizedUserInput,
+          messageContext.replyContext?.text ?? "",
+          ...messageContext.interactionTargets.flatMap((target) => target.names),
+        ].join(" "),
+        3,
+      ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
+    ]);
     const allImages = [
       ...images,
       ...(messageContext.replyContext?.images ?? []),
@@ -1493,6 +1734,8 @@ export class BotApplication {
           currentUserId: userId,
           botUserId: this.botQq,
           manualIdentities: groupConfig.manualIdentities,
+          ...(groupMemories.length > 0 ? { groupMemories } : {}),
+          ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
           ...(messageContext.interactionTargets.length > 0
             ? { interactionTargets: messageContext.interactionTargets }
             : {}),
@@ -1517,6 +1760,8 @@ export class BotApplication {
                 currentUserId: userId,
                 botUserId: this.botQq,
                 manualIdentities: groupConfig.manualIdentities,
+                ...(groupMemories.length > 0 ? { groupMemories } : {}),
+                ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
                 ...(messageContext.interactionTargets.length > 0
                   ? { interactionTargets: messageContext.interactionTargets }
                   : {}),
@@ -1718,6 +1963,53 @@ export class BotApplication {
     );
   }
 
+  private async handleMemoryStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+
+    if (!(await this.isAdmin(groupConfig, userId))) {
+      await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
+      return;
+    }
+
+    const memories = this.groupMemoryStore ? await this.groupMemoryStore.list(groupId) : [];
+    const pendingCandidates = this.groupMemoryCandidateService
+      ? await this.groupMemoryCandidateService.list({ groupId, status: "pending" })
+      : [];
+    const enabledCount = memories.filter((memory) => memory.enabled).length;
+    await this.sendText(
+      groupId,
+      [
+        `群记忆状态：群 ${groupId}`,
+        `长期记忆：${enabledCount}/${memories.length} 条启用`,
+        `候选记忆：${pendingCandidates.length} 条待审核`,
+        `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
+      ].join("\n"),
+    );
+  }
+
+  private async handleKnowledgeStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+
+    if (!(await this.isAdmin(groupConfig, userId))) {
+      await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
+      return;
+    }
+
+    const entries = this.knowledgeBaseStore ? await this.knowledgeBaseStore.list(groupId) : [];
+    const enabledCount = entries.filter((entry) => entry.enabled).length;
+    await this.sendText(
+      groupId,
+      [
+        `知识库状态：群 ${groupId}`,
+        `FAQ：${enabledCount}/${entries.length} 条启用`,
+        `检索方式：关键词 Top 3`,
+        `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
+      ].join("\n"),
+    );
+  }
+
   private async recordDailyReportMessage(
     groupConfig: GroupBotConfig,
     event: NapcatGroupMessageEvent,
@@ -1746,6 +2038,24 @@ export class BotApplication {
 
   private isBlacklistedUser(groupConfig: GroupBotConfig, userId: string): boolean {
     return (groupConfig.blacklistedUserIds ?? []).includes(userId);
+  }
+
+  private queueMemoryCandidateMessage(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    parsedMessage: ReturnType<typeof parseGroupMessage>,
+  ): void {
+    if (!this.groupMemoryCandidateService || !parsedMessage.text || parsedMessage.images.length > 0) {
+      return;
+    }
+
+    this.groupMemoryCandidateService.queueMessage({
+      groupId: groupConfig.groupId,
+      userId: String(event.user_id),
+      userName: resolveSenderName(event),
+      text: parsedMessage.text,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private checkAndTriggerRepeat(groupId: string, text: string): boolean {
@@ -1830,9 +2140,105 @@ export class BotApplication {
     }
   }
 
+  private async sendOpsAlertToGroups(args: {
+    groups: GroupBotConfig[];
+    type: OpsAlertType;
+    now: Date;
+    message: string;
+    ignoreCooldown?: boolean;
+  }): Promise<void> {
+    if (args.groups.length === 0) {
+      return;
+    }
+
+    const nowMs = args.now.getTime();
+    const lastAlertAt = this.opsAlertState.lastAlertAtByType.get(args.type) ?? 0;
+    if (!args.ignoreCooldown && nowMs - lastAlertAt < OPS_ALERT_COOLDOWN_MS) {
+      return;
+    }
+
+    const superAdminUserIds = await this.groupConfigService.getSuperAdminUserIds();
+    const textByGroup = new Map<string, string>();
+    for (const group of args.groups) {
+      const mentionUserIds = group.switcherUserIds.length > 0 ? group.switcherUserIds : superAdminUserIds;
+      textByGroup.set(
+        group.groupId,
+        `${formatOpsAlertMentions(mentionUserIds)}【运维告警】${args.message}`.trim(),
+      );
+    }
+
+    let sentCount = 0;
+    for (const [groupId, text] of textByGroup.entries()) {
+      try {
+        await this.transport.sendGroupMessage(groupId, text);
+        this.liveChatService.recordBotActivity(groupId);
+        sentCount += 1;
+      } catch (error) {
+        logWarn("Failed to send ops alert.", {
+          groupId,
+          type: args.type,
+          error: (error as Error).message,
+        });
+      }
+    }
+
+    if (sentCount > 0) {
+      this.opsAlertState.lastAlertAtByType.set(args.type, nowMs);
+      this.opsAlertState.lastAlertSummary = `${formatLocalDateTime(args.now)} ${args.message}`;
+    }
+  }
+
+  private async handleSendFailure(error: unknown): Promise<void> {
+    this.opsAlertState.consecutiveSendFailures += 1;
+    if (
+      this.opsAlertState.sendFailureAlertActive ||
+      this.opsAlertState.consecutiveSendFailures < SEND_FAILURE_ALERT_THRESHOLD
+    ) {
+      return;
+    }
+
+    this.opsAlertState.sendFailureAlertActive = true;
+    const groups = (await this.groupConfigService.getAll()).filter((group) => group.opsAlertsEnabled !== false);
+    await this.sendOpsAlertToGroups({
+      groups,
+      type: "send-failure",
+      now: new Date(),
+      message: `消息发送连续失败 ${this.opsAlertState.consecutiveSendFailures} 次，最近错误：${(error as Error).message}`,
+    });
+  }
+
+  private async handleSendSuccessRecovery(): Promise<void> {
+    if (this.opsAlertState.consecutiveSendFailures === 0) {
+      return;
+    }
+
+    const previousFailures = this.opsAlertState.consecutiveSendFailures;
+    const shouldNotifyRecovery = this.opsAlertState.sendFailureAlertActive;
+    this.opsAlertState.consecutiveSendFailures = 0;
+    this.opsAlertState.sendFailureAlertActive = false;
+
+    if (!shouldNotifyRecovery) {
+      return;
+    }
+
+    const groups = (await this.groupConfigService.getAll()).filter((group) => group.opsAlertsEnabled !== false);
+    await this.sendOpsAlertToGroups({
+      groups,
+      type: "send-recovered",
+      now: new Date(),
+      message: `消息发送已恢复，之前连续失败 ${previousFailures} 次`,
+    });
+  }
+
   private async sendText(groupId: string, text: string): Promise<void> {
-    await this.transport.sendGroupMessage(groupId, text);
-    this.liveChatService.recordBotActivity(groupId);
+    try {
+      await this.transport.sendGroupMessage(groupId, text);
+      this.liveChatService.recordBotActivity(groupId);
+      await this.handleSendSuccessRecovery();
+    } catch (error) {
+      await this.handleSendFailure(error);
+      throw error;
+    }
   }
 
   private async sendTextMessages(
@@ -2067,6 +2473,29 @@ function isHealthCommand(commandText: string): boolean {
 function isOperationLogCommand(commandText: string): boolean {
   const normalized = commandText.replace(/\s+/g, " ").trim();
   return normalized === OPERATION_LOG_PREFIX || normalized === `${OPERATION_LOG_PREFIX} 查看`;
+}
+
+function isServerCommand(commandText: string): boolean {
+  const normalized = commandText.replace(/\s+/g, " ").trim();
+  return normalized === SERVER_PREFIX || normalized === `${SERVER_PREFIX} 状态` || normalized === `${SERVER_PREFIX} 查看`;
+}
+
+function isMemoryStatusCommand(commandText: string): boolean {
+  const normalized = commandText.replace(/\s+/g, " ").trim();
+  return normalized === MEMORY_PREFIX || normalized === `${MEMORY_PREFIX} 状态` || normalized === `${MEMORY_PREFIX} 查看`;
+}
+
+function isKnowledgeStatusCommand(commandText: string): boolean {
+  const normalized = commandText.replace(/\s+/g, " ").trim();
+  return normalized === KNOWLEDGE_PREFIX || normalized === `${KNOWLEDGE_PREFIX} 状态` || normalized === `${KNOWLEDGE_PREFIX} 查看`;
+}
+
+function formatOpsAlertMentions(userIds: string[]): string {
+  const mentions = userIds
+    .map((userId) => userId.trim())
+    .filter((userId) => /^\d+$/.test(userId))
+    .map((userId) => `[CQ:at,qq=${userId}]`);
+  return mentions.length > 0 ? `${mentions.join(" ")} ` : "";
 }
 
 function extractQqFromInput(input: string): string {
@@ -2350,6 +2779,54 @@ function formatLocalDateTime(date: Date): string {
   ].join("");
 }
 
+function getMemoryStatus(): { total: number; used: number; percent: number } {
+  const total = os.totalmem();
+  const free = os.freemem();
+  const used = Math.max(0, total - free);
+  const percent = total > 0 ? Math.round((used / total) * 100) : 0;
+  return { total, used, percent };
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatDuration(seconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  const parts: string[] = [];
+
+  if (days > 0) {
+    parts.push(`${days}天`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours}小时`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}分钟`);
+  }
+  if (parts.length === 0) {
+    parts.push(`${remainingSeconds}秒`);
+  }
+
+  return parts.join("");
+}
+
 function buildFeatureListMessage(commandText = ""): string {
   const topic = parseHelpTopic(commandText);
   const sections = buildHelpSections();
@@ -2488,9 +2965,11 @@ function buildHelpSections(): HelpSection[] {
         "3. #管理员 移除 <QQ号>",
         "4. #状态",
         "5. #健康检查",
-        "6. #操作日志",
-        "7. #拉黑 <QQ号>",
-        "8. #拉黑 解除 <QQ号>",
+        "6. #服务器",
+        "7. #告警 状态 / 开启 / 关闭",
+        "8. #操作日志",
+        "9. #拉黑 <QQ号>",
+        "10. #拉黑 解除 <QQ号>",
         "说明：添加和移除管理员仅超级管理员可用；拉黑命令群管理员可用",
       ],
     },
@@ -2517,7 +2996,7 @@ function buildHelpOverviewMessage(sections: HelpSection[]): string {
     "6. 日报：#日报 状态、发送、开启、关闭、时间 <HH:mm>",
     "7. 节假日：#节假日、状态、发送、开启、关闭、时间 <HH:mm>",
     "8. 管理员：#管理员 列表、添加 <QQ号>、移除 <QQ号>",
-    "9. 状态：#状态、#健康检查、#操作日志（管理员）",
+    "9. 状态：#状态、#健康检查、#服务器、#告警、#操作日志（管理员）",
     "10. 闭嘴：#闭嘴 / #说话（管理员）",
     "11. 黑名单：#拉黑 <QQ号>、#拉黑 解除 <QQ号>",
     "12. 帮助：#功能、#帮助、#命令 都能调出本列表",

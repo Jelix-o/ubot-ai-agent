@@ -17,6 +17,7 @@ export function loadConfig(): AppConfig {
   const cwd = process.cwd();
   const napcatMode = (process.env.NAPCAT_MODE ?? "forward").trim().toLowerCase();
   const reversePort = Number(process.env.NAPCAT_REVERSE_WS_PORT ?? "6199");
+  const adminHttpPort = Number(process.env.ADMIN_HTTP_PORT ?? "6200");
   const openAiBaseUrl = requireEnv("OPENAI_BASE_URL");
   const openAiApiKey = requireEnv("OPENAI_API_KEY");
   const ttsAudioFormat = (process.env.TTS_AUDIO_FORMAT ?? "wav").trim().toLowerCase();
@@ -31,6 +32,9 @@ export function loadConfig(): AppConfig {
   }
   if (!Number.isFinite(reversePort) || reversePort <= 0 || reversePort > 65535) {
     throw new Error("NAPCAT_REVERSE_WS_PORT must be a valid TCP port (1-65535).");
+  }
+  if (!Number.isFinite(adminHttpPort) || adminHttpPort <= 0 || adminHttpPort > 65535) {
+    throw new Error("ADMIN_HTTP_PORT must be a valid TCP port (1-65535).");
   }
   if (!["wav", "mp3", "pcm", "pcm16"].includes(ttsAudioFormat)) {
     throw new Error("TTS_AUDIO_FORMAT must be one of 'wav', 'mp3', 'pcm', or 'pcm16'.");
@@ -62,5 +66,15 @@ export function loadConfig(): AppConfig {
     holidayCountdownStorePath: path.join(cwd, "data", "holiday-countdown-store.json"),
     scheduledReminderStorePath: path.join(cwd, "data", "scheduled-reminders.json"),
     adminOperationLogPath: path.join(cwd, "data", "admin-operations.jsonl"),
+    groupMemoryPath: path.join(cwd, "data", "group-memory.json"),
+    groupMemoryCandidatesPath: path.join(cwd, "data", "group-memory-candidates.json"),
+    knowledgeBasePath: path.join(cwd, "data", "knowledge-base.json"),
+    adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
+    adminHttpHost: process.env.ADMIN_HTTP_HOST ?? "127.0.0.1",
+    adminHttpPort,
+    adminPublicBaseUrl: process.env.ADMIN_PUBLIC_BASE_URL ?? "https://bot.9958.uk",
+    adminUsername: process.env.ADMIN_USERNAME,
+    adminPassword: process.env.ADMIN_PASSWORD,
+    adminSessionSecret: process.env.ADMIN_SESSION_SECRET,
   };
 }

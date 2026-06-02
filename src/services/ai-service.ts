@@ -6,6 +6,7 @@ import type {
   AiIdentityContext,
   AiReply,
   ConversationTurn,
+  GroupMemoryType,
   MessageImageInput,
   SkillDefinition,
 } from "../types.js";
@@ -57,6 +58,21 @@ export interface ChatPeriodSummaryInput {
     text: string;
     timestamp: string;
   }>;
+}
+
+export interface MemoryCandidateExtractionMessage {
+  userId: string;
+  userName: string;
+  text: string;
+  timestamp: string;
+}
+
+export interface ExtractedGroupMemoryCandidate {
+  type: GroupMemoryType;
+  subjectUserId?: string;
+  title: string;
+  content: string;
+  confidence: number;
 }
 
 export class AiService {
@@ -218,6 +234,57 @@ export class AiService {
       return parseControlledMentionDecision(text);
     } catch {
       return { shouldMention: false, reason: "decision failed" };
+    }
+  }
+
+  async extractGroupMemoryCandidates(args: {
+    groupId: string;
+    messages: MemoryCandidateExtractionMessage[];
+  }): Promise<ExtractedGroupMemoryCandidate[]> {
+    if (args.messages.length === 0) {
+      return [];
+    }
+
+    const messageLines = args.messages
+      .map((message, index) =>
+        `${index + 1}. [${message.timestamp}] ${message.userName}(${message.userId}): ${message.text}`,
+      )
+      .join("\n");
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: [
+          "你是 QQ 群长期记忆候选提炼器。",
+          "只提炼稳定、可长期帮助机器人理解群聊的信息。",
+          "允许类型：member_profile 表示成员画像、偏好、稳定身份；group_fact 表示群规则、固定梗、长期事实。",
+          "不要记录短期情绪、临时闲聊、隐私敏感信息、辱骂攻击、未经确认的严重指控。",
+          "只输出 JSON，不要输出 markdown。",
+          '格式：{"candidates":[{"type":"member_profile","subjectUserId":"123","title":"简短标题","content":"稳定事实","confidence":0.7}]}',
+          "如果没有值得记录的内容，输出 {\"candidates\":[]}",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `群号：${args.groupId}`,
+          "近期群聊：",
+          messageLines,
+          "请提炼候选记忆。",
+        ].join("\n\n"),
+      },
+    ];
+
+    try {
+      const completion = await this.chatCompletions.create({
+        model: this.model,
+        temperature: 0.1,
+        messages,
+        max_tokens: 700,
+      });
+      const text = completion.choices[0]?.message?.content?.trim() ?? "";
+      return parseMemoryCandidateExtraction(text);
+    } catch {
+      return [];
     }
   }
 
@@ -690,6 +757,8 @@ export function buildSystemPrompt(skill: SkillDefinition, identityContext?: AiId
   const knowledge = skill.knowledge.map((item) => `- ${item}`).join("\n");
   const runtimeContext = buildRuntimeContext(new Date());
   const manualIdentityContext = buildManualIdentityContext(identityContext);
+  const groupMemoryContext = buildGroupMemoryContext(identityContext);
+  const knowledgeContext = buildKnowledgeContext(identityContext);
   const interactionContext = buildInteractionContext(identityContext);
   const examples =
     skill.exampleExchanges?.length
@@ -726,10 +795,59 @@ export function buildSystemPrompt(skill: SkillDefinition, identityContext?: AiId
     "Runtime context:",
     runtimeContext,
     manualIdentityContext ? ["", "Manual group identity memory:", manualIdentityContext].join("\n") : "",
+    groupMemoryContext ? ["", "Approved group memory:", groupMemoryContext].join("\n") : "",
+    knowledgeContext ? ["", "Matched group knowledge:", knowledgeContext].join("\n") : "",
     interactionContext ? ["", "Current interaction context:", interactionContext].join("\n") : "",
     examples,
     sourceSkill,
   ].join("\n");
+}
+
+function parseMemoryCandidateExtraction(text: string): ExtractedGroupMemoryCandidate[] {
+  const jsonText = extractJsonObject(text);
+  if (!jsonText) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText) as {
+      candidates?: Array<Partial<ExtractedGroupMemoryCandidate>>;
+    };
+    if (!Array.isArray(parsed.candidates)) {
+      return [];
+    }
+
+    return parsed.candidates
+      .map((candidate) => {
+        const type = candidate.type === "member_profile" ? "member_profile" : candidate.type === "group_fact" ? "group_fact" : undefined;
+        const title = typeof candidate.title === "string" ? candidate.title.trim() : "";
+        const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
+        if (!type || !title || !content) {
+          return undefined;
+        }
+
+        const confidence =
+          typeof candidate.confidence === "number" && Number.isFinite(candidate.confidence)
+            ? Math.max(0, Math.min(1, candidate.confidence))
+            : 0.6;
+        const subjectUserId =
+          typeof candidate.subjectUserId === "string" && /^\d+$/.test(candidate.subjectUserId.trim())
+            ? candidate.subjectUserId.trim()
+            : undefined;
+
+        return {
+          type,
+          ...(subjectUserId ? { subjectUserId } : {}),
+          title: title.slice(0, 80),
+          content: content.slice(0, 600),
+          confidence,
+        };
+      })
+      .filter((candidate): candidate is ExtractedGroupMemoryCandidate => Boolean(candidate))
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
 }
 
 function buildManualIdentityContext(identityContext?: AiIdentityContext): string {
@@ -762,6 +880,40 @@ function buildManualIdentityContext(identityContext?: AiIdentityContext): string
     lines.push(`  - ${qqList}：${nameList}${note}`);
   }
 
+  return lines.join("\n");
+}
+
+function buildGroupMemoryContext(identityContext?: AiIdentityContext): string {
+  const memories = identityContext?.groupMemories ?? [];
+  if (memories.length === 0) {
+    return "";
+  }
+
+  const lines = [
+    "- 这些是管理员批准后的长期群记忆，只用于补充稳定背景，不得覆盖人工身份表。",
+    "- 如果记忆和当前用户发言冲突，以当前明确上下文为准；不要把记忆说成系统配置。",
+  ];
+  for (const memory of memories.slice(0, 20)) {
+    const subject = memory.subjectUserId ? ` QQ ${memory.subjectUserId}` : "群整体";
+    lines.push(`  - [${memory.type}]${subject}：${memory.title}：${memory.content}`);
+  }
+  return lines.join("\n");
+}
+
+function buildKnowledgeContext(identityContext?: AiIdentityContext): string {
+  const hits = identityContext?.knowledgeHits ?? [];
+  if (hits.length === 0) {
+    return "";
+  }
+
+  const lines = [
+    "- 以下 FAQ 是本轮问题的关键词命中结果。回答相关问题时优先采用这些内容。",
+    "- 未命中的资料不要编造；如果 FAQ 不足以回答，可以说明需要管理员补充知识库。",
+  ];
+  for (const hit of hits.slice(0, 3)) {
+    const keywords = hit.keywords.length > 0 ? `；关键词：${hit.keywords.join("、")}` : "";
+    lines.push(`  - ${hit.title}${keywords}\n    问：${hit.question}\n    答：${hit.answer}`);
+  }
   return lines.join("\n");
 }
 
