@@ -788,6 +788,8 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
 .badge.warn { background: oklch(94% 0.06 78); color: oklch(42% 0.09 78); }
 .group-block { display: grid; gap: 8px; margin-bottom: 18px; }
+.pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
+.pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form, .candidate-form { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
 `;
@@ -860,7 +862,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', pendingDelete: '', notice: '' };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20 };
     const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -947,9 +949,16 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       const query = new URLSearchParams({ groupId: state.groupId });
       if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
       const data = await api('/api/memories?' + query.toString());
-      const groups = groupMemories(data.memories || []);
-      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + '</section>';
-      document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; renderMemories(); });
+      const memories = data.memories || [];
+      const totalPages = Math.max(1, Math.ceil(memories.length / state.memoryPageSize));
+      state.memoryPage = Math.min(Math.max(1, state.memoryPage), totalPages);
+      const startIndex = (state.memoryPage - 1) * state.memoryPageSize;
+      const pageMemories = memories.slice(startIndex, startIndex + state.memoryPageSize);
+      const groups = groupMemories(pageMemories);
+      const pageInfo = memories.length === 0 ? '暂无长期记忆' : '第 ' + (startIndex + 1) + '-' + Math.min(startIndex + state.memoryPageSize, memories.length) + ' 条，共 ' + memories.length + ' 条';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + memoryPagination(pageInfo, totalPages) + '</section>';
+      document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; state.memoryPage = 1; renderMemories(); });
+      document.querySelector('#memoryPageSize').addEventListener('change', event => { state.memoryPageSize = Number(event.target.value) || 20; state.memoryPage = 1; renderMemories(); });
     }
     function memoryForm() {
       return '<form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form>';
@@ -965,6 +974,9 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     }
     function rowMemory(m) {
       return '<article><b>' + esc(m.title) + '</b><span>' + enabledText(m.enabled) + ' · ' + esc(typeText(m.type)) + ' · ' + esc(m.content) + '</span><div class="meta">归属：' + esc(ownerLabel(m)) + '</div><div class="actions"><button data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? '停用' : '启用') + '</button><button data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
+    }
+    function memoryPagination(pageInfo, totalPages) {
+      return '<div class="pagination"><span>' + esc(pageInfo) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (state.memoryPage <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + state.memoryPage + ' / ' + totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (state.memoryPage >= totalPages ? ' disabled' : '') + '>下一页</button></div></div>';
     }
     async function renderKnowledge() {
       const data = await api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId));
@@ -985,9 +997,9 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     document.addEventListener('click', async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLButtonElement)) return;
-      if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; await render(); }
+      if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; state.memoryPage = 1; await render(); }
       if (target.dataset.refreshMembers !== undefined) { await loadMembers(true); await renderMembers(); }
-      if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; await render(); }
+      if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
       if (target.dataset.deleteIdentity) { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.members = []; await renderMembers(); }
       if (target.dataset.saveCandidate) { await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); await renderCandidates(); }
       if (target.dataset.approve) { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }
@@ -1005,6 +1017,8 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }
       if (target.dataset.toggleMemory) { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }
       if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }
+      if (target.dataset.memoryPage === 'prev') { state.memoryPage -= 1; await renderMemories(); }
+      if (target.dataset.memoryPage === 'next') { state.memoryPage += 1; await renderMemories(); }
       if (target.dataset.toggleKnowledge) { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderKnowledge(); }
       if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; await renderKnowledge(); return; } await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await renderKnowledge(); }
     });
@@ -1018,11 +1032,11 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
         await renderMembers();
         return;
       }
-      if (form.id === 'memoryForm') await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) });
+      if (form.id === 'memoryForm') { await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) }); state.memoryPage = 1; }
       if (form.id === 'knowledgeForm') await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[,，、]+/) }) });
       await render();
     });
-    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; await render(); });
+    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; state.memoryPage = 1; await render(); });
     document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
     loadGroups().then(render);
   </script>
