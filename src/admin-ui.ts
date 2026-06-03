@@ -37,6 +37,11 @@ header select { width: 180px; }
 .metric-row div { border: 1px solid var(--line); background: var(--panel); padding: 18px; border-radius: 8px; display: grid; gap: 4px; }
 .metric-row b { font-size: 26px; line-height: 1; }
 .metric-row span { color: var(--muted); }
+.workbench-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(280px, .8fr); gap: 14px; }
+.compact-list { display: grid; gap: 8px; }
+.compact-row { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; background: oklch(99% 0.004 238); }
+.compact-row b { overflow-wrap: anywhere; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .panel { border: 1px solid var(--line); background: oklch(99% 0.004 238); padding: 18px; border-radius: 8px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
 .toolbar input { width: min(280px, 100%); }
@@ -61,7 +66,7 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form, .candidate-form, .memory-form { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
+@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .workbench-grid, .grid-form, .candidate-form, .memory-form { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
 `;
 
 export const LOGIN_HTML = `<!doctype html>
@@ -213,8 +218,26 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       return renderHealth();
     }
     async function renderOverview() {
-      const data = await api('/api/overview');
-      content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>群数量</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>FAQ 条目</span></div></div><section class="panel"><h2>连接状态</h2><p>' + esc(data.transportHealth.detail) + '</p></section>';
+      const groupQuery = state.groupId ? '?groupId=' + encodeURIComponent(state.groupId) : '';
+      const [data, candidateData, memoryData, knowledgeData] = await Promise.all([
+        api('/api/overview' + groupQuery),
+        state.groupId ? api('/api/memory-candidates?groupId=' + encodeURIComponent(state.groupId) + '&status=pending&page=1&pageSize=5') : Promise.resolve({ candidates: [] }),
+        state.groupId ? api('/api/memories?groupId=' + encodeURIComponent(state.groupId) + '&page=1&pageSize=5') : Promise.resolve({ memories: [] }),
+        state.groupId ? api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId) + '&page=1&pageSize=5') : Promise.resolve({ entries: [] }),
+      ]);
+      content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><h2>当前群待处理</h2>' + overviewCandidates(candidateData.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><h2>运行状态</h2><p>' + esc(data.transportHealth.detail) + '</p><div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><h2>最新长期记忆</h2>' + overviewMemories(memoryData.memories || []) + '</section><section class="panel"><h2>知识库</h2>' + overviewKnowledge(knowledgeData.entries || []) + '<div class="quick-actions"><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div></section></div>';
+    }
+    function overviewCandidates(candidates) {
+      if (!candidates.length) return '<p class="message">当前群没有待审候选。</p>';
+      return '<div class="compact-list">' + candidates.map(c => '<div class="compact-row"><b>' + esc(c.title) + '</b><span>' + esc(ownerLabel(c)) + ' · ' + esc(typeText(c.type)) + ' · 置信度 ' + esc(c.confidence) + '</span><span>' + esc(shortText(c.content, 120)) + '</span></div>').join('') + '</div>';
+    }
+    function overviewMemories(memories) {
+      if (!memories.length) return '<p class="message">当前群暂无长期记忆。</p>';
+      return '<div class="compact-list">' + memories.map(m => '<div class="compact-row"><b>' + esc(m.title) + '</b><span>' + esc(ownerLabel(m)) + ' · ' + esc(typeText(m.type)) + ' · ' + enabledText(m.enabled) + '</span><span>' + esc(shortText(m.content, 120)) + '</span></div>').join('') + '</div>';
+    }
+    function overviewKnowledge(entries) {
+      if (!entries.length) return '<p class="message">当前群暂无 FAQ。</p>';
+      return '<div class="compact-list">' + entries.map(k => '<div class="compact-row"><b>' + esc(k.title) + '</b><span>关键词：' + esc((k.keywords || []).join('、') || '无') + '</span><span>' + esc(shortText(k.answer, 120)) + '</span></div>').join('') + '</div>';
     }
     async function renderGroups() {
       await loadGroups();
@@ -401,6 +424,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       const target = event.target;
       if (!(target instanceof HTMLButtonElement)) return;
       if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
+      if (target.dataset.jumpView) { state.view = target.dataset.jumpView; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
       if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.members = []; state.memberPage = 1; await loadMembers(true); await renderMembers(); }, '成员列表已刷新'); }
       if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
       if (target.dataset.deleteIdentity) { await runAction(target, async () => { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.members = []; state.editingMemberId = ''; await renderMembers(); }, '成员备注已删除'); }
@@ -468,7 +492,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
         }, 'FAQ 已新增');
       }
     });
-    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; state.memoryPage = 1; await render(); });
+    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); });
     document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
     loadGroups().then(render);
   </script>

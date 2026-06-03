@@ -107,17 +107,19 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/api/overview") {
+      const groupId = url.searchParams.get("groupId") ?? undefined;
       const [groups, memories, candidates, knowledge] = await Promise.all([
         this.options.groupConfigService.getAll(),
-        this.options.groupMemoryStore.list(),
-        this.options.groupMemoryCandidateService.list({ status: "pending" }),
-        this.options.knowledgeBaseStore.list(),
+        this.options.groupMemoryStore.list(groupId),
+        this.options.groupMemoryCandidateService.list({ ...(groupId ? { groupId } : {}), status: "pending" }),
+        this.options.knowledgeBaseStore.list(groupId),
       ]);
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
         : { ok: true, detail: "未配置传输层自检" };
       this.sendJson(res, {
         groups,
+        groupId,
         stats: {
           groupCount: groups.length,
           memoryCount: memories.length,
