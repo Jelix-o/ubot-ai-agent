@@ -132,8 +132,8 @@ export class AiService {
       });
       const content = completion.choices[0]?.message?.content?.trim() ?? "";
       const status: AiHealthStatus = {
-        ok: Boolean(content),
-        detail: content ? "画像/记忆模型可用" : "画像/记忆模型返回空内容",
+        ok: true,
+        detail: content ? "画像/记忆模型可用" : "画像/记忆模型调用成功但返回空内容",
         model: completion.model ?? this.model,
         baseUrl: this.baseURL,
         checkedAt: new Date().toISOString(),

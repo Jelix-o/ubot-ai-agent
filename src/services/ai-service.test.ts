@@ -412,3 +412,27 @@ test("profile summaries use expanded Mimo budgets and broad memory context", asy
   assert.equal(overallRequest.max_tokens, 6000);
   assert.match(overallRequest.messages?.[1]?.content ?? "", /记忆 80/);
 });
+test("checkHealth treats successful empty completions as available", async () => {
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create() {
+      return {
+        model: "mimo-v2.5-pro",
+        choices: [
+          {
+            message: {
+              content: "",
+            },
+          },
+        ],
+      };
+    },
+  } as never);
+
+  const health = await service.checkHealth({ refresh: true });
+
+  assert.equal(health.ok, true);
+  assert.equal(health.detail, "画像/记忆模型调用成功但返回空内容");
+  assert.equal(health.model, "mimo-v2.5-pro");
+  assert.equal(health.baseUrl, "https://example.invalid/v1");
+  assert.equal(health.cached, false);
+});
