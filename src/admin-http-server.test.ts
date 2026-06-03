@@ -350,12 +350,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       }),
     });
     assert.equal(editMemory.status, 200);
-    const edited = await editMemory.json() as { subjectUserId?: string; title: string; content: string; confidence: number; enabled: boolean };
+    const edited = await editMemory.json() as { subjectUserId?: string; title: string; content: string; confidence: number; enabled: boolean; subjectLabel?: { label: string } };
     assert.equal(edited.subjectUserId, "30002");
     assert.equal(edited.title, "Edited preference");
     assert.equal(edited.content, "Edited content.");
     assert.equal(edited.confidence, 0.81);
     assert.equal(edited.enabled, false);
+    assert.equal(edited.subjectLabel?.label.includes("测试备注"), true);
 
     const disabledProfileMemories = await fetch(`${baseUrl}/api/memories?groupId=67890&type=member_profile&enabled=false&page=1&pageSize=10`, {
       headers: { Cookie: cookie ?? "" },

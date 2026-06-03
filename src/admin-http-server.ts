@@ -323,7 +323,8 @@ export class AdminHttpServer {
       if (memory) {
         this.invalidateMemberProfileCache(memory.groupId);
       }
-      this.sendJson(res, memory ?? { error: "not_found" }, memory ? 200 : 404);
+      const enriched = memory ? (await this.enrichMemories([memory], memory.groupId))[0] : undefined;
+      this.sendJson(res, enriched ?? { error: "not_found" }, enriched ? 200 : 404);
       return;
     }
 
