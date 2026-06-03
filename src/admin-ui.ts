@@ -50,7 +50,7 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .memory-form textarea { grid-column: 3 / span 3; }
 .evidence { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 10px; color: var(--muted); overflow-wrap: anywhere; }
 .evidence b { color: var(--ink); }
-.member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
 .member-meta, .meta { color: var(--muted); overflow-wrap: anywhere; }
 .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
 .badge.warn { background: oklch(94% 0.06 78); color: oklch(42% 0.09 78); }
@@ -133,7 +133,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: '', candidateQuery: '', memoryQuery: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: '', candidateQuery: '', memoryQuery: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
     const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -224,11 +224,20 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       await loadMembers();
       const query = state.memberQuery.trim().toLowerCase();
       const members = state.members.filter(m => !query || [m.userId, m.displayName, m.card, m.nickname, m.note, ...(m.aliases || [])].some(v => String(v || '').toLowerCase().includes(query)));
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><button data-refresh-members>刷新</button></div><div class="member-grid">' + members.map(rowMember).join('') + '</div></section>';
-      document.querySelector('#memberSearch')?.addEventListener('input', event => { state.memberQuery = event.target.value; renderMembers(); });
+      const pageInfo = paginateLocal(members, state.memberPage, state.memberPageSize);
+      state.memberPage = pageInfo.page;
+      const pageMembers = members.slice(pageInfo.startIndex, pageInfo.endIndex);
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>刷新</button></div><div class="member-grid">' + pageMembers.map(rowMember).join('') + '</div>' + memberPagination(pageInfo) + '</section>';
+      document.querySelector('#memberSearch')?.addEventListener('input', event => { state.memberQuery = event.target.value; state.memberPage = 1; renderMembers(); });
+      document.querySelector('#memberPageSize')?.addEventListener('change', event => { state.memberPageSize = Number(event.target.value) || 24; state.memberPage = 1; renderMembers(); });
     }
     function rowMember(m) {
-      return '<article><h3>' + esc(m.displayName) + '</h3><div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · 群名片 ' + esc(m.card) : '') + (m.nickname ? ' · 昵称 ' + esc(m.nickname) : '') + (m.role ? ' · 角色 ' + esc(m.role) : '') + '</div><div><span class="badge">' + m.memoryCount + ' 条记忆</span> <span class="badge warn">' + m.pendingCandidateCount + ' 条待审</span></div><form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">删除备注</button>' : '') + '</div></form></article>';
+      const meta = '<div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · 群名片 ' + esc(m.card) : '') + (m.nickname ? ' · 昵称 ' + esc(m.nickname) : '') + (m.role ? ' · 角色 ' + esc(m.role) : '') + (m.note ? ' · 备注：' + esc(m.note) : '') + '</div>';
+      const badges = '<div><span class="badge">' + m.memoryCount + ' 条记忆</span> <span class="badge warn">' + m.pendingCandidateCount + ' 条待审</span>' + ((m.aliases || []).length ? ' <span class="badge">' + esc((m.aliases || []).join('、')) + '</span>' : '') + '</div>';
+      if (state.editingMemberId !== m.userId) {
+        return '<article data-member-id="' + esc(m.userId) + '"><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<div class="actions"><button type="button" data-edit-member="' + esc(m.userId) + '">编辑备注</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">删除备注</button>' : '') + '</div></article>';
+      }
+      return '<article><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" data-cancel-edit>收起</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">删除备注</button>' : '') + '</div></form></article>';
     }
     async function renderCandidates() {
       await loadMembers();
@@ -304,6 +313,19 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       const label = pageInfo.total === 0 ? '暂无长期记忆' : '第 ' + start + '-' + end + ' 条，共 ' + pageInfo.total + ' 条';
       return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button><form id="memoryPageJump" class="pagination-controls"><input name="page" type="number" min="1" max="' + pageInfo.totalPages + '" value="' + pageInfo.page + '" aria-label="页码" style="width:86px"><button class="ghost">跳转</button></form></div></div>';
     }
+    function paginateLocal(items, page, pageSize) {
+      const total = items.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const normalizedPage = Math.min(Math.max(1, page), totalPages);
+      const startIndex = (normalizedPage - 1) * pageSize;
+      const endIndex = Math.min(startIndex + pageSize, total);
+      return { page: normalizedPage, pageSize, total, totalPages, startIndex, endIndex };
+    }
+    function memberPagination(pageInfo) {
+      const start = pageInfo.total === 0 ? 0 : pageInfo.startIndex + 1;
+      const label = pageInfo.total === 0 ? '暂无成员' : '第 ' + start + '-' + pageInfo.endIndex + ' 人，共 ' + pageInfo.total + ' 人';
+      return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-member-page="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-member-page="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button></div></div>';
+    }
     function candidatePagination(pageInfo) {
       const start = pageInfo.total === 0 ? 0 : ((pageInfo.page - 1) * pageInfo.pageSize) + 1;
       const end = Math.min(pageInfo.page * pageInfo.pageSize, pageInfo.total);
@@ -378,14 +400,15 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     document.addEventListener('click', async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLButtonElement)) return;
-      if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
-      if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.members = []; await loadMembers(true); await renderMembers(); }, '成员列表已刷新'); }
+      if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
+      if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.members = []; state.memberPage = 1; await loadMembers(true); await renderMembers(); }, '成员列表已刷新'); }
       if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
-      if (target.dataset.deleteIdentity) { await runAction(target, async () => { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.members = []; await renderMembers(); }, '成员备注已删除'); }
+      if (target.dataset.deleteIdentity) { await runAction(target, async () => { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.members = []; state.editingMemberId = ''; await renderMembers(); }, '成员备注已删除'); }
+      if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; await renderMembers(); }
       if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; await renderCandidates(); }
       if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; await renderMemories(); }
       if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; await renderKnowledge(); }
-      if (target.dataset.cancelEdit !== undefined) { state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; await render(); }
+      if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; await render(); }
       if (target.dataset.saveCandidate) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); state.editingCandidateId = ''; await renderCandidates(); }, '候选记忆已保存'); }
       if (target.dataset.approve) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }, '候选记忆已批准'); }
       if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }, '已转为群事实并批准'); }
@@ -405,6 +428,8 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.saveMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.members = []; state.editingMemoryId = ''; await renderMemories(); }, '长期记忆已保存'); }
       if (target.dataset.toggleMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }, '长期记忆状态已更新'); }
       if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }, '长期记忆已删除'); }
+      if (target.dataset.memberPage === 'prev') { state.memberPage -= 1; await renderMembers(); }
+      if (target.dataset.memberPage === 'next') { state.memberPage += 1; await renderMembers(); }
       if (target.dataset.candidatePage === 'prev') { state.candidatePage -= 1; await renderCandidates(); }
       if (target.dataset.candidatePage === 'next') { state.candidatePage += 1; await renderCandidates(); }
       if (target.dataset.memoryPage === 'prev') { state.memoryPage -= 1; await renderMemories(); }
@@ -423,6 +448,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
         await runAction(form.querySelector('button'), async () => {
           await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });
           state.members = [];
+          state.editingMemberId = '';
           await renderMembers();
         }, '成员备注已保存');
         return;
