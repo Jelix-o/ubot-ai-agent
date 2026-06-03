@@ -189,7 +189,7 @@ function memberFilterControl(id, selectedUserId = '') {
   return '<input id="' + id + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空全部">';
 }
 function ownerInput(name, selectedUserId = '', label = '') {
-  return '<label class="owner-field"><input name="' + name + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空为群整体"><span>' + esc(label || (selectedUserId ? '当前 QQ ' + selectedUserId : '群整体')) + '</span></label>';
+  return ownerMemberOptionsSlotHtml(true) + '<label class="owner-field"><input name="' + name + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空为群整体"><span>' + esc(label || (selectedUserId ? '当前 QQ ' + selectedUserId : '群整体')) + '</span></label>';
 }
 function filterSummaryHtml(kind, items) {
   const activeItems = items.filter(item => item.value !== undefined && item.value !== null && String(item.value) !== '' && String(item.value) !== item.defaultValue);
@@ -236,8 +236,8 @@ function ownerMemberOptionsHtml() {
     return '<option value="' + esc(member.userId) + '" label="' + esc(parts.join(' / ') || ('QQ ' + member.userId)) + '"></option>';
   }).join('') + '</datalist>';
 }
-function ownerMemberOptionsSlotHtml() {
-  return '<span data-owner-member-options>' + ownerMemberOptionsHtml() + '</span>';
+function ownerMemberOptionsSlotHtml(renderOptions = false) {
+  return '<span data-owner-member-options>' + (renderOptions ? ownerMemberOptionsHtml() : '') + '</span>';
 }
 function refreshOwnerMemberOptionsSlot() {
   const slot = document.querySelector('[data-owner-member-options]');

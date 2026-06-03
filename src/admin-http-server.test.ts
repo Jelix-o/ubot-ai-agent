@@ -211,6 +211,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("data-clear-knowledge-filters"), true);
     assert.equal(adminAppJsText.includes("expandedCandidateIds"), true);
     assert.equal(adminAppJsText.includes("data-toggle-memory-details"), true);
+    assert.equal(adminAppJsText.includes("ownerMemberOptionsSlotHtml(renderOptions = false)"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
