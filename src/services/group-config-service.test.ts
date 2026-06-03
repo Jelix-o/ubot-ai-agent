@@ -43,6 +43,29 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
     async (service) => {
       assert.deepEqual((await service.getGroup("67890"))?.blacklistedUserIds, ["20001", "20002"]);
       assert.deepEqual((await service.getGroup("67891"))?.blacklistedUserIds, []);
+      assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
+    },
+  );
+});
+
+test("group config updates reply model mode", async () => {
+  await withService(
+    {
+      groups: [
+        {
+          groupId: "67890",
+          currentSkillId: "assistant",
+          allowedSkillIds: ["assistant"],
+          switcherUserIds: [],
+          liveChatUserIds: [],
+        },
+      ],
+    },
+    async (service) => {
+      assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
+      assert.equal((await service.updateReplyModelMode("67890", "mimo")).replyModelMode, "mimo");
+      assert.equal((await service.getGroup("67890"))?.replyModelMode, "mimo");
+      assert.equal((await service.updateReplyModelMode("67890", "gpt")).replyModelMode, "gpt");
     },
   );
 });

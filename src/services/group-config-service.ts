@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
-import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile } from "../types.js";
+import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ReplyModelMode } from "../types.js";
 import { readJsonFile } from "../utils/json-file.js";
 
 export class GroupConfigService {
@@ -29,6 +29,22 @@ export class GroupConfigService {
     data.groups[index] = normalizeGroupConfig({
       ...data.groups[index],
       currentSkillId: skillId,
+    });
+
+    await this.writeConfig(data);
+    return data.groups[index];
+  }
+
+  async updateReplyModelMode(groupId: string, mode: ReplyModelMode): Promise<GroupBotConfig> {
+    const data = await this.readConfig();
+    const index = data.groups.findIndex((group) => group.groupId === groupId);
+    if (index === -1) {
+      throw new Error(`Group ${groupId} is not configured.`);
+    }
+
+    data.groups[index] = normalizeGroupConfig({
+      ...data.groups[index],
+      replyModelMode: normalizeReplyModelMode(mode),
     });
 
     await this.writeConfig(data);
@@ -374,6 +390,7 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
   return {
     ...group,
+    replyModelMode: normalizeReplyModelMode(group.replyModelMode),
     allowedSkillIds: Array.from(new Set(group.allowedSkillIds ?? [])),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
@@ -390,6 +407,10 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     blacklistedUserIds: normalizeUserIds(group.blacklistedUserIds),
     opsAlertsEnabled: group.opsAlertsEnabled !== false,
   };
+}
+
+function normalizeReplyModelMode(value: unknown): ReplyModelMode {
+  return value === "mimo" ? "mimo" : "gpt";
 }
 
 function normalizeUserIds(value: string[] | undefined): string[] {

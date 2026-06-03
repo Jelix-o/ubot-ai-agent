@@ -21,6 +21,8 @@ import type { SkillService } from "./services/skill-service.js";
 import type { TtsService } from "./services/tts-service.js";
 import type {
   AiInteractionTarget,
+  AiIdentityContext,
+  AiReply,
   AiReplyContext,
   ControlledMentionDecision,
   ConversationTurn,
@@ -30,6 +32,7 @@ import type {
   MessageImageInput,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
+  ReplyModelMode,
   ReferencedMessage,
   SkillDefinition,
 } from "./types.js";
@@ -39,6 +42,7 @@ import { formatReplyMessages } from "./utils/reply-format.js";
 import { parseVoiceCommand } from "./utils/voice-command.js";
 
 const SKILL_PREFIX = "#技能";
+const MODEL_PREFIX = "#模型";
 const VOICE_PREFIX = "#语音";
 const CONVERSATION_PREFIX = "#对话";
 const LIVE_CHAT_PREFIX = "#实时对话";
@@ -95,6 +99,23 @@ const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限"
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
+
+interface ReplyAiRoute {
+  mode: ReplyModelMode;
+  label: string;
+  service: AiService;
+  fallback?: {
+    mode: ReplyModelMode;
+    label: string;
+    service: AiService;
+  };
+}
+
+interface ReplyAiResult {
+  reply: AiReply;
+  usedMode: ReplyModelMode;
+  fallbackUsed: boolean;
+}
 
 interface ProfileTargetResolution {
   status: "ok" | "ambiguous" | "not_found";
@@ -181,6 +202,8 @@ export class BotApplication {
     private readonly groupMemoryCandidateService?: GroupMemoryCandidateService,
     private readonly dailyProfileReviewService?: DailyProfileReviewService,
     private readonly adminPublicBaseUrl?: string,
+    private readonly profileReplyAiService?: AiService,
+    private readonly replyModelLabels: Partial<Record<ReplyModelMode, string>> = {},
   ) {}
 
   start(): void {
@@ -418,6 +441,11 @@ export class BotApplication {
 
     if (commandText.startsWith(SKILL_PREFIX)) {
       await this.handleSkillCommand(groupConfig, event, commandText);
+      return;
+    }
+
+    if (commandText.startsWith(MODEL_PREFIX)) {
+      await this.handleModelCommand(groupConfig, event, commandText);
       return;
     }
 
@@ -1853,27 +1881,29 @@ export class BotApplication {
     const resolvedImages = this.transport.resolveImageInputs
       ? await this.transport.resolveImageInputs(allImages)
       : allImages.filter((image) => Boolean(image.url));
+    const identityContext = {
+      groupId: groupConfig.groupId,
+      currentUserId: userId,
+      botUserId: this.botQq,
+      manualIdentities: groupConfig.manualIdentities,
+      ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
+      ...(groupMemories.length > 0 ? { groupMemories } : {}),
+      ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
+      ...(messageContext.interactionTargets.length > 0
+        ? { interactionTargets: messageContext.interactionTargets }
+        : {}),
+      ...(messageContext.replyContext ? { replyContext: messageContext.replyContext } : {}),
+    };
+    const replyArgs = {
+      skill,
+      history,
+      userInput: normalizedUserInput,
+      images: resolvedImages,
+      identityContext,
+    };
 
     try {
-      const reply = await this.aiService.generateReply({
-        skill,
-        history,
-        userInput: normalizedUserInput,
-        images: resolvedImages,
-        identityContext: {
-          groupId: groupConfig.groupId,
-          currentUserId: userId,
-          botUserId: this.botQq,
-          manualIdentities: groupConfig.manualIdentities,
-          ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
-          ...(groupMemories.length > 0 ? { groupMemories } : {}),
-          ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
-          ...(messageContext.interactionTargets.length > 0
-            ? { interactionTargets: messageContext.interactionTargets }
-            : {}),
-          ...(messageContext.replyContext ? { replyContext: messageContext.replyContext } : {}),
-        },
-      });
+      const { reply, usedMode, fallbackUsed } = await this.generateReplyWithSelectedModel(groupConfig, replyArgs);
       const resolvedMentionUserIds = await this.resolveMentionUserIds(
         groupConfig.groupId,
         prefixMentionUserIds,
@@ -1887,19 +1917,7 @@ export class BotApplication {
               history,
               userInput: normalizedUserInput,
               assistantReply: replyText,
-              identityContext: {
-                groupId: groupConfig.groupId,
-                currentUserId: userId,
-                botUserId: this.botQq,
-                manualIdentities: groupConfig.manualIdentities,
-                ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
-                ...(groupMemories.length > 0 ? { groupMemories } : {}),
-                ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
-                ...(messageContext.interactionTargets.length > 0
-                  ? { interactionTargets: messageContext.interactionTargets }
-                  : {}),
-                ...(messageContext.replyContext ? { replyContext: messageContext.replyContext } : {}),
-              },
+              identityContext,
             })
           : undefined;
       const outgoingMentionUserIds = controlledMentionUserId
@@ -1954,6 +1972,8 @@ export class BotApplication {
         groupId: groupConfig.groupId,
         skillId: skill.id,
         model: reply.model,
+        replyModelMode: usedMode,
+        fallbackUsed,
         messageCount: outgoingMessages.length,
       });
     } catch (error) {
@@ -1998,6 +2018,82 @@ export class BotApplication {
     }
 
     return target.userId;
+  }
+
+  private async generateReplyWithSelectedModel(
+    groupConfig: GroupBotConfig,
+    args: {
+      skill: SkillDefinition;
+      history: ConversationTurn[];
+      userInput: string;
+      images?: MessageImageInput[];
+      identityContext?: AiIdentityContext;
+    },
+  ): Promise<ReplyAiResult> {
+    const route = this.getReplyAiRoute(groupConfig);
+
+    try {
+      return {
+        reply: await route.service.generateReply(args),
+        usedMode: route.mode,
+        fallbackUsed: false,
+      };
+    } catch (error) {
+      if (!route.fallback || route.fallback.service === route.service) {
+        throw error;
+      }
+
+      logWarn("Primary reply model failed; trying fallback reply model.", {
+        groupId: groupConfig.groupId,
+        primaryMode: route.mode,
+        primaryLabel: route.label,
+        fallbackMode: route.fallback.mode,
+        fallbackLabel: route.fallback.label,
+        error: (error as Error).message,
+      });
+
+      return {
+        reply: await route.fallback.service.generateReply(args),
+        usedMode: route.fallback.mode,
+        fallbackUsed: true,
+      };
+    }
+  }
+
+  private getReplyAiRoute(groupConfig: GroupBotConfig): ReplyAiRoute {
+    const mode = normalizeReplyModelMode(groupConfig.replyModelMode);
+    const gpt = {
+      mode: "gpt" as const,
+      label: this.formatReplyModelName("gpt"),
+      service: this.aiService,
+    };
+    const mimo = this.profileReplyAiService
+      ? {
+          mode: "mimo" as const,
+          label: this.formatReplyModelName("mimo"),
+          service: this.profileReplyAiService,
+        }
+      : undefined;
+
+    if (mode === "mimo" && mimo) {
+      return {
+        ...mimo,
+        fallback: gpt,
+      };
+    }
+
+    return {
+      ...gpt,
+      ...(mimo ? { fallback: mimo } : {}),
+    };
+  }
+
+  private formatReplyModelName(mode: ReplyModelMode): string {
+    const configured = this.replyModelLabels[mode]?.trim();
+    if (configured) {
+      return mode === "mimo" ? `Mimo（${configured}）` : `GPT（${configured}）`;
+    }
+    return mode === "mimo" ? "Mimo（mimo-v2.5-pro）" : "GPT";
   }
 
   private async handleVoiceReply(
@@ -2093,6 +2189,42 @@ export class BotApplication {
     await this.sendText(
       groupConfig.groupId,
       `已切换到技能 ${skill.name}（${skill.id}），并清空当前群上下文`,
+    );
+  }
+
+  private async handleModelCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    commandText: string,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+    const normalized = commandText.replace(/\s+/g, " ").trim();
+    const currentMode = normalizeReplyModelMode(groupConfig.replyModelMode);
+
+    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX} 状态`) {
+      await this.sendText(groupId, `当前群聊回复模型：${this.formatReplyModelName(currentMode)}`);
+      return;
+    }
+
+    const switchRegex = new RegExp(`^${escapeRegex(MODEL_PREFIX)}\\s*切换\\s+(mimo|gpt)$`, "i");
+    const match = normalized.match(switchRegex);
+    if (!match) {
+      await this.sendText(groupId, "模型命令格式：#模型 状态 或 #模型 切换 mimo/gpt");
+      return;
+    }
+
+    if (!(await this.isAdmin(groupConfig, userId))) {
+      await this.sendText(groupId, "你没有切换群聊回复模型的权限");
+      return;
+    }
+
+    const targetMode = match[1]!.toLowerCase() as ReplyModelMode;
+    const updated = await this.groupConfigService.updateReplyModelMode(groupId, targetMode);
+    await this.logAdminOperation(groupId, userId, "回复模型切换", targetMode, this.formatReplyModelName(targetMode));
+    await this.sendText(
+      groupId,
+      `已切换群聊回复模型：${this.formatReplyModelName(normalizeReplyModelMode(updated.replyModelMode))}`,
     );
   }
 
@@ -3391,6 +3523,10 @@ function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
 function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
   const seconds = getLiveChatDelaySeconds(groupConfig);
   return seconds % 60 === 0 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
+}
+
+function normalizeReplyModelMode(value: unknown): ReplyModelMode {
+  return value === "mimo" ? "mimo" : "gpt";
 }
 
 function parseLiveChatDelay(raw: string): { unit: "seconds" | "minutes"; value: number } | undefined {

@@ -125,6 +125,12 @@ class FakeGroupConfigService {
     return cloneGroup(group);
   }
 
+  async updateReplyModelMode(groupId: string, mode: "gpt" | "mimo"): Promise<GroupBotConfig> {
+    const group = this.requireGroup(groupId);
+    group.replyModelMode = mode;
+    return cloneGroup(group);
+  }
+
   async addLiveChatUser(groupId: string, userId: string): Promise<GroupBotConfig> {
     const group = this.requireGroup(groupId);
     group.liveChatUserIds = Array.from(new Set([...group.liveChatUserIds, userId]));
@@ -665,6 +671,7 @@ function createApp(options?: {
   groupConfigService?: FakeGroupConfigService;
   transport?: FakeTransport;
   aiService?: FakeAiService;
+  profileAiService?: FakeAiService;
   conversationStore?: FakeConversationStore;
   ttsService?: FakeTtsService;
   dailyReportService?: FakeDailyReportService;
@@ -682,6 +689,7 @@ function createApp(options?: {
   transport: FakeTransport;
   groupConfigService: FakeGroupConfigService;
   aiService: FakeAiService;
+  profileAiService?: FakeAiService;
   conversationStore: FakeConversationStore;
   ttsService: FakeTtsService;
   dailyReportService: FakeDailyReportService;
@@ -719,6 +727,7 @@ function createApp(options?: {
       model: "test-model",
       skillId: "assistant",
     }));
+  const profileAiService = options?.profileAiService;
   const ttsService =
     options?.ttsService ??
     new FakeTtsService(async () => ({
@@ -764,6 +773,11 @@ function createApp(options?: {
     groupMemoryCandidateService as never,
     dailyProfileReviewService as never,
     "https://bot.9958.uk",
+    profileAiService as never,
+    {
+      gpt: "gpt-5.5",
+      mimo: "mimo-v2.5-pro",
+    },
   );
 
   return {
@@ -771,6 +785,7 @@ function createApp(options?: {
     transport,
     groupConfigService,
     aiService,
+    profileAiService,
     conversationStore,
     ttsService,
     dailyReportService,
@@ -1619,6 +1634,150 @@ test("switches skill for authorized user and clears context", async () => {
   assert.equal(groupConfigService.groups[0]?.currentSkillId, "teacher");
   assert.deepEqual(conversationStore.clearedGroups, ["67890"]);
   assert.match(transport.sent[0]?.text ?? "", /teacher/);
+});
+
+test("denies unauthorized reply model switch", async () => {
+  const { app, transport } = createApp();
+
+  await app.handleGroupMessage(
+    createEvent([{ type: "text", data: { text: "#模型 切换 mimo" } }], 10000),
+  );
+
+  assert.equal(transport.sent.length, 1);
+  assert.match(transport.sent[0]?.text ?? "", /权限/);
+});
+
+test("switches reply model for authorized user", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      liveChatDelayMinutes: 5,
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+    },
+  ]);
+  const { app, transport } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(
+    createEvent([{ type: "text", data: { text: "#模型 切换 mimo" } }], 99999),
+  );
+
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "mimo");
+  assert.match(transport.sent[0]?.text ?? "", /Mimo/);
+  assert.match(transport.sent[0]?.text ?? "", /mimo-v2\.5-pro/);
+});
+
+test("uses mimo service for replies when group reply model mode is mimo", async () => {
+  const gptAiService = new FakeAiService(async () => ({
+    text: "GPT reply",
+    model: "gpt-5.5",
+    skillId: "assistant",
+  }));
+  const mimoAiService = new FakeAiService(async () => ({
+    text: "Mimo reply",
+    model: "mimo-v2.5-pro",
+    skillId: "assistant",
+  }));
+  const { app, transport } = createApp({
+    aiService: gptAiService,
+    profileAiService: mimoAiService,
+    groupConfigService: new FakeGroupConfigService([
+      {
+        groupId: "67890",
+        currentSkillId: "assistant",
+        replyModelMode: "mimo",
+        allowedSkillIds: ["assistant", "teacher"],
+        switcherUserIds: ["99999"],
+        liveChatUserIds: [],
+        liveChatDelayMinutes: 5,
+        dailyReportEnabled: true,
+        dailyReportTime: "18:00",
+        dailyReportTopUserCount: 3,
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " hello " } },
+    ]),
+  );
+
+  assert.equal(gptAiService.calls.length, 0);
+  assert.equal(mimoAiService.calls.length, 1);
+  assert.equal(transport.sent[0]?.text, "Mimo reply");
+});
+
+test("falls back to mimo when gpt reply model fails", async () => {
+  const gptAiService = new FakeAiService(async () => {
+    throw new Error("gpt unavailable");
+  });
+  const mimoAiService = new FakeAiService(async () => ({
+    text: "Mimo fallback reply",
+    model: "mimo-v2.5-pro",
+    skillId: "assistant",
+  }));
+  const { app, transport } = createApp({
+    aiService: gptAiService,
+    profileAiService: mimoAiService,
+  });
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " hello " } },
+    ]),
+  );
+
+  assert.equal(gptAiService.calls.length, 1);
+  assert.equal(mimoAiService.calls.length, 1);
+  assert.equal(transport.sent[0]?.text, "Mimo fallback reply");
+});
+
+test("falls back to gpt when mimo reply model fails", async () => {
+  const gptAiService = new FakeAiService(async () => ({
+    text: "GPT fallback reply",
+    model: "gpt-5.5",
+    skillId: "assistant",
+  }));
+  const mimoAiService = new FakeAiService(async () => {
+    throw new Error("mimo unavailable");
+  });
+  const { app, transport } = createApp({
+    aiService: gptAiService,
+    profileAiService: mimoAiService,
+    groupConfigService: new FakeGroupConfigService([
+      {
+        groupId: "67890",
+        currentSkillId: "assistant",
+        replyModelMode: "mimo",
+        allowedSkillIds: ["assistant", "teacher"],
+        switcherUserIds: ["99999"],
+        liveChatUserIds: [],
+        liveChatDelayMinutes: 5,
+        dailyReportEnabled: true,
+        dailyReportTime: "18:00",
+        dailyReportTopUserCount: 3,
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " hello " } },
+    ]),
+  );
+
+  assert.equal(mimoAiService.calls.length, 1);
+  assert.equal(gptAiService.calls.length, 1);
+  assert.equal(transport.sent[0]?.text, "GPT fallback reply");
 });
 
 test("conversation clear command clears own context for normal users", async () => {

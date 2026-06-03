@@ -105,6 +105,11 @@ async function main(): Promise<void> {
     groupMemoryCandidateService,
     dailyProfileReviewService,
     config.adminPublicBaseUrl,
+    profileAiService,
+    {
+      gpt: config.openAiModel,
+      mimo: config.profileAiModel,
+    },
   );
 
   const adminHttpServer = config.adminHttpEnabled

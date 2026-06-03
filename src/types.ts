@@ -179,9 +179,12 @@ export interface AiIdentityContext {
   replyContext?: AiReplyContext;
 }
 
+export type ReplyModelMode = "gpt" | "mimo";
+
 export interface GroupBotConfig {
   groupId: string;
   currentSkillId: string;
+  replyModelMode?: ReplyModelMode;
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
