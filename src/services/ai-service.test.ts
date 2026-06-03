@@ -340,6 +340,49 @@ test("extractGroupMemoryCandidates leaves room for reasoning model output", asyn
   });
 
   const request = calls[0] as { max_tokens?: number };
-  assert.equal(request.max_tokens, 2000);
+  assert.equal(request.max_tokens, 8000);
   assert.equal(candidates[0]?.subjectUserId, "20001");
+});
+
+test("profile summaries use expanded Mimo budgets and broad memory context", async () => {
+  const calls: unknown[] = [];
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create(args: unknown) {
+      calls.push(args);
+      return {
+        choices: [
+          {
+            message: {
+              content: "画像总结内容",
+            },
+          },
+        ],
+      };
+    },
+  } as never);
+  const memories = Array.from({ length: 80 }, (_, index) => ({
+    title: `记忆 ${index + 1}`,
+    content: `内容 ${index + 1}`,
+  }));
+
+  await service.summarizeDailyMemberProfile({
+    groupId: "67890",
+    userId: "20001",
+    displayName: "Tester",
+    dateKey: "2026-06-02",
+    memories,
+  });
+  await service.summarizeOverallMemberProfile({
+    groupId: "67890",
+    userId: "20001",
+    displayName: "Tester",
+    memories,
+  });
+
+  const dailyRequest = calls[0] as { max_tokens?: number; messages?: Array<{ content: string }> };
+  const overallRequest = calls[1] as { max_tokens?: number; messages?: Array<{ content: string }> };
+  assert.equal(dailyRequest.max_tokens, 4000);
+  assert.match(dailyRequest.messages?.[1]?.content ?? "", /记忆 80/);
+  assert.equal(overallRequest.max_tokens, 6000);
+  assert.match(overallRequest.messages?.[1]?.content ?? "", /记忆 80/);
 });

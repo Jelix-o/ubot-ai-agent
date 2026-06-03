@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import type { GroupMemory, GroupMemoryEvidence, GroupMemoryType } from "../types.js";
 import { readJsonFile } from "../utils/json-file.js";
 
+const EVIDENCE_SUMMARY_LIMIT = 2400;
+
 interface GroupMemoryFile {
   memories: GroupMemory[];
 }
@@ -249,7 +251,7 @@ function normalizeEvidence(value: GroupMemory["evidence"] | undefined): GroupMem
 
   const startAt = typeof value.startAt === "string" ? value.startAt.trim() : "";
   const endAt = typeof value.endAt === "string" ? value.endAt.trim() : "";
-  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, 600) : "";
+  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, EVIDENCE_SUMMARY_LIMIT) : "";
   const messageCount =
     typeof value.messageCount === "number" && Number.isFinite(value.messageCount)
       ? Math.max(0, Math.floor(value.messageCount))

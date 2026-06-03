@@ -12,6 +12,8 @@ import type {
 import { readJsonFile } from "../utils/json-file.js";
 import { type GroupMemoryInput, GroupMemoryStore } from "./group-memory-store.js";
 
+const EVIDENCE_SUMMARY_LIMIT = 2400;
+
 interface GroupMemoryCandidateFile {
   candidates: GroupMemoryCandidate[];
 }
@@ -338,7 +340,7 @@ function normalizeEvidence(value: GroupMemoryCandidate["evidence"] | undefined):
 
   const startAt = typeof value.startAt === "string" ? value.startAt.trim() : "";
   const endAt = typeof value.endAt === "string" ? value.endAt.trim() : "";
-  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, 600) : "";
+  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, EVIDENCE_SUMMARY_LIMIT) : "";
   const messageCount =
     typeof value.messageCount === "number" && Number.isFinite(value.messageCount)
       ? Math.max(0, Math.floor(value.messageCount))

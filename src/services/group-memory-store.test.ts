@@ -45,6 +45,22 @@ test("group memory store initializes, persists, filters, updates and removes", a
     assert.equal(updated?.evidence?.messageCount, 2);
     assert.equal((await store.listEnabled("67890")).length, 0);
 
+    const longEvidenceSummary = "evidence".repeat(180);
+    const longEvidenceMemory = await store.create({
+      groupId: "67890",
+      type: "group_fact",
+      title: "Long evidence",
+      content: "Long source evidence should be retained.",
+      evidence: {
+        startAt: "2026-06-01T11:00:00.000Z",
+        endAt: "2026-06-01T11:05:00.000Z",
+        messageCount: 10,
+        speakers: [{ userId: "20001", userName: "Tester" }],
+        summary: longEvidenceSummary,
+      },
+    });
+    assert.equal(longEvidenceMemory.evidence?.summary.length, longEvidenceSummary.length);
+
     assert.equal(await store.remove(memory.id), true);
     assert.equal(await store.remove(memory.id), false);
   } finally {
@@ -198,6 +214,46 @@ test("candidate service deduplicates and approves candidates into long term memo
 
     const rejected = await service.reject(pending[0]!.id);
     assert.equal(rejected?.status, "rejected");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate evidence keeps detailed summaries when approved into memory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-candidate-evidence-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "group_fact",
+            title: "Detailed evidence",
+            content: "Detailed evidence should survive approval.",
+            confidence: 0.55,
+          },
+        ];
+      },
+    });
+
+    for (let index = 0; index < 2; index += 1) {
+      service.queueMessage({
+        groupId: "67890",
+        userId: "20001",
+        userName: "Tester",
+        text: `long evidence ${index} ${"detail ".repeat(120)}`,
+        timestamp: new Date(1_780_000_000_000 + index * 1000).toISOString(),
+      });
+    }
+    await service.flushAll();
+
+    const pending = await service.list({ groupId: "67890", status: "pending" });
+    assert.equal(pending.length, 1);
+
+    const approved = await service.approve(pending[0]!.id);
+    assert.equal(approved?.candidate.status, "approved");
+    assert.equal((approved?.memory.evidence?.summary.length ?? 0) > 600, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

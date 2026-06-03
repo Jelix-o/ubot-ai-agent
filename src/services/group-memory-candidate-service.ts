@@ -5,6 +5,8 @@ import type { GroupMemoryCandidateListPageArgs, GroupMemoryCandidateListPageResu
 import type { GroupMemoryStore } from "./group-memory-store.js";
 
 const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.8;
+const EVIDENCE_MESSAGE_LIMIT = 30;
+const EVIDENCE_SUMMARY_LIMIT = 2400;
 
 interface BufferedMemoryMessage {
   groupId: string;
@@ -172,8 +174,8 @@ function buildEvidence(messages: BufferedMemoryMessage[]): GroupMemoryEvidence {
 
 function summarizeEvidenceMessages(messages: BufferedMemoryMessage[]): string {
   return messages
-    .slice(0, 8)
+    .slice(0, EVIDENCE_MESSAGE_LIMIT)
     .map((message) => `${message.userName}(${message.userId}): ${message.text}`)
     .join(" / ")
-    .slice(0, 600);
+    .slice(0, EVIDENCE_SUMMARY_LIMIT);
 }

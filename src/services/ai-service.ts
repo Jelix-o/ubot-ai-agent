@@ -16,6 +16,12 @@ import type { BufferedMessage } from "./live-chat-service.js";
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type ChatCompletionsClient = Pick<OpenAI.Chat.Completions, "create">;
 
+const PROFILE_EXTRACTION_MAX_TOKENS = 8000;
+const DAILY_PROFILE_SUMMARY_MAX_TOKENS = 4000;
+const OVERALL_PROFILE_SUMMARY_MAX_TOKENS = 6000;
+const DAILY_PROFILE_MEMORY_LIMIT = 200;
+const OVERALL_PROFILE_MEMORY_LIMIT = 500;
+
 export interface DailyReportTopicInsight {
   title: string;
   reason: string;
@@ -288,7 +294,7 @@ export class AiService {
         model: this.model,
         temperature: 0.1,
         messages,
-        max_tokens: 2000,
+        max_tokens: PROFILE_EXTRACTION_MAX_TOKENS,
       });
       const text = completion.choices[0]?.message?.content?.trim() ?? "";
       return parseMemoryCandidateExtraction(text);
@@ -309,7 +315,7 @@ export class AiService {
     }
 
     const memoryLines = args.memories
-      .slice(0, 30)
+      .slice(0, DAILY_PROFILE_MEMORY_LIMIT)
       .map((memory, index) => `${index + 1}. ${memory.title}：${memory.content}`)
       .join("\n");
     const messages: ChatMessage[] = [
@@ -318,7 +324,7 @@ export class AiService {
         content: [
           "你是 QQ 群成员画像审查助手。",
           "只能根据提供的新增长期记忆总结，不要编造新事实。",
-          "输出 2 到 4 句完整中文，概括这个成员昨日新增画像。",
+          "输出 3 到 8 句完整中文，尽量覆盖昨日新增画像中的偏好、行为习惯、互动方式和稳定事实。",
           "不要 markdown，不要编号，不要标题，不要提到置信度。",
         ].join("\n"),
       },
@@ -340,7 +346,7 @@ export class AiService {
         model: this.model,
         temperature: 0.2,
         messages,
-        max_tokens: 1200,
+        max_tokens: DAILY_PROFILE_SUMMARY_MAX_TOKENS,
       });
       return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
     } catch {
@@ -359,7 +365,7 @@ export class AiService {
     }
 
     const memoryLines = args.memories
-      .slice(0, 60)
+      .slice(0, OVERALL_PROFILE_MEMORY_LIMIT)
       .map((memory, index) => `${index + 1}. ${memory.title}：${memory.content}`)
       .join("\n");
     const messages: ChatMessage[] = [
@@ -368,8 +374,8 @@ export class AiService {
         content: [
           "你是 QQ 群成员整体画像汇总助手。",
           "只能根据提供的长期记忆总结，不要编造不存在的身份、关系、性格或事件。",
-          "输出一段完整中文，概括这个成员在群里的稳定画像、偏好和互动特点。",
-          "语气自然客观，控制在 180 字以内。",
+          "输出一段或数段完整中文，概括这个成员在群里的稳定画像、偏好、互动特点、常见话题和可被长期记住的事实。",
+          "语气自然客观，不要为了省字数丢失关键细节。",
           "不要 markdown，不要编号，不要标题。",
         ].join("\n"),
       },
@@ -390,7 +396,7 @@ export class AiService {
         model: this.model,
         temperature: 0.2,
         messages,
-        max_tokens: 1400,
+        max_tokens: OVERALL_PROFILE_SUMMARY_MAX_TOKENS,
       });
       return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
     } catch {
