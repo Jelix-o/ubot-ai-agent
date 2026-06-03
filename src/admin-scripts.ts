@@ -9,7 +9,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 `.trimStart();
 
 export const ADMIN_APP_JS = String.raw`
-const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map() };
+const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
@@ -122,8 +122,21 @@ function ownerMemberOptionsHtml() {
 }
 async function ensureOwnerMembers() {
   if (!state.groupId || state.ownerMembersByGroup.has(state.groupId)) return;
-  const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members?all=1&pageSize=100');
-  state.ownerMembersByGroup.set(state.groupId, data.members || []);
+  const groupId = state.groupId;
+  const existing = state.ownerMembersInflight.get(groupId);
+  if (existing) return existing;
+  const version = state.ownerMemberVersions.get(groupId) || 0;
+  const promise = api('/api/groups/' + encodeURIComponent(groupId) + '/members?all=1&pageSize=100')
+    .then(data => {
+      if ((state.ownerMemberVersions.get(groupId) || 0) === version) {
+        state.ownerMembersByGroup.set(groupId, data.members || []);
+      }
+    })
+    .finally(() => {
+      if (state.ownerMembersInflight.get(groupId) === promise) state.ownerMembersInflight.delete(groupId);
+    });
+  state.ownerMembersInflight.set(groupId, promise);
+  return promise;
 }
 async function render() {
   try {
@@ -170,7 +183,11 @@ async function renderGroups() {
 }
 async function renderMembers(force = false) {
   const token = nextRenderToken();
-  if (force) state.ownerMembersByGroup.delete(state.groupId);
+  if (force) {
+    state.ownerMemberVersions.set(state.groupId, (state.ownerMemberVersions.get(state.groupId) || 0) + 1);
+    state.ownerMembersInflight.delete(state.groupId);
+    state.ownerMembersByGroup.delete(state.groupId);
+  }
   const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
   if (state.memberQuery.trim()) query.set('q', state.memberQuery.trim());
   if (force) query.set('refresh', '1');
