@@ -42,7 +42,8 @@ const evidenceHtml = (item) => {
   const evidence = item.evidence;
   if (!evidence) return '<div class="evidence"><b>来源证据：</b>无来源记录</div>';
   const speakers = (evidence.speakers || []).map(s => (s.userName ? esc(s.userName) + ' / QQ ' + esc(s.userId) : 'QQ ' + esc(s.userId))).join('、') || '无';
-  return '<div class="evidence"><b>来源证据：</b>' + esc(evidence.summary) + '<br>时间段：' + esc(evidence.startAt) + ' 至 ' + esc(evidence.endAt) + '<br>消息数：' + esc(evidence.messageCount) + ' · 参与：' + speakers + '</div>';
+  const summary = shortText(evidence.summary, 120);
+  return '<details class="evidence"><summary><b>来源证据</b><span>' + esc(evidence.messageCount) + ' 条 · ' + esc(evidence.startAt) + ' 至 ' + esc(evidence.endAt) + ' · ' + esc((evidence.speakers || []).length) + ' 人参与</span><em>' + esc(summary) + '</em></summary><div class="evidence-body"><p>' + esc(evidence.summary) + '</p><span>参与：' + speakers + '</span></div></details>';
 };
 const api = async (url, options = {}) => {
   const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });

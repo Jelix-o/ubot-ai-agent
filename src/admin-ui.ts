@@ -57,6 +57,11 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .owner-field span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .evidence { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 10px; color: var(--muted); overflow-wrap: anywhere; }
 .evidence b { color: var(--ink); }
+.evidence summary { cursor: pointer; display: grid; grid-template-columns: auto minmax(180px, max-content) minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.evidence summary span, .evidence summary em { color: var(--muted); font-style: normal; min-width: 0; }
+.evidence summary em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evidence-body { margin-top: 8px; display: grid; gap: 6px; max-height: 220px; overflow: auto; border-top: 1px solid var(--line); padding-top: 8px; }
+.evidence-body p { margin: 0; color: var(--ink); }
 .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
 .member-meta, .meta { color: var(--muted); overflow-wrap: anywhere; }
 .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
@@ -68,7 +73,7 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .workbench-grid, .grid-form, .candidate-form, .memory-form { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
+@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .workbench-grid, .grid-form, .candidate-form, .memory-form, .evidence summary { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
 `;
 
 
