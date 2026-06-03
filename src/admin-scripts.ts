@@ -12,6 +12,7 @@ export const ADMIN_APP_JS = String.raw`
 const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
+let ownerMemberSearchTimer = null;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
 const content = () => document.querySelector('#content');
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -131,25 +132,55 @@ function refreshOwnerMemberOptionsSlot() {
   if (slot) slot.innerHTML = ownerMemberOptionsHtml();
 }
 async function ensureOwnerMembers(options = {}) {
-  if (!state.groupId || state.ownerMembersByGroup.has(state.groupId)) return;
+  if (!state.groupId) return;
+  const search = String(options.query || '').trim();
+  if (!search && state.ownerMembersByGroup.has(state.groupId)) return;
   const groupId = state.groupId;
-  const existing = state.ownerMembersInflight.get(groupId);
+  const inflightKey = groupId + ':' + search;
+  const existing = state.ownerMembersInflight.get(inflightKey);
   if (existing) return existing;
   const version = state.ownerMemberVersions.get(groupId) || 0;
-  const query = new URLSearchParams({ all: '1', pageSize: String(options.pageSize || 100) });
+  const query = search
+    ? new URLSearchParams({ q: search, page: '1', pageSize: String(options.pageSize || 20) })
+    : new URLSearchParams({ all: '1', pageSize: String(options.pageSize || 100) });
   if (options.refresh) query.set('refresh', '1');
   const promise = api('/api/groups/' + encodeURIComponent(groupId) + '/members?' + query.toString())
     .then(data => {
       if ((state.ownerMemberVersions.get(groupId) || 0) === version) {
-        state.ownerMembersByGroup.set(groupId, data.members || []);
+        const members = data.members || [];
+        if (search) mergeOwnerMembers(groupId, members);
+        else state.ownerMembersByGroup.set(groupId, members);
         refreshOwnerMemberOptionsSlot();
       }
     })
     .finally(() => {
-      if (state.ownerMembersInflight.get(groupId) === promise) state.ownerMembersInflight.delete(groupId);
+      if (state.ownerMembersInflight.get(inflightKey) === promise) state.ownerMembersInflight.delete(inflightKey);
     });
-  state.ownerMembersInflight.set(groupId, promise);
+  state.ownerMembersInflight.set(inflightKey, promise);
   return promise;
+}
+function mergeOwnerMembers(groupId, members) {
+  const current = state.ownerMembersByGroup.get(groupId) || [];
+  const byId = new Map(current.map(member => [member.userId, member]));
+  for (const member of members) {
+    if (member?.userId) byId.set(member.userId, member);
+  }
+  state.ownerMembersByGroup.set(groupId, [...byId.values()]);
+}
+function clearOwnerMemberInflight(groupId) {
+  for (const key of state.ownerMembersInflight.keys()) {
+    if (key === groupId || key.startsWith(groupId + ':')) state.ownerMembersInflight.delete(key);
+  }
+}
+function scheduleOwnerMemberSearch(value) {
+  clearTimeout(ownerMemberSearchTimer);
+  const query = String(value || '').trim();
+  ownerMemberSearchTimer = setTimeout(() => {
+    const options = query && !/^\d+$/.test(query)
+      ? { query, pageSize: 20 }
+      : { pageSize: 100 };
+    void ensureOwnerMembers(options).catch(error => toast(error.message || '成员搜索失败', 'error'));
+  }, query ? 180 : 0);
 }
 async function render() {
   try {
@@ -198,7 +229,7 @@ async function renderMembers(force = false) {
   const token = nextRenderToken();
   if (force) {
     state.ownerMemberVersions.set(state.groupId, (state.ownerMemberVersions.get(state.groupId) || 0) + 1);
-    state.ownerMembersInflight.delete(state.groupId);
+    clearOwnerMemberInflight(state.groupId);
     state.ownerMembersByGroup.delete(state.groupId);
   }
   const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
@@ -611,7 +642,14 @@ document.addEventListener('focusin', (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement)) return;
   if (target.getAttribute('list') === 'ownerMemberOptions') {
-    preloadOwnerMembers();
+    scheduleOwnerMemberSearch(target.value);
+  }
+});
+document.addEventListener('input', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  if (target.getAttribute('list') === 'ownerMemberOptions') {
+    scheduleOwnerMemberSearch(target.value);
   }
 });
 document.addEventListener('change', async (event) => {
