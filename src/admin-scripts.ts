@@ -370,6 +370,20 @@ function updateCurrentMember(member) {
   if (index >= 0) state.currentMembers[index] = member;
   else state.currentMembers.unshift(member);
 }
+function updateCurrentItem(listName, id, patch) {
+  const list = state[listName];
+  if (!Array.isArray(list)) return;
+  const index = list.findIndex(item => item.id === id);
+  if (index >= 0) list[index] = { ...list[index], ...patch };
+}
+function removeCurrentItem(listName, id) {
+  const list = state[listName];
+  if (!Array.isArray(list)) return;
+  state[listName] = list.filter(item => item.id !== id);
+}
+function removeArticle(target) {
+  target.closest('article')?.remove();
+}
 function replaceEditedArticle(target) {
   const article = target.closest('article');
   if (!article) return false;
@@ -412,14 +426,14 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); updateCandidateSelectionUi(); }
   if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }, '候选记忆已删除'); }
   if (target.dataset.saveMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.editingMemoryId = ''; await renderMemories(); }, '长期记忆已保存'); }
-  if (target.dataset.toggleMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }, '长期记忆状态已更新'); }
-  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }, '长期记忆已删除'); }
+  if (target.dataset.toggleMemory) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentMemories', target.dataset.toggleMemory, { enabled }); replaceArticle(target, 'memory', target.dataset.toggleMemory); }, '长期记忆状态已更新'); }
+  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); }, '长期记忆已删除'); }
   if (target.dataset.clearMemoryFilters !== undefined) { state.subjectUserId = ''; state.memoryType = ''; state.memoryEnabled = ''; state.memoryQuery = ''; state.memoryPage = 1; await renderMemories(); }
   if (target.dataset.candidateStatusShortcut !== undefined) { state.candidateStatus = target.dataset.candidateStatusShortcut; state.candidatePage = 1; await renderCandidates(); }
   if (target.dataset.pageKind && target.dataset.pageStep) { await changePage(target.dataset.pageKind, target.dataset.pageStep === 'next' ? 1 : -1); }
-  if (target.dataset.saveKnowledge) { await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.saveKnowledge, { method: 'PUT', body: JSON.stringify(knowledgePayload(target.dataset.saveKnowledge)) }); state.editingKnowledgeId = ''; await renderKnowledge(); }, 'FAQ 已保存'); }
-  if (target.dataset.toggleKnowledge) { await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderKnowledge(); }, 'FAQ 状态已更新'); }
-  if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; replaceArticle(target, 'knowledge', target.dataset.deleteKnowledge); return; } await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await renderKnowledge(); }, 'FAQ 已删除'); }
+  if (target.dataset.saveKnowledge) { await runAction(target, async () => { const entry = await api('/api/knowledge/' + target.dataset.saveKnowledge, { method: 'PUT', body: JSON.stringify(knowledgePayload(target.dataset.saveKnowledge)) }); updateCurrentItem('currentKnowledge', target.dataset.saveKnowledge, entry); state.editingKnowledgeId = ''; replaceArticle(target, 'knowledge', target.dataset.saveKnowledge); }, 'FAQ 已保存'); }
+  if (target.dataset.toggleKnowledge) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentKnowledge', target.dataset.toggleKnowledge, { enabled }); replaceArticle(target, 'knowledge', target.dataset.toggleKnowledge); }, 'FAQ 状态已更新'); }
+  if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; replaceArticle(target, 'knowledge', target.dataset.deleteKnowledge); return; } await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); removeCurrentItem('currentKnowledge', target.dataset.deleteKnowledge); state.pendingDelete = ''; removeArticle(target); }, 'FAQ 已删除'); }
 });
 document.addEventListener('change', async (event) => {
   const target = event.target;
