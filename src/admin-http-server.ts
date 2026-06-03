@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 
-import { ADMIN_APP_HTML_V2, LOGIN_HTML } from "./admin-ui.js";
+import { ADMIN_APP_HTML_V2, ADMIN_CSS, LOGIN_HTML } from "./admin-ui.js";
 import { logInfo, logWarn } from "./logger.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -68,6 +68,11 @@ export class AdminHttpServer {
 
       if (req.method === "GET" && (pathname === "" || pathname === "/login")) {
         this.sendHtml(res, this.isAuthenticated(req) ? ADMIN_APP_HTML_V2 : LOGIN_HTML);
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/admin.css") {
+        this.sendStaticText(res, ADMIN_CSS, "text/css; charset=utf-8");
         return;
       }
 
@@ -723,6 +728,13 @@ export class AdminHttpServer {
     res.statusCode = 200;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.end(html);
+  }
+
+  private sendStaticText(res: ServerResponse, content: string, contentType: string): void {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.end(content);
   }
 }
 

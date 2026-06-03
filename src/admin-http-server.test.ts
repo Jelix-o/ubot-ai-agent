@@ -138,6 +138,15 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const unauthorized = await fetch(`${baseUrl}/api/groups`);
     assert.equal(unauthorized.status, 401);
 
+    const loginPage = await fetch(`${baseUrl}/login`);
+    assert.equal(loginPage.status, 200);
+    assert.equal((await loginPage.text()).includes('href="/admin.css"'), true);
+
+    const adminCss = await fetch(`${baseUrl}/admin.css`);
+    assert.equal(adminCss.status, 200);
+    assert.equal(adminCss.headers.get("content-type")?.includes("text/css"), true);
+    assert.equal((await adminCss.text()).includes(".app-shell"), true);
+
     const badLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

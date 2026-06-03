@@ -1,4 +1,4 @@
-const ADMIN_CSS = `
+export const ADMIN_CSS = `
 :root { color-scheme: light; --ink: oklch(22% 0.012 238); --muted: oklch(50% 0.012 238); --line: oklch(86% 0.012 238); --paper: oklch(98% 0.006 238); --panel: oklch(96% 0.008 238); --accent: oklch(55% 0.16 168); --accent-soft: oklch(92% 0.045 168); --danger: oklch(52% 0.16 28); --warn: oklch(78% 0.13 78); }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.5 Inter, "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--paper); }
@@ -77,7 +77,7 @@ export const LOGIN_HTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI-Project 机器人后台</title>
-  <style>${ADMIN_CSS}</style>
+  <link rel="stylesheet" href="/admin.css">
 </head>
 <body class="login-page">
   <main class="login-shell">
@@ -110,7 +110,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI-Project 机器人后台</title>
-  <style>${ADMIN_CSS}</style>
+  <link rel="stylesheet" href="/admin.css">
 </head>
 <body>
   <div class="app-shell">
