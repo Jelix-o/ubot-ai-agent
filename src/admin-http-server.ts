@@ -127,11 +127,11 @@ export class AdminHttpServer {
 
     if (req.method === "GET" && pathname === "/api/overview") {
       const groupId = url.searchParams.get("groupId") ?? undefined;
-      const [groups, memories, candidates, knowledge] = await Promise.all([
+      const [groups, memoriesPage, candidatesPage, knowledgePage] = await Promise.all([
         this.options.groupConfigService.getAll(),
-        this.options.groupMemoryStore.list(groupId),
-        this.options.groupMemoryCandidateService.list({ ...(groupId ? { groupId } : {}), status: "pending" }),
-        this.options.knowledgeBaseStore.list(groupId),
+        this.options.groupMemoryStore.listPage({ groupId, page: 1, pageSize: 5 }),
+        this.options.groupMemoryCandidateService.listPage({ groupId, status: "pending", page: 1, pageSize: 5 }),
+        this.options.knowledgeBaseStore.listPage({ groupId, page: 1, pageSize: 5 }),
       ]);
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
@@ -141,14 +141,14 @@ export class AdminHttpServer {
         groupId,
         stats: {
           groupCount: groups.length,
-          memoryCount: memories.length,
-          pendingCandidateCount: candidates.length,
-          knowledgeCount: knowledge.length,
+          memoryCount: memoriesPage.pagination.total,
+          pendingCandidateCount: candidatesPage.pagination.total,
+          knowledgeCount: knowledgePage.pagination.total,
         },
         recent: {
-          candidates: await this.enrichCandidates(candidates.slice(0, 5), groupId),
-          memories: await this.enrichMemories(sortMemoriesNewestFirst(memories).slice(0, 5), groupId),
-          knowledge: knowledge.slice(0, 5),
+          candidates: await this.enrichCandidates(candidatesPage.items, groupId),
+          memories: await this.enrichMemories(memoriesPage.items, groupId),
+          knowledge: knowledgePage.items,
         },
         transportHealth,
       });
@@ -764,14 +764,6 @@ function normalizeMemoryInput(body: Record<string, unknown>) {
     enabled: optionalBoolean(body.enabled) ?? true,
     ...(body.evidence !== undefined ? { evidence: evidenceField(body.evidence) } : {}),
   };
-}
-
-function sortMemoriesNewestFirst(memories: GroupMemory[]): GroupMemory[] {
-  return [...memories].sort((left, right) =>
-    right.createdAt.localeCompare(left.createdAt) ||
-    right.updatedAt.localeCompare(left.updatedAt) ||
-    right.id.localeCompare(left.id),
-  );
 }
 
 function paginationParams(url: URL, defaultPageSize: number, maxPageSize: number): { page: number; pageSize: number } {
