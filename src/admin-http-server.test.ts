@@ -154,7 +154,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const adminCss = await fetch(`${baseUrl}/admin.css`);
     assert.equal(adminCss.status, 200);
     assert.equal(adminCss.headers.get("content-type")?.includes("text/css"), true);
-    assert.equal((await adminCss.text()).includes(".app-shell"), true);
+    const adminCssText = await adminCss.text();
+    assert.equal(adminCssText.includes(".app-shell"), true);
+    assert.equal(adminCssText.includes(".filter-summary"), true);
 
     const adminLoginJs = await fetch(`${baseUrl}/admin-login.js`);
     assert.equal(adminLoginJs.status, 200);
@@ -202,6 +204,10 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("syncUrlState"), true);
     assert.equal(adminAppJsText.includes("popstate"), true);
     assert.equal(adminAppJsText.includes("history[replace ? 'replaceState' : 'pushState']"), true);
+    assert.equal(adminAppJsText.includes("filterSummaryHtml"), true);
+    assert.equal(adminAppJsText.includes("data-clear-candidate-filters"), true);
+    assert.equal(adminAppJsText.includes("data-clear-member-filters"), true);
+    assert.equal(adminAppJsText.includes("data-clear-knowledge-filters"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {

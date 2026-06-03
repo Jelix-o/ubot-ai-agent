@@ -45,6 +45,13 @@ header select { width: 180px; }
 .panel { border: 1px solid var(--line); background: oklch(99% 0.004 238); padding: 18px; border-radius: 8px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
 .toolbar input { width: min(280px, 100%); }
+.filter-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin: -4px 0 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.filter-summary > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.filter-summary strong { font-size: 13px; }
+.filter-summary span { display: inline-flex; flex-wrap: wrap; gap: 6px; color: var(--muted); }
+.filter-chip { min-height: 24px; align-items: center; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: oklch(99% 0.004 238); font-size: 12px; overflow-wrap: anywhere; }
+.filter-chip b { margin-right: 4px; color: var(--ink); }
+.filter-chip.muted { border-color: transparent; background: transparent; padding-inline: 0; }
 .hint-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .hint-row span { color: var(--muted); overflow-wrap: anywhere; }
 .list { display: grid; gap: 10px; }
