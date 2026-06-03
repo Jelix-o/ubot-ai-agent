@@ -152,7 +152,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const adminLoginJs = await fetch(`${baseUrl}/admin-login.js`);
     assert.equal(adminLoginJs.status, 200);
     assert.equal(adminLoginJs.headers.get("content-type")?.includes("javascript"), true);
-    assert.equal((await adminLoginJs.text()).includes("/api/login"), true);
+    const adminLoginJsText = await adminLoginJs.text();
+    assert.equal(adminLoginJsText.includes("/api/login"), true);
+    assert.doesNotThrow(() => new Function(adminLoginJsText));
 
     const badLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
@@ -185,7 +187,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const adminAppJs = await fetch(`${baseUrl}/admin-app.js`);
     assert.equal(adminAppJs.status, 200);
     assert.equal(adminAppJs.headers.get("content-type")?.includes("javascript"), true);
-    assert.equal((await adminAppJs.text()).includes("renderOverview"), true);
+    const adminAppJsText = await adminAppJs.text();
+    assert.equal(adminAppJsText.includes("renderOverview"), true);
+    assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
       headers: { Cookie: cookie ?? "" },
