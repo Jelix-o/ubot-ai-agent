@@ -170,6 +170,7 @@ async function renderGroups() {
 }
 async function renderMembers(force = false) {
   const token = nextRenderToken();
+  if (force) state.ownerMembersByGroup.delete(state.groupId);
   const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
   if (state.memberQuery.trim()) query.set('q', state.memberQuery.trim());
   if (force) query.set('refresh', '1');
@@ -177,6 +178,9 @@ async function renderMembers(force = false) {
   if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.memberPage, pageSize: state.memberPageSize, total: (data.members || []).length, totalPages: 1 };
   state.currentMembers = data.members || [];
+  if (!state.memberQuery.trim() && state.memberPage === 1 && state.currentMembers.length >= pageInfo.total) {
+    state.ownerMembersByGroup.set(state.groupId, state.currentMembers);
+  }
   state.memberPage = pageInfo.page;
   const empty = state.currentMembers.length ? '' : '<p class="message">没有符合筛选条件的成员。</p>';
   content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>同步群成员</button><span class="meta">默认显示本地身份和已有记忆，必要时再同步 NapCat 群成员。</span></div>' + empty + '<div class="member-grid">' + state.currentMembers.map(rowMember).join('') + '</div>' + listPagination('member', pageInfo, '成员') + '</section>';
