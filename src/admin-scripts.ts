@@ -9,7 +9,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 `.trimStart();
 
 export const ADMIN_APP_JS = String.raw`
-const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), selectedMemoryIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
+const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), selectedMemoryIds: new Set(), expandedCandidateIds: new Set(), expandedMemoryIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
 let ownerMemberSearchTimer = null;
@@ -162,6 +162,8 @@ function clearTransientState() {
   state.editingKnowledgeId = '';
   state.selectedCandidateIds = new Set();
   state.selectedMemoryIds = new Set();
+  state.expandedCandidateIds = new Set();
+  state.expandedMemoryIds = new Set();
 }
 async function navigateTo(view, options = {}) {
   state.view = view;
@@ -206,6 +208,8 @@ function resetGroupScopedState() {
   state.candidateQuery = '';
   state.selectedCandidateIds = new Set();
   state.selectedMemoryIds = new Set();
+  state.expandedCandidateIds = new Set();
+  state.expandedMemoryIds = new Set();
   state.memoryQuery = '';
   state.memoryType = '';
   state.memoryEnabled = '';
@@ -384,6 +388,7 @@ async function renderCandidates() {
   state.currentCandidates = data.candidates || [];
   const currentCandidateIds = new Set(state.currentCandidates.map(candidate => candidate.id));
   state.selectedCandidateIds = new Set([...state.selectedCandidateIds].filter(id => currentCandidateIds.has(id)));
+  state.expandedCandidateIds = new Set([...state.expandedCandidateIds].filter(id => currentCandidateIds.has(id)));
   state.candidatePage = pageInfo.page;
   const notice = state.notice ? '<p class="message" data-local-notice="candidate">' + esc(state.notice) + '</p>' : '';
   state.notice = '';
@@ -449,7 +454,9 @@ function rowCandidate(c) {
   const meta = '<div class="meta">归属：' + esc(ownerLabel(c)) + ' · 类型：' + esc(typeText(c.type)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 这条像个人画像，但模型没确定是谁' : '') + '</div>';
   if (state.editingCandidateId !== c.id) {
     const checked = state.selectedCandidateIds.has(c.id) ? ' checked' : '';
-    return '<article data-candidate-id="' + esc(c.id) + '"><label><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '> 选择</label><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content)) + '</span>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">入长期记忆</button><button type="button" data-edit-candidate="' + esc(c.id) + '" class="ghost">调整后处理</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">按群整体入库</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></article>';
+    const expanded = state.expandedCandidateIds.has(c.id);
+    const details = expanded ? '<div class="detail-block">' + evidenceHtml(c) + '<div class="actions secondary-actions"><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">按群整体入库</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></div>' : '';
+    return '<article data-candidate-id="' + esc(c.id) + '"><div class="row-head"><label><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '> 选择</label><div><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content, 120)) + '</span></div></div>' + meta + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">入长期记忆</button><button type="button" data-edit-candidate="' + esc(c.id) + '" class="ghost">调整后处理</button><button type="button" data-toggle-candidate-details="' + esc(c.id) + '" class="ghost">' + (expanded ? '收起详情' : '查看详情') + '</button></div>' + details + '</article>';
   }
   return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>个人画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群整体记忆</option></select><input name="title" value="' + esc(c.title) + '" placeholder="记忆标题"><textarea name="content" placeholder="要写入长期记忆的内容">' + esc(c.content) + '</textarea>' + ownerInput('subjectUserId', c.subjectUserId || '', ownerLabel(c)) + '</div><div class="candidate-help"><b>怎么处理：</b><span>入长期记忆：内容和归属都对，写进正式记忆。</span><span>按群整体入库：这不是某个人的画像，而是群规则、群事实或固定梗。</span><span>暂存修改：只保存你的编辑，稍后再决定。</span></div>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">保存并入长期记忆</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">保存为群整体记忆</button><button type="button" data-save-candidate="' + esc(c.id) + '" class="ghost">暂存修改</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></form></article>';
 }
@@ -469,6 +476,7 @@ async function renderMemories() {
   state.currentMemories = memories;
   const currentMemoryIds = new Set(state.currentMemories.map(memory => memory.id));
   state.selectedMemoryIds = new Set([...state.selectedMemoryIds].filter(id => currentMemoryIds.has(id)));
+  state.expandedMemoryIds = new Set([...state.expandedMemoryIds].filter(id => currentMemoryIds.has(id)));
   const pageInfo = data.pagination || { page: state.memoryPage, pageSize: state.memoryPageSize, total: memories.length, totalPages: 1 };
   state.memoryPage = pageInfo.page;
   const groups = groupMemories(memories);
@@ -528,7 +536,9 @@ function rowMemory(m) {
   const meta = '<div class="meta">当前归属：' + esc(ownerLabel(m)) + ' · 类型：' + esc(typeText(m.type)) + ' · 状态：' + enabledText(m.enabled) + ' · 置信度：' + esc(m.confidence) + '</div>';
   if (state.editingMemoryId !== m.id) {
     const checked = state.selectedMemoryIds.has(m.id) ? ' checked' : '';
-    return '<article data-memory-id="' + esc(m.id) + '"><label><input type="checkbox" data-select-memory="' + esc(m.id) + '"' + checked + '> 选择</label><h3>' + esc(m.title) + '</h3><span>' + esc(shortText(m.content)) + '</span>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-edit-memory="' + esc(m.id) + '">编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
+    const expanded = state.expandedMemoryIds.has(m.id);
+    const details = expanded ? '<div class="detail-block">' + evidenceHtml(m) + '<div class="actions secondary-actions"><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></div>' : '';
+    return '<article data-memory-id="' + esc(m.id) + '"><div class="row-head"><label><input type="checkbox" data-select-memory="' + esc(m.id) + '"' + checked + '> 选择</label><div><h3>' + esc(m.title) + '</h3><span>' + esc(shortText(m.content, 120)) + '</span></div></div>' + meta + '<div class="actions"><button type="button" data-edit-memory="' + esc(m.id) + '">编辑</button><button type="button" data-toggle-memory-details="' + esc(m.id) + '" class="ghost">' + (expanded ? '收起详情' : '查看详情') + '</button></div>' + details + '</article>';
   }
   return '<article><form class="memoryItemForm" data-memory-id="' + esc(m.id) + '"><div class="memory-form"><select name="type"><option value="member_profile"' + selected(m.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(m.type, 'group_fact') + '>群事实</option></select>' + ownerInput('subjectUserId', m.subjectUserId || '', ownerLabel(m)) + '<input name="title" value="' + esc(m.title) + '" placeholder="标题"><input name="confidence" type="number" min="0" max="1" step="0.01" value="' + esc(m.confidence) + '" placeholder="置信度"><select name="enabled"><option value="true"' + selected(String(m.enabled), 'true') + '>启用</option><option value="false"' + selected(String(m.enabled), 'false') + '>停用</option></select><textarea name="content" placeholder="内容">' + esc(m.content) + '</textarea></div>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-save-memory="' + esc(m.id) + '">保存编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></form></article>';
 }
@@ -703,6 +713,7 @@ function showOrRemoveCandidate(target, candidate) {
 function updateCandidateFromBulk(candidate) {
   if (!candidate?.id) return;
   state.selectedCandidateIds.delete(candidate.id);
+  state.expandedCandidateIds.delete(candidate.id);
   updateCurrentItem('currentCandidates', candidate.id, candidate);
   const article = content().querySelector('[data-candidate-id="' + CSS.escape(candidate.id) + '"]');
   if (shouldRemoveProcessedCandidate(candidate)) {
@@ -719,6 +730,7 @@ function shouldRemoveProcessedCandidate(candidate) {
 function updateMemoryFromBulk(memory) {
   if (!memory?.id) return;
   state.selectedMemoryIds.delete(memory.id);
+  state.expandedMemoryIds.delete(memory.id);
   updateCurrentItem('currentMemories', memory.id, memory);
   const article = content().querySelector('[data-memory-id="' + CSS.escape(memory.id) + '"]');
   if (!itemMatchesCurrentMemoryFilters(memory)) {
@@ -730,6 +742,7 @@ function updateMemoryFromBulk(memory) {
 }
 function removeMemoryFromBulk(id) {
   state.selectedMemoryIds.delete(id);
+  state.expandedMemoryIds.delete(id);
   removeCurrentItem('currentMemories', id);
   content().querySelector('[data-memory-id="' + CSS.escape(id) + '"]')?.remove();
 }
@@ -820,11 +833,13 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; clearTransientState(); syncUrlState(); await render(); }
   if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
   if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; replaceArticle(target, 'member', target.dataset.editMember); }
-  if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; replaceArticle(target, 'candidate', target.dataset.editCandidate); preloadOwnerMembers(); }
-  if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; replaceArticle(target, 'memory', target.dataset.editMemory); preloadOwnerMembers(); }
+  if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; state.expandedCandidateIds.add(target.dataset.editCandidate); replaceArticle(target, 'candidate', target.dataset.editCandidate); preloadOwnerMembers(); }
+  if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; state.expandedMemoryIds.add(target.dataset.editMemory); replaceArticle(target, 'memory', target.dataset.editMemory); preloadOwnerMembers(); }
   if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; replaceArticle(target, 'knowledge', target.dataset.editKnowledge); }
   if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; replaceEditedArticle(target); }
   if (target.dataset.loadEvidence) { await runAction(target, async () => { await loadFullEvidence(target); }, '来源证据已展开'); }
+  if (target.dataset.toggleCandidateDetails) { const id = target.dataset.toggleCandidateDetails; state.pendingDelete = ''; if (state.expandedCandidateIds.has(id)) state.expandedCandidateIds.delete(id); else state.expandedCandidateIds.add(id); replaceArticle(target, 'candidate', id); }
+  if (target.dataset.toggleMemoryDetails) { const id = target.dataset.toggleMemoryDetails; state.pendingDelete = ''; if (state.expandedMemoryIds.has(id)) state.expandedMemoryIds.delete(id); else state.expandedMemoryIds.add(id); replaceArticle(target, 'memory', id); }
   if (target.dataset.saveCandidate) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); updateCurrentItem('currentCandidates', target.dataset.saveCandidate, candidate); state.editingCandidateId = ''; replaceArticle(target, 'candidate', target.dataset.saveCandidate); }, '候选记忆已保存'); }
   if (target.dataset.approve) { await runAction(target, async () => { const result = await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); showOrRemoveCandidate(target, result.candidate); }, '候选记忆已批准'); }
   if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); const result = await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); showOrRemoveCandidate(target, result.candidate); }, '已转为群事实并批准'); }
@@ -841,10 +856,10 @@ document.addEventListener('click', async (event) => {
     }, '已处理选中的候选记忆');
   }
   if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); updateCandidateSelectionUi(); }
-  if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); state.selectedCandidateIds.delete(target.dataset.deleteCandidate); removeCurrentItem('currentCandidates', target.dataset.deleteCandidate); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('candidate'); }, '候选记忆已删除'); }
+  if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; state.expandedCandidateIds.add(target.dataset.deleteCandidate); replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); state.selectedCandidateIds.delete(target.dataset.deleteCandidate); state.expandedCandidateIds.delete(target.dataset.deleteCandidate); removeCurrentItem('currentCandidates', target.dataset.deleteCandidate); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('candidate'); }, '候选记忆已删除'); }
   if (target.dataset.saveMemory) { await runAction(target, async () => { const memory = await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); updateCurrentItem('currentMemories', target.dataset.saveMemory, memory); state.editingMemoryId = ''; replaceArticle(target, 'memory', target.dataset.saveMemory); }, '长期记忆已保存'); }
   if (target.dataset.toggleMemory) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentMemories', target.dataset.toggleMemory, { enabled }); replaceArticle(target, 'memory', target.dataset.toggleMemory); }, '长期记忆状态已更新'); }
-  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); state.selectedMemoryIds.delete(target.dataset.deleteMemory); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('memory'); updateMemorySelectionUi(); }, '长期记忆已删除'); }
+  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; state.expandedMemoryIds.add(target.dataset.deleteMemory); replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); state.selectedMemoryIds.delete(target.dataset.deleteMemory); state.expandedMemoryIds.delete(target.dataset.deleteMemory); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('memory'); updateMemorySelectionUi(); }, '长期记忆已删除'); }
   if (target.dataset.bulkDisableMemories !== undefined) {
     await runAction(target, async () => {
       const selectedIds = state.currentMemories.filter(memory => state.selectedMemoryIds.has(memory.id)).map(memory => memory.id);

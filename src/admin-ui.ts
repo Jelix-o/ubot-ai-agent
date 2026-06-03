@@ -57,7 +57,12 @@ header select { width: 180px; }
 .list { display: grid; gap: 10px; }
 article { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
 article span { color: var(--muted); overflow-wrap: anywhere; }
+.row-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; align-items: start; }
+.row-head label { min-width: 56px; padding-top: 2px; }
+.row-head h3 { margin-bottom: 3px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.secondary-actions { padding-top: 2px; }
+.detail-block { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 8px; margin-bottom: 14px; align-items: start; }
 .candidate-form { display: grid; grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1.2fr) 170px; gap: 8px; align-items: start; }
 .candidate-help { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 13px; }
