@@ -300,7 +300,25 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     function candidateSelectionBar() {
       const selectedCount = state.selectedCandidateIds.size;
       const allSelected = state.currentCandidates.length > 0 && state.currentCandidates.every(candidate => state.selectedCandidateIds.has(candidate.id));
-      return '<div class="toolbar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta">已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批准已选</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+      return '<div class="toolbar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-candidate-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批准已选</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+    }
+    function updateCandidateSelectionUi() {
+      const selectedCount = state.selectedCandidateIds.size;
+      const countNode = document.querySelector('[data-candidate-selected-count]');
+      if (countNode) countNode.textContent = '已选 ' + selectedCount + ' 条';
+      const approveButton = document.querySelector('[data-bulk-approve-selected]');
+      if (approveButton) approveButton.disabled = selectedCount === 0;
+      const clearButton = document.querySelector('[data-clear-candidate-selection]');
+      if (clearButton) clearButton.disabled = selectedCount === 0;
+      document.querySelectorAll('[data-select-candidate]').forEach(input => {
+        if (input instanceof HTMLInputElement) input.checked = state.selectedCandidateIds.has(input.dataset.selectCandidate);
+      });
+      const allInput = document.querySelector('[data-select-all-candidates]');
+      if (allInput instanceof HTMLInputElement) {
+        const selectedOnPage = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id)).length;
+        allInput.checked = state.currentCandidates.length > 0 && selectedOnPage === state.currentCandidates.length;
+        allInput.indeterminate = selectedOnPage > 0 && selectedOnPage < state.currentCandidates.length;
+      }
     }
     function rowCandidate(c) {
       const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
@@ -484,7 +502,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
           await renderCandidates();
         }, '已处理选中的候选记忆');
       }
-      if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); await renderCandidates(); }
+      if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); updateCandidateSelectionUi(); }
       if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }, '候选记忆已删除'); }
       if (target.dataset.saveMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.members = []; state.editingMemoryId = ''; await renderMemories(); }, '长期记忆已保存'); }
       if (target.dataset.toggleMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }, '长期记忆状态已更新'); }
@@ -502,13 +520,13 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.selectCandidate) {
         if (target.checked) state.selectedCandidateIds.add(target.dataset.selectCandidate);
         else state.selectedCandidateIds.delete(target.dataset.selectCandidate);
-        await renderCandidates();
+        updateCandidateSelectionUi();
       }
       if (target.dataset.selectAllCandidates !== undefined) {
         state.selectedCandidateIds = target.checked
           ? new Set(state.currentCandidates.map(candidate => candidate.id))
           : new Set();
-        await renderCandidates();
+        updateCandidateSelectionUi();
       }
     });
     document.addEventListener('submit', async (event) => {
