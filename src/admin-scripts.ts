@@ -10,6 +10,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 
 export const ADMIN_APP_JS = String.raw`
 const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [] };
+let renderVersion = 0;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
 const content = () => document.querySelector('#content');
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -22,6 +23,8 @@ const shortText = (value, limit = 160) => {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit) + '...' : text;
 };
+const nextRenderToken = () => ++renderVersion;
+const isLatestRender = (token) => token === renderVersion;
 const toast = (message, type = 'ok') => {
   const node = document.querySelector('#toast');
   node.textContent = message;
@@ -83,8 +86,10 @@ async function render() {
   return renderHealth();
 }
 async function renderOverview() {
+  const token = nextRenderToken();
   const groupQuery = state.groupId ? '?groupId=' + encodeURIComponent(state.groupId) : '';
   const data = await api('/api/overview' + groupQuery);
+  if (!isLatestRender(token)) return;
   const recent = data.recent || {};
   content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><h2>当前群待处理</h2>' + overviewCandidates(recent.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><h2>运行状态</h2><p>' + esc(data.transportHealth.detail) + '</p><div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><h2>最新长期记忆</h2>' + overviewMemories(recent.memories || []) + '</section><section class="panel"><h2>知识库</h2>' + overviewKnowledge(recent.knowledge || []) + '<div class="quick-actions"><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div></section></div>';
 }
@@ -101,14 +106,18 @@ function overviewKnowledge(entries) {
   return '<div class="compact-list">' + entries.map(k => '<div class="compact-row"><b>' + esc(k.title) + '</b><span>关键词：' + esc((k.keywords || []).join('、') || '无') + '</span><span>' + esc(shortText(k.answer, 120)) + '</span></div>').join('') + '</div>';
 }
 async function renderGroups() {
+  const token = nextRenderToken();
   await loadGroups();
+  if (!isLatestRender(token)) return;
   content().innerHTML = '<section class="panel"><h2>群配置</h2><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
 }
 async function renderMembers(force = false) {
+  const token = nextRenderToken();
   const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
   if (state.memberQuery.trim()) query.set('q', state.memberQuery.trim());
   if (force) query.set('refresh', '1');
   const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + query.toString());
+  if (!isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.memberPage, pageSize: state.memberPageSize, total: (data.members || []).length, totalPages: 1 };
   state.currentMembers = data.members || [];
   state.memberPage = pageInfo.page;
@@ -126,6 +135,7 @@ function rowMember(m) {
   return '<article><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" data-cancel-edit>收起</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">删除备注</button>' : '') + '</div></form></article>';
 }
 async function renderCandidates() {
+  const token = nextRenderToken();
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.candidateStatus) query.set('status', state.candidateStatus);
   if (state.candidateType) query.set('type', state.candidateType);
@@ -134,6 +144,7 @@ async function renderCandidates() {
   query.set('page', String(state.candidatePage));
   query.set('pageSize', String(state.candidatePageSize));
   const data = await api('/api/memory-candidates?' + query.toString());
+  if (!isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.candidatePage, pageSize: state.candidatePageSize, total: (data.candidates || []).length, totalPages: 1 };
   state.currentCandidates = data.candidates || [];
   const currentCandidateIds = new Set(state.currentCandidates.map(candidate => candidate.id));
@@ -181,6 +192,7 @@ function rowCandidate(c) {
   return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea>' + ownerInput('subjectUserId', c.subjectUserId || '', ownerLabel(c)) + '</div>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
 }
 async function renderMemories() {
+  const token = nextRenderToken();
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
   if (state.memoryType) query.set('type', state.memoryType);
@@ -189,6 +201,7 @@ async function renderMemories() {
   query.set('page', String(state.memoryPage));
   query.set('pageSize', String(state.memoryPageSize));
   const data = await api('/api/memories?' + query.toString());
+  if (!isLatestRender(token)) return;
   const memories = data.memories || [];
   state.currentMemories = memories;
   const pageInfo = data.pagination || { page: state.memoryPage, pageSize: state.memoryPageSize, total: memories.length, totalPages: 1 };
@@ -254,9 +267,11 @@ async function renderPageKind(kind) {
   if (kind === 'knowledge') return renderKnowledge();
 }
 async function renderKnowledge() {
+  const token = nextRenderToken();
   const query = new URLSearchParams({ groupId: state.groupId, page: String(state.knowledgePage), pageSize: String(state.knowledgePageSize) });
   if (state.knowledgeQuery.trim()) query.set('q', state.knowledgeQuery.trim());
   const data = await api('/api/knowledge?' + query.toString());
+  if (!isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.knowledgePage, pageSize: state.knowledgePageSize, total: (data.entries || []).length, totalPages: 1 };
   state.currentKnowledge = data.entries || [];
   state.knowledgePage = pageInfo.page;
@@ -275,7 +290,9 @@ function rowKnowledge(k) {
   return '<article><form class="knowledgeItemForm" data-knowledge-id="' + esc(k.id) + '"><div class="grid-form"><input name="title" value="' + esc(k.title) + '" placeholder="标题"><input name="question" value="' + esc(k.question) + '" placeholder="问题"><input name="answer" value="' + esc(k.answer) + '" placeholder="答案"><input name="keywords" value="' + esc((k.keywords || []).join(', ')) + '" placeholder="关键词"><select name="enabled"><option value="true"' + selected(String(k.enabled), 'true') + '>启用</option><option value="false"' + selected(String(k.enabled), 'false') + '>停用</option></select></div>' + meta + '<div class="actions"><button type="button" data-save-knowledge="' + esc(k.id) + '">保存编辑</button><button type="button" data-toggle-knowledge="' + esc(k.id) + '" data-enabled="' + (!k.enabled) + '" class="ghost">' + (k.enabled ? '停用' : '启用') + '</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-knowledge="' + esc(k.id) + '" class="ghost">' + (state.pendingDelete === k.id ? '确认删除' : '删除') + '</button></div></form></article>';
 }
 async function renderHealth() {
+  const token = nextRenderToken();
   const data = await api('/api/health');
+  if (!isLatestRender(token)) return;
   content().innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
 }
 function candidatePayload(id) {
