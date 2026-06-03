@@ -158,6 +158,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminCssText.includes(".app-shell"), true);
     assert.equal(adminCssText.includes(".filter-summary"), true);
     assert.equal(adminCssText.includes(".detail-block"), true);
+    assert.equal(adminCssText.includes(".page-loading"), true);
 
     const adminLoginJs = await fetch(`${baseUrl}/admin-login.js`);
     assert.equal(adminLoginJs.status, 200);
@@ -212,6 +213,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("expandedCandidateIds"), true);
     assert.equal(adminAppJsText.includes("data-toggle-memory-details"), true);
     assert.equal(adminAppJsText.includes("ownerMemberOptionsSlotHtml(renderOptions = false)"), true);
+    assert.equal(adminAppJsText.includes("groupsLoadedAt"), true);
+    assert.equal(adminAppJsText.includes("data-refresh-groups"), true);
+    assert.equal(adminAppJsText.includes("setPageLoading"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {

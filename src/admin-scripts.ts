@@ -12,6 +12,8 @@ export const ADMIN_APP_JS = String.raw`
 const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), selectedMemoryIds: new Set(), expandedCandidateIds: new Set(), expandedMemoryIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
+let groupsLoadedAt = 0;
+let groupsInflight = null;
 let ownerMemberSearchTimer = null;
 let isApplyingHistoryState = false;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
@@ -33,6 +35,18 @@ const nextRenderToken = () => {
   return ++renderVersion;
 };
 const isLatestRender = (token) => token === renderVersion;
+const setPageLoading = (message = '正在更新列表...') => {
+  const panel = content()?.querySelector('section.panel');
+  if (!panel) return;
+  let node = panel.querySelector('[data-page-loading]');
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'page-loading';
+    node.dataset.pageLoading = '1';
+    panel.prepend(node);
+  }
+  node.textContent = message;
+};
 const toast = (message, type = 'ok') => {
   const node = document.querySelector('#toast');
   node.textContent = message;
@@ -176,14 +190,26 @@ async function navigateTo(view, options = {}) {
   syncUrlState();
   await render();
 }
-async function loadGroups() {
-  const data = await api('/api/groups');
+async function loadGroups(options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? 30000;
+  if (!options.refresh && state.groups.length && Date.now() - groupsLoadedAt < maxAgeMs) {
+    document.querySelector('#groupFilter').value = state.groupId;
+    return;
+  }
+  if (!options.refresh && groupsInflight) return groupsInflight;
+  const work = api('/api/groups').then(data => {
   state.groups = data.groups || [];
   if (!state.groups.some(group => group.groupId === state.groupId)) {
     state.groupId = state.groups[0]?.groupId || '';
   }
   document.querySelector('#groupFilter').innerHTML = state.groups.map(g => '<option value="' + esc(g.groupId) + '">' + esc(g.groupId) + '</option>').join('');
   document.querySelector('#groupFilter').value = state.groupId;
+    groupsLoadedAt = Date.now();
+  }).finally(() => {
+    if (groupsInflight === work) groupsInflight = null;
+  });
+  groupsInflight = work;
+  return work;
 }
 function memberFilterControl(id, selectedUserId = '') {
   return '<input id="' + id + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空全部">';
@@ -333,12 +359,14 @@ function overviewKnowledge(entries) {
 }
 async function renderGroups() {
   const token = nextRenderToken();
-  await loadGroups();
+  setPageLoading('正在更新群配置...');
+  await loadGroups({ maxAgeMs: 5 * 60 * 1000 });
   if (!isLatestRender(token)) return;
-  content().innerHTML = '<section class="panel"><h2>群配置</h2><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
+  content().innerHTML = '<section class="panel"><div class="toolbar"><h2>群配置</h2><button type="button" class="ghost" data-refresh-groups>刷新群配置</button><span class="meta">群配置会缓存 5 分钟，手动刷新才重新读取。</span></div><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
 }
 async function renderMembers(force = false) {
   const token = nextRenderToken();
+  setPageLoading(force ? '正在同步群成员...' : '正在更新成员列表...');
   if (force) {
     state.ownerMemberVersions.set(state.groupId, (state.ownerMemberVersions.get(state.groupId) || 0) + 1);
     clearOwnerMemberInflight(state.groupId);
@@ -374,6 +402,7 @@ function rowMember(m) {
 }
 async function renderCandidates() {
   const token = nextRenderToken();
+  setPageLoading('正在更新候选记忆...');
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.candidateStatus) query.set('status', state.candidateStatus);
   if (state.candidateType) query.set('type', state.candidateType);
@@ -462,6 +491,7 @@ function rowCandidate(c) {
 }
 async function renderMemories() {
   const token = nextRenderToken();
+  setPageLoading('正在更新长期记忆...');
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
   if (state.memoryType) query.set('type', state.memoryType);
@@ -578,6 +608,7 @@ async function renderPageKind(kind) {
 }
 async function renderKnowledge() {
   const token = nextRenderToken();
+  setPageLoading('正在更新知识库...');
   const query = new URLSearchParams({ groupId: state.groupId, page: String(state.knowledgePage), pageSize: String(state.knowledgePageSize) });
   if (state.knowledgeQuery.trim()) query.set('q', state.knowledgeQuery.trim());
   const data = await apiForRender('/api/knowledge?' + query.toString());
@@ -605,6 +636,7 @@ function rowKnowledge(k) {
 }
 async function renderHealth() {
   const token = nextRenderToken();
+  setPageLoading('正在读取健康状态...');
   const data = await apiForRender('/api/health');
   if (!data || !isLatestRender(token)) return;
   content().innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
@@ -829,6 +861,7 @@ document.addEventListener('click', async (event) => {
   if (!(target instanceof HTMLButtonElement)) return;
   if (target.dataset.view) { await navigateTo(target.dataset.view); }
   if (target.dataset.jumpView) { await navigateTo(target.dataset.jumpView); }
+  if (target.dataset.refreshGroups !== undefined) { await runAction(target, async () => { await loadGroups({ refresh: true }); await renderGroups(); }, '群配置已刷新'); }
   if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.memberPage = 1; syncUrlState(); await renderMembers(true); }, '群成员已同步'); }
   if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; clearTransientState(); syncUrlState(); await render(); }
   if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
