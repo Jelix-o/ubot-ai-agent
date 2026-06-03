@@ -7,6 +7,7 @@ import type { GroupMemoryStore } from "./group-memory-store.js";
 const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.8;
 const EVIDENCE_MESSAGE_LIMIT = 30;
 const EVIDENCE_SUMMARY_LIMIT = 2400;
+const MESSAGE_TEXT_LIMIT = 1000;
 const DUPLICATE_SIMILARITY_THRESHOLD = 0.82;
 const RELATED_SIMILARITY_THRESHOLD = 0.68;
 
@@ -26,6 +27,7 @@ export interface GroupMemoryCandidateFlushStats {
   pendingCount: number;
   skippedDuplicateCount: number;
   mergedCandidateCount: number;
+  refinedMemoryCount: number;
 }
 
 export class GroupMemoryCandidateService {
@@ -81,7 +83,7 @@ export class GroupMemoryCandidateService {
     const buffer = this.buffers.get(message.groupId) ?? [];
     buffer.push({
       ...message,
-      text: normalizedText.slice(0, 300),
+      text: normalizedText.slice(0, MESSAGE_TEXT_LIMIT),
     });
     this.buffers.set(message.groupId, buffer.slice(-this.batchSize * 2));
 
@@ -115,16 +117,18 @@ export class GroupMemoryCandidateService {
         this.memoryStore.list(groupId),
         this.candidateStore.list({ groupId }),
       ]);
+      const dedupReferenceMemories = existingMemories.filter(isDedupReferenceMemory);
       const candidates = await this.aiService.extractGroupMemoryCandidates({
         groupId,
         messages,
-        existingMemories: existingMemories.filter((memory) => memory.enabled),
+        existingMemories: dedupReferenceMemories,
         existingCandidates: existingCandidates.filter((candidate) => candidate.status !== "rejected"),
       });
       let autoApprovedCount = 0;
       let pendingCount = 0;
       let skippedDuplicateCount = 0;
       let mergedCandidateCount = 0;
+      let refinedMemoryCount = 0;
       for (const candidate of candidates) {
         const subjectUserId =
           candidate.type === "member_profile" && candidate.subjectUserId && speakerIds.has(candidate.subjectUserId)
@@ -141,9 +145,25 @@ export class GroupMemoryCandidateService {
           source: "auto",
           evidence,
         };
-        const duplicateDecision = findDuplicateDecision(normalizedCandidate, existingMemories, existingCandidates);
+        const duplicateDecision = findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, existingCandidates);
         if (duplicateDecision.kind === "skip" || duplicateDecision.kind === "skip_candidate") {
           skippedDuplicateCount += 1;
+          continue;
+        }
+        if (duplicateDecision.kind === "refine_memory") {
+          const refined = await this.memoryStore.update(duplicateDecision.memory.id, {
+            title: chooseMoreSpecificText(duplicateDecision.memory.title, candidate.title, 80),
+            content: chooseMoreSpecificText(duplicateDecision.memory.content, candidate.content, 600),
+            confidence: Math.max(duplicateDecision.memory.confidence, candidate.confidence),
+            evidence: mergeEvidence(duplicateDecision.memory.evidence, evidence),
+          });
+          if (refined) {
+            replaceMemory(existingMemories, refined);
+            replaceMemory(dedupReferenceMemories, refined);
+            refinedMemoryCount += 1;
+          } else {
+            skippedDuplicateCount += 1;
+          }
           continue;
         }
         if (duplicateDecision.kind === "merge") {
@@ -176,6 +196,7 @@ export class GroupMemoryCandidateService {
                 enabled: true,
                 evidence: merged.evidence,
               });
+              dedupReferenceMemories.push(existingMemories.at(-1)!);
               autoApprovedCount += 1;
             } else if (merged.status === "pending") {
               pendingCount += 1;
@@ -192,6 +213,9 @@ export class GroupMemoryCandidateService {
           if (approved) {
             replaceCandidate(existingCandidates, approved.candidate);
             existingMemories.push(approved.memory);
+            if (isDedupReferenceMemory(approved.memory)) {
+              dedupReferenceMemories.push(approved.memory);
+            }
           }
           autoApprovedCount += 1;
         } else if (result.candidate.status === "pending") {
@@ -206,6 +230,7 @@ export class GroupMemoryCandidateService {
         pendingCount,
         skippedDuplicateCount,
         mergedCandidateCount,
+        refinedMemoryCount,
       };
       logInfo("Extracted group memory candidates.", stats);
       return stats;
@@ -233,6 +258,7 @@ type CandidateLike = Pick<
 type DuplicateDecision =
   | { kind: "none" }
   | { kind: "skip"; memory: GroupMemory; similarity: number }
+  | { kind: "refine_memory"; memory: GroupMemory; similarity: number }
   | { kind: "skip_candidate"; candidate: GroupMemoryCandidate; similarity: number }
   | { kind: "merge"; candidate: GroupMemoryCandidate; similarity: number };
 
@@ -244,7 +270,17 @@ function findDuplicateDecision(
   const comparableMemories = memories.filter((memory) => memory.enabled && sameScope(candidate, memory));
   const duplicateMemory = findMostSimilar(candidate, comparableMemories);
   if (duplicateMemory && duplicateMemory.similarity >= DUPLICATE_SIMILARITY_THRESHOLD) {
+    if (isMoreSpecificMemory(candidate, duplicateMemory.item)) {
+      return { kind: "refine_memory", memory: duplicateMemory.item, similarity: duplicateMemory.similarity };
+    }
     return { kind: "skip", memory: duplicateMemory.item, similarity: duplicateMemory.similarity };
+  }
+
+  if (duplicateMemory && duplicateMemory.similarity >= RELATED_SIMILARITY_THRESHOLD) {
+    const titleOverlap = textSimilarity(candidate.title, duplicateMemory.item.title);
+    if (titleOverlap >= DUPLICATE_SIMILARITY_THRESHOLD && isMoreSpecificMemory(candidate, duplicateMemory.item)) {
+      return { kind: "refine_memory", memory: duplicateMemory.item, similarity: duplicateMemory.similarity };
+    }
   }
 
   const approvedCandidates = candidates.filter((item) => item.status === "approved" && sameScope(candidate, item));
@@ -278,6 +314,23 @@ function sameScope(
   right: Pick<GroupMemory | GroupMemoryCandidate, "groupId" | "type" | "subjectUserId">,
 ): boolean {
   return left.groupId === right.groupId && left.type === right.type && (left.subjectUserId ?? "") === (right.subjectUserId ?? "");
+}
+
+function isDedupReferenceMemory(memory: GroupMemory): boolean {
+  return memory.enabled && !memory.source.startsWith("daily_profile_review:");
+}
+
+function isMoreSpecificMemory(candidate: CandidateLike, memory: GroupMemory): boolean {
+  if (candidate.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD) {
+    return false;
+  }
+
+  const candidateContent = candidate.content.trim();
+  const memoryContent = memory.content.trim();
+  if (candidateContent.length >= memoryContent.length + 24) {
+    return true;
+  }
+  return false;
 }
 
 function findMostSimilar<T extends Pick<GroupMemory | GroupMemoryCandidate, "title" | "content">>(
@@ -399,6 +452,15 @@ function mergeEvidence(
     speakers: [...speakerMap.entries()].map(([userId, userName]) => ({ userId, userName })).slice(0, 20),
     summary,
   };
+}
+
+function replaceMemory(memories: GroupMemory[], memory: GroupMemory): void {
+  const index = memories.findIndex((item) => item.id === memory.id);
+  if (index === -1) {
+    memories.push(memory);
+    return;
+  }
+  memories[index] = memory;
 }
 
 function replaceCandidate(candidates: GroupMemoryCandidate[], candidate: GroupMemoryCandidate): void {

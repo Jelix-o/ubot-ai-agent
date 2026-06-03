@@ -418,6 +418,139 @@ test("candidate service skips candidates similar to approved memories", async ()
   }
 });
 
+test("candidate service refines similar approved memories when new detail is stronger", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-refine-approved-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    const existing = await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Tester game preference",
+      content: "Tester plays League of Legends.",
+      confidence: 0.82,
+      source: "test",
+      evidence: {
+        startAt: "2026-06-01T10:00:00.000Z",
+        endAt: "2026-06-01T10:00:00.000Z",
+        messageCount: 1,
+        speakers: [{ userId: "20001", userName: "Tester" }],
+        summary: "Tester mentioned League of Legends.",
+      },
+    });
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "member_profile",
+            subjectUserId: "20001",
+            title: "Tester game preference",
+            content: "Tester mainly plays League of Legends, prefers five-stack games, and dislikes solo queue.",
+            confidence: 0.9,
+          },
+        ];
+      },
+    });
+
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: "我平时主要玩英雄联盟，喜欢五排，不太喜欢路人局",
+      timestamp: "2026-06-02T10:00:00.000Z",
+    });
+    const stats = await service.flushGroup("67890");
+
+    const refined = await memoryStore.get(existing.id);
+    assert.equal(stats?.refinedMemoryCount, 1);
+    assert.equal(stats?.autoApprovedCount, 0);
+    assert.equal(stats?.pendingCount, 0);
+    assert.equal((await memoryStore.listEnabled("67890")).length, 1);
+    assert.equal((await service.list({ groupId: "67890" })).length, 0);
+    assert.match(refined?.content ?? "", /five-stack games/);
+    assert.equal(refined?.confidence, 0.9);
+    assert.equal(refined?.evidence?.messageCount, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service ignores daily profile summaries for duplicate blocking", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-daily-review-dedupe-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "2026-06-01 昨日画像总结",
+      content: "Tester 昨日提到自己常玩游戏，也会聊工作和群内协作方式。",
+      confidence: 0.8,
+      source: "daily_profile_review:2026-06-01",
+    });
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "member_profile",
+            subjectUserId: "20001",
+            title: "Tester game preference",
+            content: "Tester mainly plays League of Legends and prefers five-stack games.",
+            confidence: 0.86,
+          },
+        ];
+      },
+    });
+
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: "我平时主要玩英雄联盟，喜欢五排",
+      timestamp: "2026-06-02T10:00:00.000Z",
+    });
+    const stats = await service.flushGroup("67890");
+
+    assert.equal(stats?.autoApprovedCount, 1);
+    assert.equal(stats?.skippedDuplicateCount, 0);
+    assert.equal((await memoryStore.listEnabled("67890")).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service sends long message bodies to the profile extractor", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-long-message-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    let observedText = "";
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates(args) {
+        observedText = args.messages[0]?.text ?? "";
+        return [];
+      },
+    });
+
+    const longText = `前缀${"一".repeat(360)}后缀`;
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: longText,
+      timestamp: "2026-06-02T10:00:00.000Z",
+    });
+    await service.flushGroup("67890");
+
+    assert.equal(observedText.includes("后缀"), true);
+    assert.equal(observedText.length, longText.length);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("candidate service merges candidates similar to pending candidates", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-pending-merge-"));
   try {

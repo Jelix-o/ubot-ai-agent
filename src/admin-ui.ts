@@ -45,12 +45,16 @@ header select { width: 180px; }
 .panel { border: 1px solid var(--line); background: oklch(99% 0.004 238); padding: 18px; border-radius: 8px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
 .toolbar input { width: min(280px, 100%); }
+.hint-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.hint-row span { color: var(--muted); overflow-wrap: anywhere; }
 .list { display: grid; gap: 10px; }
 article { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
 article span { color: var(--muted); overflow-wrap: anywhere; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 8px; margin-bottom: 14px; align-items: start; }
 .candidate-form { display: grid; grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1.2fr) 170px; gap: 8px; align-items: start; }
+.candidate-help { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 13px; }
+.candidate-help b { color: var(--ink); }
 .memory-form { display: grid; grid-template-columns: 140px 190px minmax(160px, 1fr) 110px 120px; gap: 8px; align-items: start; }
 .memory-form textarea { grid-column: 3 / span 3; }
 .owner-field { display: grid; gap: 4px; min-width: 190px; }

@@ -275,17 +275,37 @@ async function renderCandidates() {
   state.candidatePage = pageInfo.page;
   const notice = state.notice ? '<p class="message" data-local-notice="candidate">' + esc(state.notice) + '</p>' : '';
   state.notice = '';
-  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div>' + candidateSelectionBar() + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
+  const empty = state.currentCandidates.length ? '' : '<p class="message" data-local-empty="candidate">' + esc(candidateEmptyText()) + '</p>';
+  const pagination = listPagination('candidate', pageInfo, '候选记忆', true);
+  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待处理</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已入长期记忆</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>不采纳记录</option><option value=""' + selected(state.candidateStatus, '') + '>全部状态</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>个人画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群整体记忆</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.candidatePageSize), '100') + '>每页 100 条</option></select></div>' + notice + '<div class="hint-row"><b>' + esc(candidateModeTitle()) + '</b><span>' + esc(candidateModeHint()) + '</span></div><div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">待处理工作台</button><button class="ghost" data-candidate-status-shortcut="approved">查看已入库</button><button class="ghost" data-candidate-status-shortcut="rejected">查看不采纳</button><button class="ghost" data-candidate-status-shortcut="">查看全部历史</button></div>' + pagination + candidateSelectionBar() + empty + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + pagination + '</section>';
   document.querySelector('#candidateSearch').addEventListener('input', debounce(event => { state.candidateQuery = event.target.value; state.candidatePage = 1; renderCandidates(); }, 250));
   document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; state.candidatePage = 1; renderCandidates(); });
   document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; state.candidatePage = 1; renderCandidates(); });
   document.querySelector('#subjectFilter')?.addEventListener('input', debounce(event => { state.subjectUserId = event.target.value.trim(); state.candidatePage = 1; renderCandidates(); }, 250));
   document.querySelector('#candidatePageSize').addEventListener('change', event => { state.candidatePageSize = Number(event.target.value) || 20; state.candidatePage = 1; renderCandidates(); });
 }
+function candidateModeTitle() {
+  if (state.candidateStatus === 'approved') return '已入库历史';
+  if (state.candidateStatus === 'rejected') return '不采纳历史';
+  if (state.candidateStatus === '') return '全部候选历史';
+  return '待处理候选';
+}
+function candidateModeHint() {
+  if (state.candidateStatus === 'approved') return '这些已经写入长期记忆，只用于追溯，不需要再处理。';
+  if (state.candidateStatus === 'rejected') return '这些是已经不采纳的候选，保留用于排查模型提取质量。';
+  if (state.candidateStatus === '') return '这里包含待处理、已入库和不采纳记录；日常审核建议回到待处理工作台。';
+  return '确认归属和内容后入库；处理完成后会自动从当前列表移走。';
+}
+function candidateEmptyText() {
+  if (state.candidateStatus === 'approved') return '当前筛选下没有已入库候选。';
+  if (state.candidateStatus === 'rejected') return '当前筛选下没有不采纳记录。';
+  if (state.candidateStatus === '') return '当前筛选下没有候选记忆。';
+  return '当前没有待处理候选。';
+}
 function candidateSelectionBar() {
   const selectedCount = state.selectedCandidateIds.size;
   const allSelected = state.currentCandidates.length > 0 && state.currentCandidates.every(candidate => state.selectedCandidateIds.has(candidate.id));
-  return '<div class="toolbar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-candidate-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批准已选</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+  return '<div class="toolbar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-candidate-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批量入长期记忆</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
 }
 function updateCandidateSelectionUi() {
   const selectedCount = state.selectedCandidateIds.size;
@@ -307,12 +327,12 @@ function updateCandidateSelectionUi() {
 }
 function rowCandidate(c) {
   const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
-  const meta = '<div class="meta">归属：' + esc(ownerLabel(c)) + ' · 类型：' + esc(typeText(c.type)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 需要选择成员或转为群事实' : '') + '</div>';
+  const meta = '<div class="meta">归属：' + esc(ownerLabel(c)) + ' · 类型：' + esc(typeText(c.type)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 这条像个人画像，但模型没确定是谁' : '') + '</div>';
   if (state.editingCandidateId !== c.id) {
     const checked = state.selectedCandidateIds.has(c.id) ? ' checked' : '';
-    return '<article data-candidate-id="' + esc(c.id) + '"><label><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '> 选择</label><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content)) + '</span>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-edit-candidate="' + esc(c.id) + '">编辑</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></article>';
+    return '<article data-candidate-id="' + esc(c.id) + '"><label><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '> 选择</label><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content)) + '</span>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">入长期记忆</button><button type="button" data-edit-candidate="' + esc(c.id) + '" class="ghost">调整后处理</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">按群整体入库</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></article>';
   }
-  return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea>' + ownerInput('subjectUserId', c.subjectUserId || '', ownerLabel(c)) + '</div>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
+  return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>个人画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群整体记忆</option></select><input name="title" value="' + esc(c.title) + '" placeholder="记忆标题"><textarea name="content" placeholder="要写入长期记忆的内容">' + esc(c.content) + '</textarea>' + ownerInput('subjectUserId', c.subjectUserId || '', ownerLabel(c)) + '</div><div class="candidate-help"><b>怎么处理：</b><span>入长期记忆：内容和归属都对，写进正式记忆。</span><span>按群整体入库：这不是某个人的画像，而是群规则、群事实或固定梗。</span><span>暂存修改：只保存你的编辑，稍后再决定。</span></div>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">保存并入长期记忆</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">保存为群整体记忆</button><button type="button" data-save-candidate="' + esc(c.id) + '" class="ghost">暂存修改</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></form></article>';
 }
 async function renderMemories() {
   const token = nextRenderToken();
@@ -538,7 +558,7 @@ function ensureLocalEmptyState(kind) {
 function showOrRemoveCandidate(target, candidate) {
   state.selectedCandidateIds.delete(candidate.id);
   updateCurrentItem('currentCandidates', candidate.id, candidate);
-  if (state.candidateStatus && state.candidateStatus !== candidate.status) {
+  if (shouldRemoveProcessedCandidate(candidate)) {
     removeCurrentItem('currentCandidates', candidate.id);
     removeArticle(target);
     ensureLocalEmptyState('candidate');
@@ -552,12 +572,16 @@ function updateCandidateFromBulk(candidate) {
   state.selectedCandidateIds.delete(candidate.id);
   updateCurrentItem('currentCandidates', candidate.id, candidate);
   const article = content().querySelector('[data-candidate-id="' + CSS.escape(candidate.id) + '"]');
-  if (state.candidateStatus && state.candidateStatus !== candidate.status) {
+  if (shouldRemoveProcessedCandidate(candidate)) {
     removeCurrentItem('currentCandidates', candidate.id);
     article?.remove();
     return;
   }
   if (article) article.outerHTML = rowCandidate(candidate);
+}
+function shouldRemoveProcessedCandidate(candidate) {
+  if (!candidate || candidate.status === 'pending') return false;
+  return state.candidateStatus === 'pending' || state.candidateStatus === '';
 }
 function updateMemoryFromBulk(memory) {
   if (!memory?.id) return;
