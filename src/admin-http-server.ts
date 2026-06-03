@@ -10,7 +10,7 @@ import type { GroupMemoryCandidateService } from "./services/group-memory-candid
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
-import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryType, NapcatGroupMember } from "./types.js";
+import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType, NapcatGroupMember } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -558,6 +558,7 @@ function normalizeMemoryInput(body: Record<string, unknown>) {
     confidence: optionalNumber(body.confidence),
     source: optionalString(body.source) ?? "admin",
     enabled: optionalBoolean(body.enabled) ?? true,
+    ...(body.evidence !== undefined ? { evidence: evidenceField(body.evidence) } : {}),
   };
 }
 
@@ -570,15 +571,21 @@ function sortMemoriesNewestFirst(memories: GroupMemory[]): GroupMemory[] {
 }
 
 function normalizeMemoryPatch(body: Record<string, unknown>) {
+  const nextType = body.type !== undefined ? normalizeMemoryType(body.type) : undefined;
   return {
     ...(body.groupId !== undefined ? { groupId: requiredString(body.groupId) } : {}),
-    ...(body.type !== undefined ? { type: normalizeMemoryType(body.type) } : {}),
-    ...(body.subjectUserId !== undefined ? { subjectUserId: subjectUserIdField(body) } : {}),
+    ...(nextType !== undefined ? { type: nextType } : {}),
+    ...(nextType === "group_fact"
+      ? { subjectUserId: undefined }
+      : body.subjectUserId !== undefined
+        ? { subjectUserId: subjectUserIdField(body) }
+        : {}),
     ...(body.title !== undefined ? { title: requiredString(body.title) } : {}),
     ...(body.content !== undefined ? { content: requiredString(body.content) } : {}),
     ...(body.confidence !== undefined ? { confidence: optionalNumber(body.confidence) } : {}),
     ...(body.source !== undefined ? { source: optionalString(body.source) ?? "admin" } : {}),
     ...(body.enabled !== undefined ? { enabled: optionalBoolean(body.enabled) ?? true } : {}),
+    ...(body.evidence !== undefined ? { evidence: evidenceField(body.evidence) } : {}),
   };
 }
 
@@ -590,6 +597,7 @@ function normalizeCandidatePatch(body: Record<string, unknown>) {
     ...(body.content !== undefined ? { content: requiredString(body.content) } : {}),
     ...(body.confidence !== undefined ? { confidence: optionalNumber(body.confidence) } : {}),
     ...(body.status !== undefined ? { status: normalizeStatus(requiredString(body.status)) ?? "pending" } : {}),
+    ...(body.evidence !== undefined ? { evidence: evidenceField(body.evidence) } : {}),
   };
 }
 
@@ -690,11 +698,54 @@ function normalizeNames(value: unknown): string[] {
 }
 
 function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function evidenceField(value: unknown): GroupMemoryEvidence | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const evidence = value as Partial<GroupMemoryEvidence>;
+  const startAt = optionalString(evidence.startAt);
+  const endAt = optionalString(evidence.endAt);
+  const summary = optionalString(evidence.summary)?.slice(0, 600);
+  if (!startAt || !endAt || !summary) {
+    return undefined;
+  }
+
+  const messageCount = optionalNumber(evidence.messageCount) ?? 0;
+  const speakers = Array.isArray(evidence.speakers)
+    ? evidence.speakers
+        .map((speaker) => {
+          const source = speaker as { userId?: unknown; userName?: unknown };
+          return {
+            userId: optionalUserId(source.userId) ?? "",
+            userName: optionalString(source.userName)?.slice(0, 80) ?? "",
+          };
+        })
+        .filter((speaker) => speaker.userId)
+        .slice(0, 20)
+    : [];
+
+  return {
+    startAt,
+    endAt,
+    messageCount: Math.max(0, Math.floor(messageCount)),
+    speakers,
+    summary,
+  };
 }
 
 function matchRoute(pathname: string, regex: RegExp): RouteParams | undefined {
@@ -791,6 +842,10 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 8px; margin-bottom: 14px; align-items: start; }
 .candidate-form { display: grid; grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1.2fr) 170px; gap: 8px; align-items: start; }
+.memory-form { display: grid; grid-template-columns: 140px 190px minmax(160px, 1fr) 110px 120px; gap: 8px; align-items: start; }
+.memory-form textarea { grid-column: 3 / span 3; }
+.evidence { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.evidence b { color: var(--ink); }
 .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 .member-meta, .meta { color: var(--muted); overflow-wrap: anywhere; }
 .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
@@ -799,7 +854,7 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form, .candidate-form { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
+@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form, .candidate-form, .memory-form { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
 `;
 
 const LOGIN_HTML = `<!doctype html>
@@ -870,7 +925,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20 };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20 };
     const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -879,6 +934,12 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     const statusText = (value) => ({ pending: '待审', approved: '已批准', rejected: '已拒绝' }[value] || value);
     const enabledText = (value) => value ? '启用' : '停用';
     const ownerLabel = (item) => item.subjectLabel?.label || (item.type === 'member_profile' && !item.subjectUserId ? '未归属' : '群整体');
+    const evidenceHtml = (item) => {
+      const evidence = item.evidence;
+      if (!evidence) return '<div class="evidence"><b>来源证据：</b>无来源记录</div>';
+      const speakers = (evidence.speakers || []).map(s => (s.userName ? esc(s.userName) + ' / QQ ' + esc(s.userId) : 'QQ ' + esc(s.userId))).join('、') || '无';
+      return '<div class="evidence"><b>来源证据：</b>' + esc(evidence.summary) + '<br>时间段：' + esc(evidence.startAt) + ' 至 ' + esc(evidence.endAt) + '<br>消息数：' + esc(evidence.messageCount) + ' · 参与：' + speakers + '</div>';
+    };
     const api = async (url, options = {}) => {
       const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
       if (res.status === 401) location.href = '/login';
@@ -950,7 +1011,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
     }
     function rowCandidate(c) {
       const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
-      return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false, c.subjectUserId || '') + '</select></div><div class="meta">归属：' + esc(ownerLabel(c)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 需要选择成员或转为群事实' : '') + '</div><div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
+      return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false, c.subjectUserId || '') + '</select></div><div class="meta">归属：' + esc(ownerLabel(c)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 需要选择成员或转为群事实' : '') + '</div>' + evidenceHtml(c) + '<div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
     }
     async function renderMemories() {
       await loadMembers();
@@ -982,7 +1043,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       return [...map.entries()].map(([label, items]) => ({ label, items }));
     }
     function rowMemory(m) {
-      return '<article><b>' + esc(m.title) + '</b><span>' + enabledText(m.enabled) + ' · ' + esc(typeText(m.type)) + ' · ' + esc(m.content) + '</span><div class="meta">归属：' + esc(ownerLabel(m)) + '</div><div class="actions"><button data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? '停用' : '启用') + '</button><button data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
+      return '<article><form class="memoryItemForm" data-memory-id="' + esc(m.id) + '"><div class="memory-form"><select name="type"><option value="member_profile"' + selected(m.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(m.type, 'group_fact') + '>群事实</option></select><select name="subjectUserId">' + memberOptions(false, m.subjectUserId || '') + '</select><input name="title" value="' + esc(m.title) + '" placeholder="标题"><input name="confidence" type="number" min="0" max="1" step="0.01" value="' + esc(m.confidence) + '" placeholder="置信度"><select name="enabled"><option value="true"' + selected(String(m.enabled), 'true') + '>启用</option><option value="false"' + selected(String(m.enabled), 'false') + '>停用</option></select><textarea name="content" placeholder="内容">' + esc(m.content) + '</textarea></div><div class="meta">当前归属：' + esc(ownerLabel(m)) + ' · 类型：' + esc(typeText(m.type)) + ' · 状态：' + enabledText(m.enabled) + '</div>' + evidenceHtml(m) + '<div class="actions"><button type="button" data-save-memory="' + esc(m.id) + '">保存编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></form></article>';
     }
     function memoryPagination(pageInfo, totalPages) {
       return '<div class="pagination"><span>' + esc(pageInfo) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (state.memoryPage <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + state.memoryPage + ' / ' + totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (state.memoryPage >= totalPages ? ' disabled' : '') + '>下一页</button><form id="memoryPageJump" class="pagination-controls"><input name="page" type="number" min="1" max="' + totalPages + '" value="' + state.memoryPage + '" aria-label="页码" style="width:86px"><button class="ghost">跳转</button></form></div></div>';
@@ -1002,6 +1063,11 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
       const form = document.querySelector('.candidateForm[data-candidate-id="' + CSS.escape(id) + '"]');
       const data = Object.fromEntries(new FormData(form).entries());
       return { type: data.type, title: data.title, content: data.content, subjectUserId: data.subjectUserId || null };
+    }
+    function memoryPayload(id) {
+      const form = document.querySelector('.memoryItemForm[data-memory-id="' + CSS.escape(id) + '"]');
+      const data = Object.fromEntries(new FormData(form).entries());
+      return { type: data.type, title: data.title, content: data.content, confidence: Number(data.confidence), enabled: data.enabled === 'true', subjectUserId: data.subjectUserId || null };
     }
     document.addEventListener('click', async (event) => {
       const target = event.target;
@@ -1024,6 +1090,7 @@ const ADMIN_APP_HTML_V2 = `<!doctype html>
         await renderCandidates();
       }
       if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }
+      if (target.dataset.saveMemory) { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.members = []; await renderMemories(); }
       if (target.dataset.toggleMemory) { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }
       if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }
       if (target.dataset.memoryPage === 'prev') { state.memoryPage -= 1; await renderMemories(); }

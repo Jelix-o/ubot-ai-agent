@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import type { GroupMemory, GroupMemoryType } from "../types.js";
+import type { GroupMemory, GroupMemoryEvidence, GroupMemoryType } from "../types.js";
 import { readJsonFile } from "../utils/json-file.js";
 
 interface GroupMemoryFile {
@@ -19,6 +19,7 @@ export type GroupMemoryInput = {
   source?: string;
   enabled?: boolean;
   createdAt?: string;
+  evidence?: GroupMemoryEvidence;
 };
 
 export class GroupMemoryStore {
@@ -57,6 +58,7 @@ export class GroupMemoryStore {
       createdAt,
       updatedAt: createdAt,
       enabled: input.enabled ?? true,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
     });
 
     data.memories.push(memory);
@@ -140,7 +142,7 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
     id: String(value.id || randomUUID()),
     groupId: String(value.groupId || "").trim(),
     type,
-    ...(value.subjectUserId && /^\d+$/.test(String(value.subjectUserId).trim())
+    ...(type === "member_profile" && value.subjectUserId && /^\d+$/.test(String(value.subjectUserId).trim())
       ? { subjectUserId: String(value.subjectUserId).trim() }
       : {}),
     title: String(value.title || "").trim().slice(0, 80),
@@ -150,9 +152,55 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
     enabled: value.enabled !== false,
+    ...(normalizeEvidence(value.evidence) ? { evidence: normalizeEvidence(value.evidence) } : {}),
   };
 }
 
 function cloneMemory(memory: GroupMemory): GroupMemory {
-  return { ...memory };
+  return {
+    ...memory,
+    ...(memory.evidence
+      ? {
+          evidence: {
+            ...memory.evidence,
+            speakers: memory.evidence.speakers.map((speaker) => ({ ...speaker })),
+          },
+        }
+      : {}),
+  };
+}
+
+function normalizeEvidence(value: GroupMemory["evidence"] | undefined): GroupMemoryEvidence | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const startAt = typeof value.startAt === "string" ? value.startAt.trim() : "";
+  const endAt = typeof value.endAt === "string" ? value.endAt.trim() : "";
+  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, 600) : "";
+  const messageCount =
+    typeof value.messageCount === "number" && Number.isFinite(value.messageCount)
+      ? Math.max(0, Math.floor(value.messageCount))
+      : 0;
+  const speakers = Array.isArray(value.speakers)
+    ? value.speakers
+        .map((speaker) => ({
+          userId: String(speaker?.userId ?? "").trim(),
+          userName: String(speaker?.userName ?? "").trim().slice(0, 80),
+        }))
+        .filter((speaker) => /^\d+$/.test(speaker.userId))
+        .slice(0, 20)
+    : [];
+
+  if (!startAt || !endAt || !summary) {
+    return undefined;
+  }
+
+  return {
+    startAt,
+    endAt,
+    messageCount,
+    speakers,
+    summary,
+  };
 }

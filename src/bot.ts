@@ -95,7 +95,6 @@ const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限"
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
-const MSG_PROFILE_NO_PERMISSION = "你只能查询自己的画像，管理员可以查询所有人";
 
 interface ProfileTargetResolution {
   status: "ok" | "ambiguous" | "not_found";
@@ -2160,11 +2159,6 @@ export class BotApplication {
       await this.sendText(groupConfig.groupId, target.label ?? "没有找到这个成员，请用 QQ 号查询");
       return;
     }
-    if (target.userId !== requesterUserId && !(await this.isAdmin(groupConfig, requesterUserId))) {
-      await this.sendText(groupConfig.groupId, MSG_PROFILE_NO_PERMISSION);
-      return;
-    }
-
     const members = await this.buildMemberProfiles(groupConfig);
     const dateKey = getYesterdayDateKey(new Date());
     const summary = await this.dailyProfileReviewService.getOrCreateYesterdaySummary({
@@ -2201,11 +2195,6 @@ export class BotApplication {
       await this.sendText(groupConfig.groupId, target.label ?? "没有找到这个成员，请用 QQ 号查询");
       return;
     }
-    if (target.userId !== requesterUserId && !(await this.isAdmin(groupConfig, requesterUserId))) {
-      await this.sendText(groupConfig.groupId, MSG_PROFILE_NO_PERMISSION);
-      return;
-    }
-
     const members = await this.buildMemberProfiles(groupConfig);
     const label = buildProfileDisplayLabel(groupConfig, target.userId, members);
     const summary = await this.dailyProfileReviewService.summarizeOverallProfile({

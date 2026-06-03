@@ -80,6 +80,17 @@ export interface GroupManualIdentity {
 
 export type GroupMemoryType = "member_profile" | "group_fact";
 
+export interface GroupMemoryEvidence {
+  startAt: string;
+  endAt: string;
+  messageCount: number;
+  speakers: Array<{
+    userId: string;
+    userName: string;
+  }>;
+  summary: string;
+}
+
 export interface GroupMemory {
   id: string;
   groupId: string;
@@ -92,6 +103,7 @@ export interface GroupMemory {
   createdAt: string;
   updatedAt: string;
   enabled: boolean;
+  evidence?: GroupMemoryEvidence;
 }
 
 export type GroupMemoryCandidateStatus = "pending" | "approved" | "rejected";
@@ -108,6 +120,7 @@ export interface GroupMemoryCandidate {
   status: GroupMemoryCandidateStatus;
   createdAt: string;
   updatedAt: string;
+  evidence?: GroupMemoryEvidence;
 }
 
 export interface KnowledgeBaseEntry {

@@ -3176,7 +3176,7 @@ test("profile commands allow self and admin queries with member aliases", async 
   assert.equal(dailyProfileReviewService.overallCalls[0]?.userId, "20001");
 });
 
-test("profile commands reject non-admin queries for other members and report ambiguous targets", async () => {
+test("profile commands allow any member to query others and report ambiguous targets", async () => {
   const groupConfigService = new FakeGroupConfigService([
     {
       groupId: "67890",
@@ -3195,7 +3195,7 @@ test("profile commands reject non-admin queries for other members and report amb
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#群聊画像 20002" } }], 20001));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#群聊画像 项目" } }], 99999));
 
-  assert.match(transport.sent[0]?.text ?? "", /只能查询自己的画像/);
+  assert.match(transport.sent[0]?.text ?? "", /整体画像总结/);
   assert.match(transport.sent[1]?.text ?? "", /匹配到多个人/);
 });
 

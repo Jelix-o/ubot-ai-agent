@@ -44,6 +44,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     title: "Tester preference",
     content: "Tester likes concise answers.",
     createdAt: "2026-06-01T10:00:00.000Z",
+    evidence: {
+      startAt: "2026-06-01T09:50:00.000Z",
+      endAt: "2026-06-01T10:00:00.000Z",
+      messageCount: 3,
+      speakers: [{ userId: "20001", userName: "TesterCard" }],
+      summary: "Tester said they prefer concise answers.",
+    },
   });
   await groupMemoryStore.create({
     groupId: "67890",
@@ -152,9 +159,41 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const memories = await fetch(`${baseUrl}/api/memories?groupId=67890`, {
       headers: { Cookie: cookie ?? "" },
     });
-    const memoryBody = await memories.json() as { memories: Array<{ title: string; subjectLabel?: { label: string } }> };
+    const memoryBody = await memories.json() as { memories: Array<{ id: string; title: string; type: string; subjectUserId?: string; content: string; confidence: number; enabled: boolean; evidence?: { messageCount: number }; subjectLabel?: { label: string } }> };
     assert.equal(memoryBody.memories[0]?.title, "Latest fact");
     assert.equal(memoryBody.memories[1]?.subjectLabel?.label.includes("TesterCard / QQ 20001"), true);
+    assert.equal(memoryBody.memories[1]?.evidence?.messageCount, 3);
+
+    const editMemory = await fetch(`${baseUrl}/api/memories/${memoryBody.memories[1]?.id}`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "member_profile",
+        subjectUserId: "30002",
+        title: "Edited preference",
+        content: "Edited content.",
+        confidence: "0.81",
+        enabled: false,
+      }),
+    });
+    assert.equal(editMemory.status, 200);
+    const edited = await editMemory.json() as { subjectUserId?: string; title: string; content: string; confidence: number; enabled: boolean };
+    assert.equal(edited.subjectUserId, "30002");
+    assert.equal(edited.title, "Edited preference");
+    assert.equal(edited.content, "Edited content.");
+    assert.equal(edited.confidence, 0.81);
+    assert.equal(edited.enabled, false);
+
+    const convertMemory = await fetch(`${baseUrl}/api/memories/${memoryBody.memories[1]?.id}`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "group_fact", subjectUserId: "30002", enabled: true }),
+    });
+    assert.equal(convertMemory.status, 200);
+    const converted = await convertMemory.json() as { type: string; subjectUserId?: string; enabled: boolean };
+    assert.equal(converted.type, "group_fact");
+    assert.equal(converted.subjectUserId, undefined);
+    assert.equal(converted.enabled, true);
 
     const directApprove = await fetch(`${baseUrl}/api/memory-candidates/${orphanCandidate.id}/approve`, {
       method: "POST",

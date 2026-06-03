@@ -2,7 +2,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import type { GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryType } from "../types.js";
+import type {
+  GroupMemory,
+  GroupMemoryCandidate,
+  GroupMemoryCandidateStatus,
+  GroupMemoryEvidence,
+  GroupMemoryType,
+} from "../types.js";
 import { readJsonFile } from "../utils/json-file.js";
 import { type GroupMemoryInput, GroupMemoryStore } from "./group-memory-store.js";
 
@@ -18,6 +24,7 @@ export type GroupMemoryCandidateInput = {
   content: string;
   confidence?: number;
   source?: string;
+  evidence?: GroupMemoryEvidence;
 };
 
 export interface GroupMemoryCandidateAddResult {
@@ -55,6 +62,7 @@ export class GroupMemoryCandidateStore {
       existing.content = input.content.trim().slice(0, 600) || existing.content;
       existing.confidence = normalizeConfidence(input.confidence ?? existing.confidence);
       existing.source = input.source?.trim().slice(0, 80) || existing.source;
+      existing.evidence = normalizeEvidence(input.evidence) ?? existing.evidence;
       existing.updatedAt = now;
       if (existing.status === "rejected") {
         existing.status = "pending";
@@ -75,6 +83,7 @@ export class GroupMemoryCandidateStore {
       status: "pending",
       createdAt: now,
       updatedAt: now,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
     });
     data.candidates.push(candidate);
     await this.writeData(data);
@@ -134,6 +143,7 @@ export class GroupMemoryCandidateStore {
       confidence: updatedCandidate.confidence,
       source: updatedCandidate.source,
       enabled: true,
+      evidence: updatedCandidate.evidence,
     });
     await this.writeData(data);
     return {
@@ -193,11 +203,12 @@ function normalizeCandidateFile(data: Partial<GroupMemoryCandidateFile>): GroupM
 function normalizeCandidate(value: Partial<GroupMemoryCandidate>): GroupMemoryCandidate {
   const now = new Date().toISOString();
   const status = value.status === "approved" || value.status === "rejected" ? value.status : "pending";
+  const type = value.type === "member_profile" ? "member_profile" : "group_fact";
   return {
     id: String(value.id || randomUUID()),
     groupId: String(value.groupId || "").trim(),
-    type: value.type === "member_profile" ? "member_profile" : "group_fact",
-    ...(value.subjectUserId && /^\d+$/.test(String(value.subjectUserId).trim())
+    type,
+    ...(type === "member_profile" && value.subjectUserId && /^\d+$/.test(String(value.subjectUserId).trim())
       ? { subjectUserId: String(value.subjectUserId).trim() }
       : {}),
     title: String(value.title || "").trim().slice(0, 80),
@@ -207,6 +218,7 @@ function normalizeCandidate(value: Partial<GroupMemoryCandidate>): GroupMemoryCa
     status,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
+    ...(normalizeEvidence(value.evidence) ? { evidence: normalizeEvidence(value.evidence) } : {}),
   };
 }
 
@@ -237,5 +249,50 @@ function normalizeKeyText(value: string): string {
 }
 
 function cloneCandidate(candidate: GroupMemoryCandidate): GroupMemoryCandidate {
-  return { ...candidate };
+  return {
+    ...candidate,
+    ...(candidate.evidence
+      ? {
+          evidence: {
+            ...candidate.evidence,
+            speakers: candidate.evidence.speakers.map((speaker) => ({ ...speaker })),
+          },
+        }
+      : {}),
+  };
+}
+
+function normalizeEvidence(value: GroupMemoryCandidate["evidence"] | undefined): GroupMemoryEvidence | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const startAt = typeof value.startAt === "string" ? value.startAt.trim() : "";
+  const endAt = typeof value.endAt === "string" ? value.endAt.trim() : "";
+  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, 600) : "";
+  const messageCount =
+    typeof value.messageCount === "number" && Number.isFinite(value.messageCount)
+      ? Math.max(0, Math.floor(value.messageCount))
+      : 0;
+  const speakers = Array.isArray(value.speakers)
+    ? value.speakers
+        .map((speaker) => ({
+          userId: String(speaker?.userId ?? "").trim(),
+          userName: String(speaker?.userName ?? "").trim().slice(0, 80),
+        }))
+        .filter((speaker) => /^\d+$/.test(speaker.userId))
+        .slice(0, 20)
+    : [];
+
+  if (!startAt || !endAt || !summary) {
+    return undefined;
+  }
+
+  return {
+    startAt,
+    endAt,
+    messageCount,
+    speakers,
+    summary,
+  };
 }

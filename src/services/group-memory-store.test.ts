@@ -22,6 +22,13 @@ test("group memory store initializes, persists, filters, updates and removes", a
       content: "Tester likes concise answers.",
       confidence: 0.8,
       source: "test",
+      evidence: {
+        startAt: "2026-06-01T10:00:00.000Z",
+        endAt: "2026-06-01T10:02:00.000Z",
+        messageCount: 2,
+        speakers: [{ userId: "20001", userName: "Tester" }],
+        summary: "Tester said they like concise answers.",
+      },
     });
     await store.create({
       groupId: "99999",
@@ -35,6 +42,7 @@ test("group memory store initializes, persists, filters, updates and removes", a
 
     const updated = await store.update(memory.id, { enabled: false, title: "Updated" });
     assert.equal(updated?.enabled, false);
+    assert.equal(updated?.evidence?.messageCount, 2);
     assert.equal((await store.listEnabled("67890")).length, 0);
 
     assert.equal(await store.remove(memory.id), true);
@@ -84,6 +92,7 @@ test("candidate service deduplicates and approves candidates into long term memo
 
     const approved = await service.approve(pending[0]!.id, { title: "提问规则" });
     assert.equal(approved?.candidate.status, "approved");
+    assert.equal(approved?.memory.evidence?.speakers[0]?.userId, "20001");
     assert.equal((await memoryStore.listEnabled("67890")).length, 1);
 
     const rejected = await service.reject(pending[0]!.id);
@@ -105,14 +114,20 @@ test("candidate service auto-approves confident candidates and keeps unsafe memb
             type: "group_fact",
             title: "固定群规",
             content: "问题解决后要回填结论。",
-            confidence: 0.6,
+            confidence: 0.8,
           },
           {
             type: "member_profile",
             subjectUserId: "20001",
             title: "Tester 偏好",
             content: "Tester 喜欢直接给结论。",
-            confidence: 0.72,
+            confidence: 0.8,
+          },
+          {
+            type: "group_fact",
+            title: "低置信固定群规",
+            content: "问题解决后可能需要回填结论。",
+            confidence: 0.7,
           },
           {
             type: "member_profile",
@@ -121,10 +136,11 @@ test("candidate service auto-approves confident candidates and keeps unsafe memb
             confidence: 0.95,
           },
           {
-            type: "group_fact",
-            title: "低置信规则",
-            content: "可能每周五复盘。",
-            confidence: 0.59,
+            type: "member_profile",
+            subjectUserId: "99999",
+            title: "错归属偏好",
+            content: "模型把画像挂到了未发言的人。",
+            confidence: 0.95,
           },
         ];
       },
@@ -147,14 +163,16 @@ test("candidate service auto-approves confident candidates and keeps unsafe memb
     );
 
     const pending = await service.list({ groupId: "67890", status: "pending" });
-    assert.equal(pending.length, 2);
+    assert.equal(pending.length, 3);
     assert.deepEqual(
       pending.map((candidate) => candidate.title).sort(),
-      ["低置信规则", "未归属偏好"],
+      ["低置信固定群规", "未归属偏好", "错归属偏好"],
     );
+    assert.equal(pending.find((candidate) => candidate.title === "错归属偏好")?.subjectUserId, undefined);
 
     const approved = await service.list({ groupId: "67890", status: "approved" });
     assert.equal(approved.length, 2);
+    assert.equal(memories.every((memory) => memory.evidence?.messageCount === 1), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

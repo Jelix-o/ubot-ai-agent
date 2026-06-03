@@ -1,10 +1,10 @@
 import { logInfo, logWarn } from "../logger.js";
-import type { GroupMemoryCandidate, GroupMemoryCandidateStatus } from "../types.js";
+import type { GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence } from "../types.js";
 import type { AiService, MemoryCandidateExtractionMessage } from "./ai-service.js";
 import type { GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
 import type { GroupMemoryStore } from "./group-memory-store.js";
 
-const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.6;
+const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.8;
 
 interface BufferedMemoryMessage {
   groupId: string;
@@ -38,7 +38,7 @@ export class GroupMemoryCandidateService {
 
   async approve(
     id: string,
-    patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence">> = {},
+    patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "evidence">> = {},
   ): Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>> {
     return this.candidateStore.approve(id, this.memoryStore, patch);
   }
@@ -49,7 +49,7 @@ export class GroupMemoryCandidateService {
 
   async update(
     id: string,
-    patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "status">>,
+    patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "status" | "evidence">>,
   ): Promise<GroupMemoryCandidate | undefined> {
     return this.candidateStore.update(id, patch);
   }
@@ -95,20 +95,28 @@ export class GroupMemoryCandidateService {
         text: message.text,
         timestamp: message.timestamp,
       }));
+      const evidence = buildEvidence(buffer);
+      const speakerIds = new Set(buffer.map((message) => message.userId));
       const candidates = await this.aiService.extractGroupMemoryCandidates({ groupId, messages });
       let autoApprovedCount = 0;
       let pendingCount = 0;
       for (const candidate of candidates) {
+        const subjectUserId =
+          candidate.type === "member_profile" && candidate.subjectUserId && speakerIds.has(candidate.subjectUserId)
+            ? candidate.subjectUserId
+            : undefined;
+        const forcedPending = candidate.type === "member_profile" && candidate.subjectUserId && !subjectUserId;
         const result = await this.candidateStore.addCandidateWithResult({
           groupId,
           type: candidate.type,
-          subjectUserId: candidate.subjectUserId,
+          subjectUserId,
           title: candidate.title,
           content: candidate.content,
           confidence: candidate.confidence,
           source: "auto",
+          evidence,
         });
-        if (shouldAutoApprove(result.candidate) && (result.created || result.candidate.status === "pending")) {
+        if (!forcedPending && shouldAutoApprove(result.candidate) && (result.created || result.candidate.status === "pending")) {
           await this.candidateStore.approve(result.candidate.id, this.memoryStore);
           autoApprovedCount += 1;
         } else if (result.candidate.status === "pending") {
@@ -138,4 +146,30 @@ function shouldAutoApprove(candidate: GroupMemoryCandidate): boolean {
     return false;
   }
   return candidate.type === "group_fact" || Boolean(candidate.subjectUserId);
+}
+
+function buildEvidence(messages: BufferedMemoryMessage[]): GroupMemoryEvidence {
+  const sortedMessages = [...messages].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  const speakerMap = new Map<string, string>();
+  for (const message of sortedMessages) {
+    if (!speakerMap.has(message.userId)) {
+      speakerMap.set(message.userId, message.userName);
+    }
+  }
+
+  return {
+    startAt: sortedMessages[0]?.timestamp ?? new Date().toISOString(),
+    endAt: sortedMessages.at(-1)?.timestamp ?? sortedMessages[0]?.timestamp ?? new Date().toISOString(),
+    messageCount: sortedMessages.length,
+    speakers: [...speakerMap.entries()].map(([userId, userName]) => ({ userId, userName })),
+    summary: summarizeEvidenceMessages(sortedMessages),
+  };
+}
+
+function summarizeEvidenceMessages(messages: BufferedMemoryMessage[]): string {
+  return messages
+    .slice(0, 8)
+    .map((message) => `${message.userName}(${message.userId}): ${message.text}`)
+    .join(" / ")
+    .slice(0, 600);
 }
