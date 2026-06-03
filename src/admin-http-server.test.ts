@@ -158,12 +158,23 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(overview.status, 200);
-    const overviewBody = await overview.json() as { groupId?: string; stats: { groupCount: number; memoryCount: number; pendingCandidateCount: number; knowledgeCount: number } };
+    const overviewBody = await overview.json() as {
+      groupId?: string;
+      stats: { groupCount: number; memoryCount: number; pendingCandidateCount: number; knowledgeCount: number };
+      recent?: {
+        candidates: Array<{ id: string; title: string; subjectLabel?: { label: string } }>;
+        memories: Array<{ title: string; subjectLabel?: { label: string } }>;
+        knowledge: Array<{ id: string; title: string }>;
+      };
+    };
     assert.equal(overviewBody.groupId, "67890");
     assert.equal(overviewBody.stats.groupCount, 1);
     assert.equal(overviewBody.stats.memoryCount, 3);
     assert.equal(overviewBody.stats.pendingCandidateCount, 1);
     assert.equal(overviewBody.stats.knowledgeCount, 2);
+    assert.equal(overviewBody.recent?.candidates[0]?.id, orphanCandidate.id);
+    assert.equal(overviewBody.recent?.memories[0]?.title, "Another fact");
+    assert.equal(overviewBody.recent?.knowledge[0]?.id, knowledgeEntry.id);
 
     const unauthorizedMembers = await fetch(`${baseUrl}/api/groups/67890/members`);
     assert.equal(unauthorizedMembers.status, 401);

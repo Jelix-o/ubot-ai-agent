@@ -128,6 +128,11 @@ export class AdminHttpServer {
           pendingCandidateCount: candidates.length,
           knowledgeCount: knowledge.length,
         },
+        recent: {
+          candidates: await this.enrichCandidates(candidates.slice(0, 5), groupId),
+          memories: await this.enrichMemories(sortMemoriesNewestFirst(memories).slice(0, 5), groupId),
+          knowledge: knowledge.slice(0, 5),
+        },
         transportHealth,
       });
       return;
