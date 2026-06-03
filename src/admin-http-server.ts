@@ -434,13 +434,13 @@ export class AdminHttpServer {
     memories: GroupMemory[],
     preferredGroupId?: string,
   ): Promise<Array<GroupMemory & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
-    const membersByGroup = await this.loadLightMemberProfilesByGroup(memories.map((memory) => memory.groupId), preferredGroupId);
+    const groupsById = await this.loadGroupConfigsById(memories.map((memory) => memory.groupId), preferredGroupId);
     return memories.map((memory) => ({
       ...memory,
       subjectLabel: buildSubjectLabel(
-        membersByGroup.get(memory.groupId)?.groupConfig ?? fallbackGroupConfig(memory.groupId),
+        groupsById.get(memory.groupId) ?? fallbackGroupConfig(memory.groupId),
         memory.subjectUserId,
-        membersByGroup.get(memory.groupId)?.members ?? [],
+        [],
         memory.type,
       ),
     }));
@@ -450,37 +450,30 @@ export class AdminHttpServer {
     candidates: GroupMemoryCandidate[],
     preferredGroupId?: string,
   ): Promise<Array<GroupMemoryCandidate & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
-    const membersByGroup = await this.loadLightMemberProfilesByGroup(candidates.map((candidate) => candidate.groupId), preferredGroupId);
+    const groupsById = await this.loadGroupConfigsById(candidates.map((candidate) => candidate.groupId), preferredGroupId);
     return candidates.map((candidate) => ({
       ...candidate,
       subjectLabel: buildSubjectLabel(
-        membersByGroup.get(candidate.groupId)?.groupConfig ?? fallbackGroupConfig(candidate.groupId),
+        groupsById.get(candidate.groupId) ?? fallbackGroupConfig(candidate.groupId),
         candidate.subjectUserId,
-        membersByGroup.get(candidate.groupId)?.members ?? [],
+        [],
         candidate.type,
       ),
     }));
   }
 
-  private async loadLightMemberProfilesByGroup(
+  private async loadGroupConfigsById(
     groupIds: string[],
     preferredGroupId?: string,
-  ): Promise<Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>> {
+  ): Promise<Map<string, GroupBotConfig>> {
     const uniqueGroupIds = [...new Set([preferredGroupId, ...groupIds].filter((groupId): groupId is string => Boolean(groupId)))];
-    const result = new Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>();
+    const result = new Map<string, GroupBotConfig>();
     await Promise.all(uniqueGroupIds.map(async (groupId) => {
       const groupConfig = await this.options.groupConfigService.getGroup(groupId);
       if (!groupConfig) {
         return;
       }
-      const [memories, candidates] = await Promise.all([
-        this.options.groupMemoryStore.list(groupId),
-        this.options.groupMemoryCandidateService.list({ groupId }),
-      ]);
-      result.set(groupId, {
-        groupConfig,
-        members: buildGroupMemberProfiles({ groupConfig, memories, candidates }),
-      });
+      result.set(groupId, groupConfig);
     }));
     return result;
   }

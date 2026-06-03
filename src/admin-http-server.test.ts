@@ -317,6 +317,14 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       body: JSON.stringify({ names: ["新人"], note: "测试备注二" }),
     });
     assert.equal(invalidateIdentity.status, 200);
+    const callsBeforeLightLabel = listGroupMembersCalls;
+    const lightLabelMemories = await fetch(`${baseUrl}/api/memories?groupId=67890&type=member_profile&enabled=false&page=1&pageSize=10`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(lightLabelMemories.status, 200);
+    const lightLabelBody = await lightLabelMemories.json() as typeof memoryBody;
+    assert.equal(lightLabelBody.memories[0]?.subjectLabel?.label.includes("测试备注二"), true);
+    assert.equal(listGroupMembersCalls, callsBeforeLightLabel);
 
     const callsBeforeConcurrentProfileLoads = listGroupMembersCalls;
     const [concurrentMembers, concurrentMemories, concurrentCandidates] = await Promise.all([
