@@ -138,7 +138,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
     const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -285,21 +285,29 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       const data = await api('/api/memory-candidates?' + query.toString());
       const pageInfo = data.pagination || { page: state.candidatePage, pageSize: state.candidatePageSize, total: (data.candidates || []).length, totalPages: 1 };
       state.currentCandidates = data.candidates || [];
+      const currentCandidateIds = new Set(state.currentCandidates.map(candidate => candidate.id));
+      state.selectedCandidateIds = new Set([...state.selectedCandidateIds].filter(id => currentCandidateIds.has(id)));
       state.candidatePage = pageInfo.page;
       const notice = state.notice ? '<p class="message">' + esc(state.notice) + '</p>' : '';
       state.notice = '';
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select><button data-bulk-approve>批量批准当前页</button></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div><div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div>' + candidateSelectionBar() + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
       document.querySelector('#candidateSearch').addEventListener('input', debounce(event => { state.candidateQuery = event.target.value; state.candidatePage = 1; renderCandidates(); }, 250));
       document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; state.candidatePage = 1; renderCandidates(); });
       document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; state.candidatePage = 1; renderCandidates(); });
       document.querySelector('#subjectFilter')?.addEventListener('change', event => { state.subjectUserId = event.target.value; state.candidatePage = 1; renderCandidates(); });
       document.querySelector('#candidatePageSize').addEventListener('change', event => { state.candidatePageSize = Number(event.target.value) || 20; state.candidatePage = 1; renderCandidates(); });
     }
+    function candidateSelectionBar() {
+      const selectedCount = state.selectedCandidateIds.size;
+      const allSelected = state.currentCandidates.length > 0 && state.currentCandidates.every(candidate => state.selectedCandidateIds.has(candidate.id));
+      return '<div class="toolbar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta">已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批准已选</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+    }
     function rowCandidate(c) {
       const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
       const meta = '<div class="meta">归属：' + esc(ownerLabel(c)) + ' · 类型：' + esc(typeText(c.type)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 需要选择成员或转为群事实' : '') + '</div>';
       if (state.editingCandidateId !== c.id) {
-        return '<article data-candidate-id="' + esc(c.id) + '"><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content)) + '</span>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-edit-candidate="' + esc(c.id) + '">编辑</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></article>';
+        const checked = state.selectedCandidateIds.has(c.id) ? ' checked' : '';
+        return '<article data-candidate-id="' + esc(c.id) + '"><label><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '> 选择</label><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content)) + '</span>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-edit-candidate="' + esc(c.id) + '">编辑</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></article>';
       }
       return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false, c.subjectUserId || '') + '</select></div>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
     }
@@ -463,17 +471,20 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.approve) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }, '候选记忆已批准'); }
       if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }, '已转为群事实并批准'); }
       if (target.dataset.reject) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await renderCandidates(); }, '候选记忆已拒绝'); }
-      if (target.dataset.bulkApprove !== undefined) {
+      if (target.dataset.bulkApproveSelected !== undefined) {
         await runAction(target, async () => {
           let skipped = 0;
-          for (const candidate of state.currentCandidates) {
+          const selectedCandidates = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id));
+          for (const candidate of selectedCandidates) {
             const id = candidate.id;
             try { await api('/api/memory-candidates/' + id + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(id)) }); } catch { skipped += 1; }
           }
+          state.selectedCandidateIds = new Set();
           state.notice = skipped ? '有 ' + skipped + ' 条候选未满足批准条件，已跳过。成员画像必须先选择归属成员。' : '';
           await renderCandidates();
-        }, '当前页批量处理完成');
+        }, '已处理选中的候选记忆');
       }
+      if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); await renderCandidates(); }
       if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }, '候选记忆已删除'); }
       if (target.dataset.saveMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.members = []; state.editingMemoryId = ''; await renderMemories(); }, '长期记忆已保存'); }
       if (target.dataset.toggleMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }, '长期记忆状态已更新'); }
@@ -484,6 +495,21 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.saveKnowledge) { await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.saveKnowledge, { method: 'PUT', body: JSON.stringify(knowledgePayload(target.dataset.saveKnowledge)) }); state.editingKnowledgeId = ''; await renderKnowledge(); }, 'FAQ 已保存'); }
       if (target.dataset.toggleKnowledge) { await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderKnowledge(); }, 'FAQ 状态已更新'); }
       if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; await renderKnowledge(); return; } await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await renderKnowledge(); }, 'FAQ 已删除'); }
+    });
+    document.addEventListener('change', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.dataset.selectCandidate) {
+        if (target.checked) state.selectedCandidateIds.add(target.dataset.selectCandidate);
+        else state.selectedCandidateIds.delete(target.dataset.selectCandidate);
+        await renderCandidates();
+      }
+      if (target.dataset.selectAllCandidates !== undefined) {
+        state.selectedCandidateIds = target.checked
+          ? new Set(state.currentCandidates.map(candidate => candidate.id))
+          : new Set();
+        await renderCandidates();
+      }
     });
     document.addEventListener('submit', async (event) => {
       event.preventDefault();
