@@ -340,6 +340,43 @@ function knowledgePayload(id) {
   const data = Object.fromEntries(new FormData(form).entries());
   return { title: data.title, question: data.question, answer: data.answer, keywords: String(data.keywords || '').split(/[,，、]+/), enabled: data.enabled === 'true' };
 }
+function replaceArticle(target, kind, id) {
+  const article = target.closest('article');
+  if (!article) return false;
+  let html = '';
+  if (kind === 'member') {
+    const member = state.currentMembers.find(item => item.userId === id);
+    if (member) html = rowMember(member);
+  }
+  if (kind === 'candidate') {
+    const candidate = state.currentCandidates.find(item => item.id === id);
+    if (candidate) html = rowCandidate(candidate);
+  }
+  if (kind === 'memory') {
+    const memory = state.currentMemories.find(item => item.id === id);
+    if (memory) html = rowMemory(memory);
+  }
+  if (kind === 'knowledge') {
+    const entry = state.currentKnowledge.find(item => item.id === id);
+    if (entry) html = rowKnowledge(entry);
+  }
+  if (!html) return false;
+  article.outerHTML = html;
+  return true;
+}
+function replaceEditedArticle(target) {
+  const article = target.closest('article');
+  if (!article) return false;
+  const memberId = article.dataset.memberId || article.querySelector('.memberForm')?.dataset.userId;
+  if (memberId) return replaceArticle(target, 'member', memberId);
+  const candidateId = article.dataset.candidateId || article.querySelector('.candidateForm')?.dataset.candidateId;
+  if (candidateId) return replaceArticle(target, 'candidate', candidateId);
+  const memoryId = article.dataset.memoryId || article.querySelector('.memoryItemForm')?.dataset.memoryId;
+  if (memoryId) return replaceArticle(target, 'memory', memoryId);
+  const knowledgeId = article.dataset.knowledgeId || article.querySelector('.knowledgeItemForm')?.dataset.knowledgeId;
+  if (knowledgeId) return replaceArticle(target, 'knowledge', knowledgeId);
+  return false;
+}
 document.addEventListener('click', async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement)) return;
@@ -348,11 +385,11 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.memberPage = 1; await renderMembers(true); }, '群成员已同步'); }
   if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
   if (target.dataset.deleteIdentity) { await runAction(target, async () => { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.editingMemberId = ''; await renderMembers(); }, '成员备注已删除'); }
-  if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; await renderMembers(); }
-  if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; await renderCandidates(); }
-  if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; await renderMemories(); }
-  if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; await renderKnowledge(); }
-  if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; await render(); }
+  if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; replaceArticle(target, 'member', target.dataset.editMember); }
+  if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; replaceArticle(target, 'candidate', target.dataset.editCandidate); }
+  if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; replaceArticle(target, 'memory', target.dataset.editMemory); }
+  if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; replaceArticle(target, 'knowledge', target.dataset.editKnowledge); }
+  if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; replaceEditedArticle(target); }
   if (target.dataset.saveCandidate) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); state.editingCandidateId = ''; await renderCandidates(); }, '候选记忆已保存'); }
   if (target.dataset.approve) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }, '候选记忆已批准'); }
   if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }, '已转为群事实并批准'); }
