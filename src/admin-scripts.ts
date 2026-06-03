@@ -213,7 +213,7 @@ async function renderCandidates() {
   const currentCandidateIds = new Set(state.currentCandidates.map(candidate => candidate.id));
   state.selectedCandidateIds = new Set([...state.selectedCandidateIds].filter(id => currentCandidateIds.has(id)));
   state.candidatePage = pageInfo.page;
-  const notice = state.notice ? '<p class="message">' + esc(state.notice) + '</p>' : '';
+  const notice = state.notice ? '<p class="message" data-local-notice="candidate">' + esc(state.notice) + '</p>' : '';
   state.notice = '';
   content().innerHTML = '<section class="panel">' + ownerMemberOptionsHtml() + '<div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div>' + candidateSelectionBar() + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
   document.querySelector('#candidateSearch').addEventListener('input', debounce(event => { state.candidateQuery = event.target.value; state.candidatePage = 1; renderCandidates(); }, 250));
@@ -461,6 +461,36 @@ function showOrRemoveCandidate(target, candidate) {
   }
   updateCandidateSelectionUi();
 }
+function updateCandidateFromBulk(candidate) {
+  if (!candidate?.id) return;
+  state.selectedCandidateIds.delete(candidate.id);
+  updateCurrentItem('currentCandidates', candidate.id, candidate);
+  const article = content().querySelector('[data-candidate-id="' + CSS.escape(candidate.id) + '"]');
+  if (state.candidateStatus && state.candidateStatus !== candidate.status) {
+    removeCurrentItem('currentCandidates', candidate.id);
+    article?.remove();
+    return;
+  }
+  if (article) article.outerHTML = rowCandidate(candidate);
+}
+function showLocalNotice(kind, message) {
+  const previous = content().querySelector('[data-local-notice="' + kind + '"]');
+  if (!message) {
+    previous?.remove();
+    return;
+  }
+  if (previous) {
+    previous.textContent = message;
+    return;
+  }
+  const node = document.createElement('p');
+  node.className = 'message';
+  node.dataset.localNotice = kind;
+  node.textContent = message;
+  const anchor = content().querySelector('.quick-actions') || content().querySelector('.list') || content().firstElementChild;
+  if (anchor?.parentNode) anchor.parentNode.insertBefore(node, anchor.nextSibling);
+  else content().appendChild(node);
+}
 function replaceEditedArticle(target) {
   const article = target.closest('article');
   if (!article) return false;
@@ -495,9 +525,11 @@ document.addEventListener('click', async (event) => {
     await runAction(target, async () => {
       const selectedIds = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id)).map(candidate => candidate.id);
       const result = await api('/api/memory-candidates/bulk-approve', { method: 'POST', body: JSON.stringify({ ids: selectedIds }) });
-      state.selectedCandidateIds = new Set();
-      state.notice = result.skippedCount ? '已批准 ' + result.approvedCount + ' 条，跳过 ' + result.skippedCount + ' 条。成员画像必须先选择归属成员。' : '';
-      await renderCandidates();
+      (result.approved || []).forEach(item => updateCandidateFromBulk(item.candidate));
+      state.selectedCandidateIds = new Set((result.skipped || []).map(item => item.id).filter(id => state.currentCandidates.some(candidate => candidate.id === id)));
+      showLocalNotice('candidate', result.skippedCount ? '已批准 ' + result.approvedCount + ' 条，跳过 ' + result.skippedCount + ' 条。成员画像必须先选择归属成员。' : '');
+      ensureLocalEmptyState('candidate');
+      updateCandidateSelectionUi();
     }, '已处理选中的候选记忆');
   }
   if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); updateCandidateSelectionUi(); }
