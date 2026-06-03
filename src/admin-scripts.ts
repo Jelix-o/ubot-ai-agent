@@ -9,7 +9,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 `.trimStart();
 
 export const ADMIN_APP_JS = String.raw`
-const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [] };
+const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
@@ -81,10 +81,23 @@ async function loadGroups() {
   document.querySelector('#groupFilter').value = state.groupId;
 }
 function memberFilterControl(id, selectedUserId = '') {
-  return '<input id="' + id + '" value="' + esc(selectedUserId) + '" placeholder="归属 QQ，留空全部">';
+  return '<input id="' + id + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空全部">';
 }
 function ownerInput(name, selectedUserId = '', label = '') {
-  return '<label class="owner-field"><input name="' + name + '" value="' + esc(selectedUserId) + '" placeholder="归属 QQ，留空为群整体"><span>' + esc(label || (selectedUserId ? '当前 QQ ' + selectedUserId : '群整体')) + '</span></label>';
+  return '<label class="owner-field"><input name="' + name + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空为群整体"><span>' + esc(label || (selectedUserId ? '当前 QQ ' + selectedUserId : '群整体')) + '</span></label>';
+}
+function ownerMemberOptionsHtml() {
+  const members = state.ownerMembersByGroup.get(state.groupId) || [];
+  if (!members.length) return '';
+  return '<datalist id="ownerMemberOptions">' + members.map(member => {
+    const parts = [member.displayName, member.note, member.card, member.nickname].filter(Boolean);
+    return '<option value="' + esc(member.userId) + '" label="' + esc(parts.join(' / ') || ('QQ ' + member.userId)) + '"></option>';
+  }).join('') + '</datalist>';
+}
+async function ensureOwnerMembers() {
+  if (!state.groupId || state.ownerMembersByGroup.has(state.groupId)) return;
+  const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members?all=1&pageSize=100');
+  state.ownerMembersByGroup.set(state.groupId, data.members || []);
 }
 async function render() {
   try {
@@ -154,6 +167,8 @@ function rowMember(m) {
 }
 async function renderCandidates() {
   const token = nextRenderToken();
+  await ensureOwnerMembers();
+  if (!isLatestRender(token)) return;
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.candidateStatus) query.set('status', state.candidateStatus);
   if (state.candidateType) query.set('type', state.candidateType);
@@ -170,7 +185,7 @@ async function renderCandidates() {
   state.candidatePage = pageInfo.page;
   const notice = state.notice ? '<p class="message">' + esc(state.notice) + '</p>' : '';
   state.notice = '';
-  content().innerHTML = '<section class="panel"><div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div>' + candidateSelectionBar() + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
+  content().innerHTML = '<section class="panel">' + ownerMemberOptionsHtml() + '<div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div>' + candidateSelectionBar() + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
   document.querySelector('#candidateSearch').addEventListener('input', debounce(event => { state.candidateQuery = event.target.value; state.candidatePage = 1; renderCandidates(); }, 250));
   document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; state.candidatePage = 1; renderCandidates(); });
   document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; state.candidatePage = 1; renderCandidates(); });
@@ -211,6 +226,8 @@ function rowCandidate(c) {
 }
 async function renderMemories() {
   const token = nextRenderToken();
+  await ensureOwnerMembers();
+  if (!isLatestRender(token)) return;
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
   if (state.memoryType) query.set('type', state.memoryType);
@@ -226,7 +243,7 @@ async function renderMemories() {
   state.memoryPage = pageInfo.page;
   const groups = groupMemories(memories);
   const empty = groups.length ? '' : '<p class="message">没有符合筛选条件的长期记忆。</p>';
-  content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ">' + memberFilterControl('memorySubjectFilter', state.subjectUserId) + '<select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select><button class="ghost" data-clear-memory-filters>清空筛选</button></div>' + memoryForm() + empty + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
+  content().innerHTML = '<section class="panel">' + ownerMemberOptionsHtml() + '<div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ">' + memberFilterControl('memorySubjectFilter', state.subjectUserId) + '<select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select><button class="ghost" data-clear-memory-filters>清空筛选</button></div>' + memoryForm() + empty + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
   document.querySelector('#memorySearch').addEventListener('input', debounce(event => { state.memoryQuery = event.target.value; state.memoryPage = 1; renderMemories(); }, 250));
   document.querySelector('#memorySubjectFilter')?.addEventListener('input', debounce(event => { state.subjectUserId = event.target.value.trim(); state.memoryPage = 1; renderMemories(); }, 250));
   document.querySelector('#memoryTypeFilter').addEventListener('change', event => { state.memoryType = event.target.value; state.memoryPage = 1; renderMemories(); });
@@ -369,6 +386,11 @@ function updateCurrentMember(member) {
   const index = state.currentMembers.findIndex(item => item.userId === member.userId);
   if (index >= 0) state.currentMembers[index] = member;
   else state.currentMembers.unshift(member);
+  const ownerMembers = state.ownerMembersByGroup.get(state.groupId);
+  if (!ownerMembers) return;
+  const ownerIndex = ownerMembers.findIndex(item => item.userId === member.userId);
+  if (ownerIndex >= 0) ownerMembers[ownerIndex] = member;
+  else ownerMembers.unshift(member);
 }
 function updateCurrentItem(listName, id, patch) {
   const list = state[listName];
