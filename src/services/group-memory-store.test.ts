@@ -283,7 +283,7 @@ test("candidate service auto-approves confident candidates and keeps unsafe memb
           {
             type: "group_fact",
             title: "低置信固定群规",
-            content: "问题解决后可能需要回填结论。",
+            content: "群里周五晚上常会约组队游戏。",
             confidence: 0.7,
           },
           {
@@ -365,6 +365,150 @@ test("candidate service does not duplicate memories for repeated auto-approved c
     }
 
     assert.equal((await memoryStore.listEnabled("67890")).length, 1);
+    assert.equal((await service.list({ groupId: "67890", status: "approved" })).length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service skips candidates similar to approved memories", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-existing-dedupe-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Tester answer preference",
+      content: "Tester prefers concise answers with direct conclusions.",
+      confidence: 0.9,
+      source: "test",
+    });
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "member_profile",
+            subjectUserId: "20001",
+            title: "Tester answer preference",
+            content: "Tester prefers concise answers with direct conclusions.",
+            confidence: 0.95,
+          },
+        ];
+      },
+    });
+
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: "I still prefer concise answers with direct conclusions.",
+      timestamp: new Date().toISOString(),
+    });
+    const stats = await service.flushGroup("67890");
+
+    assert.equal(stats?.skippedDuplicateCount, 1);
+    assert.equal((await memoryStore.listEnabled("67890")).length, 1);
+    assert.equal((await service.list({ groupId: "67890" })).length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service merges candidates similar to pending candidates", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-pending-merge-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    await candidateStore.addCandidate({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Tester game preference",
+      content: "Tester mainly plays League of Legends and likes five-stack games.",
+      confidence: 0.62,
+      evidence: {
+        startAt: "2026-06-01T10:00:00.000Z",
+        endAt: "2026-06-01T10:00:00.000Z",
+        messageCount: 1,
+        speakers: [{ userId: "20001", userName: "Tester" }],
+        summary: "Tester mentioned League of Legends.",
+      },
+    });
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "member_profile",
+            subjectUserId: "20001",
+            title: "Tester game preference",
+            content: "Tester mainly plays League of Legends and likes five-stack games.",
+            confidence: 0.7,
+          },
+        ];
+      },
+    });
+
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: "I mainly play League of Legends and like five-stack games.",
+      timestamp: "2026-06-02T10:00:00.000Z",
+    });
+    const stats = await service.flushGroup("67890");
+
+    const pending = await service.list({ groupId: "67890", status: "pending" });
+    assert.equal(stats?.mergedCandidateCount, 1);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.confidence, 0.7);
+    assert.equal(pending[0]?.evidence?.messageCount, 2);
+    assert.equal((await memoryStore.listEnabled("67890")).length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate service still approves new non-duplicate facts after duplicate filtering", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-new-after-dedupe-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Tester answer preference",
+      content: "Tester prefers concise answers with direct conclusions.",
+      confidence: 0.9,
+      source: "test",
+    });
+    const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
+      async extractGroupMemoryCandidates() {
+        return [
+          {
+            type: "member_profile",
+            subjectUserId: "20001",
+            title: "Tester game preference",
+            content: "Tester mainly plays League of Legends and likes five-stack games.",
+            confidence: 0.85,
+          },
+        ];
+      },
+    });
+
+    service.queueMessage({
+      groupId: "67890",
+      userId: "20001",
+      userName: "Tester",
+      text: "I mainly play League of Legends and like five-stack games.",
+      timestamp: new Date().toISOString(),
+    });
+    const stats = await service.flushGroup("67890");
+
+    assert.equal(stats?.autoApprovedCount, 1);
+    assert.equal((await memoryStore.listEnabled("67890")).length, 2);
     assert.equal((await service.list({ groupId: "67890", status: "approved" })).length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });

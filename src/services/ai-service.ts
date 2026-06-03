@@ -7,6 +7,8 @@ import type {
   AiIdentityContext,
   AiReply,
   ConversationTurn,
+  GroupMemory,
+  GroupMemoryCandidate,
   GroupMemoryType,
   MessageImageInput,
   SkillDefinition,
@@ -21,6 +23,8 @@ const DAILY_PROFILE_SUMMARY_MAX_TOKENS = 4000;
 const OVERALL_PROFILE_SUMMARY_MAX_TOKENS = 6000;
 const DAILY_PROFILE_MEMORY_LIMIT = 200;
 const OVERALL_PROFILE_MEMORY_LIMIT = 500;
+const PROFILE_EXTRACTION_EXISTING_MEMORY_LIMIT = 1000;
+const PROFILE_EXTRACTION_EXISTING_CANDIDATE_LIMIT = 1000;
 
 export interface DailyReportTopicInsight {
   title: string;
@@ -254,6 +258,8 @@ export class AiService {
   async extractGroupMemoryCandidates(args: {
     groupId: string;
     messages: MemoryCandidateExtractionMessage[];
+    existingMemories?: Array<Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence" | "source" | "updatedAt">>;
+    existingCandidates?: Array<Pick<GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence" | "status" | "updatedAt">>;
   }): Promise<ExtractedGroupMemoryCandidate[]> {
     if (args.messages.length === 0) {
       return [];
@@ -264,6 +270,31 @@ export class AiService {
         `${index + 1}. [${message.timestamp}] ${message.userName}(${message.userId}): ${message.text}`,
       )
       .join("\n");
+    const existingMemoryLines = formatExistingMemoryContext(args.existingMemories ?? []);
+    const existingCandidateLines = formatExistingCandidateContext(args.existingCandidates ?? []);
+    const extractionSystemPrompt = [
+      "You are a QQ group long-term memory candidate extractor.",
+      "Extract only stable, durable facts that help the bot understand members or the group over time.",
+      "Allowed types: member_profile for a member's stable profile, preferences, habits, identity or interaction style; group_fact for group rules, fixed memes, recurring facts, or shared long-term conventions.",
+      "For member_profile, subjectUserId MUST be a real QQ userId from the provided recent chat lines. If personal ownership is uncertain, output group_fact instead.",
+      "Do not record short-lived emotions, casual one-off chatter, private sensitive data, insults, attacks, or unverified serious accusations.",
+      "Use the existing approved memories and existing candidates as a deduplication reference. If the new chat only repeats an existing item, do not output it.",
+      "If the new chat meaningfully updates an existing memory, output only the new difference or a stronger refined fact, with a specific title and content that explain what changed.",
+      "Prefer fewer high-value candidates over many tiny fragments. Merge closely related facts about the same subject into one precise candidate.",
+      "Return JSON only, no markdown.",
+      'Schema: {"candidates":[{"type":"member_profile","subjectUserId":"123","title":"short title","content":"stable fact","confidence":0.7}]}',
+      "If nothing is worth recording, return {\"candidates\":[]}.",
+    ].join("\n");
+    const extractionUserContent = [
+      `Group ID: ${args.groupId}`,
+      "Existing approved long-term memories:",
+      existingMemoryLines,
+      "Existing memory candidates:",
+      existingCandidateLines,
+      "Recent group chat:",
+      messageLines,
+      "Extract non-duplicate candidate memories from the recent chat.",
+    ].join("\n\n");
     const messages: ChatMessage[] = [
       {
         role: "system",
@@ -288,6 +319,8 @@ export class AiService {
         ].join("\n\n"),
       },
     ];
+    messages[0] = { role: "system", content: extractionSystemPrompt };
+    messages[1] = { role: "user", content: extractionUserContent };
 
     try {
       const completion = await this.chatCompletions.create({
@@ -878,6 +911,38 @@ function normalizeProfileSummary(text: string): string | null {
     .trim()
     .slice(0, 260);
   return normalized || null;
+}
+
+function formatExistingMemoryContext(
+  memories: Array<Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence" | "source" | "updatedAt">>,
+): string {
+  if (memories.length === 0) {
+    return "None";
+  }
+
+  return memories
+    .slice(0, PROFILE_EXTRACTION_EXISTING_MEMORY_LIMIT)
+    .map((memory, index) => {
+      const subject = memory.type === "member_profile" ? `subject=${memory.subjectUserId ?? "unassigned"}` : "subject=group";
+      return `${index + 1}. [${memory.type} ${subject} confidence=${memory.confidence} source=${memory.source} updatedAt=${memory.updatedAt}] ${memory.title}: ${memory.content}`;
+    })
+    .join("\n");
+}
+
+function formatExistingCandidateContext(
+  candidates: Array<Pick<GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence" | "status" | "updatedAt">>,
+): string {
+  if (candidates.length === 0) {
+    return "None";
+  }
+
+  return candidates
+    .slice(0, PROFILE_EXTRACTION_EXISTING_CANDIDATE_LIMIT)
+    .map((candidate, index) => {
+      const subject = candidate.type === "member_profile" ? `subject=${candidate.subjectUserId ?? "unassigned"}` : "subject=group";
+      return `${index + 1}. [${candidate.status} ${candidate.type} ${subject} confidence=${candidate.confidence} updatedAt=${candidate.updatedAt}] ${candidate.title}: ${candidate.content}`;
+    })
+    .join("\n");
 }
 
 export function buildSystemPrompt(skill: SkillDefinition, identityContext?: AiIdentityContext): string {

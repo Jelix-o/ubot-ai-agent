@@ -329,6 +329,27 @@ test("extractGroupMemoryCandidates leaves room for reasoning model output", asyn
 
   const candidates = await service.extractGroupMemoryCandidates({
     groupId: "67890",
+    existingMemories: [
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "Existing preference",
+        content: "Tester already prefers concise replies.",
+        confidence: 0.9,
+        source: "auto",
+        updatedAt: "2026-06-01T09:00:00.000Z",
+      },
+    ],
+    existingCandidates: [
+      {
+        type: "group_fact",
+        title: "Existing rule candidate",
+        content: "The group already asks for context before questions.",
+        confidence: 0.7,
+        status: "pending",
+        updatedAt: "2026-06-01T10:00:00.000Z",
+      },
+    ],
     messages: [
       {
         userId: "20001",
@@ -339,8 +360,13 @@ test("extractGroupMemoryCandidates leaves room for reasoning model output", asyn
     ],
   });
 
-  const request = calls[0] as { max_tokens?: number };
+  const request = calls[0] as { max_tokens?: number; messages?: Array<{ content: string }> };
   assert.equal(request.max_tokens, 8000);
+  assert.match(request.messages?.[0]?.content ?? "", /deduplication reference/);
+  assert.match(request.messages?.[1]?.content ?? "", /Existing approved long-term memories/);
+  assert.match(request.messages?.[1]?.content ?? "", /Tester already prefers concise replies/);
+  assert.match(request.messages?.[1]?.content ?? "", /Existing memory candidates/);
+  assert.match(request.messages?.[1]?.content ?? "", /already asks for context/);
   assert.equal(candidates[0]?.subjectUserId, "20001");
 });
 

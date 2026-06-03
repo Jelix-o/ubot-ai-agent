@@ -32,6 +32,8 @@ interface AdminHttpServerOptions {
 
 type RouteParams = Record<string, string>;
 
+const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
+
 export class AdminHttpServer {
   private readonly memberProfileCache = new Map<string, {
     expiresAt: number;
@@ -561,7 +563,7 @@ export class AdminHttpServer {
     if (!force && cached && cached.expiresAt > Date.now() && (!includeNapcatMembers || cached.includesNapcatMembers)) {
       return { groupConfig: cached.groupConfig, members: cached.members };
     }
-    const inflightKey = `${groupId}:${includeNapcatMembers ? "full" : "light"}`;
+    const inflightKey = memberProfileInflightKey(groupId, includeNapcatMembers);
     const inflight = this.memberProfileInflight.get(inflightKey);
     if (!force && inflight) {
       return inflight;
@@ -608,7 +610,8 @@ export class AdminHttpServer {
   private invalidateMemberProfileCache(groupId?: string): void {
     if (groupId) {
       this.memberProfileCache.delete(groupId);
-      this.memberProfileInflight.delete(groupId);
+      this.memberProfileInflight.delete(memberProfileInflightKey(groupId, false));
+      this.memberProfileInflight.delete(memberProfileInflightKey(groupId, true));
       return;
     }
     this.memberProfileCache.clear();
@@ -834,6 +837,10 @@ function paginateItems<T>(
   };
 }
 
+function memberProfileInflightKey(groupId: string, includeNapcatMembers: boolean): string {
+  return `${groupId}:${includeNapcatMembers ? "full" : "light"}`;
+}
+
 function normalizeSearchQuery(value: string | undefined): string {
   return String(value ?? "").trim().toLowerCase();
 }
@@ -1021,7 +1028,7 @@ function evidenceField(value: unknown): GroupMemoryEvidence | undefined {
   const evidence = value as Partial<GroupMemoryEvidence>;
   const startAt = optionalString(evidence.startAt);
   const endAt = optionalString(evidence.endAt);
-  const summary = optionalString(evidence.summary)?.slice(0, 600);
+  const summary = optionalString(evidence.summary)?.slice(0, ADMIN_EVIDENCE_SUMMARY_LIMIT);
   if (!startAt || !endAt || !summary) {
     return undefined;
   }
