@@ -410,7 +410,7 @@ export class AdminHttpServer {
     memories: GroupMemory[],
     preferredGroupId?: string,
   ): Promise<Array<GroupMemory & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
-    const membersByGroup = await this.loadMemberProfilesByGroup(memories.map((memory) => memory.groupId), preferredGroupId);
+    const membersByGroup = await this.loadLightMemberProfilesByGroup(memories.map((memory) => memory.groupId), preferredGroupId);
     return memories.map((memory) => ({
       ...memory,
       subjectLabel: buildSubjectLabel(
@@ -426,7 +426,7 @@ export class AdminHttpServer {
     candidates: GroupMemoryCandidate[],
     preferredGroupId?: string,
   ): Promise<Array<GroupMemoryCandidate & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
-    const membersByGroup = await this.loadMemberProfilesByGroup(candidates.map((candidate) => candidate.groupId), preferredGroupId);
+    const membersByGroup = await this.loadLightMemberProfilesByGroup(candidates.map((candidate) => candidate.groupId), preferredGroupId);
     return candidates.map((candidate) => ({
       ...candidate,
       subjectLabel: buildSubjectLabel(
@@ -436,6 +436,29 @@ export class AdminHttpServer {
         candidate.type,
       ),
     }));
+  }
+
+  private async loadLightMemberProfilesByGroup(
+    groupIds: string[],
+    preferredGroupId?: string,
+  ): Promise<Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>> {
+    const uniqueGroupIds = [...new Set([preferredGroupId, ...groupIds].filter((groupId): groupId is string => Boolean(groupId)))];
+    const result = new Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>();
+    await Promise.all(uniqueGroupIds.map(async (groupId) => {
+      const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+      if (!groupConfig) {
+        return;
+      }
+      const [memories, candidates] = await Promise.all([
+        this.options.groupMemoryStore.list(groupId),
+        this.options.groupMemoryCandidateService.list({ groupId }),
+      ]);
+      result.set(groupId, {
+        groupConfig,
+        members: buildGroupMemberProfiles({ groupConfig, memories, candidates }),
+      });
+    }));
+    return result;
   }
 
   private async loadMemberProfilesByGroup(

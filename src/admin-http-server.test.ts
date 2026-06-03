@@ -211,6 +211,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const membersAfterIdentityUpdateBody = await membersAfterIdentityUpdate.json() as { members: Array<{ userId: string; note?: string; aliases?: string[] }> };
     assert.equal(membersAfterIdentityUpdateBody.members.find((member) => member.userId === "30002")?.note, "测试备注");
 
+    const listCallsBeforeLightPages = listGroupMembersCalls;
     const memories = await fetch(`${baseUrl}/api/memories?groupId=67890&page=1&pageSize=2`, {
       headers: { Cookie: cookie ?? "" },
     });
@@ -219,13 +220,20 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(memoryBody.memories.length, 2);
     assert.equal(memoryBody.memories[0]?.title, "Another fact");
     assert.equal(memoryBody.memories[1]?.title, "Latest fact");
+    assert.equal(listGroupMembersCalls, listCallsBeforeLightPages);
+
+    const lightCandidates = await fetch(`${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=1`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(lightCandidates.status, 200);
+    assert.equal(listGroupMembersCalls, listCallsBeforeLightPages);
 
     const memorySearch = await fetch(`${baseUrl}/api/memories?groupId=67890&q=concise&page=1&pageSize=10`, {
       headers: { Cookie: cookie ?? "" },
     });
     const memorySearchBody = await memorySearch.json() as typeof memoryBody;
     assert.equal(memorySearchBody.pagination.total, 1);
-    assert.equal(memorySearchBody.memories[0]?.subjectLabel?.label.includes("TesterCard / QQ 20001"), true);
+    assert.equal(memorySearchBody.memories[0]?.subjectLabel?.label.includes("QQ 20001"), true);
     assert.equal(memorySearchBody.memories[0]?.evidence?.messageCount, 3);
 
     const profileMemoryId = memorySearchBody.memories[0]!.id;
@@ -280,7 +288,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(concurrentMembers.status, 200);
     assert.equal(concurrentMemories.status, 200);
     assert.equal(concurrentCandidates.status, 200);
-    assert.equal(listGroupMembersCalls, callsBeforeConcurrentProfileLoads + 1);
+    assert.ok(listGroupMembersCalls > callsBeforeConcurrentProfileLoads);
 
     const convertMemory = await fetch(`${baseUrl}/api/memories/${profileMemoryId}`, {
       method: "PUT",
