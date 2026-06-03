@@ -86,6 +86,32 @@ function memberFilterControl(id, selectedUserId = '') {
 function ownerInput(name, selectedUserId = '', label = '') {
   return '<label class="owner-field"><input name="' + name + '" value="' + esc(selectedUserId) + '" list="ownerMemberOptions" placeholder="归属 QQ，留空为群整体"><span>' + esc(label || (selectedUserId ? '当前 QQ ' + selectedUserId : '群整体')) + '</span></label>';
 }
+function resetGroupScopedState() {
+  state.memberQuery = '';
+  state.subjectUserId = '';
+  state.candidateType = '';
+  state.candidateStatus = 'pending';
+  state.candidateQuery = '';
+  state.selectedCandidateIds = new Set();
+  state.memoryQuery = '';
+  state.memoryType = '';
+  state.memoryEnabled = '';
+  state.knowledgeQuery = '';
+  state.pendingDelete = '';
+  state.notice = '';
+  state.memberPage = 1;
+  state.memoryPage = 1;
+  state.candidatePage = 1;
+  state.knowledgePage = 1;
+  state.editingMemberId = '';
+  state.editingCandidateId = '';
+  state.editingMemoryId = '';
+  state.editingKnowledgeId = '';
+  state.currentMembers = [];
+  state.currentCandidates = [];
+  state.currentMemories = [];
+  state.currentKnowledge = [];
+}
 function ownerMemberOptionsHtml() {
   const members = state.ownerMembersByGroup.get(state.groupId) || [];
   if (!members.length) return '';
@@ -528,7 +554,7 @@ document.addEventListener('submit', async (event) => {
     await jumpPage(form.dataset.pageJump, Number(data.page) || 1);
   }
 });
-document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); });
+document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; resetGroupScopedState(); await render(); });
 document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
 loadGroups().then(render);
 `.trimStart();
