@@ -198,6 +198,10 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("renderOverview"), true);
     assert.equal(adminAppJsText.includes("query.set('evidence', 'preview')"), true);
     assert.equal(adminAppJsText.includes("data-load-evidence"), true);
+    assert.equal(adminAppJsText.includes("readStateFromUrl()"), true);
+    assert.equal(adminAppJsText.includes("syncUrlState"), true);
+    assert.equal(adminAppJsText.includes("popstate"), true);
+    assert.equal(adminAppJsText.includes("history[replace ? 'replaceState' : 'pushState']"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
