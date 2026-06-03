@@ -1672,6 +1672,35 @@ test("switches reply model for authorized user", async () => {
   assert.match(transport.sent[0]?.text ?? "", /mimo-v2\.5-pro/);
 });
 
+test("supports compact reply model commands", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      liveChatDelayMinutes: 5,
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+    },
+  ]);
+  const { app, transport } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(
+    createEvent([{ type: "text", data: { text: "#模型切换 mimo" } }], 99999),
+  );
+  await app.handleGroupMessage(
+    createEvent([{ type: "text", data: { text: "#模型状态" } }], 99999),
+  );
+
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "mimo");
+  assert.match(transport.sent[0]?.text ?? "", /已切换群聊回复模型/);
+  assert.match(transport.sent[1]?.text ?? "", /当前群聊回复模型/);
+  assert.match(transport.sent[1]?.text ?? "", /Mimo/);
+});
+
 test("uses mimo service for replies when group reply model mode is mimo", async () => {
   const gptAiService = new FakeAiService(async () => ({
     text: "GPT reply",

@@ -2202,15 +2202,15 @@ export class BotApplication {
     const normalized = commandText.replace(/\s+/g, " ").trim();
     const currentMode = normalizeReplyModelMode(groupConfig.replyModelMode);
 
-    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX} 状态`) {
+    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX}状态` || normalized === `${MODEL_PREFIX} 状态`) {
       await this.sendText(groupId, `当前群聊回复模型：${this.formatReplyModelName(currentMode)}`);
       return;
     }
 
-    const switchRegex = new RegExp(`^${escapeRegex(MODEL_PREFIX)}\\s*切换\\s+(mimo|gpt)$`, "i");
+    const switchRegex = new RegExp(`^${escapeRegex(MODEL_PREFIX)}\\s*(?:切换\\s*)?(mimo|gpt)$`, "i");
     const match = normalized.match(switchRegex);
     if (!match) {
-      await this.sendText(groupId, "模型命令格式：#模型 状态 或 #模型 切换 mimo/gpt");
+      await this.sendText(groupId, "模型命令格式：#模型状态 或 #模型切换 mimo/gpt");
       return;
     }
 
