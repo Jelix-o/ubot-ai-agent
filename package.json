@@ -1,6 +1,6 @@
 {
-  "name": "napcat-qq-skill-bot",
-  "version": "0.1.0",
+  "name": "ubot",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "engines": {

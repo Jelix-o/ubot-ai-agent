@@ -98,14 +98,14 @@ export const LOGIN_HTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project 机器人后台</title>
+  <title>UBot 后台</title>
   <link rel="stylesheet" href="/admin.css">
 </head>
 <body class="login-page">
   <main class="login-shell">
     <section class="login-panel">
-      <p class="eyebrow">AI-Project</p>
-      <h1>机器人后台</h1>
+      <p class="eyebrow">UBot</p>
+      <h1>后台登录</h1>
       <form id="loginForm" class="stack">
         <label>账号<input name="username" autocomplete="username" required></label>
         <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
@@ -123,13 +123,13 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project 机器人后台</title>
+  <title>UBot 后台</title>
   <link rel="stylesheet" href="/admin.css">
 </head>
 <body>
   <div class="app-shell">
     <aside>
-      <div class="brand"><span>AI</span><strong>机器人后台</strong></div>
+      <div class="brand"><span>UB</span><strong>UBot 后台</strong></div>
       <nav>
         <button data-view="overview" class="active">总览</button>
         <button data-view="groups">群配置</button>

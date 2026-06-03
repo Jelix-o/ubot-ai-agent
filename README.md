@@ -1,6 +1,6 @@
-# NapCat QQ 群聊 Skill AI 机器人
+# UBot
 
-这是一个基于 `NapCat + OneBot + Node.js + TypeScript` 的 QQ 群聊机器人项目，适合和 NapCat 部署在同一台 Windows 机器上使用。
+UBot 是一个基于 `NapCat + OneBot + Node.js + TypeScript` 的 QQ 群聊机器人与群运营后台。当前版本为 `v3.0`，重点面向群聊回复、群记忆、成员画像、FAQ 知识库和公网后台运维。
 
 它已经支持：
 
@@ -16,6 +16,8 @@
 - 健康检查与管理员操作日志
 - 自动运维告警
 - 群管理员 / 超级管理员权限体系
+- 公网后台、成员管理、长期记忆、候选记忆和 FAQ 知识库
+- Mimo 画像分析、每日画像审查和回复模型切换
 
 ## 功能概览
 
@@ -149,7 +151,7 @@ copy .env.server-2022.example .env
 
 配置文件路径：
 
-- [`config/groups.json`](/D:/development/AI-Project/config/groups.json)
+- `config/groups.json`
 
 示例结构：
 
@@ -323,7 +325,7 @@ NapCat 里对应填写：
 示例：
 
 ```bat
-cd /d D:\apps\napcat-qq-skill-bot
+cd /d D:\apps\ubot
 pnpm install
 pnpm run build
 pnpm start
@@ -401,11 +403,12 @@ pnpm test
 - `#操作日志` 查看当前群最近 10 条管理员操作，包括闭嘴、黑名单、实时对话、技能切换、定时任务和管理员变更。
 - 这些命令在闭嘴模式下仍可使用；被拉黑用户仍保持静默。
 
-## V2 后台、群记忆和知识库
+## UBot v3.0 后台、群记忆和知识库
 
 - 设置 `ADMIN_HTTP_ENABLED=true` 后会启动独立后台服务，默认监听 `127.0.0.1:6200`。
 - 生产建议通过 Nginx 将 `https://bot.9958.uk` 反代到 `http://127.0.0.1:6200`，不要暴露 NapCat 反向 WebSocket。
 - 后台登录使用 `.env` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，会话由 `ADMIN_SESSION_SECRET` 签名。
+- v3.0 后台默认使用分页、筛选摘要、URL 状态恢复、来源证据按需加载和精简列表；候选记忆、长期记忆默认只显示核心信息，详情和危险操作按需展开，降低大列表卡顿。
 - 群记忆长期数据保存在 `data/group-memory.json`；自动提炼候选保存在 `data/group-memory-candidates.json`，候选必须在后台批准后才会进入 AI 上下文。
 - 文本 FAQ 知识库保存在 `data/knowledge-base.json`，机器人对话前会按关键词检索当前群启用 FAQ，最多注入 Top 3 条。
 - `manualIdentities` 仍然是身份识别最高优先级；群记忆只补充偏好、稳定事实、群规则和固定梗，不覆盖 QQ 身份表。
@@ -423,13 +426,29 @@ pnpm test
 - `#拉黑 解除 <QQ号>` 解除拉黑；黑名单按群保存，不影响其它群。
 - 被拉黑成员的发言仍进入日报和聊天总结统计，但机器人不会回复他的普通对话、语音、实时对话、关键词、复读或其它命令。
 
+## 发布与升级
+
+- 项目名：`UBot`
+- 当前版本：`v3.0`
+- npm 包名：`ubot`
+- Node.js：建议 Node 22
+- 发布包会排除 `.env`、`data/`、`config/groups.json`、`node_modules/`、`dist/`、`release/` 和 `NUL`，避免覆盖生产配置和数据。
+
+升级生产环境时保留原有 `.env`、`data/` 和 `config/groups.json`。尤其不要把生产的 NapCat 反向 WebSocket 配置覆盖掉，生产应保持：
+
+```env
+NAPCAT_REVERSE_WS_HOST=0.0.0.0
+NAPCAT_REVERSE_WS_PORT=6199
+NAPCAT_REVERSE_WS_PATH=/onebot/ws
+```
+
 ## 分享项目给别人
 
 如果你要把项目发给别人，建议不要直接发正在运行的目录。
 
-推荐发脱敏分享包：
+推荐发脱敏分享包或 GitHub Release 包：
 
-- [分享包目录](/D:/development/AI-Project/share/napcat-qq-skill-bot-share)
-- [分享包压缩文件](/D:/development/AI-Project/share/napcat-qq-skill-bot-share.zip)
+- `release/ubot-v3.0.tar.gz`
+- `RELEASE-v3.0.md`
 
 这样不会带上你的真实 `.env`、API Key、对话历史和生产群配置。
