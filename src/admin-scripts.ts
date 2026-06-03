@@ -197,8 +197,7 @@ function rowMember(m) {
 }
 async function renderCandidates() {
   const token = nextRenderToken();
-  await ensureOwnerMembers();
-  if (!isLatestRender(token)) return;
+  const ownerMembersPromise = ensureOwnerMembers();
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.candidateStatus) query.set('status', state.candidateStatus);
   if (state.candidateType) query.set('type', state.candidateType);
@@ -206,7 +205,10 @@ async function renderCandidates() {
   if (state.candidateQuery.trim()) query.set('q', state.candidateQuery.trim());
   query.set('page', String(state.candidatePage));
   query.set('pageSize', String(state.candidatePageSize));
-  const data = await apiForRender('/api/memory-candidates?' + query.toString());
+  const [data] = await Promise.all([
+    apiForRender('/api/memory-candidates?' + query.toString()),
+    ownerMembersPromise,
+  ]);
   if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.candidatePage, pageSize: state.candidatePageSize, total: (data.candidates || []).length, totalPages: 1 };
   state.currentCandidates = data.candidates || [];
@@ -256,8 +258,7 @@ function rowCandidate(c) {
 }
 async function renderMemories() {
   const token = nextRenderToken();
-  await ensureOwnerMembers();
-  if (!isLatestRender(token)) return;
+  const ownerMembersPromise = ensureOwnerMembers();
   const query = new URLSearchParams({ groupId: state.groupId });
   if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
   if (state.memoryType) query.set('type', state.memoryType);
@@ -265,7 +266,10 @@ async function renderMemories() {
   if (state.memoryQuery.trim()) query.set('q', state.memoryQuery.trim());
   query.set('page', String(state.memoryPage));
   query.set('pageSize', String(state.memoryPageSize));
-  const data = await apiForRender('/api/memories?' + query.toString());
+  const [data] = await Promise.all([
+    apiForRender('/api/memories?' + query.toString()),
+    ownerMembersPromise,
+  ]);
   if (!data || !isLatestRender(token)) return;
   const memories = data.memories || [];
   state.currentMemories = memories;
