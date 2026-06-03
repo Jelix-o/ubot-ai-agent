@@ -138,7 +138,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: '', candidateQuery: '', memoryQuery: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
     const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -251,7 +251,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       state.memberPage = pageInfo.page;
       const pageMembers = members.slice(pageInfo.startIndex, pageInfo.endIndex);
       content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>刷新</button></div><div class="member-grid">' + pageMembers.map(rowMember).join('') + '</div>' + memberPagination(pageInfo) + '</section>';
-      document.querySelector('#memberSearch')?.addEventListener('input', event => { state.memberQuery = event.target.value; state.memberPage = 1; renderMembers(); });
+      document.querySelector('#memberSearch')?.addEventListener('input', debounce(event => { state.memberQuery = event.target.value; state.memberPage = 1; renderMembers(); }, 180));
       document.querySelector('#memberPageSize')?.addEventListener('change', event => { state.memberPageSize = Number(event.target.value) || 24; state.memberPage = 1; renderMembers(); });
     }
     function rowMember(m) {
@@ -277,7 +277,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       state.candidatePage = pageInfo.page;
       const notice = state.notice ? '<p class="message">' + esc(state.notice) + '</p>' : '';
       state.notice = '';
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select><select id="subjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select><button data-bulk-approve>批量批准当前页</button></div>' + notice + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + candidatePagination(pageInfo) + '</section>';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select><select id="subjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option></select><button data-bulk-approve>批量批准当前页</button></div>' + notice + '<div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">只看待审</button><button class="ghost" data-candidate-status-shortcut="approved">最近自动/手动批准</button><button class="ghost" data-candidate-status-shortcut="">查看全部</button></div><div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + listPagination('candidate', pageInfo, '候选记忆', true) + '</section>';
       document.querySelector('#candidateSearch').addEventListener('input', debounce(event => { state.candidateQuery = event.target.value; state.candidatePage = 1; renderCandidates(); }, 250));
       document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; state.candidatePage = 1; renderCandidates(); });
       document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; state.candidatePage = 1; renderCandidates(); });
@@ -296,6 +296,8 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       await loadMembers();
       const query = new URLSearchParams({ groupId: state.groupId });
       if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
+      if (state.memoryType) query.set('type', state.memoryType);
+      if (state.memoryEnabled) query.set('enabled', state.memoryEnabled);
       if (state.memoryQuery.trim()) query.set('q', state.memoryQuery.trim());
       query.set('page', String(state.memoryPage));
       query.set('pageSize', String(state.memoryPageSize));
@@ -305,11 +307,13 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       const pageInfo = data.pagination || { page: state.memoryPage, pageSize: state.memoryPageSize, total: memories.length, totalPages: 1 };
       state.memoryPage = pageInfo.page;
       const groups = groupMemories(memories);
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + memoryPagination(pageInfo) + '</section>';
+      const empty = groups.length ? '' : '<p class="message">没有符合筛选条件的长期记忆。</p>';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select><button class="ghost" data-clear-memory-filters>清空筛选</button></div>' + memoryForm() + empty + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
       document.querySelector('#memorySearch').addEventListener('input', debounce(event => { state.memoryQuery = event.target.value; state.memoryPage = 1; renderMemories(); }, 250));
       document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; state.memoryPage = 1; renderMemories(); });
+      document.querySelector('#memoryTypeFilter').addEventListener('change', event => { state.memoryType = event.target.value; state.memoryPage = 1; renderMemories(); });
+      document.querySelector('#memoryEnabledFilter').addEventListener('change', event => { state.memoryEnabled = event.target.value; state.memoryPage = 1; renderMemories(); });
       document.querySelector('#memoryPageSize').addEventListener('change', event => { state.memoryPageSize = Number(event.target.value) || 20; state.memoryPage = 1; renderMemories(); });
-      document.querySelector('#memoryPageJump').addEventListener('submit', event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target).entries()); state.memoryPage = Number(data.page) || 1; renderMemories(); });
     }
     function memoryForm() {
       return '<details class="inline-editor"><summary>新增长期记忆</summary><form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form></details>';
@@ -330,12 +334,6 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       }
       return '<article><form class="memoryItemForm" data-memory-id="' + esc(m.id) + '"><div class="memory-form"><select name="type"><option value="member_profile"' + selected(m.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(m.type, 'group_fact') + '>群事实</option></select><select name="subjectUserId">' + memberOptions(false, m.subjectUserId || '') + '</select><input name="title" value="' + esc(m.title) + '" placeholder="标题"><input name="confidence" type="number" min="0" max="1" step="0.01" value="' + esc(m.confidence) + '" placeholder="置信度"><select name="enabled"><option value="true"' + selected(String(m.enabled), 'true') + '>启用</option><option value="false"' + selected(String(m.enabled), 'false') + '>停用</option></select><textarea name="content" placeholder="内容">' + esc(m.content) + '</textarea></div>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-save-memory="' + esc(m.id) + '">保存编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></form></article>';
     }
-    function memoryPagination(pageInfo) {
-      const start = pageInfo.total === 0 ? 0 : ((pageInfo.page - 1) * pageInfo.pageSize) + 1;
-      const end = Math.min(pageInfo.page * pageInfo.pageSize, pageInfo.total);
-      const label = pageInfo.total === 0 ? '暂无长期记忆' : '第 ' + start + '-' + end + ' 条，共 ' + pageInfo.total + ' 条';
-      return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button><form id="memoryPageJump" class="pagination-controls"><input name="page" type="number" min="1" max="' + pageInfo.totalPages + '" value="' + pageInfo.page + '" aria-label="页码" style="width:86px"><button class="ghost">跳转</button></form></div></div>';
-    }
     function paginateLocal(items, page, pageSize) {
       const total = items.length;
       const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -344,22 +342,18 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       const endIndex = Math.min(startIndex + pageSize, total);
       return { page: normalizedPage, pageSize, total, totalPages, startIndex, endIndex };
     }
+    function listPagination(kind, pageInfo, noun, withJump = false) {
+      const start = pageInfo.total === 0 ? 0 : ((pageInfo.page - 1) * pageInfo.pageSize) + 1;
+      const end = Math.min(pageInfo.page * pageInfo.pageSize, pageInfo.total);
+      const label = pageInfo.total === 0 ? '暂无' + noun : '第 ' + start + '-' + end + ' 条，共 ' + pageInfo.total + ' 条';
+      const jump = withJump ? '<form data-page-jump="' + kind + '" class="pagination-controls"><input name="page" type="number" min="1" max="' + pageInfo.totalPages + '" value="' + pageInfo.page + '" aria-label="页码" style="width:86px"><button class="ghost">跳转</button></form>' : '';
+      return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-page-kind="' + kind + '" data-page-step="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-page-kind="' + kind + '" data-page-step="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button>' + jump + '</div></div>';
+    }
     function memberPagination(pageInfo) {
+      const normalized = { page: pageInfo.page, pageSize: pageInfo.pageSize, total: pageInfo.total, totalPages: pageInfo.totalPages };
       const start = pageInfo.total === 0 ? 0 : pageInfo.startIndex + 1;
       const label = pageInfo.total === 0 ? '暂无成员' : '第 ' + start + '-' + pageInfo.endIndex + ' 人，共 ' + pageInfo.total + ' 人';
-      return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-member-page="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-member-page="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button></div></div>';
-    }
-    function candidatePagination(pageInfo) {
-      const start = pageInfo.total === 0 ? 0 : ((pageInfo.page - 1) * pageInfo.pageSize) + 1;
-      const end = Math.min(pageInfo.page * pageInfo.pageSize, pageInfo.total);
-      const label = pageInfo.total === 0 ? '暂无候选记忆' : '第 ' + start + '-' + end + ' 条，共 ' + pageInfo.total + ' 条';
-      return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-candidate-page="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-candidate-page="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button></div></div>';
-    }
-    function knowledgePagination(pageInfo) {
-      const start = pageInfo.total === 0 ? 0 : ((pageInfo.page - 1) * pageInfo.pageSize) + 1;
-      const end = Math.min(pageInfo.page * pageInfo.pageSize, pageInfo.total);
-      const label = pageInfo.total === 0 ? '暂无 FAQ' : '第 ' + start + '-' + end + ' 条，共 ' + pageInfo.total + ' 条';
-      return '<div class="pagination"><span>' + esc(label) + '</span><div class="pagination-controls"><button class="ghost" data-knowledge-page="prev"' + (pageInfo.page <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + pageInfo.page + ' / ' + pageInfo.totalPages + ' 页</span><button class="ghost" data-knowledge-page="next"' + (pageInfo.page >= pageInfo.totalPages ? ' disabled' : '') + '>下一页</button></div></div>';
+      return listPagination('member', normalized, '成员').replace(/<span>.*?<\/span>/, '<span>' + esc(label) + '</span>');
     }
     function debounce(fn, wait) {
       let timer;
@@ -368,6 +362,24 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
         timer = setTimeout(() => fn(...args), wait);
       };
     }
+    async function changePage(kind, delta) {
+      const key = kind + 'Page';
+      if (!Object.prototype.hasOwnProperty.call(state, key)) return;
+      state[key] = Math.max(1, Number(state[key] || 1) + delta);
+      await renderPageKind(kind);
+    }
+    async function jumpPage(kind, page) {
+      const key = kind + 'Page';
+      if (!Object.prototype.hasOwnProperty.call(state, key)) return;
+      state[key] = Math.max(1, page);
+      await renderPageKind(kind);
+    }
+    async function renderPageKind(kind) {
+      if (kind === 'member') return renderMembers();
+      if (kind === 'candidate') return renderCandidates();
+      if (kind === 'memory') return renderMemories();
+      if (kind === 'knowledge') return renderKnowledge();
+    }
     async function renderKnowledge() {
       const query = new URLSearchParams({ groupId: state.groupId, page: String(state.knowledgePage), pageSize: String(state.knowledgePageSize) });
       if (state.knowledgeQuery.trim()) query.set('q', state.knowledgeQuery.trim());
@@ -375,7 +387,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       const pageInfo = data.pagination || { page: state.knowledgePage, pageSize: state.knowledgePageSize, total: (data.entries || []).length, totalPages: 1 };
       state.currentKnowledge = data.entries || [];
       state.knowledgePage = pageInfo.page;
-      content().innerHTML = '<section class="panel"><h2>文本 FAQ</h2><div class="toolbar"><input id="knowledgeSearch" value="' + esc(state.knowledgeQuery) + '" placeholder="搜索标题、问题、答案、关键词"><select id="knowledgePageSize"><option value="10"' + selected(String(state.knowledgePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.knowledgePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.knowledgePageSize), '50') + '>每页 50 条</option></select></div>' + knowledgeForm() + '<div class="list">' + state.currentKnowledge.map(rowKnowledge).join('') + '</div>' + knowledgePagination(pageInfo) + '</section>';
+      content().innerHTML = '<section class="panel"><h2>文本 FAQ</h2><div class="toolbar"><input id="knowledgeSearch" value="' + esc(state.knowledgeQuery) + '" placeholder="搜索标题、问题、答案、关键词"><select id="knowledgePageSize"><option value="10"' + selected(String(state.knowledgePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.knowledgePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.knowledgePageSize), '50') + '>每页 50 条</option></select></div>' + knowledgeForm() + '<div class="list">' + state.currentKnowledge.map(rowKnowledge).join('') + '</div>' + listPagination('knowledge', pageInfo, 'FAQ', true) + '</section>';
       document.querySelector('#knowledgeSearch').addEventListener('input', debounce(event => { state.knowledgeQuery = event.target.value; state.knowledgePage = 1; renderKnowledge(); }, 250));
       document.querySelector('#knowledgePageSize').addEventListener('change', event => { state.knowledgePageSize = Number(event.target.value) || 20; state.knowledgePage = 1; renderKnowledge(); });
     }
@@ -452,14 +464,9 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.saveMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.members = []; state.editingMemoryId = ''; await renderMemories(); }, '长期记忆已保存'); }
       if (target.dataset.toggleMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }, '长期记忆状态已更新'); }
       if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }, '长期记忆已删除'); }
-      if (target.dataset.memberPage === 'prev') { state.memberPage -= 1; await renderMembers(); }
-      if (target.dataset.memberPage === 'next') { state.memberPage += 1; await renderMembers(); }
-      if (target.dataset.candidatePage === 'prev') { state.candidatePage -= 1; await renderCandidates(); }
-      if (target.dataset.candidatePage === 'next') { state.candidatePage += 1; await renderCandidates(); }
-      if (target.dataset.memoryPage === 'prev') { state.memoryPage -= 1; await renderMemories(); }
-      if (target.dataset.memoryPage === 'next') { state.memoryPage += 1; await renderMemories(); }
-      if (target.dataset.knowledgePage === 'prev') { state.knowledgePage -= 1; await renderKnowledge(); }
-      if (target.dataset.knowledgePage === 'next') { state.knowledgePage += 1; await renderKnowledge(); }
+      if (target.dataset.clearMemoryFilters !== undefined) { state.subjectUserId = ''; state.memoryType = ''; state.memoryEnabled = ''; state.memoryQuery = ''; state.memoryPage = 1; await renderMemories(); }
+      if (target.dataset.candidateStatusShortcut !== undefined) { state.candidateStatus = target.dataset.candidateStatusShortcut; state.candidatePage = 1; await renderCandidates(); }
+      if (target.dataset.pageKind && target.dataset.pageStep) { await changePage(target.dataset.pageKind, target.dataset.pageStep === 'next' ? 1 : -1); }
       if (target.dataset.saveKnowledge) { await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.saveKnowledge, { method: 'PUT', body: JSON.stringify(knowledgePayload(target.dataset.saveKnowledge)) }); state.editingKnowledgeId = ''; await renderKnowledge(); }, 'FAQ 已保存'); }
       if (target.dataset.toggleKnowledge) { await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderKnowledge(); }, 'FAQ 状态已更新'); }
       if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; await renderKnowledge(); return; } await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await renderKnowledge(); }, 'FAQ 已删除'); }
@@ -490,6 +497,9 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
           state.knowledgePage = 1;
           await render();
         }, 'FAQ 已新增');
+      }
+      if (form.dataset.pageJump) {
+        await jumpPage(form.dataset.pageJump, Number(data.page) || 1);
       }
     });
     document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); });

@@ -259,11 +259,13 @@ export class AdminHttpServer {
       const groupId = url.searchParams.get("groupId") ?? undefined;
       const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
       const type = normalizeOptionalMemoryType(url.searchParams.get("type") ?? undefined);
+      const enabled = normalizeOptionalBoolean(url.searchParams.get("enabled") ?? undefined);
       const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
       const pagination = paginationParams(url, 20, 100);
       const rawMemories = sortMemoriesNewestFirst(await this.options.groupMemoryStore.list(groupId))
         .filter((memory) => !subjectUserId || memory.subjectUserId === subjectUserId)
         .filter((memory) => !type || memory.type === type)
+        .filter((memory) => enabled === undefined || memory.enabled === enabled)
         .filter((memory) => !query || memoryMatchesQuery(memory, query));
       const page = paginateItems(rawMemories, pagination);
       const memories = await this.enrichMemories(page.items, groupId);
@@ -691,6 +693,20 @@ function paginateItems<T>(
 
 function normalizeSearchQuery(value: string | undefined): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  const normalized = value.toLowerCase();
+  if (["1", "true", "yes", "enabled", "启用"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "disabled", "停用"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
 }
 
 function memoryMatchesQuery(memory: GroupMemory, query: string): boolean {

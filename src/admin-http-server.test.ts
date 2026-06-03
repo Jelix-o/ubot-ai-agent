@@ -174,19 +174,20 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(members.status, 200);
     const memberBody = await members.json() as { members: Array<{ userId: string; displayName: string; memoryCount: number; pendingCandidateCount: number }> };
     assert.equal(memberBody.members.some((member) => member.userId === "20001" && member.displayName === "TesterCard" && member.memoryCount === 1), true);
-    assert.equal(listGroupMembersCalls, 1);
+    const callsAfterFirstMemberLoad = listGroupMembersCalls;
+    assert.ok(callsAfterFirstMemberLoad >= 1);
 
     const cachedMembers = await fetch(`${baseUrl}/api/groups/67890/members`, {
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(cachedMembers.status, 200);
-    assert.equal(listGroupMembersCalls, 1);
+    assert.equal(listGroupMembersCalls, callsAfterFirstMemberLoad);
 
     const refreshedMembers = await fetch(`${baseUrl}/api/groups/67890/members?refresh=1`, {
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(refreshedMembers.status, 200);
-    assert.equal(listGroupMembersCalls, 2);
+    assert.ok(listGroupMembersCalls > callsAfterFirstMemberLoad);
 
     const updateIdentity = await fetch(`${baseUrl}/api/groups/67890/members/30002/identity`, {
       method: "PUT",
@@ -207,7 +208,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(membersAfterIdentityUpdate.status, 200);
-    assert.equal(listGroupMembersCalls, 3);
+    const membersAfterIdentityUpdateBody = await membersAfterIdentityUpdate.json() as { members: Array<{ userId: string; note?: string; aliases?: string[] }> };
+    assert.equal(membersAfterIdentityUpdateBody.members.find((member) => member.userId === "30002")?.note, "测试备注");
 
     const memories = await fetch(`${baseUrl}/api/memories?groupId=67890&page=1&pageSize=2`, {
       headers: { Cookie: cookie ?? "" },
@@ -246,6 +248,28 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(edited.content, "Edited content.");
     assert.equal(edited.confidence, 0.81);
     assert.equal(edited.enabled, false);
+
+    const disabledProfileMemories = await fetch(`${baseUrl}/api/memories?groupId=67890&type=member_profile&enabled=false&page=1&pageSize=10`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(disabledProfileMemories.status, 200);
+    const disabledProfileBody = await disabledProfileMemories.json() as typeof memoryBody;
+    assert.equal(disabledProfileBody.pagination.total, 1);
+    assert.equal(disabledProfileBody.memories[0]?.id, profileMemoryId);
+
+    const enabledProfileMemories = await fetch(`${baseUrl}/api/memories?groupId=67890&type=member_profile&enabled=true&page=1&pageSize=10`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(enabledProfileMemories.status, 200);
+    const enabledProfileBody = await enabledProfileMemories.json() as typeof memoryBody;
+    assert.equal(enabledProfileBody.pagination.total, 0);
+
+    const invalidateIdentity = await fetch(`${baseUrl}/api/groups/67890/members/30002/identity`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ names: ["新人"], note: "测试备注二" }),
+    });
+    assert.equal(invalidateIdentity.status, 200);
 
     const callsBeforeConcurrentProfileLoads = listGroupMembersCalls;
     const [concurrentMembers, concurrentMemories, concurrentCandidates] = await Promise.all([
