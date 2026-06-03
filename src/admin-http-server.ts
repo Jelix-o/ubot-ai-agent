@@ -2,7 +2,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 
-import { ADMIN_APP_HTML_V2, ADMIN_APP_JS, ADMIN_CSS, LOGIN_HTML, LOGIN_JS } from "./admin-ui.js";
+import { ADMIN_APP_HTML_V2, ADMIN_CSS, LOGIN_HTML } from "./admin-ui.js";
+import { ADMIN_APP_JS, LOGIN_JS } from "./admin-scripts.js";
 import { logInfo, logWarn } from "./logger.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
