@@ -455,14 +455,10 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (target.dataset.reject) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await renderCandidates(); }, '候选记忆已拒绝'); }
       if (target.dataset.bulkApproveSelected !== undefined) {
         await runAction(target, async () => {
-          let skipped = 0;
-          const selectedCandidates = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id));
-          for (const candidate of selectedCandidates) {
-            const id = candidate.id;
-            try { await api('/api/memory-candidates/' + id + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(id)) }); } catch { skipped += 1; }
-          }
+          const selectedIds = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id)).map(candidate => candidate.id);
+          const result = await api('/api/memory-candidates/bulk-approve', { method: 'POST', body: JSON.stringify({ ids: selectedIds }) });
           state.selectedCandidateIds = new Set();
-          state.notice = skipped ? '有 ' + skipped + ' 条候选未满足批准条件，已跳过。成员画像必须先选择归属成员。' : '';
+          state.notice = result.skippedCount ? '已批准 ' + result.approvedCount + ' 条，跳过 ' + result.skippedCount + ' 条。成员画像必须先选择归属成员。' : '';
           await renderCandidates();
         }, '已处理选中的候选记忆');
       }

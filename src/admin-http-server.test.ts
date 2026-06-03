@@ -73,6 +73,12 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     title: "Unknown member profile",
     content: "Someone likes late-night chats.",
   });
+  const batchFactCandidate = await candidateStore.addCandidate({
+    groupId: "67890",
+    type: "group_fact",
+    title: "Batch fact",
+    content: "Batch approval should use one API call.",
+  });
   const knowledgeBaseStore = new KnowledgeBaseStore(path.join(dir, "knowledge.json"));
   const knowledgeEntry = await knowledgeBaseStore.create({
     groupId: "67890",
@@ -170,9 +176,10 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(overviewBody.groupId, "67890");
     assert.equal(overviewBody.stats.groupCount, 1);
     assert.equal(overviewBody.stats.memoryCount, 3);
-    assert.equal(overviewBody.stats.pendingCandidateCount, 1);
+    assert.equal(overviewBody.stats.pendingCandidateCount, 2);
     assert.equal(overviewBody.stats.knowledgeCount, 2);
-    assert.equal(overviewBody.recent?.candidates[0]?.id, orphanCandidate.id);
+    assert.equal(overviewBody.recent?.candidates.some((candidate) => candidate.id === orphanCandidate.id), true);
+    assert.equal(overviewBody.recent?.candidates.some((candidate) => candidate.id === batchFactCandidate.id), true);
     assert.equal(overviewBody.recent?.memories[0]?.title, "Another fact");
     assert.equal(overviewBody.recent?.knowledge.some((entry) => entry.id === knowledgeEntry.id), true);
 
@@ -368,6 +375,24 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(candidatePageBody.pagination.pageSize, 1);
     assert.equal(candidatePageBody.candidates[0]?.title, "Unknown member profile");
 
+    const bulkApprove = await fetch(`${baseUrl}/api/memory-candidates/bulk-approve`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [orphanCandidate.id, batchFactCandidate.id, "missing"] }),
+    });
+    assert.equal(bulkApprove.status, 200);
+    const bulkApproveBody = await bulkApprove.json() as {
+      approvedCount: number;
+      skippedCount: number;
+      approved: Array<{ candidate: { id: string; status: string } }>;
+      skipped: Array<{ id: string; error: string }>;
+    };
+    assert.equal(bulkApproveBody.approvedCount, 1);
+    assert.equal(bulkApproveBody.skippedCount, 2);
+    assert.equal(bulkApproveBody.approved[0]?.candidate.id, batchFactCandidate.id);
+    assert.equal(bulkApproveBody.skipped.some((item) => item.id === orphanCandidate.id && item.error === "member_profile_requires_subject_user_id"), true);
+    assert.equal(bulkApproveBody.skipped.some((item) => item.id === "missing" && item.error === "not_found"), true);
+
     const knowledgeSearch = await fetch(`${baseUrl}/api/knowledge?groupId=67890&q=发票&page=1&pageSize=1`, {
       headers: { Cookie: cookie ?? "" },
     });
@@ -407,7 +432,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(deleteIdentity.status, 200);
-    assert.equal((await groupMemoryStore.list("67890")).length, 4);
+    assert.equal((await groupMemoryStore.list("67890")).length, 5);
   } finally {
     service.close();
     await rm(dir, { recursive: true, force: true });

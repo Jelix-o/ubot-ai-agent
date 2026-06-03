@@ -194,6 +194,11 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/memory-candidates/bulk-approve" && req.method === "POST") {
+      await this.handleBulkApproveCandidates(req, res);
+      return;
+    }
+
     const approveRoute = matchRoute(pathname, /^\/api\/memory-candidates\/([^/]+)\/approve$/);
     if (approveRoute && req.method === "POST") {
       const body = await readJsonBody(req);
@@ -342,6 +347,51 @@ export class AdminHttpServer {
     this.sendJson(res, {
       candidates,
       pagination: page.pagination,
+    });
+  }
+
+  private async handleBulkApproveCandidates(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJsonBody(req);
+    const ids = normalizeIds(body.ids);
+    if (ids.length === 0) {
+      this.sendJson(res, { approved: [], skipped: [], approvedCount: 0, skippedCount: 0 });
+      return;
+    }
+
+    const allCandidates = await this.options.groupMemoryCandidateService.list();
+    const candidatesById = new Map(allCandidates.map((candidate) => [candidate.id, candidate]));
+    const approved: Array<NonNullable<Awaited<ReturnType<GroupMemoryCandidateService["approve"]>>>> = [];
+    const skipped: Array<{ id: string; error: string }> = [];
+    const changedGroupIds = new Set<string>();
+
+    for (const id of ids) {
+      const candidate = candidatesById.get(id);
+      if (!candidate) {
+        skipped.push({ id, error: "not_found" });
+        continue;
+      }
+      if (candidate.type === "member_profile" && !candidate.subjectUserId) {
+        skipped.push({ id, error: "member_profile_requires_subject_user_id" });
+        continue;
+      }
+      const result = await this.options.groupMemoryCandidateService.approve(id);
+      if (!result) {
+        skipped.push({ id, error: "not_found" });
+        continue;
+      }
+      approved.push(result);
+      changedGroupIds.add(result.candidate.groupId);
+    }
+
+    for (const groupId of changedGroupIds) {
+      this.invalidateMemberProfileCache(groupId);
+    }
+
+    this.sendJson(res, {
+      approved,
+      skipped,
+      approvedCount: approved.length,
+      skippedCount: skipped.length,
     });
   }
 
@@ -887,6 +937,13 @@ function normalizeKeywords(value: unknown): string[] {
     return value.split(/[,\s，、]+/).map((item) => item.trim()).filter(Boolean);
   }
   return [];
+}
+
+function normalizeIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(new Set(value.map((item) => String(item).trim()).filter(Boolean)));
 }
 
 function requiredString(value: unknown): string {
