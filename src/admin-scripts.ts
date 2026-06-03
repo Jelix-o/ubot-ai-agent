@@ -364,6 +364,12 @@ function replaceArticle(target, kind, id) {
   article.outerHTML = html;
   return true;
 }
+function updateCurrentMember(member) {
+  if (!member?.userId) return;
+  const index = state.currentMembers.findIndex(item => item.userId === member.userId);
+  if (index >= 0) state.currentMembers[index] = member;
+  else state.currentMembers.unshift(member);
+}
 function replaceEditedArticle(target) {
   const article = target.closest('article');
   if (!article) return false;
@@ -384,7 +390,7 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.jumpView) { state.view = target.dataset.jumpView; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
   if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.memberPage = 1; await renderMembers(true); }, '群成员已同步'); }
   if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
-  if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.editingMemberId = ''; await renderMembers(); }, '成员备注已删除'); }
+  if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
   if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; replaceArticle(target, 'member', target.dataset.editMember); }
   if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; replaceArticle(target, 'candidate', target.dataset.editCandidate); }
   if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; replaceArticle(target, 'memory', target.dataset.editMemory); }
@@ -436,9 +442,10 @@ document.addEventListener('submit', async (event) => {
   const data = Object.fromEntries(new FormData(form).entries());
   if (form.classList.contains('memberForm')) {
     await runAction(form.querySelector('button'), async () => {
-      await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });
+      const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });
+      updateCurrentMember(result.member);
       state.editingMemberId = '';
-      await renderMembers();
+      replaceArticle(form, 'member', form.dataset.userId);
     }, '成员备注已保存');
     return;
   }

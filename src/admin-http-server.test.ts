@@ -283,6 +283,18 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       body: JSON.stringify({ names: ["新人"], note: "测试备注" }),
     });
     assert.equal(updateIdentity.status, 200);
+    const updateIdentityBody = await updateIdentity.json() as { member?: { userId: string; displayName: string; aliases: string[]; note?: string; hasManualIdentity: boolean; memoryCount: number; pendingCandidateCount: number } };
+    assert.deepEqual(updateIdentityBody.member, {
+      userId: "30002",
+      displayName: "新人",
+      nickname: "Newbie",
+      role: "member",
+      aliases: ["新人"],
+      note: "测试备注",
+      hasManualIdentity: true,
+      memoryCount: 0,
+      pendingCandidateCount: 0,
+    });
     const updatedGroups = await fetch(`${baseUrl}/api/groups`, {
       headers: { Cookie: cookie ?? "" },
     });
@@ -463,6 +475,11 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(deleteIdentity.status, 200);
+    const deleteIdentityBody = await deleteIdentity.json() as { member?: { userId: string; note?: string; hasManualIdentity: boolean; memoryCount: number } };
+    assert.equal(deleteIdentityBody.member?.userId, "30002");
+    assert.equal(deleteIdentityBody.member?.note, undefined);
+    assert.equal(deleteIdentityBody.member?.hasManualIdentity, false);
+    assert.equal(deleteIdentityBody.member?.memoryCount, 0);
     assert.equal((await groupMemoryStore.list("67890")).length, 5);
   } finally {
     service.close();

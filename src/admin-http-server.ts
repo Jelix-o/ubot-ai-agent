@@ -480,19 +480,21 @@ export class AdminHttpServer {
 
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
+      const currentProfile = await this.getMemberProfile(route.groupId, route.userId);
       const group = await this.options.groupConfigService.updateManualIdentity(route.groupId, route.userId, {
         names: normalizeNames(body.names),
         note: optionalString(body.note),
       });
       this.invalidateMemberProfileCache(route.groupId);
-      this.sendJson(res, { group });
+      this.sendJson(res, { group, member: await this.buildUpdatedMemberProfile(route.groupId, route.userId, group, currentProfile) });
       return;
     }
 
     if (req.method === "DELETE") {
+      const currentProfile = await this.getMemberProfile(route.groupId, route.userId);
       const group = await this.options.groupConfigService.removeManualIdentity(route.groupId, route.userId);
       this.invalidateMemberProfileCache(route.groupId);
-      this.sendJson(res, { group });
+      this.sendJson(res, { group, member: await this.buildUpdatedMemberProfile(route.groupId, route.userId, group, currentProfile) });
       return;
     }
 
@@ -609,6 +611,44 @@ export class AdminHttpServer {
     }
     this.memberProfileCache.clear();
     this.memberProfileInflight.clear();
+  }
+
+  private async getMemberProfile(groupId: string, userId: string): Promise<GroupMemberProfile | undefined> {
+    const profiles = await this.getCachedMemberProfileData(groupId);
+    return profiles?.members.find((member) => member.userId === userId);
+  }
+
+  private async buildUpdatedMemberProfile(
+    groupId: string,
+    userId: string,
+    groupConfig: GroupBotConfig,
+    currentProfile?: GroupMemberProfile,
+  ): Promise<GroupMemberProfile> {
+    const [memories, candidates] = await Promise.all([
+      this.options.groupMemoryStore.list(groupId),
+      this.options.groupMemoryCandidateService.list({ groupId }),
+    ]);
+    const napcatMembers: NapcatGroupMember[] = currentProfile
+      ? [{
+          user_id: Number(userId),
+          ...(currentProfile.card ? { card: currentProfile.card } : {}),
+          ...(currentProfile.nickname ? { nickname: currentProfile.nickname } : {}),
+          ...(currentProfile.role ? { role: currentProfile.role } : {}),
+        }]
+      : [];
+    return buildGroupMemberProfiles({
+      groupConfig,
+      napcatMembers,
+      memories,
+      candidates,
+    }).find((member) => member.userId === userId) ?? {
+      userId,
+      displayName: userId,
+      aliases: [],
+      hasManualIdentity: false,
+      memoryCount: 0,
+      pendingCandidateCount: 0,
+    };
   }
 
   private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
