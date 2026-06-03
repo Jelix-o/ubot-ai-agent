@@ -42,6 +42,10 @@ export class GroupMemoryCandidateService {
     return this.candidateStore.list(args);
   }
 
+  async get(id: string): Promise<GroupMemoryCandidate | undefined> {
+    return this.candidateStore.get(id);
+  }
+
   async listPage(args: GroupMemoryCandidateListPageArgs): Promise<GroupMemoryCandidateListPageResult> {
     return this.candidateStore.listPage(args);
   }

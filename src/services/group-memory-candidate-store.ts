@@ -68,6 +68,12 @@ export class GroupMemoryCandidateStore {
       .map(cloneCandidate);
   }
 
+  async get(id: string): Promise<GroupMemoryCandidate | undefined> {
+    const data = await this.readData();
+    const candidate = data.candidates.find((item) => item.id === id);
+    return candidate ? cloneCandidate(candidate) : undefined;
+  }
+
   async listPage(args: GroupMemoryCandidateListPageArgs): Promise<GroupMemoryCandidateListPageResult> {
     const data = await this.readData();
     const query = normalizeSearchQuery(args.query);

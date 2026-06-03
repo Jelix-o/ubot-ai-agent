@@ -379,8 +379,8 @@ export class AdminHttpServer {
       return;
     }
 
-    const allCandidates = await this.options.groupMemoryCandidateService.list();
-    const candidatesById = new Map(allCandidates.map((candidate) => [candidate.id, candidate]));
+    const requestedCandidates = await Promise.all(ids.map(async (id) => [id, await this.findCandidate(id)] as const));
+    const candidatesById = new Map(requestedCandidates);
     const approved: Array<NonNullable<Awaited<ReturnType<GroupMemoryCandidateService["approve"]>>>> = [];
     const skipped: Array<{ id: string; error: string }> = [];
     const changedGroupIds = new Set<string>();
@@ -672,13 +672,11 @@ export class AdminHttpServer {
   }
 
   private async findCandidate(id: string): Promise<GroupMemoryCandidate | undefined> {
-    const candidates = await this.options.groupMemoryCandidateService.list();
-    return candidates.find((candidate) => candidate.id === id);
+    return this.options.groupMemoryCandidateService.get(id);
   }
 
   private async findMemory(id: string): Promise<GroupMemory | undefined> {
-    const memories = await this.options.groupMemoryStore.list();
-    return memories.find((memory) => memory.id === id);
+    return this.options.groupMemoryStore.get(id);
   }
 
   private async handleKnowledge(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {

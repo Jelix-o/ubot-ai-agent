@@ -55,6 +55,12 @@ export class GroupMemoryStore {
     return memories.map(cloneMemory);
   }
 
+  async get(id: string): Promise<GroupMemory | undefined> {
+    const data = await this.readData();
+    const memory = data.memories.find((item) => item.id === id);
+    return memory ? cloneMemory(memory) : undefined;
+  }
+
   async listPage(args: GroupMemoryListPageArgs): Promise<GroupMemoryListPageResult> {
     const data = await this.readData();
     const query = normalizeSearchQuery(args.query);

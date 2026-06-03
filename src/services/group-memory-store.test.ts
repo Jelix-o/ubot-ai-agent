@@ -39,6 +39,8 @@ test("group memory store initializes, persists, filters, updates and removes", a
 
     assert.equal((await store.list("67890")).length, 1);
     assert.equal((await store.listEnabled("67890")).length, 1);
+    assert.equal((await store.get(memory.id))?.title, "Tester preference");
+    assert.equal(await store.get("missing"), undefined);
 
     const updated = await store.update(memory.id, { enabled: false, title: "Updated" });
     assert.equal(updated?.enabled, false);
@@ -421,7 +423,7 @@ test("candidate service merges candidates similar to pending candidates", async 
   try {
     const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
     const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
-    await candidateStore.addCandidate({
+    const existingCandidate = await candidateStore.addCandidate({
       groupId: "67890",
       type: "member_profile",
       subjectUserId: "20001",
@@ -436,6 +438,8 @@ test("candidate service merges candidates similar to pending candidates", async 
         summary: "Tester mentioned League of Legends.",
       },
     });
+    assert.equal((await candidateStore.get(existingCandidate.id))?.title, "Tester game preference");
+    assert.equal(await candidateStore.get("missing"), undefined);
     const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
       async extractGroupMemoryCandidates() {
         return [
