@@ -309,7 +309,8 @@ export class AdminHttpServer {
       const body = await readJsonBody(req);
       const memory = await this.options.groupMemoryStore.create(normalizeMemoryInput(body));
       this.invalidateMemberProfileCache(memory.groupId);
-      this.sendJson(res, memory, 201);
+      const enriched = (await this.enrichMemories([memory], memory.groupId))[0];
+      this.sendJson(res, enriched ?? memory, 201);
       return;
     }
 

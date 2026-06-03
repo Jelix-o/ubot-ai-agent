@@ -491,6 +491,43 @@ function showLocalNotice(kind, message) {
   if (anchor?.parentNode) anchor.parentNode.insertBefore(node, anchor.nextSibling);
   else content().appendChild(node);
 }
+function itemMatchesCurrentMemoryFilters(memory) {
+  if (!memory || memory.groupId !== state.groupId) return false;
+  if (state.subjectUserId && memory.subjectUserId !== state.subjectUserId) return false;
+  if (state.memoryType && memory.type !== state.memoryType) return false;
+  if (state.memoryEnabled && String(memory.enabled) !== state.memoryEnabled) return false;
+  if (state.memoryQuery.trim()) return false;
+  return state.memoryPage === 1;
+}
+function insertMemoryLocally(memory) {
+  if (!itemMatchesCurrentMemoryFilters(memory)) return false;
+  state.currentMemories = [memory, ...state.currentMemories.filter(item => item.id !== memory.id)].slice(0, state.memoryPageSize);
+  state.editingMemoryId = '';
+  const groups = groupMemories(state.currentMemories);
+  const section = content().querySelector('section.panel');
+  const pagination = content().querySelector('.pagination');
+  content().querySelector('[data-local-empty="memory"]')?.remove();
+  content().querySelectorAll('.group-block').forEach(node => node.remove());
+  const html = groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('');
+  if (pagination) pagination.insertAdjacentHTML('beforebegin', html);
+  else section?.insertAdjacentHTML('beforeend', html);
+  return true;
+}
+function knowledgeMatchesCurrentFilters(entry) {
+  if (!entry || entry.groupId !== state.groupId) return false;
+  if (state.knowledgeQuery.trim()) return false;
+  return state.knowledgePage === 1;
+}
+function insertKnowledgeLocally(entry) {
+  if (!knowledgeMatchesCurrentFilters(entry)) return false;
+  state.currentKnowledge = [entry, ...state.currentKnowledge.filter(item => item.id !== entry.id)].slice(0, state.knowledgePageSize);
+  state.editingKnowledgeId = '';
+  const list = content().querySelector('.list');
+  if (!list) return false;
+  list.innerHTML = state.currentKnowledge.map(rowKnowledge).join('');
+  content().querySelector('[data-local-empty="knowledge"]')?.remove();
+  return true;
+}
 function replaceEditedArticle(target) {
   const article = target.closest('article');
   if (!article) return false;
@@ -574,16 +611,16 @@ document.addEventListener('submit', async (event) => {
   }
   if (form.id === 'memoryForm') {
     await runAction(form.querySelector('button'), async () => {
-      await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) });
-      state.memoryPage = 1;
-      await render();
+      const memory = await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) });
+      form.reset();
+      if (!insertMemoryLocally(memory)) showLocalNotice('memory', '长期记忆已新增。当前筛选下不显示，可清空筛选或回到第一页查看。');
     }, '长期记忆已新增');
   }
   if (form.id === 'knowledgeForm') {
     await runAction(form.querySelector('button'), async () => {
-      await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[,，、]+/) }) });
-      state.knowledgePage = 1;
-      await render();
+      const entry = await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[,，、]+/) }) });
+      form.reset();
+      if (!insertKnowledgeLocally(entry)) showLocalNotice('knowledge', 'FAQ 已新增。当前搜索下不显示，可清空搜索或回到第一页查看。');
     }, 'FAQ 已新增');
   }
   if (form.dataset.pageJump) {
