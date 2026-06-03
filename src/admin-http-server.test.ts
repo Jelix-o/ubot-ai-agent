@@ -322,6 +322,40 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(memoryBody.memories[1]?.title, "Latest fact");
     assert.equal(listGroupMembersCalls, listCallsBeforeLightPages);
 
+    const invalidBulkMemory = await fetch(`${baseUrl}/api/memories/bulk`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "archive", ids: [memoryBody.memories[0]!.id] }),
+    });
+    assert.equal(invalidBulkMemory.status, 400);
+
+    const bulkDisableMemories = await fetch(`${baseUrl}/api/memories/bulk`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "disable", ids: [memoryBody.memories[0]!.id, "missing"] }),
+    });
+    assert.equal(bulkDisableMemories.status, 200);
+    const bulkDisableBody = await bulkDisableMemories.json() as {
+      processedCount: number;
+      skippedCount: number;
+      processed: Array<{ id: string; memory?: { id: string; enabled: boolean; subjectLabel?: { label: string } } }>;
+      skipped: Array<{ id: string; error: string }>;
+    };
+    assert.equal(bulkDisableBody.processedCount, 1);
+    assert.equal(bulkDisableBody.skippedCount, 1);
+    assert.equal(bulkDisableBody.processed[0]?.memory?.enabled, false);
+    assert.equal(bulkDisableBody.skipped[0]?.error, "not_found");
+
+    const bulkDeleteMemories = await fetch(`${baseUrl}/api/memories/bulk`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", ids: [memoryBody.memories[1]!.id] }),
+    });
+    assert.equal(bulkDeleteMemories.status, 200);
+    const bulkDeleteBody = await bulkDeleteMemories.json() as { processedCount: number; skippedCount: number };
+    assert.equal(bulkDeleteBody.processedCount, 1);
+    assert.equal(bulkDeleteBody.skippedCount, 0);
+
     const lightCandidates = await fetch(`${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=1`, {
       headers: { Cookie: cookie ?? "" },
     });
@@ -335,6 +369,14 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(memorySearchBody.pagination.total, 1);
     assert.equal(memorySearchBody.memories[0]?.subjectLabel?.label.includes("QQ 20001"), true);
     assert.equal(memorySearchBody.memories[0]?.evidence?.messageCount, 3);
+
+    const memoriesAfterBulk = await fetch(`${baseUrl}/api/memories?groupId=67890&page=1&pageSize=10`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    const memoriesAfterBulkBody = await memoriesAfterBulk.json() as typeof memoryBody;
+    assert.equal(memoriesAfterBulkBody.pagination.total, 2);
+    assert.equal(memoriesAfterBulkBody.memories.some((memory) => memory.title === "Latest fact"), false);
+    assert.equal(memoriesAfterBulkBody.memories.find((memory) => memory.title === "Another fact")?.enabled, false);
 
     const profileMemoryId = memorySearchBody.memories[0]!.id;
     const editMemory = await fetch(`${baseUrl}/api/memories/${profileMemoryId}`, {
@@ -481,7 +523,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(deleteIdentityBody.member?.note, undefined);
     assert.equal(deleteIdentityBody.member?.hasManualIdentity, false);
     assert.equal(deleteIdentityBody.member?.memoryCount, 0);
-    assert.equal((await groupMemoryStore.list("67890")).length, 5);
+    assert.equal((await groupMemoryStore.list("67890")).length, 4);
   } finally {
     service.close();
     await rm(dir, { recursive: true, force: true });

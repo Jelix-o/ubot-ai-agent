@@ -9,7 +9,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 `.trimStart();
 
 export const ADMIN_APP_JS = String.raw`
-const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
+const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), selectedMemoryIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
 let ownerMemberSearchTimer = null;
@@ -98,6 +98,7 @@ function resetGroupScopedState() {
   state.candidateStatus = 'pending';
   state.candidateQuery = '';
   state.selectedCandidateIds = new Set();
+  state.selectedMemoryIds = new Set();
   state.memoryQuery = '';
   state.memoryType = '';
   state.memoryEnabled = '';
@@ -326,11 +327,13 @@ async function renderMemories() {
   if (!data || !isLatestRender(token)) return;
   const memories = data.memories || [];
   state.currentMemories = memories;
+  const currentMemoryIds = new Set(state.currentMemories.map(memory => memory.id));
+  state.selectedMemoryIds = new Set([...state.selectedMemoryIds].filter(id => currentMemoryIds.has(id)));
   const pageInfo = data.pagination || { page: state.memoryPage, pageSize: state.memoryPageSize, total: memories.length, totalPages: 1 };
   state.memoryPage = pageInfo.page;
   const groups = groupMemories(memories);
   const empty = groups.length ? '' : '<p class="message">没有符合筛选条件的长期记忆。</p>';
-  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ">' + memberFilterControl('memorySubjectFilter', state.subjectUserId) + '<select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select><button class="ghost" data-clear-memory-filters>清空筛选</button></div>' + memoryForm() + empty + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
+  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ">' + memberFilterControl('memorySubjectFilter', state.subjectUserId) + '<select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select><button class="ghost" data-clear-memory-filters>清空筛选</button></div>' + memoryForm() + memorySelectionBar() + empty + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
   document.querySelector('#memorySearch').addEventListener('input', debounce(event => { state.memoryQuery = event.target.value; state.memoryPage = 1; renderMemories(); }, 250));
   document.querySelector('#memorySubjectFilter')?.addEventListener('input', debounce(event => { state.subjectUserId = event.target.value.trim(); state.memoryPage = 1; renderMemories(); }, 250));
   document.querySelector('#memoryTypeFilter').addEventListener('change', event => { state.memoryType = event.target.value; state.memoryPage = 1; renderMemories(); });
@@ -339,6 +342,31 @@ async function renderMemories() {
 }
 function memoryForm() {
   return '<details class="inline-editor"><summary>新增长期记忆</summary><form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select>' + ownerInput('subjectUserId') + '<input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form></details>';
+}
+function memorySelectionBar() {
+  const selectedCount = state.selectedMemoryIds.size;
+  const allSelected = state.currentMemories.length > 0 && state.currentMemories.every(memory => state.selectedMemoryIds.has(memory.id));
+  return '<div class="toolbar"><label><input type="checkbox" data-select-all-memories' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-memory-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-disable-memories' + (selectedCount === 0 ? ' disabled' : '') + '>停用已选</button><button type="button" class="ghost" data-bulk-delete-memories' + (selectedCount === 0 ? ' disabled' : '') + '>' + (state.pendingDelete === 'memories:bulk' ? '确认批量删除' : '批量删除') + '</button><button type="button" class="ghost" data-clear-memory-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+}
+function updateMemorySelectionUi() {
+  const selectedCount = state.selectedMemoryIds.size;
+  const countNode = document.querySelector('[data-memory-selected-count]');
+  if (countNode) countNode.textContent = '已选 ' + selectedCount + ' 条';
+  const disableButton = document.querySelector('[data-bulk-disable-memories]');
+  if (disableButton) disableButton.disabled = selectedCount === 0;
+  const deleteButton = document.querySelector('[data-bulk-delete-memories]');
+  if (deleteButton) deleteButton.disabled = selectedCount === 0;
+  const clearButton = document.querySelector('[data-clear-memory-selection]');
+  if (clearButton) clearButton.disabled = selectedCount === 0;
+  document.querySelectorAll('[data-select-memory]').forEach(input => {
+    if (input instanceof HTMLInputElement) input.checked = state.selectedMemoryIds.has(input.dataset.selectMemory);
+  });
+  const allInput = document.querySelector('[data-select-all-memories]');
+  if (allInput instanceof HTMLInputElement) {
+    const selectedOnPage = state.currentMemories.filter(memory => state.selectedMemoryIds.has(memory.id)).length;
+    allInput.checked = state.currentMemories.length > 0 && selectedOnPage === state.currentMemories.length;
+    allInput.indeterminate = selectedOnPage > 0 && selectedOnPage < state.currentMemories.length;
+  }
 }
 function groupMemories(memories) {
   const map = new Map();
@@ -352,7 +380,8 @@ function groupMemories(memories) {
 function rowMemory(m) {
   const meta = '<div class="meta">当前归属：' + esc(ownerLabel(m)) + ' · 类型：' + esc(typeText(m.type)) + ' · 状态：' + enabledText(m.enabled) + ' · 置信度：' + esc(m.confidence) + '</div>';
   if (state.editingMemoryId !== m.id) {
-    return '<article data-memory-id="' + esc(m.id) + '"><h3>' + esc(m.title) + '</h3><span>' + esc(shortText(m.content)) + '</span>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-edit-memory="' + esc(m.id) + '">编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
+    const checked = state.selectedMemoryIds.has(m.id) ? ' checked' : '';
+    return '<article data-memory-id="' + esc(m.id) + '"><label><input type="checkbox" data-select-memory="' + esc(m.id) + '"' + checked + '> 选择</label><h3>' + esc(m.title) + '</h3><span>' + esc(shortText(m.content)) + '</span>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-edit-memory="' + esc(m.id) + '">编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></article>';
   }
   return '<article><form class="memoryItemForm" data-memory-id="' + esc(m.id) + '"><div class="memory-form"><select name="type"><option value="member_profile"' + selected(m.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(m.type, 'group_fact') + '>群事实</option></select>' + ownerInput('subjectUserId', m.subjectUserId || '', ownerLabel(m)) + '<input name="title" value="' + esc(m.title) + '" placeholder="标题"><input name="confidence" type="number" min="0" max="1" step="0.01" value="' + esc(m.confidence) + '" placeholder="置信度"><select name="enabled"><option value="true"' + selected(String(m.enabled), 'true') + '>启用</option><option value="false"' + selected(String(m.enabled), 'false') + '>停用</option></select><textarea name="content" placeholder="内容">' + esc(m.content) + '</textarea></div>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-save-memory="' + esc(m.id) + '">保存编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></form></article>';
 }
@@ -530,6 +559,23 @@ function updateCandidateFromBulk(candidate) {
   }
   if (article) article.outerHTML = rowCandidate(candidate);
 }
+function updateMemoryFromBulk(memory) {
+  if (!memory?.id) return;
+  state.selectedMemoryIds.delete(memory.id);
+  updateCurrentItem('currentMemories', memory.id, memory);
+  const article = content().querySelector('[data-memory-id="' + CSS.escape(memory.id) + '"]');
+  if (!itemMatchesCurrentMemoryFilters(memory)) {
+    removeCurrentItem('currentMemories', memory.id);
+    article?.remove();
+    return;
+  }
+  if (article) article.outerHTML = rowMemory(memory);
+}
+function removeMemoryFromBulk(id) {
+  state.selectedMemoryIds.delete(id);
+  removeCurrentItem('currentMemories', id);
+  content().querySelector('[data-memory-id="' + CSS.escape(id) + '"]')?.remove();
+}
 function showLocalNotice(kind, message) {
   const previous = content().querySelector('[data-local-notice="' + kind + '"]');
   if (!message) {
@@ -630,7 +676,37 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); state.selectedCandidateIds.delete(target.dataset.deleteCandidate); removeCurrentItem('currentCandidates', target.dataset.deleteCandidate); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('candidate'); }, '候选记忆已删除'); }
   if (target.dataset.saveMemory) { await runAction(target, async () => { const memory = await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); updateCurrentItem('currentMemories', target.dataset.saveMemory, memory); state.editingMemoryId = ''; replaceArticle(target, 'memory', target.dataset.saveMemory); }, '长期记忆已保存'); }
   if (target.dataset.toggleMemory) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentMemories', target.dataset.toggleMemory, { enabled }); replaceArticle(target, 'memory', target.dataset.toggleMemory); }, '长期记忆状态已更新'); }
-  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('memory'); }, '长期记忆已删除'); }
+  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); state.selectedMemoryIds.delete(target.dataset.deleteMemory); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('memory'); updateMemorySelectionUi(); }, '长期记忆已删除'); }
+  if (target.dataset.bulkDisableMemories !== undefined) {
+    await runAction(target, async () => {
+      const selectedIds = state.currentMemories.filter(memory => state.selectedMemoryIds.has(memory.id)).map(memory => memory.id);
+      const result = await api('/api/memories/bulk', { method: 'POST', body: JSON.stringify({ action: 'disable', ids: selectedIds }) });
+      (result.processed || []).forEach(item => updateMemoryFromBulk(item.memory));
+      state.selectedMemoryIds = new Set((result.skipped || []).map(item => item.id).filter(id => state.currentMemories.some(memory => memory.id === id)));
+      showLocalNotice('memory', result.skippedCount ? '已停用 ' + result.processedCount + ' 条，跳过 ' + result.skippedCount + ' 条。' : '');
+      ensureLocalEmptyState('memory');
+      updateMemorySelectionUi();
+    }, '已停用选中的长期记忆');
+  }
+  if (target.dataset.bulkDeleteMemories !== undefined) {
+    if (state.pendingDelete !== 'memories:bulk') {
+      state.pendingDelete = 'memories:bulk';
+      const button = document.querySelector('[data-bulk-delete-memories]');
+      if (button) button.textContent = '确认批量删除';
+      return;
+    }
+    await runAction(target, async () => {
+      const selectedIds = state.currentMemories.filter(memory => state.selectedMemoryIds.has(memory.id)).map(memory => memory.id);
+      const result = await api('/api/memories/bulk', { method: 'POST', body: JSON.stringify({ action: 'delete', ids: selectedIds }) });
+      (result.processed || []).forEach(item => removeMemoryFromBulk(item.id));
+      state.selectedMemoryIds = new Set((result.skipped || []).map(item => item.id).filter(id => state.currentMemories.some(memory => memory.id === id)));
+      state.pendingDelete = '';
+      showLocalNotice('memory', result.skippedCount ? '已删除 ' + result.processedCount + ' 条，跳过 ' + result.skippedCount + ' 条。' : '');
+      ensureLocalEmptyState('memory');
+      updateMemorySelectionUi();
+    }, '已删除选中的长期记忆');
+  }
+  if (target.dataset.clearMemorySelection !== undefined) { state.selectedMemoryIds = new Set(); state.pendingDelete = ''; updateMemorySelectionUi(); const button = document.querySelector('[data-bulk-delete-memories]'); if (button) button.textContent = '批量删除'; }
   if (target.dataset.clearMemoryFilters !== undefined) { state.subjectUserId = ''; state.memoryType = ''; state.memoryEnabled = ''; state.memoryQuery = ''; state.memoryPage = 1; await renderMemories(); }
   if (target.dataset.candidateStatusShortcut !== undefined) { state.candidateStatus = target.dataset.candidateStatusShortcut; state.candidatePage = 1; await renderCandidates(); }
   if (target.dataset.pageKind && target.dataset.pageStep) { await changePage(target.dataset.pageKind, target.dataset.pageStep === 'next' ? 1 : -1); }
@@ -665,6 +741,19 @@ document.addEventListener('change', async (event) => {
       ? new Set(state.currentCandidates.map(candidate => candidate.id))
       : new Set();
     updateCandidateSelectionUi();
+  }
+  if (target.dataset.selectMemory) {
+    if (target.checked) state.selectedMemoryIds.add(target.dataset.selectMemory);
+    else state.selectedMemoryIds.delete(target.dataset.selectMemory);
+    state.pendingDelete = '';
+    updateMemorySelectionUi();
+  }
+  if (target.dataset.selectAllMemories !== undefined) {
+    state.selectedMemoryIds = target.checked
+      ? new Set(state.currentMemories.map(memory => memory.id))
+      : new Set();
+    state.pendingDelete = '';
+    updateMemorySelectionUi();
   }
 });
 document.addEventListener('submit', async (event) => {

@@ -201,6 +201,11 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/memories/bulk" && req.method === "POST") {
+      await this.handleBulkMemories(req, res);
+      return;
+    }
+
     const memoryRoute = matchRoute(pathname, /^\/api\/memories\/([^/]+)$/);
     if (memoryRoute) {
       await this.handleMemoryItem(req, res, memoryRoute);
@@ -342,6 +347,62 @@ export class AdminHttpServer {
     }
 
     this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async handleBulkMemories(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await readJsonBody(req);
+    const ids = normalizeIds(body.ids);
+    const action = typeof body.action === "string" ? body.action : "";
+    if (ids.length === 0) {
+      this.sendJson(res, { processed: [], skipped: [], processedCount: 0, skippedCount: 0 });
+      return;
+    }
+    if (action !== "disable" && action !== "delete") {
+      this.sendJson(res, { error: "invalid_action" }, 400);
+      return;
+    }
+
+    const processed: Array<{ id: string; memory?: GroupMemory }> = [];
+    const skipped: Array<{ id: string; error: string }> = [];
+    const changedGroupIds = new Set<string>();
+
+    for (const id of ids) {
+      const existing = await this.findMemory(id);
+      if (!existing) {
+        skipped.push({ id, error: "not_found" });
+        continue;
+      }
+
+      if (action === "delete") {
+        const removed = await this.options.groupMemoryStore.remove(id);
+        if (!removed) {
+          skipped.push({ id, error: "not_found" });
+          continue;
+        }
+        processed.push({ id });
+        changedGroupIds.add(existing.groupId);
+        continue;
+      }
+
+      const memory = await this.options.groupMemoryStore.update(id, { enabled: false });
+      if (!memory) {
+        skipped.push({ id, error: "not_found" });
+        continue;
+      }
+      processed.push({ id, memory: (await this.enrichMemories([memory], memory.groupId))[0] ?? memory });
+      changedGroupIds.add(memory.groupId);
+    }
+
+    for (const groupId of changedGroupIds) {
+      this.invalidateMemberProfileCache(groupId);
+    }
+
+    this.sendJson(res, {
+      processed,
+      skipped,
+      processedCount: processed.length,
+      skippedCount: skipped.length,
+    });
   }
 
   private async handleCandidates(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
