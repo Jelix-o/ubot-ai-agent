@@ -91,6 +91,15 @@ export interface GroupMemoryEvidence {
   summary: string;
 }
 
+export interface GroupMemoryEvidencePreview {
+  startAt: string;
+  endAt: string;
+  messageCount: number;
+  speakerCount: number;
+  summaryPreview: string;
+  hasFullEvidence: boolean;
+}
+
 export interface GroupMemory {
   id: string;
   groupId: string;

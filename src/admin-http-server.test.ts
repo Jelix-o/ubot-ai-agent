@@ -78,6 +78,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     type: "group_fact",
     title: "Batch fact",
     content: "Batch approval should use one API call.",
+    evidence: {
+      startAt: "2026-06-03T09:00:00.000Z",
+      endAt: "2026-06-03T09:02:00.000Z",
+      messageCount: 2,
+      speakers: [{ userId: "20002", userName: "BatchUser" }],
+      summary: "BatchUser discussed a group-level fact that should be approved in bulk.",
+    },
   });
   const knowledgeBaseStore = new KnowledgeBaseStore(path.join(dir, "knowledge.json"));
   const knowledgeEntry = await knowledgeBaseStore.create({
@@ -189,6 +196,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJs.headers.get("content-type")?.includes("javascript"), true);
     const adminAppJsText = await adminAppJs.text();
     assert.equal(adminAppJsText.includes("renderOverview"), true);
+    assert.equal(adminAppJsText.includes("query.set('evidence', 'preview')"), true);
+    assert.equal(adminAppJsText.includes("data-load-evidence"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
@@ -322,6 +331,29 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(memoryBody.memories[1]?.title, "Latest fact");
     assert.equal(listGroupMembersCalls, listCallsBeforeLightPages);
 
+    const previewMemories = await fetch(`${baseUrl}/api/memories?groupId=67890&q=concise&page=1&pageSize=2&evidence=preview`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(previewMemories.status, 200);
+    const previewMemoryBody = await previewMemories.json() as {
+      memories: Array<{ id: string; evidence?: { messageCount: number; speakerCount?: number; summaryPreview?: string; summary?: string; speakers?: unknown[]; hasFullEvidence?: boolean } }>;
+    };
+    const previewEvidence = previewMemoryBody.memories.find((memory) => memory.evidence)?.evidence;
+    assert.equal(previewEvidence?.hasFullEvidence, true);
+    assert.equal(previewEvidence?.messageCount, 3);
+    assert.equal(previewEvidence?.speakerCount, 1);
+    assert.equal(typeof previewEvidence?.summaryPreview, "string");
+    assert.equal(previewEvidence?.summary, undefined);
+    assert.equal(previewEvidence?.speakers, undefined);
+
+    const memoryDetail = await fetch(`${baseUrl}/api/memories/${previewMemoryBody.memories.find((memory) => memory.evidence)!.id}`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(memoryDetail.status, 200);
+    const memoryDetailBody = await memoryDetail.json() as { evidence?: { summary?: string; speakers?: unknown[] } };
+    assert.equal(typeof memoryDetailBody.evidence?.summary, "string");
+    assert.equal(Array.isArray(memoryDetailBody.evidence?.speakers), true);
+
     const invalidBulkMemory = await fetch(`${baseUrl}/api/memories/bulk`, {
       method: "POST",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -361,6 +393,24 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(lightCandidates.status, 200);
     assert.equal(listGroupMembersCalls, listCallsBeforeLightPages);
+
+    const previewCandidates = await fetch(`${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=10&evidence=preview`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(previewCandidates.status, 200);
+    const previewCandidateBody = await previewCandidates.json() as { candidates: Array<{ id: string; evidence?: { hasFullEvidence?: boolean; summary?: string; summaryPreview?: string } }> };
+    const previewCandidate = previewCandidateBody.candidates.find((candidate) => candidate.evidence);
+    assert.equal(previewCandidate?.evidence?.hasFullEvidence, true);
+    assert.equal(typeof previewCandidate?.evidence?.summaryPreview, "string");
+    assert.equal(previewCandidate?.evidence?.summary, undefined);
+
+    const candidateDetail = await fetch(`${baseUrl}/api/memory-candidates/${previewCandidate!.id}`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(candidateDetail.status, 200);
+    const candidateDetailBody = await candidateDetail.json() as { evidence?: { summary?: string; speakers?: unknown[] } };
+    assert.equal(typeof candidateDetailBody.evidence?.summary, "string");
+    assert.equal(Array.isArray(candidateDetailBody.evidence?.speakers), true);
 
     const memorySearch = await fetch(`${baseUrl}/api/memories?groupId=67890&q=concise&page=1&pageSize=10`, {
       headers: { Cookie: cookie ?? "" },

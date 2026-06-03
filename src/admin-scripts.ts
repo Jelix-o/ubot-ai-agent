@@ -42,9 +42,16 @@ const toast = (message, type = 'ok') => {
 const evidenceHtml = (item) => {
   const evidence = item.evidence;
   if (!evidence) return '<div class="evidence"><b>来源证据：</b>无来源记录</div>';
+  if (evidence.hasFullEvidence) {
+    return '<div class="evidence" data-evidence-box="' + esc(item.id) + '"><b>来源证据</b><span>' + esc(evidence.messageCount) + ' 条 · ' + esc(evidence.startAt) + ' 至 ' + esc(evidence.endAt) + ' · ' + esc(evidence.speakerCount) + ' 人参与</span><em>' + esc(evidence.summaryPreview || '无摘要') + '</em><button type="button" class="ghost" data-load-evidence="' + esc(item.id) + '" data-evidence-kind="' + esc(item.status ? 'candidate' : 'memory') + '">查看完整来源</button></div>';
+  }
   const speakers = (evidence.speakers || []).map(s => (s.userName ? esc(s.userName) + ' / QQ ' + esc(s.userId) : 'QQ ' + esc(s.userId))).join('、') || '无';
   const summary = shortText(evidence.summary, 120);
   return '<details class="evidence"><summary><b>来源证据</b><span>' + esc(evidence.messageCount) + ' 条 · ' + esc(evidence.startAt) + ' 至 ' + esc(evidence.endAt) + ' · ' + esc((evidence.speakers || []).length) + ' 人参与</span><em>' + esc(summary) + '</em></summary><div class="evidence-body"><p>' + esc(evidence.summary) + '</p><span>参与：' + speakers + '</span></div></details>';
+};
+const fullEvidenceHtml = (item) => {
+  if (!item?.evidence || item.evidence.hasFullEvidence) return evidenceHtml(item || {});
+  return evidenceHtml(item);
 };
 const api = async (url, options = {}) => {
   const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -266,6 +273,7 @@ async function renderCandidates() {
   if (state.candidateQuery.trim()) query.set('q', state.candidateQuery.trim());
   query.set('page', String(state.candidatePage));
   query.set('pageSize', String(state.candidatePageSize));
+  query.set('evidence', 'preview');
   const data = await apiForRender('/api/memory-candidates?' + query.toString());
   if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.candidatePage, pageSize: state.candidatePageSize, total: (data.candidates || []).length, totalPages: 1 };
@@ -343,6 +351,7 @@ async function renderMemories() {
   if (state.memoryQuery.trim()) query.set('q', state.memoryQuery.trim());
   query.set('page', String(state.memoryPage));
   query.set('pageSize', String(state.memoryPageSize));
+  query.set('evidence', 'preview');
   const data = await apiForRender('/api/memories?' + query.toString());
   if (!data || !isLatestRender(token)) return;
   const memories = data.memories || [];
@@ -655,6 +664,16 @@ function insertKnowledgeLocally(entry) {
   content().querySelector('[data-local-empty="knowledge"]')?.remove();
   return true;
 }
+async function loadFullEvidence(target) {
+  const id = target.dataset.loadEvidence;
+  const kind = target.dataset.evidenceKind;
+  if (!id || (kind !== 'memory' && kind !== 'candidate')) return;
+  const item = await api((kind === 'memory' ? '/api/memories/' : '/api/memory-candidates/') + encodeURIComponent(id));
+  if (kind === 'memory') updateCurrentItem('currentMemories', id, item);
+  else updateCurrentItem('currentCandidates', id, item);
+  const box = content().querySelector('[data-evidence-box="' + CSS.escape(id) + '"]');
+  if (box) box.outerHTML = fullEvidenceHtml(item);
+}
 function replaceEditedArticle(target) {
   const article = target.closest('article');
   if (!article) return false;
@@ -681,6 +700,7 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; replaceArticle(target, 'memory', target.dataset.editMemory); preloadOwnerMembers(); }
   if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; replaceArticle(target, 'knowledge', target.dataset.editKnowledge); }
   if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; replaceEditedArticle(target); }
+  if (target.dataset.loadEvidence) { await runAction(target, async () => { await loadFullEvidence(target); }, '来源证据已展开'); }
   if (target.dataset.saveCandidate) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); updateCurrentItem('currentCandidates', target.dataset.saveCandidate, candidate); state.editingCandidateId = ''; replaceArticle(target, 'candidate', target.dataset.saveCandidate); }, '候选记忆已保存'); }
   if (target.dataset.approve) { await runAction(target, async () => { const result = await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); showOrRemoveCandidate(target, result.candidate); }, '候选记忆已批准'); }
   if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); const result = await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); showOrRemoveCandidate(target, result.candidate); }, '已转为群事实并批准'); }

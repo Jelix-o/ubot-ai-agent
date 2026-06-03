@@ -12,7 +12,7 @@ import type { GroupMemoryCandidateService } from "./services/group-memory-candid
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
-import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType, NapcatGroupMember } from "./types.js";
+import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupMember } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -31,8 +31,10 @@ interface AdminHttpServerOptions {
 }
 
 type RouteParams = Record<string, string>;
+type EvidenceResponseMode = "full" | "preview";
 
 const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
+const ADMIN_EVIDENCE_PREVIEW_LIMIT = 180;
 
 export class AdminHttpServer {
   private readonly memberProfileCache = new Map<string, {
@@ -148,8 +150,8 @@ export class AdminHttpServer {
           knowledgeCount: knowledgePage.pagination.total,
         },
         recent: {
-          candidates: await this.enrichCandidates(candidatesPage.items, groupId),
-          memories: await this.enrichMemories(memoriesPage.items, groupId),
+          candidates: await this.enrichCandidates(candidatesPage.items, groupId, "preview"),
+          memories: await this.enrichMemories(memoriesPage.items, groupId, "preview"),
           knowledge: knowledgePage.items,
         },
         transportHealth,
@@ -295,6 +297,7 @@ export class AdminHttpServer {
       const type = normalizeOptionalMemoryType(url.searchParams.get("type") ?? undefined);
       const enabled = normalizeOptionalBoolean(url.searchParams.get("enabled") ?? undefined);
       const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
+      const evidenceMode = normalizeEvidenceMode(url.searchParams.get("evidence") ?? undefined);
       const pagination = paginationParams(url, 20, 100);
       const page = await this.options.groupMemoryStore.listPage({
         groupId,
@@ -304,7 +307,7 @@ export class AdminHttpServer {
         query,
         ...pagination,
       });
-      const memories = await this.enrichMemories(page.items, groupId);
+      const memories = await this.enrichMemories(page.items, groupId, evidenceMode);
       this.sendJson(res, {
         memories,
         pagination: page.pagination,
@@ -325,6 +328,13 @@ export class AdminHttpServer {
   }
 
   private async handleMemoryItem(req: IncomingMessage, res: ServerResponse, params: RouteParams): Promise<void> {
+    if (req.method === "GET") {
+      const memory = await this.findMemory(params.id);
+      const enriched = memory ? (await this.enrichMemories([memory], memory.groupId, "full"))[0] : undefined;
+      this.sendJson(res, enriched ?? { error: "not_found" }, enriched ? 200 : 404);
+      return;
+    }
+
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
       const memory = await this.options.groupMemoryStore.update(params.id, normalizeMemoryPatch(body));
@@ -362,7 +372,7 @@ export class AdminHttpServer {
       return;
     }
 
-    const processed: Array<{ id: string; memory?: GroupMemory }> = [];
+    const processed: Array<{ id: string; memory?: unknown }> = [];
     const skipped: Array<{ id: string; error: string }> = [];
     const changedGroupIds = new Set<string>();
 
@@ -416,6 +426,7 @@ export class AdminHttpServer {
     const type = normalizeOptionalMemoryType(url.searchParams.get("type") ?? undefined);
     const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
     const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
+    const evidenceMode = normalizeEvidenceMode(url.searchParams.get("evidence") ?? undefined);
     const pagination = paginationParams(url, 20, 100);
     const page = await this.options.groupMemoryCandidateService.listPage({
       groupId,
@@ -425,7 +436,7 @@ export class AdminHttpServer {
       query,
       ...pagination,
     });
-    const candidates = await this.enrichCandidates(page.items, groupId);
+    const candidates = await this.enrichCandidates(page.items, groupId, evidenceMode);
     this.sendJson(res, {
       candidates,
       pagination: page.pagination,
@@ -478,6 +489,13 @@ export class AdminHttpServer {
   }
 
   private async handleCandidateItem(req: IncomingMessage, res: ServerResponse, params: RouteParams): Promise<void> {
+    if (req.method === "GET") {
+      const candidate = await this.findCandidate(params.id);
+      const enriched = candidate ? (await this.enrichCandidates([candidate], candidate.groupId, "full"))[0] : undefined;
+      this.sendJson(res, enriched ?? { error: "not_found" }, enriched ? 200 : 404);
+      return;
+    }
+
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
       const candidate = await this.options.groupMemoryCandidateService.update(params.id, normalizeCandidatePatch(body));
@@ -569,10 +587,15 @@ export class AdminHttpServer {
   private async enrichMemories(
     memories: GroupMemory[],
     preferredGroupId?: string,
-  ): Promise<Array<GroupMemory & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
+    evidenceMode: EvidenceResponseMode = "full",
+  ): Promise<Array<Omit<GroupMemory, "evidence"> & {
+    evidence?: GroupMemoryEvidence | GroupMemoryEvidencePreview;
+    subjectLabel: ReturnType<typeof buildSubjectLabel>;
+  }>> {
     const groupsById = await this.loadGroupConfigsById(memories.map((memory) => memory.groupId), preferredGroupId);
     return memories.map((memory) => ({
       ...memory,
+      ...(memory.evidence ? { evidence: formatEvidenceForResponse(memory.evidence, evidenceMode) } : {}),
       subjectLabel: buildSubjectLabel(
         groupsById.get(memory.groupId) ?? fallbackGroupConfig(memory.groupId),
         memory.subjectUserId,
@@ -585,10 +608,15 @@ export class AdminHttpServer {
   private async enrichCandidates(
     candidates: GroupMemoryCandidate[],
     preferredGroupId?: string,
-  ): Promise<Array<GroupMemoryCandidate & { subjectLabel: ReturnType<typeof buildSubjectLabel> }>> {
+    evidenceMode: EvidenceResponseMode = "full",
+  ): Promise<Array<Omit<GroupMemoryCandidate, "evidence"> & {
+    evidence?: GroupMemoryEvidence | GroupMemoryEvidencePreview;
+    subjectLabel: ReturnType<typeof buildSubjectLabel>;
+  }>> {
     const groupsById = await this.loadGroupConfigsById(candidates.map((candidate) => candidate.groupId), preferredGroupId);
     return candidates.map((candidate) => ({
       ...candidate,
+      ...(candidate.evidence ? { evidence: formatEvidenceForResponse(candidate.evidence, evidenceMode) } : {}),
       subjectLabel: buildSubjectLabel(
         groupsById.get(candidate.groupId) ?? fallbackGroupConfig(candidate.groupId),
         candidate.subjectUserId,
@@ -916,6 +944,30 @@ function normalizeOptionalBoolean(value: string | undefined): boolean | undefine
     return false;
   }
   return undefined;
+}
+
+function normalizeEvidenceMode(value: string | undefined): EvidenceResponseMode {
+  return value === "preview" ? "preview" : "full";
+}
+
+function formatEvidenceForResponse(
+  evidence: GroupMemoryEvidence,
+  mode: EvidenceResponseMode,
+): GroupMemoryEvidence | GroupMemoryEvidencePreview {
+  if (mode === "full") {
+    return evidence;
+  }
+
+  return {
+    startAt: evidence.startAt,
+    endAt: evidence.endAt,
+    messageCount: evidence.messageCount,
+    speakerCount: evidence.speakers.length,
+    summaryPreview: evidence.summary.length > ADMIN_EVIDENCE_PREVIEW_LIMIT
+      ? `${evidence.summary.slice(0, ADMIN_EVIDENCE_PREVIEW_LIMIT)}...`
+      : evidence.summary,
+    hasFullEvidence: true,
+  };
 }
 
 function memberMatchesQuery(member: GroupMemberProfile, query: string): boolean {
