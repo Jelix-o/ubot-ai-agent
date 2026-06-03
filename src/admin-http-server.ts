@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 
+import { ADMIN_APP_HTML_V2, LOGIN_HTML } from "./admin-ui.js";
 import { logInfo, logWarn } from "./logger.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -10,7 +11,7 @@ import type { GroupMemoryCandidateService } from "./services/group-memory-candid
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
-import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType, NapcatGroupMember } from "./types.js";
+import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType, KnowledgeBaseEntry, NapcatGroupMember } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -31,6 +32,12 @@ interface AdminHttpServerOptions {
 type RouteParams = Record<string, string>;
 
 export class AdminHttpServer {
+  private readonly memberProfileCache = new Map<string, {
+    expiresAt: number;
+    groupConfig: GroupBotConfig;
+    members: GroupMemberProfile[];
+  }>();
+
   private readonly server = createServer((req, res) => {
     void this.handleRequest(req, res);
   });
@@ -129,7 +136,7 @@ export class AdminHttpServer {
 
     const membersRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members$/);
     if (membersRoute && req.method === "GET") {
-      await this.handleGroupMembers(res, membersRoute.groupId);
+      await this.handleGroupMembers(res, membersRoute.groupId, url.searchParams.get("refresh") === "1");
       return;
     }
 
@@ -247,9 +254,18 @@ export class AdminHttpServer {
     if (req.method === "GET") {
       const groupId = url.searchParams.get("groupId") ?? undefined;
       const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
-      const memories = await this.enrichMemories(sortMemoriesNewestFirst(await this.options.groupMemoryStore.list(groupId)), groupId);
+      const type = normalizeOptionalMemoryType(url.searchParams.get("type") ?? undefined);
+      const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
+      const pagination = paginationParams(url, 20, 100);
+      const rawMemories = sortMemoriesNewestFirst(await this.options.groupMemoryStore.list(groupId))
+        .filter((memory) => !subjectUserId || memory.subjectUserId === subjectUserId)
+        .filter((memory) => !type || memory.type === type)
+        .filter((memory) => !query || memoryMatchesQuery(memory, query));
+      const page = paginateItems(rawMemories, pagination);
+      const memories = await this.enrichMemories(page.items, groupId);
       this.sendJson(res, {
-        memories: subjectUserId ? memories.filter((memory) => memory.subjectUserId === subjectUserId) : memories,
+        memories,
+        pagination: page.pagination,
       });
       return;
     }
@@ -257,6 +273,7 @@ export class AdminHttpServer {
     if (req.method === "POST") {
       const body = await readJsonBody(req);
       const memory = await this.options.groupMemoryStore.create(normalizeMemoryInput(body));
+      this.invalidateMemberProfileCache(memory.groupId);
       this.sendJson(res, memory, 201);
       return;
     }
@@ -268,12 +285,19 @@ export class AdminHttpServer {
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
       const memory = await this.options.groupMemoryStore.update(params.id, normalizeMemoryPatch(body));
+      if (memory) {
+        this.invalidateMemberProfileCache(memory.groupId);
+      }
       this.sendJson(res, memory ?? { error: "not_found" }, memory ? 200 : 404);
       return;
     }
 
     if (req.method === "DELETE") {
+      const existing = await this.findMemory(params.id);
       const removed = await this.options.groupMemoryStore.remove(params.id);
+      if (existing) {
+        this.invalidateMemberProfileCache(existing.groupId);
+      }
       this.sendJson(res, { ok: removed }, removed ? 200 : 404);
       return;
     }
@@ -291,15 +315,21 @@ export class AdminHttpServer {
     const groupId = url.searchParams.get("groupId") ?? undefined;
     const type = normalizeOptionalMemoryType(url.searchParams.get("type") ?? undefined);
     const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
+    const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
+    const pagination = paginationParams(url, 20, 100);
     const rawCandidates = await this.options.groupMemoryCandidateService.list({
       groupId,
       ...(status ? { status } : {}),
     });
-    const candidates = await this.enrichCandidates(rawCandidates, groupId);
+    const filteredCandidates = rawCandidates
+      .filter((candidate) => !type || candidate.type === type)
+      .filter((candidate) => !subjectUserId || candidate.subjectUserId === subjectUserId)
+      .filter((candidate) => !query || candidateMatchesQuery(candidate, query));
+    const page = paginateItems(filteredCandidates, pagination);
+    const candidates = await this.enrichCandidates(page.items, groupId);
     this.sendJson(res, {
-      candidates: candidates
-        .filter((candidate) => !type || candidate.type === type)
-        .filter((candidate) => !subjectUserId || candidate.subjectUserId === subjectUserId),
+      candidates,
+      pagination: page.pagination,
     });
   }
 
@@ -307,12 +337,19 @@ export class AdminHttpServer {
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
       const candidate = await this.options.groupMemoryCandidateService.update(params.id, normalizeCandidatePatch(body));
+      if (candidate) {
+        this.invalidateMemberProfileCache(candidate.groupId);
+      }
       this.sendJson(res, candidate ?? { error: "not_found" }, candidate ? 200 : 404);
       return;
     }
 
     if (req.method === "DELETE") {
+      const existing = await this.findCandidate(params.id);
       const removed = await this.options.groupMemoryCandidateService.remove(params.id);
+      if (existing) {
+        this.invalidateMemberProfileCache(existing.groupId);
+      }
       this.sendJson(res, { ok: removed }, removed ? 200 : 404);
       return;
     }
@@ -320,25 +357,15 @@ export class AdminHttpServer {
     this.sendJson(res, { error: "method_not_allowed" }, 405);
   }
 
-  private async handleGroupMembers(res: ServerResponse, groupId: string): Promise<void> {
-    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
-    if (!groupConfig) {
+  private async handleGroupMembers(res: ServerResponse, groupId: string, force = false): Promise<void> {
+    const profiles = await this.getCachedMemberProfileData(groupId, force);
+    if (!profiles) {
       this.sendJson(res, { error: "not_found" }, 404);
       return;
     }
 
-    const [memories, candidates, napcatMembers] = await Promise.all([
-      this.options.groupMemoryStore.list(groupId),
-      this.options.groupMemoryCandidateService.list({ groupId }),
-      this.safeListGroupMembers(groupId),
-    ]);
     this.sendJson(res, {
-      members: buildGroupMemberProfiles({
-        groupConfig,
-        napcatMembers,
-        memories,
-        candidates,
-      }),
+      members: profiles.members,
     });
   }
 
@@ -358,12 +385,14 @@ export class AdminHttpServer {
         names: normalizeNames(body.names),
         note: optionalString(body.note),
       });
+      this.invalidateMemberProfileCache(route.groupId);
       this.sendJson(res, { group });
       return;
     }
 
     if (req.method === "DELETE") {
       const group = await this.options.groupConfigService.removeManualIdentity(route.groupId, route.userId);
+      this.invalidateMemberProfileCache(route.groupId);
       this.sendJson(res, { group });
       return;
     }
@@ -410,21 +439,52 @@ export class AdminHttpServer {
     const uniqueGroupIds = [...new Set([preferredGroupId, ...groupIds].filter((groupId): groupId is string => Boolean(groupId)))];
     const result = new Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>();
     await Promise.all(uniqueGroupIds.map(async (groupId) => {
-      const groupConfig = await this.options.groupConfigService.getGroup(groupId);
-      if (!groupConfig) {
+      const profiles = await this.getCachedMemberProfileData(groupId);
+      if (!profiles) {
         return;
       }
-      const [memories, candidates, napcatMembers] = await Promise.all([
-        this.options.groupMemoryStore.list(groupId),
-        this.options.groupMemoryCandidateService.list({ groupId }),
-        this.safeListGroupMembers(groupId),
-      ]);
-      result.set(groupId, {
-        groupConfig,
-        members: buildGroupMemberProfiles({ groupConfig, napcatMembers, memories, candidates }),
-      });
+      result.set(groupId, profiles);
     }));
     return result;
+  }
+
+  private async getCachedMemberProfileData(
+    groupId: string,
+    force = false,
+  ): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
+    const cached = this.memberProfileCache.get(groupId);
+    if (!force && cached && cached.expiresAt > Date.now()) {
+      return { groupConfig: cached.groupConfig, members: cached.members };
+    }
+
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.memberProfileCache.delete(groupId);
+      return undefined;
+    }
+
+    const [memories, candidates, napcatMembers] = await Promise.all([
+      this.options.groupMemoryStore.list(groupId),
+      this.options.groupMemoryCandidateService.list({ groupId }),
+      this.safeListGroupMembers(groupId),
+    ]);
+    const data = {
+      groupConfig,
+      members: buildGroupMemberProfiles({ groupConfig, napcatMembers, memories, candidates }),
+    };
+    this.memberProfileCache.set(groupId, {
+      ...data,
+      expiresAt: Date.now() + 30_000,
+    });
+    return data;
+  }
+
+  private invalidateMemberProfileCache(groupId?: string): void {
+    if (groupId) {
+      this.memberProfileCache.delete(groupId);
+      return;
+    }
+    this.memberProfileCache.clear();
   }
 
   private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
@@ -447,9 +507,20 @@ export class AdminHttpServer {
     return candidates.find((candidate) => candidate.id === id);
   }
 
+  private async findMemory(id: string): Promise<GroupMemory | undefined> {
+    const memories = await this.options.groupMemoryStore.list();
+    return memories.find((memory) => memory.id === id);
+  }
+
   private async handleKnowledge(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     if (req.method === "GET") {
-      this.sendJson(res, { entries: await this.options.knowledgeBaseStore.list(url.searchParams.get("groupId") ?? undefined) });
+      const groupId = url.searchParams.get("groupId") ?? undefined;
+      const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
+      const pagination = paginationParams(url, 20, 100);
+      const entries = (await this.options.knowledgeBaseStore.list(groupId))
+        .filter((entry) => !query || knowledgeEntryMatchesQuery(entry, query));
+      const page = paginateItems(entries, pagination);
+      this.sendJson(res, { entries: page.items, pagination: page.pagination });
       return;
     }
 
@@ -568,6 +639,77 @@ function sortMemoriesNewestFirst(memories: GroupMemory[]): GroupMemory[] {
     right.updatedAt.localeCompare(left.updatedAt) ||
     right.id.localeCompare(left.id),
   );
+}
+
+function paginationParams(url: URL, defaultPageSize: number, maxPageSize: number): { page: number; pageSize: number } {
+  const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+  const requestedPageSize = Number.parseInt(url.searchParams.get("pageSize") ?? String(defaultPageSize), 10) || defaultPageSize;
+  const pageSize = Math.max(1, Math.min(maxPageSize, requestedPageSize));
+  return { page, pageSize };
+}
+
+function paginateItems<T>(
+  items: T[],
+  pagination: { page: number; pageSize: number },
+): { items: T[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } } {
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / pagination.pageSize));
+  const page = Math.min(Math.max(1, pagination.page), totalPages);
+  const start = (page - 1) * pagination.pageSize;
+  return {
+    items: items.slice(start, start + pagination.pageSize),
+    pagination: {
+      page,
+      pageSize: pagination.pageSize,
+      total,
+      totalPages,
+    },
+  };
+}
+
+function normalizeSearchQuery(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function memoryMatchesQuery(memory: GroupMemory, query: string): boolean {
+  return [
+    memory.id,
+    memory.groupId,
+    memory.type,
+    memory.subjectUserId,
+    memory.title,
+    memory.content,
+    memory.source,
+    memory.evidence?.summary,
+    ...(memory.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
+}
+
+function candidateMatchesQuery(candidate: GroupMemoryCandidate, query: string): boolean {
+  return [
+    candidate.id,
+    candidate.groupId,
+    candidate.type,
+    candidate.status,
+    candidate.subjectUserId,
+    candidate.title,
+    candidate.content,
+    candidate.source,
+    candidate.evidence?.summary,
+    ...(candidate.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
+}
+
+function knowledgeEntryMatchesQuery(entry: KnowledgeBaseEntry, query: string): boolean {
+  return [
+    entry.id,
+    entry.groupId,
+    entry.title,
+    entry.question,
+    entry.answer,
+    entry.keywords.join(" "),
+    entry.enabled ? "enabled 启用" : "disabled 停用",
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 
 function normalizeMemoryPatch(body: Record<string, unknown>) {
@@ -797,442 +939,3 @@ function safeEqual(left: string, right: string): boolean {
 export function createAdminSessionSecret(): string {
   return randomBytes(32).toString("base64url");
 }
-
-const ADMIN_CSS = `
-:root { color-scheme: light; --ink: oklch(22% 0.012 238); --muted: oklch(50% 0.012 238); --line: oklch(86% 0.012 238); --paper: oklch(98% 0.006 238); --panel: oklch(96% 0.008 238); --accent: oklch(55% 0.16 168); --accent-soft: oklch(92% 0.045 168); --danger: oklch(52% 0.16 28); --warn: oklch(78% 0.13 78); }
-* { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.5 Inter, "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--paper); }
-button, input, select, textarea { font: inherit; }
-button { min-height: 36px; border: 1px solid var(--accent); background: var(--accent); color: oklch(98% 0.006 168); padding: 0 14px; border-radius: 6px; cursor: pointer; }
-button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
-button.danger { background: var(--danger); border-color: var(--danger); }
-.login-page { min-height: 100vh; display: grid; place-items: center; }
-.login-shell { width: min(420px, calc(100vw - 32px)); }
-.login-panel { border: 1px solid var(--line); background: var(--panel); padding: 28px; border-radius: 8px; }
-.eyebrow { margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 12px; }
-h1, h2, h3 { margin: 0; letter-spacing: 0; }
-h1 { font-size: 28px; }
-h2 { font-size: 18px; margin-bottom: 14px; }
-h3 { font-size: 15px; }
-.stack { display: grid; gap: 14px; margin-top: 22px; }
-label { display: grid; gap: 6px; color: var(--muted); }
-input, select, textarea { min-height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; background: oklch(99% 0.004 238); color: var(--ink); }
-textarea { min-height: 72px; padding: 8px 10px; resize: vertical; }
-.message { min-height: 20px; color: var(--danger); }
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 240px 1fr; }
-aside { border-right: 1px solid var(--line); background: oklch(94% 0.012 238); padding: 18px; display: grid; grid-template-rows: auto 1fr auto; gap: 24px; }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; background: var(--accent-soft); color: oklch(38% 0.14 168); font-weight: 700; }
-nav { display: grid; align-content: start; gap: 8px; }
-nav button { text-align: left; background: transparent; color: var(--ink); border-color: transparent; }
-nav button.active { background: var(--accent-soft); border-color: oklch(82% 0.07 168); }
-main { padding: 24px; min-width: 0; }
-header { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
-header select { width: 180px; }
-.metric-row { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; margin-bottom: 14px; }
-.metric-row div { border: 1px solid var(--line); background: var(--panel); padding: 18px; border-radius: 8px; display: grid; gap: 4px; }
-.metric-row b { font-size: 26px; line-height: 1; }
-.metric-row span { color: var(--muted); }
-.panel { border: 1px solid var(--line); background: oklch(99% 0.004 238); padding: 18px; border-radius: 8px; }
-.toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
-.toolbar input { width: min(280px, 100%); }
-.list { display: grid; gap: 10px; }
-article { border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
-article span { color: var(--muted); overflow-wrap: anywhere; }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.grid-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 8px; margin-bottom: 14px; align-items: start; }
-.candidate-form { display: grid; grid-template-columns: 140px minmax(160px, 1fr) minmax(160px, 1.2fr) 170px; gap: 8px; align-items: start; }
-.memory-form { display: grid; grid-template-columns: 140px 190px minmax(160px, 1fr) 110px 120px; gap: 8px; align-items: start; }
-.memory-form textarea { grid-column: 3 / span 3; }
-.evidence { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 10px; color: var(--muted); overflow-wrap: anywhere; }
-.evidence b { color: var(--ink); }
-.member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
-.member-meta, .meta { color: var(--muted); overflow-wrap: anywhere; }
-.badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
-.badge.warn { background: oklch(94% 0.06 78); color: oklch(42% 0.09 78); }
-.group-block { display: grid; gap: 8px; margin-bottom: 18px; }
-.pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
-.pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .grid-form, .candidate-form, .memory-form { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
-`;
-
-const LOGIN_HTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project 机器人后台</title>
-  <style>${ADMIN_CSS}</style>
-</head>
-<body class="login-page">
-  <main class="login-shell">
-    <section class="login-panel">
-      <p class="eyebrow">AI-Project</p>
-      <h1>机器人后台</h1>
-      <form id="loginForm" class="stack">
-        <label>账号<input name="username" autocomplete="username" required></label>
-        <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
-        <button type="submit">登录</button>
-        <p id="message" class="message"></p>
-      </form>
-    </section>
-  </main>
-  <script>
-    document.querySelector('#loginForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(event.target).entries());
-      const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-      if (res.ok) location.href = '/';
-      else document.querySelector('#message').textContent = '账号或密码错误';
-    });
-  </script>
-</body>
-</html>`;
-
-const ADMIN_APP_HTML_V2 = `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project 机器人后台</title>
-  <style>${ADMIN_CSS}</style>
-</head>
-<body>
-  <div class="app-shell">
-    <aside>
-      <div class="brand"><span>AI</span><strong>机器人后台</strong></div>
-      <nav>
-        <button data-view="overview" class="active">总览</button>
-        <button data-view="groups">群配置</button>
-        <button data-view="members">成员管理</button>
-        <button data-view="candidates">候选记忆</button>
-        <button data-view="memories">长期记忆</button>
-        <button data-view="knowledge">知识库</button>
-        <button data-view="health">健康状态</button>
-      </nav>
-      <button id="logout" class="ghost">退出登录</button>
-    </aside>
-    <main>
-      <header>
-        <div>
-          <p class="eyebrow">运维控制台</p>
-          <h1 id="viewTitle">总览</h1>
-        </div>
-        <select id="groupFilter"></select>
-      </header>
-      <section id="content"></section>
-    </main>
-  </div>
-  <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', subjectUserId: '', candidateType: '', candidateStatus: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20 };
-    const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
-    const content = () => document.querySelector('#content');
-    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-    const selected = (left, right) => left === right ? ' selected' : '';
-    const typeText = (value) => value === 'member_profile' ? '成员画像' : '群事实';
-    const statusText = (value) => ({ pending: '待审', approved: '已批准', rejected: '已拒绝' }[value] || value);
-    const enabledText = (value) => value ? '启用' : '停用';
-    const ownerLabel = (item) => item.subjectLabel?.label || (item.type === 'member_profile' && !item.subjectUserId ? '未归属' : '群整体');
-    const evidenceHtml = (item) => {
-      const evidence = item.evidence;
-      if (!evidence) return '<div class="evidence"><b>来源证据：</b>无来源记录</div>';
-      const speakers = (evidence.speakers || []).map(s => (s.userName ? esc(s.userName) + ' / QQ ' + esc(s.userId) : 'QQ ' + esc(s.userId))).join('、') || '无';
-      return '<div class="evidence"><b>来源证据：</b>' + esc(evidence.summary) + '<br>时间段：' + esc(evidence.startAt) + ' 至 ' + esc(evidence.endAt) + '<br>消息数：' + esc(evidence.messageCount) + ' · 参与：' + speakers + '</div>';
-    };
-    const api = async (url, options = {}) => {
-      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
-      if (res.status === 401) location.href = '/login';
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    };
-    async function loadGroups() {
-      const data = await api('/api/groups');
-      state.groups = data.groups || [];
-      state.groupId = state.groupId || state.groups[0]?.groupId || '';
-      document.querySelector('#groupFilter').innerHTML = state.groups.map(g => '<option value="' + esc(g.groupId) + '">' + esc(g.groupId) + '</option>').join('');
-      document.querySelector('#groupFilter').value = state.groupId;
-    }
-    async function loadMembers(force = false) {
-      if (!state.groupId) return [];
-      if (!force && state.members.length > 0) return state.members;
-      const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members');
-      state.members = data.members || [];
-      return state.members;
-    }
-    function memberOptions(includeAll = false, selectedUserId = '') {
-      const baseLabel = includeAll ? '全部成员' : '群整体';
-      const base = '<option value=""' + selected(selectedUserId, '') + '>' + baseLabel + '</option>';
-      return base + state.members.map(m => '<option value="' + esc(m.userId) + '"' + selected(m.userId, selectedUserId) + '>' + esc(m.displayName) + ' / QQ ' + esc(m.userId) + (m.note ? ' / 备注：' + esc(m.note) : '') + '</option>').join('');
-    }
-    async function render() {
-      document.querySelector('#viewTitle').textContent = titleByView[state.view];
-      document.querySelectorAll('nav button').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view));
-      state.pendingDelete = '';
-      if (state.view === 'overview') return renderOverview();
-      if (state.view === 'groups') return renderGroups();
-      if (state.view === 'members') return renderMembers();
-      if (state.view === 'candidates') return renderCandidates();
-      if (state.view === 'memories') return renderMemories();
-      if (state.view === 'knowledge') return renderKnowledge();
-      return renderHealth();
-    }
-    async function renderOverview() {
-      const data = await api('/api/overview');
-      content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>群数量</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>FAQ 条目</span></div></div><section class="panel"><h2>连接状态</h2><p>' + esc(data.transportHealth.detail) + '</p></section>';
-    }
-    async function renderGroups() {
-      await loadGroups();
-      content().innerHTML = '<section class="panel"><h2>群配置</h2><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
-    }
-    async function renderMembers() {
-      await loadMembers(true);
-      const query = state.memberQuery.trim().toLowerCase();
-      const members = state.members.filter(m => !query || [m.userId, m.displayName, m.card, m.nickname, m.note, ...(m.aliases || [])].some(v => String(v || '').toLowerCase().includes(query)));
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><button data-refresh-members>刷新</button></div><div class="member-grid">' + members.map(rowMember).join('') + '</div></section>';
-      document.querySelector('#memberSearch')?.addEventListener('input', event => { state.memberQuery = event.target.value; renderMembers(); });
-    }
-    function rowMember(m) {
-      return '<article><h3>' + esc(m.displayName) + '</h3><div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · 群名片 ' + esc(m.card) : '') + (m.nickname ? ' · 昵称 ' + esc(m.nickname) : '') + (m.role ? ' · 角色 ' + esc(m.role) : '') + '</div><div><span class="badge">' + m.memoryCount + ' 条记忆</span> <span class="badge warn">' + m.pendingCandidateCount + ' 条待审</span></div><form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">删除备注</button>' : '') + '</div></form></article>';
-    }
-    async function renderCandidates() {
-      await loadMembers();
-      const query = new URLSearchParams({ groupId: state.groupId });
-      if (state.candidateStatus) query.set('status', state.candidateStatus);
-      if (state.candidateType) query.set('type', state.candidateType);
-      if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
-      const data = await api('/api/memory-candidates?' + query.toString());
-      const notice = state.notice ? '<p class="message">' + esc(state.notice) + '</p>' : '';
-      state.notice = '';
-      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待审</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已批准</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>已拒绝</option><option value=""' + selected(state.candidateStatus, '') + '>全部</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群事实</option></select><select id="subjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><button data-bulk-approve>批量批准当前列表</button></div>' + notice + '<div class="list">' + (data.candidates || []).map(rowCandidate).join('') + '</div></section>';
-      document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; renderCandidates(); });
-      document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; renderCandidates(); });
-      document.querySelector('#subjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; renderCandidates(); });
-    }
-    function rowCandidate(c) {
-      const needsOwner = c.type === 'member_profile' && !c.subjectUserId;
-      return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群事实</option></select><input name="title" value="' + esc(c.title) + '" placeholder="标题"><textarea name="content" placeholder="内容">' + esc(c.content) + '</textarea><select name="subjectUserId">' + memberOptions(false, c.subjectUserId || '') + '</select></div><div class="meta">归属：' + esc(ownerLabel(c)) + ' · 状态：' + esc(statusText(c.status)) + ' · 置信度：' + esc(c.confidence) + (needsOwner ? ' · 需要选择成员或转为群事实' : '') + '</div>' + evidenceHtml(c) + '<div class="actions"><button type="button" data-save-candidate="' + esc(c.id) + '">保存</button><button type="button" data-approve="' + esc(c.id) + '">批准</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">转为群事实并批准</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">拒绝</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除') + '</button></div></form></article>';
-    }
-    async function renderMemories() {
-      await loadMembers();
-      const query = new URLSearchParams({ groupId: state.groupId });
-      if (state.subjectUserId) query.set('subjectUserId', state.subjectUserId);
-      const data = await api('/api/memories?' + query.toString());
-      const memories = data.memories || [];
-      const totalPages = Math.max(1, Math.ceil(memories.length / state.memoryPageSize));
-      state.memoryPage = Math.min(Math.max(1, state.memoryPage), totalPages);
-      const startIndex = (state.memoryPage - 1) * state.memoryPageSize;
-      const pageMemories = memories.slice(startIndex, startIndex + state.memoryPageSize);
-      const groups = groupMemories(pageMemories);
-      const pageInfo = memories.length === 0 ? '暂无长期记忆' : '第 ' + (startIndex + 1) + '-' + Math.min(startIndex + state.memoryPageSize, memories.length) + ' 条，共 ' + memories.length + ' 条';
-      content().innerHTML = '<section class="panel"><div class="toolbar"><select id="memorySubjectFilter">' + memberOptions(true, state.subjectUserId) + '</select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select></div>' + memoryForm() + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + memoryPagination(pageInfo, totalPages) + '</section>';
-      document.querySelector('#memorySubjectFilter').addEventListener('change', event => { state.subjectUserId = event.target.value; state.memoryPage = 1; renderMemories(); });
-      document.querySelector('#memoryPageSize').addEventListener('change', event => { state.memoryPageSize = Number(event.target.value) || 20; state.memoryPage = 1; renderMemories(); });
-      document.querySelector('#memoryPageJump').addEventListener('submit', event => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target).entries()); state.memoryPage = Number(data.page) || 1; renderMemories(); });
-    }
-    function memoryForm() {
-      return '<form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select><select name="subjectUserId">' + memberOptions(false) + '</select><input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form>';
-    }
-    function groupMemories(memories) {
-      const map = new Map();
-      for (const memory of memories) {
-        const label = ownerLabel(memory);
-        if (!map.has(label)) map.set(label, []);
-        map.get(label).push(memory);
-      }
-      return [...map.entries()].map(([label, items]) => ({ label, items }));
-    }
-    function rowMemory(m) {
-      return '<article><form class="memoryItemForm" data-memory-id="' + esc(m.id) + '"><div class="memory-form"><select name="type"><option value="member_profile"' + selected(m.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(m.type, 'group_fact') + '>群事实</option></select><select name="subjectUserId">' + memberOptions(false, m.subjectUserId || '') + '</select><input name="title" value="' + esc(m.title) + '" placeholder="标题"><input name="confidence" type="number" min="0" max="1" step="0.01" value="' + esc(m.confidence) + '" placeholder="置信度"><select name="enabled"><option value="true"' + selected(String(m.enabled), 'true') + '>启用</option><option value="false"' + selected(String(m.enabled), 'false') + '>停用</option></select><textarea name="content" placeholder="内容">' + esc(m.content) + '</textarea></div><div class="meta">当前归属：' + esc(ownerLabel(m)) + ' · 类型：' + esc(typeText(m.type)) + ' · 状态：' + enabledText(m.enabled) + '</div>' + evidenceHtml(m) + '<div class="actions"><button type="button" data-save-memory="' + esc(m.id) + '">保存编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></form></article>';
-    }
-    function memoryPagination(pageInfo, totalPages) {
-      return '<div class="pagination"><span>' + esc(pageInfo) + '</span><div class="pagination-controls"><button class="ghost" data-memory-page="prev"' + (state.memoryPage <= 1 ? ' disabled' : '') + '>上一页</button><span>第 ' + state.memoryPage + ' / ' + totalPages + ' 页</span><button class="ghost" data-memory-page="next"' + (state.memoryPage >= totalPages ? ' disabled' : '') + '>下一页</button><form id="memoryPageJump" class="pagination-controls"><input name="page" type="number" min="1" max="' + totalPages + '" value="' + state.memoryPage + '" aria-label="页码" style="width:86px"><button class="ghost">跳转</button></form></div></div>';
-    }
-    async function renderKnowledge() {
-      const data = await api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId));
-      content().innerHTML = '<section class="panel"><h2>文本 FAQ</h2>' + knowledgeForm() + '<div class="list">' + (data.entries || []).map(k => '<article><b>' + esc(k.title) + '</b><span>问：' + esc(k.question) + '<br>答：' + esc(k.answer) + '<br>关键词：' + esc(k.keywords.join('、')) + '</span><div class="actions"><button data-toggle-knowledge="' + esc(k.id) + '" data-enabled="' + (!k.enabled) + '">' + (k.enabled ? '停用' : '启用') + '</button><button data-delete-knowledge="' + esc(k.id) + '" class="ghost">' + (state.pendingDelete === k.id ? '确认删除' : '删除') + '</button></div></article>').join('') + '</div></section>';
-    }
-    function knowledgeForm() {
-      return '<form id="knowledgeForm" class="grid-form"><input name="title" placeholder="标题"><input name="question" placeholder="问题"><input name="answer" placeholder="答案"><input name="keywords" placeholder="关键词，用逗号分隔"><button>新增</button></form>';
-    }
-    async function renderHealth() {
-      const data = await api('/api/health');
-      content().innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
-    }
-    function candidatePayload(id) {
-      const form = document.querySelector('.candidateForm[data-candidate-id="' + CSS.escape(id) + '"]');
-      const data = Object.fromEntries(new FormData(form).entries());
-      return { type: data.type, title: data.title, content: data.content, subjectUserId: data.subjectUserId || null };
-    }
-    function memoryPayload(id) {
-      const form = document.querySelector('.memoryItemForm[data-memory-id="' + CSS.escape(id) + '"]');
-      const data = Object.fromEntries(new FormData(form).entries());
-      return { type: data.type, title: data.title, content: data.content, confidence: Number(data.confidence), enabled: data.enabled === 'true', subjectUserId: data.subjectUserId || null };
-    }
-    document.addEventListener('click', async (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLButtonElement)) return;
-      if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; state.memoryPage = 1; await render(); }
-      if (target.dataset.refreshMembers !== undefined) { await loadMembers(true); await renderMembers(); }
-      if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
-      if (target.dataset.deleteIdentity) { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.members = []; await renderMembers(); }
-      if (target.dataset.saveCandidate) { await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); await renderCandidates(); }
-      if (target.dataset.approve) { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }
-      if (target.dataset.approveAsFact) { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }
-      if (target.dataset.reject) { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await renderCandidates(); }
-      if (target.dataset.bulkApprove !== undefined) {
-        let skipped = 0;
-        for (const form of document.querySelectorAll('.candidateForm')) {
-          const id = form.dataset.candidateId;
-          try { await api('/api/memory-candidates/' + id + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(id)) }); } catch { skipped += 1; }
-        }
-        state.notice = skipped ? '有 ' + skipped + ' 条候选未满足批准条件，已跳过。成员画像必须先选择归属成员。' : '';
-        await renderCandidates();
-      }
-      if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; await renderCandidates(); return; } await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }
-      if (target.dataset.saveMemory) { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.members = []; await renderMemories(); }
-      if (target.dataset.toggleMemory) { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderMemories(); }
-      if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; await renderMemories(); return; } await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await renderMemories(); }
-      if (target.dataset.memoryPage === 'prev') { state.memoryPage -= 1; await renderMemories(); }
-      if (target.dataset.memoryPage === 'next') { state.memoryPage += 1; await renderMemories(); }
-      if (target.dataset.toggleKnowledge) { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await renderKnowledge(); }
-      if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; await renderKnowledge(); return; } await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await renderKnowledge(); }
-    });
-    document.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const form = event.target;
-      const data = Object.fromEntries(new FormData(form).entries());
-      if (form.classList.contains('memberForm')) {
-        await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });
-        state.members = [];
-        await renderMembers();
-        return;
-      }
-      if (form.id === 'memoryForm') { await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) }); state.memoryPage = 1; }
-      if (form.id === 'knowledgeForm') await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[,，、]+/) }) });
-      await render();
-    });
-    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; state.members = []; state.subjectUserId = ''; state.memoryPage = 1; await render(); });
-    document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
-    loadGroups().then(render);
-  </script>
-</body>
-</html>`;
-
-const ADMIN_APP_HTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI-Project Bot Admin</title>
-  <style>${ADMIN_CSS}</style>
-</head>
-<body>
-  <div class="app-shell">
-    <aside>
-      <div class="brand"><span>AI</span><strong>Bot Admin</strong></div>
-      <nav>
-        <button data-view="overview" class="active">总览</button>
-        <button data-view="groups">群配置</button>
-        <button data-view="candidates">候选记忆</button>
-        <button data-view="memories">长期记忆</button>
-        <button data-view="knowledge">知识库</button>
-        <button data-view="health">健康状态</button>
-      </nav>
-      <button id="logout" class="ghost">退出</button>
-    </aside>
-    <main>
-      <header>
-        <div>
-          <p class="eyebrow">Public console</p>
-          <h1 id="viewTitle">总览</h1>
-        </div>
-        <select id="groupFilter"></select>
-      </header>
-      <section id="content"></section>
-    </main>
-  </div>
-  <script>
-    const state = { view: 'overview', groups: [], groupId: '' };
-    const titleByView = { overview: '总览', groups: '群配置', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
-    const api = async (url, options = {}) => {
-      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
-      if (res.status === 401) location.href = '/login';
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    };
-    const el = (html) => html;
-    async function loadGroups() {
-      const data = await api('/api/groups');
-      state.groups = data.groups || [];
-      state.groupId = state.groupId || state.groups[0]?.groupId || '';
-      document.querySelector('#groupFilter').innerHTML = state.groups.map(g => '<option value="' + g.groupId + '">' + g.groupId + '</option>').join('');
-      document.querySelector('#groupFilter').value = state.groupId;
-    }
-    async function render() {
-      document.querySelector('#viewTitle').textContent = titleByView[state.view];
-      document.querySelectorAll('nav button').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view));
-      if (state.view === 'overview') return renderOverview();
-      if (state.view === 'groups') return renderGroups();
-      if (state.view === 'candidates') return renderCandidates();
-      if (state.view === 'memories') return renderMemories();
-      if (state.view === 'knowledge') return renderKnowledge();
-      return renderHealth();
-    }
-    async function renderOverview() {
-      const data = await api('/api/overview');
-      document.querySelector('#content').innerHTML = el('<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>FAQ</span></div></div><section class="panel"><h2>连接状态</h2><p>' + data.transportHealth.detail + '</p></section>');
-    }
-    async function renderGroups() {
-      await loadGroups();
-      document.querySelector('#content').innerHTML = '<section class="panel"><h2>群配置</h2><div class="list">' + state.groups.map(g => '<article><b>' + g.groupId + '</b><span>skill ' + g.currentSkillId + '，管理员 ' + g.switcherUserIds.length + '，实时对话 ' + g.liveChatUserIds.length + '</span></article>').join('') + '</div></section>';
-    }
-    async function renderCandidates() {
-      const data = await api('/api/memory-candidates?status=pending&groupId=' + encodeURIComponent(state.groupId));
-      document.querySelector('#content').innerHTML = '<section class="panel"><h2>待审核候选</h2><div class="list">' + (data.candidates || []).map(c => rowCandidate(c)).join('') + '</div></section>';
-    }
-    function rowCandidate(c) {
-      return '<article><b>' + c.title + '</b><span>' + c.type + ' · ' + c.content + '</span><div class="actions"><button data-approve="' + c.id + '">批准</button><button data-reject="' + c.id + '" class="ghost">拒绝</button></div></article>';
-    }
-    async function renderMemories() {
-      const data = await api('/api/memories?groupId=' + encodeURIComponent(state.groupId));
-      document.querySelector('#content').innerHTML = '<section class="panel"><h2>长期记忆</h2>' + memoryForm() + '<div class="list">' + (data.memories || []).map(m => '<article><b>' + m.title + '</b><span>' + (m.enabled ? '启用' : '停用') + ' · ' + m.type + ' · ' + m.content + '</span><div class="actions"><button data-toggle-memory="' + m.id + '" data-enabled="' + (!m.enabled) + '">' + (m.enabled ? '停用' : '启用') + '</button><button data-delete-memory="' + m.id + '" class="ghost">删除</button></div></article>').join('') + '</div></section>';
-    }
-    function memoryForm() {
-      return '<form id="memoryForm" class="grid-form"><input name="title" placeholder="标题"><input name="content" placeholder="内容"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select><button>新增</button></form>';
-    }
-    async function renderKnowledge() {
-      const data = await api('/api/knowledge?groupId=' + encodeURIComponent(state.groupId));
-      document.querySelector('#content').innerHTML = '<section class="panel"><h2>文本 FAQ</h2>' + knowledgeForm() + '<div class="list">' + (data.entries || []).map(k => '<article><b>' + k.title + '</b><span>问：' + k.question + '<br>答：' + k.answer + '<br>关键词：' + k.keywords.join('、') + '</span><div class="actions"><button data-toggle-knowledge="' + k.id + '" data-enabled="' + (!k.enabled) + '">' + (k.enabled ? '停用' : '启用') + '</button><button data-delete-knowledge="' + k.id + '" class="ghost">删除</button></div></article>').join('') + '</div></section>';
-    }
-    function knowledgeForm() {
-      return '<form id="knowledgeForm" class="grid-form"><input name="title" placeholder="标题"><input name="question" placeholder="问题"><input name="answer" placeholder="答案"><input name="keywords" placeholder="关键词，用逗号分隔"><button>新增</button></form>';
-    }
-    async function renderHealth() {
-      const data = await api('/api/health');
-      document.querySelector('#content').innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + JSON.stringify(data, null, 2) + '</pre></section>';
-    }
-    document.addEventListener('click', async (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLButtonElement)) return;
-      if (target.dataset.view) { state.view = target.dataset.view; await render(); }
-      if (target.dataset.approve) { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: '{}' }); await render(); }
-      if (target.dataset.reject) { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await render(); }
-      if (target.dataset.toggleMemory) { await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await render(); }
-      if (target.dataset.deleteMemory && confirm('确认删除这条记忆？')) { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); await render(); }
-      if (target.dataset.toggleKnowledge) { await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled: target.dataset.enabled === 'true' }) }); await render(); }
-      if (target.dataset.deleteKnowledge && confirm('确认删除这条 FAQ？')) { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); await render(); }
-    });
-    document.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(event.target).entries());
-      if (event.target.id === 'memoryForm') await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId }) });
-      if (event.target.id === 'knowledgeForm') await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[，,]/) }) });
-      await render();
-    });
-    document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; await render(); });
-    document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
-    loadGroups().then(render);
-  </script>
-</body>
-</html>`;
