@@ -140,12 +140,19 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
 
     const loginPage = await fetch(`${baseUrl}/login`);
     assert.equal(loginPage.status, 200);
-    assert.equal((await loginPage.text()).includes('href="/admin.css"'), true);
+    const loginPageText = await loginPage.text();
+    assert.equal(loginPageText.includes('href="/admin.css"'), true);
+    assert.equal(loginPageText.includes('src="/admin-login.js"'), true);
 
     const adminCss = await fetch(`${baseUrl}/admin.css`);
     assert.equal(adminCss.status, 200);
     assert.equal(adminCss.headers.get("content-type")?.includes("text/css"), true);
     assert.equal((await adminCss.text()).includes(".app-shell"), true);
+
+    const adminLoginJs = await fetch(`${baseUrl}/admin-login.js`);
+    assert.equal(adminLoginJs.status, 200);
+    assert.equal(adminLoginJs.headers.get("content-type")?.includes("javascript"), true);
+    assert.equal((await adminLoginJs.text()).includes("/api/login"), true);
 
     const badLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
@@ -168,6 +175,17 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(groups.status, 200);
     assert.equal(((await groups.json()) as { groups: unknown[] }).groups.length, 1);
+
+    const dashboardPage = await fetch(`${baseUrl}/`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(dashboardPage.status, 200);
+    assert.equal((await dashboardPage.text()).includes('src="/admin-app.js"'), true);
+
+    const adminAppJs = await fetch(`${baseUrl}/admin-app.js`);
+    assert.equal(adminAppJs.status, 200);
+    assert.equal(adminAppJs.headers.get("content-type")?.includes("javascript"), true);
+    assert.equal((await adminAppJs.text()).includes("renderOverview"), true);
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
       headers: { Cookie: cookie ?? "" },

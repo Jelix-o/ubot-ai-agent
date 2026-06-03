@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 
-import { ADMIN_APP_HTML_V2, ADMIN_CSS, LOGIN_HTML } from "./admin-ui.js";
+import { ADMIN_APP_HTML_V2, ADMIN_APP_JS, ADMIN_CSS, LOGIN_HTML, LOGIN_JS } from "./admin-ui.js";
 import { logInfo, logWarn } from "./logger.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -73,6 +73,16 @@ export class AdminHttpServer {
 
       if (req.method === "GET" && pathname === "/admin.css") {
         this.sendStaticText(res, ADMIN_CSS, "text/css; charset=utf-8");
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/admin-login.js") {
+        this.sendStaticText(res, LOGIN_JS, "application/javascript; charset=utf-8");
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/admin-app.js") {
+        this.sendStaticText(res, ADMIN_APP_JS, "application/javascript; charset=utf-8");
         return;
       }
 
