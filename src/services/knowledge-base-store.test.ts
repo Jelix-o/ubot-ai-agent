@@ -37,3 +37,69 @@ test("knowledge base store persists entries and ranks keyword hits", async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("knowledge base store pages filtered entries newest first", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "knowledge-base-page-"));
+  try {
+    const store = new KnowledgeBaseStore(path.join(dir, "knowledge.json"));
+    await store.create({
+      groupId: "67890",
+      title: "Older FAQ",
+      question: "How to claim travel expenses?",
+      answer: "Use the travel form.",
+      keywords: ["travel", "expense"],
+    });
+    const disabled = await store.create({
+      groupId: "67890",
+      title: "Disabled FAQ",
+      question: "How to book a room?",
+      answer: "Ask operations.",
+      keywords: ["room"],
+    });
+    await store.update(disabled.id, { enabled: false });
+    await store.create({
+      groupId: "67890",
+      title: "Newest FAQ",
+      question: "How to submit invoices?",
+      answer: "Upload invoice files before Friday.",
+      keywords: ["invoice"],
+    });
+    await store.create({
+      groupId: "99999",
+      title: "Other group FAQ",
+      question: "Should not match this group.",
+      answer: "No.",
+      keywords: ["invoice"],
+    });
+
+    const firstPage = await store.listPage({
+      groupId: "67890",
+      page: 1,
+      pageSize: 2,
+    });
+    assert.equal(firstPage.pagination.total, 3);
+    assert.equal(firstPage.pagination.totalPages, 2);
+    assert.equal(firstPage.items.length, 2);
+    assert.deepEqual(firstPage.items.map((entry) => entry.title), ["Newest FAQ", "Disabled FAQ"]);
+
+    const searchPage = await store.listPage({
+      groupId: "67890",
+      query: "invoice",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(searchPage.pagination.total, 1);
+    assert.equal(searchPage.items[0]?.title, "Newest FAQ");
+
+    const disabledPage = await store.listPage({
+      groupId: "67890",
+      query: "disabled",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(disabledPage.pagination.total, 1);
+    assert.equal(disabledPage.items[0]?.title, "Disabled FAQ");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -9,6 +9,23 @@ interface KnowledgeBaseFile {
   entries: KnowledgeBaseEntry[];
 }
 
+export interface KnowledgeBaseListPageArgs {
+  groupId?: string;
+  query?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface KnowledgeBaseListPageResult {
+  items: KnowledgeBaseEntry[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 export type KnowledgeBaseEntryInput = {
   groupId: string;
   title: string;
@@ -34,6 +51,29 @@ export class KnowledgeBaseStore {
       .filter((entry) => !groupId || entry.groupId === groupId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map(cloneEntry);
+  }
+
+  async listPage(args: KnowledgeBaseListPageArgs): Promise<KnowledgeBaseListPageResult> {
+    const data = await this.readData();
+    const query = normalizeListQuery(args.query);
+    const pageSize = Math.max(1, args.pageSize);
+    const matched = data.entries
+      .filter((entry) => !args.groupId || entry.groupId === args.groupId)
+      .filter((entry) => !query || knowledgeEntryMatchesQuery(entry, query))
+      .sort(compareEntriesNewestFirst);
+    const total = matched.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(1, args.page), totalPages);
+    const start = (page - 1) * pageSize;
+    return {
+      items: matched.slice(start, start + pageSize).map(cloneEntry),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
   }
 
   async create(input: KnowledgeBaseEntryInput): Promise<KnowledgeBaseEntry> {
@@ -216,6 +256,26 @@ function buildCjkTokens(text: string): string[] {
 
 function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeListQuery(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function knowledgeEntryMatchesQuery(entry: KnowledgeBaseEntry, query: string): boolean {
+  return [
+    entry.id,
+    entry.groupId,
+    entry.title,
+    entry.question,
+    entry.answer,
+    entry.keywords.join(" "),
+    entry.enabled ? "enabled 启用" : "disabled 停用",
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
+}
+
+function compareEntriesNewestFirst(left: KnowledgeBaseEntry, right: KnowledgeBaseEntry): number {
+  return right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
 }
 
 function cloneEntry(entry: KnowledgeBaseEntry): KnowledgeBaseEntry {

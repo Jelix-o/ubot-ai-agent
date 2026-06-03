@@ -1,7 +1,7 @@
 import { logInfo, logWarn } from "../logger.js";
 import type { GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence } from "../types.js";
 import type { AiService, MemoryCandidateExtractionMessage } from "./ai-service.js";
-import type { GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
+import type { GroupMemoryCandidateListPageArgs, GroupMemoryCandidateListPageResult, GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
 import type { GroupMemoryStore } from "./group-memory-store.js";
 
 const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.8;
@@ -34,6 +34,10 @@ export class GroupMemoryCandidateService {
 
   async list(args: { groupId?: string; status?: GroupMemoryCandidateStatus } = {}): Promise<GroupMemoryCandidate[]> {
     return this.candidateStore.list(args);
+  }
+
+  async listPage(args: GroupMemoryCandidateListPageArgs): Promise<GroupMemoryCandidateListPageResult> {
+    return this.candidateStore.listPage(args);
   }
 
   async approve(

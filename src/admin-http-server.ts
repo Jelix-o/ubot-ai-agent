@@ -12,7 +12,7 @@ import type { GroupMemoryCandidateService } from "./services/group-memory-candid
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
-import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType, KnowledgeBaseEntry, NapcatGroupMember } from "./types.js";
+import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType, NapcatGroupMember } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -352,15 +352,14 @@ export class AdminHttpServer {
     const subjectUserId = url.searchParams.get("subjectUserId") ?? undefined;
     const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
     const pagination = paginationParams(url, 20, 100);
-    const rawCandidates = await this.options.groupMemoryCandidateService.list({
+    const page = await this.options.groupMemoryCandidateService.listPage({
       groupId,
       ...(status ? { status } : {}),
+      subjectUserId,
+      type,
+      query,
+      ...pagination,
     });
-    const filteredCandidates = rawCandidates
-      .filter((candidate) => !type || candidate.type === type)
-      .filter((candidate) => !subjectUserId || candidate.subjectUserId === subjectUserId)
-      .filter((candidate) => !query || candidateMatchesQuery(candidate, query));
-    const page = paginateItems(filteredCandidates, pagination);
     const candidates = await this.enrichCandidates(page.items, groupId);
     this.sendJson(res, {
       candidates,
@@ -642,9 +641,11 @@ export class AdminHttpServer {
       const groupId = url.searchParams.get("groupId") ?? undefined;
       const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
       const pagination = paginationParams(url, 20, 100);
-      const entries = (await this.options.knowledgeBaseStore.list(groupId))
-        .filter((entry) => !query || knowledgeEntryMatchesQuery(entry, query));
-      const page = paginateItems(entries, pagination);
+      const page = await this.options.knowledgeBaseStore.listPage({
+        groupId,
+        query,
+        ...pagination,
+      });
       this.sendJson(res, { entries: page.items, pagination: page.pagination });
       return;
     }
@@ -817,21 +818,6 @@ function normalizeOptionalBoolean(value: string | undefined): boolean | undefine
   return undefined;
 }
 
-function candidateMatchesQuery(candidate: GroupMemoryCandidate, query: string): boolean {
-  return [
-    candidate.id,
-    candidate.groupId,
-    candidate.type,
-    candidate.status,
-    candidate.subjectUserId,
-    candidate.title,
-    candidate.content,
-    candidate.source,
-    candidate.evidence?.summary,
-    ...(candidate.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
-  ].some((value) => String(value ?? "").toLowerCase().includes(query));
-}
-
 function memberMatchesQuery(member: GroupMemberProfile, query: string): boolean {
   return [
     member.userId,
@@ -841,18 +827,6 @@ function memberMatchesQuery(member: GroupMemberProfile, query: string): boolean 
     member.role,
     member.note,
     ...(member.aliases ?? []),
-  ].some((value) => String(value ?? "").toLowerCase().includes(query));
-}
-
-function knowledgeEntryMatchesQuery(entry: KnowledgeBaseEntry, query: string): boolean {
-  return [
-    entry.id,
-    entry.groupId,
-    entry.title,
-    entry.question,
-    entry.answer,
-    entry.keywords.join(" "),
-    entry.enabled ? "enabled 启用" : "disabled 停用",
   ].some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 

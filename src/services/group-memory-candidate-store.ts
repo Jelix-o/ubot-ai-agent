@@ -16,6 +16,26 @@ interface GroupMemoryCandidateFile {
   candidates: GroupMemoryCandidate[];
 }
 
+export interface GroupMemoryCandidateListPageArgs {
+  groupId?: string;
+  status?: GroupMemoryCandidateStatus;
+  subjectUserId?: string;
+  type?: GroupMemoryType;
+  query?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface GroupMemoryCandidateListPageResult {
+  items: GroupMemoryCandidate[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 export type GroupMemoryCandidateInput = {
   groupId: string;
   type: GroupMemoryType;
@@ -44,6 +64,32 @@ export class GroupMemoryCandidateStore {
       .filter((candidate) => !args.status || candidate.status === args.status)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map(cloneCandidate);
+  }
+
+  async listPage(args: GroupMemoryCandidateListPageArgs): Promise<GroupMemoryCandidateListPageResult> {
+    const data = await this.readData();
+    const query = normalizeSearchQuery(args.query);
+    const pageSize = Math.max(1, args.pageSize);
+    const matched = data.candidates
+      .filter((candidate) => !args.groupId || candidate.groupId === args.groupId)
+      .filter((candidate) => !args.status || candidate.status === args.status)
+      .filter((candidate) => !args.subjectUserId || candidate.subjectUserId === args.subjectUserId)
+      .filter((candidate) => !args.type || candidate.type === args.type)
+      .filter((candidate) => !query || candidateMatchesQuery(candidate, query))
+      .sort(compareCandidatesNewestFirst);
+    const total = matched.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(1, args.page), totalPages);
+    const start = (page - 1) * pageSize;
+    return {
+      items: matched.slice(start, start + pageSize).map(cloneCandidate),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
   }
 
   async addCandidate(input: GroupMemoryCandidateInput): Promise<GroupMemoryCandidate> {
@@ -248,6 +294,10 @@ function normalizeKeyText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, "").slice(0, 120);
 }
 
+function compareCandidatesNewestFirst(left: GroupMemoryCandidate, right: GroupMemoryCandidate): number {
+  return right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+}
+
 function cloneCandidate(candidate: GroupMemoryCandidate): GroupMemoryCandidate {
   return {
     ...candidate,
@@ -260,6 +310,25 @@ function cloneCandidate(candidate: GroupMemoryCandidate): GroupMemoryCandidate {
         }
       : {}),
   };
+}
+
+function normalizeSearchQuery(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function candidateMatchesQuery(candidate: GroupMemoryCandidate, query: string): boolean {
+  return [
+    candidate.id,
+    candidate.groupId,
+    candidate.type,
+    candidate.status,
+    candidate.subjectUserId,
+    candidate.title,
+    candidate.content,
+    candidate.source,
+    candidate.evidence?.summary,
+    ...(candidate.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 
 function normalizeEvidence(value: GroupMemoryCandidate["evidence"] | undefined): GroupMemoryEvidence | undefined {

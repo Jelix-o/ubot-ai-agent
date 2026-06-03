@@ -314,3 +314,81 @@ test("candidate service does not duplicate memories for repeated auto-approved c
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("candidate store pages filtered candidates newest first", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-candidate-page-"));
+  try {
+    const store = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+    await store.addCandidate({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Older profile",
+      content: "Tester likes concise answers.",
+      confidence: 0.7,
+      evidence: {
+        startAt: "2026-06-01T09:59:00.000Z",
+        endAt: "2026-06-01T10:00:00.000Z",
+        messageCount: 2,
+        speakers: [{ userId: "20001", userName: "CandidateSpeaker" }],
+        summary: "CandidateSpeaker talked about concise answers.",
+      },
+    });
+    const rejected = await store.addCandidate({
+      groupId: "67890",
+      type: "group_fact",
+      title: "Rejected fact",
+      content: "The group likes short updates.",
+      confidence: 0.6,
+    });
+    await store.update(rejected.id, { status: "rejected" });
+    await store.addCandidate({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20002",
+      title: "Other profile",
+      content: "Another member likes long updates.",
+      confidence: 0.6,
+    });
+    await store.addCandidate({
+      groupId: "99999",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Other group profile",
+      content: "Other group should not match.",
+    });
+
+    const subjectPage = await store.listPage({
+      groupId: "67890",
+      status: "pending",
+      type: "member_profile",
+      subjectUserId: "20001",
+      query: "candidatespeaker",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(subjectPage.pagination.total, 1);
+    assert.equal(subjectPage.items[0]?.title, "Older profile");
+
+    const pendingPage = await store.listPage({
+      groupId: "67890",
+      status: "pending",
+      page: 1,
+      pageSize: 1,
+    });
+    assert.equal(pendingPage.pagination.total, 2);
+    assert.equal(pendingPage.pagination.totalPages, 2);
+    assert.equal(pendingPage.items.length, 1);
+
+    const rejectedPage = await store.listPage({
+      groupId: "67890",
+      status: "rejected",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(rejectedPage.pagination.total, 1);
+    assert.equal(rejectedPage.items[0]?.title, "Rejected fact");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
