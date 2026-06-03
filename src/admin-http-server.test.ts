@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { request } from "node:http";
 import { AddressInfo } from "node:net";
+import { gunzipSync } from "node:zlib";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +15,26 @@ import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-sto
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import type { NapcatGroupMember } from "./types.js";
+
+async function rawGet(url: string, headers: Record<string, string> = {}): Promise<{
+  statusCode: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+}> {
+  return await new Promise((resolve, reject) => {
+    const req = request(url, { method: "GET", headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => resolve({
+        statusCode: res.statusCode ?? 0,
+        headers: res.headers,
+        body: Buffer.concat(chunks),
+      }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 test("admin http server protects APIs and serves authenticated dashboard data", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-http-"));
@@ -189,6 +211,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(groups.status, 200);
     assert.equal(((await groups.json()) as { groups: unknown[] }).groups.length, 1);
 
+    const compressedGroups = await fetch(`${baseUrl}/api/groups`, {
+      headers: { Cookie: cookie ?? "", "Accept-Encoding": "gzip" },
+    });
+    assert.equal(compressedGroups.status, 200);
+    assert.equal(compressedGroups.headers.get("content-encoding"), null);
+    assert.equal(((await compressedGroups.json()) as { groups: unknown[] }).groups.length, 1);
+
     const dashboardPage = await fetch(`${baseUrl}/`, {
       headers: { Cookie: cookie ?? "" },
     });
@@ -220,6 +249,12 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("invalidateRenderCache"), true);
     assert.equal(adminAppJsText.includes("cloneData"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
+
+    const compressedAdminAppJs = await rawGet(`${baseUrl}/admin-app.js`, { "Accept-Encoding": "gzip" });
+    assert.equal(compressedAdminAppJs.statusCode, 200);
+    assert.equal(compressedAdminAppJs.headers["content-encoding"], "gzip");
+    assert.equal(compressedAdminAppJs.headers.vary, "Accept-Encoding");
+    assert.equal(gunzipSync(compressedAdminAppJs.body).toString("utf8").includes("renderOverview"), true);
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
       headers: { Cookie: cookie ?? "" },

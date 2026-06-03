@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 
@@ -35,6 +36,7 @@ type EvidenceResponseMode = "full" | "preview";
 
 const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
 const ADMIN_EVIDENCE_PREVIEW_LIMIT = 180;
+const ADMIN_GZIP_MIN_BYTES = 1024;
 
 export class AdminHttpServer {
   private readonly memberProfileCache = new Map<string, {
@@ -865,22 +867,35 @@ export class AdminHttpServer {
   }
 
   private sendJson(res: ServerResponse, data: unknown, statusCode = 200): void {
-    res.statusCode = statusCode;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(data));
+    this.sendText(res, JSON.stringify(data), "application/json; charset=utf-8", { statusCode });
   }
 
   private sendHtml(res: ServerResponse, html: string): void {
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.end(html);
+    this.sendText(res, html, "text/html; charset=utf-8");
   }
 
   private sendStaticText(res: ServerResponse, content: string, contentType: string): void {
-    res.statusCode = 200;
+    this.sendText(res, content, contentType, { cacheControl: "private, max-age=300" });
+  }
+
+  private sendText(
+    res: ServerResponse,
+    content: string,
+    contentType: string,
+    options: { statusCode?: number; cacheControl?: string } = {},
+  ): void {
+    const body = Buffer.from(content, "utf8");
+    const request = res.req as IncomingMessage | undefined;
+    const acceptsGzip = request?.headers["accept-encoding"]?.includes("gzip") ?? false;
+    const shouldCompress = acceptsGzip && body.byteLength >= ADMIN_GZIP_MIN_BYTES;
+    const payload = shouldCompress ? gzipSync(body) : body;
+    res.statusCode = options.statusCode ?? 200;
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", "private, max-age=300");
-    res.end(content);
+    res.setHeader("Content-Length", payload.byteLength);
+    res.setHeader("Vary", "Accept-Encoding");
+    if (options.cacheControl) res.setHeader("Cache-Control", options.cacheControl);
+    if (shouldCompress) res.setHeader("Content-Encoding", "gzip");
+    res.end(payload);
   }
 }
 
