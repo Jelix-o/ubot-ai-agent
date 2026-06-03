@@ -38,6 +38,8 @@ export class AdminHttpServer {
     members: GroupMemberProfile[];
   }>();
 
+  private readonly memberProfileInflight = new Map<string, Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined>>();
+
   private readonly server = createServer((req, res) => {
     void this.handleRequest(req, res);
   });
@@ -458,7 +460,23 @@ export class AdminHttpServer {
     if (!force && cached && cached.expiresAt > Date.now()) {
       return { groupConfig: cached.groupConfig, members: cached.members };
     }
+    const inflight = this.memberProfileInflight.get(groupId);
+    if (!force && inflight) {
+      return inflight;
+    }
 
+    const loading = this.loadMemberProfileData(groupId);
+    this.memberProfileInflight.set(groupId, loading);
+    try {
+      return await loading;
+    } finally {
+      if (this.memberProfileInflight.get(groupId) === loading) {
+        this.memberProfileInflight.delete(groupId);
+      }
+    }
+  }
+
+  private async loadMemberProfileData(groupId: string): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
     const groupConfig = await this.options.groupConfigService.getGroup(groupId);
     if (!groupConfig) {
       this.memberProfileCache.delete(groupId);
@@ -484,9 +502,11 @@ export class AdminHttpServer {
   private invalidateMemberProfileCache(groupId?: string): void {
     if (groupId) {
       this.memberProfileCache.delete(groupId);
+      this.memberProfileInflight.delete(groupId);
       return;
     }
     this.memberProfileCache.clear();
+    this.memberProfileInflight.clear();
   }
 
   private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {

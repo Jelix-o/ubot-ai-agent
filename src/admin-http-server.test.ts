@@ -247,6 +247,17 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(edited.confidence, 0.81);
     assert.equal(edited.enabled, false);
 
+    const callsBeforeConcurrentProfileLoads = listGroupMembersCalls;
+    const [concurrentMembers, concurrentMemories, concurrentCandidates] = await Promise.all([
+      fetch(`${baseUrl}/api/groups/67890/members`, { headers: { Cookie: cookie ?? "" } }),
+      fetch(`${baseUrl}/api/memories?groupId=67890&page=1&pageSize=1`, { headers: { Cookie: cookie ?? "" } }),
+      fetch(`${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=1`, { headers: { Cookie: cookie ?? "" } }),
+    ]);
+    assert.equal(concurrentMembers.status, 200);
+    assert.equal(concurrentMemories.status, 200);
+    assert.equal(concurrentCandidates.status, 200);
+    assert.equal(listGroupMembersCalls, callsBeforeConcurrentProfileLoads + 1);
+
     const convertMemory = await fetch(`${baseUrl}/api/memories/${profileMemoryId}`, {
       method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
