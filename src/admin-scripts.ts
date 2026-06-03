@@ -384,6 +384,17 @@ function removeCurrentItem(listName, id) {
 function removeArticle(target) {
   target.closest('article')?.remove();
 }
+function showOrRemoveCandidate(target, candidate) {
+  state.selectedCandidateIds.delete(candidate.id);
+  updateCurrentItem('currentCandidates', candidate.id, candidate);
+  if (state.candidateStatus && state.candidateStatus !== candidate.status) {
+    removeCurrentItem('currentCandidates', candidate.id);
+    removeArticle(target);
+  } else {
+    replaceArticle(target, 'candidate', candidate.id);
+  }
+  updateCandidateSelectionUi();
+}
 function replaceEditedArticle(target) {
   const article = target.closest('article');
   if (!article) return false;
@@ -410,10 +421,10 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; replaceArticle(target, 'memory', target.dataset.editMemory); }
   if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; replaceArticle(target, 'knowledge', target.dataset.editKnowledge); }
   if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; replaceEditedArticle(target); }
-  if (target.dataset.saveCandidate) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); state.editingCandidateId = ''; await renderCandidates(); }, '候选记忆已保存'); }
-  if (target.dataset.approve) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); await renderCandidates(); }, '候选记忆已批准'); }
-  if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); await renderCandidates(); }, '已转为群事实并批准'); }
-  if (target.dataset.reject) { await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); await renderCandidates(); }, '候选记忆已拒绝'); }
+  if (target.dataset.saveCandidate) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); updateCurrentItem('currentCandidates', target.dataset.saveCandidate, candidate); state.editingCandidateId = ''; replaceArticle(target, 'candidate', target.dataset.saveCandidate); }, '候选记忆已保存'); }
+  if (target.dataset.approve) { await runAction(target, async () => { const result = await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); showOrRemoveCandidate(target, result.candidate); }, '候选记忆已批准'); }
+  if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); const result = await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); showOrRemoveCandidate(target, result.candidate); }, '已转为群事实并批准'); }
+  if (target.dataset.reject) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); showOrRemoveCandidate(target, candidate); }, '候选记忆已拒绝'); }
   if (target.dataset.bulkApproveSelected !== undefined) {
     await runAction(target, async () => {
       const selectedIds = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id)).map(candidate => candidate.id);
@@ -424,7 +435,7 @@ document.addEventListener('click', async (event) => {
     }, '已处理选中的候选记忆');
   }
   if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); updateCandidateSelectionUi(); }
-  if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); await renderCandidates(); }, '候选记忆已删除'); }
+  if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); state.selectedCandidateIds.delete(target.dataset.deleteCandidate); removeCurrentItem('currentCandidates', target.dataset.deleteCandidate); state.pendingDelete = ''; removeArticle(target); updateCandidateSelectionUi(); }, '候选记忆已删除'); }
   if (target.dataset.saveMemory) { await runAction(target, async () => { await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); state.editingMemoryId = ''; await renderMemories(); }, '长期记忆已保存'); }
   if (target.dataset.toggleMemory) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentMemories', target.dataset.toggleMemory, { enabled }); replaceArticle(target, 'memory', target.dataset.toggleMemory); }, '长期记忆状态已更新'); }
   if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); }, '长期记忆已删除'); }
