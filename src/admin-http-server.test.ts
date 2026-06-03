@@ -216,6 +216,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("groupsLoadedAt"), true);
     assert.equal(adminAppJsText.includes("data-refresh-groups"), true);
     assert.equal(adminAppJsText.includes("setPageLoading"), true);
+    assert.equal(adminAppJsText.includes("renderCacheTtlMs"), true);
+    assert.equal(adminAppJsText.includes("invalidateRenderCache"), true);
+    assert.equal(adminAppJsText.includes("cloneData"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const overview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {

@@ -14,6 +14,8 @@ let renderVersion = 0;
 let renderAbortController = null;
 let groupsLoadedAt = 0;
 let groupsInflight = null;
+const renderCache = new Map();
+const renderCacheTtlMs = 8000;
 let ownerMemberSearchTimer = null;
 let isApplyingHistoryState = false;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
@@ -28,6 +30,10 @@ const ownerLabel = (item) => item.subjectLabel?.label || (item.type === 'member_
 const shortText = (value, limit = 160) => {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit) + '...' : text;
+};
+const cloneData = (value) => {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
 };
 const nextRenderToken = () => {
   renderAbortController?.abort();
@@ -81,12 +87,29 @@ const api = async (url, options = {}) => {
 };
 const apiForRender = async (url) => {
   try {
-    return await api(url, { signal: renderAbortController?.signal });
+    const cached = renderCache.get(url);
+    if (cached && Date.now() - cached.time < renderCacheTtlMs) return cloneData(cached.data);
+    const data = await api(url, { signal: renderAbortController?.signal });
+    renderCache.set(url, { time: Date.now(), data: cloneData(data) });
+    return data;
   } catch (error) {
     if (error?.name === 'AbortError') return null;
     throw error;
   }
 };
+function invalidateRenderCache(match) {
+  if (!match) {
+    renderCache.clear();
+    return;
+  }
+  for (const key of renderCache.keys()) {
+    if (typeof match === 'string' ? key.startsWith(match) : match.test(key)) renderCache.delete(key);
+  }
+}
+function invalidateGroupsCache() {
+  groupsLoadedAt = 0;
+  invalidateRenderCache('/api/groups');
+}
 const runAction = async (button, work, success = '操作完成') => {
   try {
     if (button) button.disabled = true;
@@ -309,6 +332,25 @@ function clearOwnerMemberInflight(groupId) {
   for (const key of state.ownerMembersInflight.keys()) {
     if (key === groupId || key.startsWith(groupId + ':')) state.ownerMembersInflight.delete(key);
   }
+}
+function invalidateMemberCaches() {
+  invalidateGroupsCache();
+  invalidateRenderCache('/api/overview');
+}
+function invalidateCandidateCaches() {
+  invalidateRenderCache('/api/memory-candidates');
+  invalidateRenderCache('/api/memories');
+  invalidateRenderCache('/api/overview');
+  invalidateGroupsCache();
+}
+function invalidateMemoryCaches() {
+  invalidateRenderCache('/api/memories');
+  invalidateRenderCache('/api/overview');
+  invalidateGroupsCache();
+}
+function invalidateKnowledgeCaches() {
+  invalidateRenderCache('/api/knowledge');
+  invalidateRenderCache('/api/overview');
 }
 function scheduleOwnerMemberSearch(value) {
   clearTimeout(ownerMemberSearchTimer);
@@ -861,10 +903,10 @@ document.addEventListener('click', async (event) => {
   if (!(target instanceof HTMLButtonElement)) return;
   if (target.dataset.view) { await navigateTo(target.dataset.view); }
   if (target.dataset.jumpView) { await navigateTo(target.dataset.jumpView); }
-  if (target.dataset.refreshGroups !== undefined) { await runAction(target, async () => { await loadGroups({ refresh: true }); await renderGroups(); }, '群配置已刷新'); }
-  if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.memberPage = 1; syncUrlState(); await renderMembers(true); }, '群成员已同步'); }
+  if (target.dataset.refreshGroups !== undefined) { await runAction(target, async () => { invalidateGroupsCache(); await loadGroups({ refresh: true }); await renderGroups(); }, '群配置已刷新'); }
+  if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { invalidateMemberCaches(); state.memberPage = 1; syncUrlState(); await renderMembers(true); }, '群成员已同步'); }
   if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; clearTransientState(); syncUrlState(); await render(); }
-  if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
+  if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); invalidateMemberCaches(); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
   if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; replaceArticle(target, 'member', target.dataset.editMember); }
   if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; state.expandedCandidateIds.add(target.dataset.editCandidate); replaceArticle(target, 'candidate', target.dataset.editCandidate); preloadOwnerMembers(); }
   if (target.dataset.editMemory) { state.editingMemoryId = target.dataset.editMemory; state.expandedMemoryIds.add(target.dataset.editMemory); replaceArticle(target, 'memory', target.dataset.editMemory); preloadOwnerMembers(); }
@@ -873,14 +915,15 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.loadEvidence) { await runAction(target, async () => { await loadFullEvidence(target); }, '来源证据已展开'); }
   if (target.dataset.toggleCandidateDetails) { const id = target.dataset.toggleCandidateDetails; state.pendingDelete = ''; if (state.expandedCandidateIds.has(id)) state.expandedCandidateIds.delete(id); else state.expandedCandidateIds.add(id); replaceArticle(target, 'candidate', id); }
   if (target.dataset.toggleMemoryDetails) { const id = target.dataset.toggleMemoryDetails; state.pendingDelete = ''; if (state.expandedMemoryIds.has(id)) state.expandedMemoryIds.delete(id); else state.expandedMemoryIds.add(id); replaceArticle(target, 'memory', id); }
-  if (target.dataset.saveCandidate) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); updateCurrentItem('currentCandidates', target.dataset.saveCandidate, candidate); state.editingCandidateId = ''; replaceArticle(target, 'candidate', target.dataset.saveCandidate); }, '候选记忆已保存'); }
-  if (target.dataset.approve) { await runAction(target, async () => { const result = await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); showOrRemoveCandidate(target, result.candidate); }, '候选记忆已批准'); }
-  if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); const result = await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); showOrRemoveCandidate(target, result.candidate); }, '已转为群事实并批准'); }
-  if (target.dataset.reject) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); showOrRemoveCandidate(target, candidate); }, '候选记忆已拒绝'); }
+  if (target.dataset.saveCandidate) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); invalidateCandidateCaches(); updateCurrentItem('currentCandidates', target.dataset.saveCandidate, candidate); state.editingCandidateId = ''; replaceArticle(target, 'candidate', target.dataset.saveCandidate); }, '候选记忆已保存'); }
+  if (target.dataset.approve) { await runAction(target, async () => { const result = await api('/api/memory-candidates/' + target.dataset.approve + '/approve', { method: 'POST', body: JSON.stringify(candidatePayload(target.dataset.approve)) }); invalidateCandidateCaches(); showOrRemoveCandidate(target, result.candidate); }, '候选记忆已批准'); }
+  if (target.dataset.approveAsFact) { await runAction(target, async () => { const payload = candidatePayload(target.dataset.approveAsFact); const result = await api('/api/memory-candidates/' + target.dataset.approveAsFact + '/approve', { method: 'POST', body: JSON.stringify({ ...payload, type: 'group_fact', subjectUserId: null }) }); invalidateCandidateCaches(); showOrRemoveCandidate(target, result.candidate); }, '已转为群事实并批准'); }
+  if (target.dataset.reject) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.reject + '/reject', { method: 'POST', body: '{}' }); invalidateCandidateCaches(); showOrRemoveCandidate(target, candidate); }, '候选记忆已拒绝'); }
   if (target.dataset.bulkApproveSelected !== undefined) {
     await runAction(target, async () => {
       const selectedIds = state.currentCandidates.filter(candidate => state.selectedCandidateIds.has(candidate.id)).map(candidate => candidate.id);
       const result = await api('/api/memory-candidates/bulk-approve', { method: 'POST', body: JSON.stringify({ ids: selectedIds }) });
+      invalidateCandidateCaches();
       (result.approved || []).forEach(item => updateCandidateFromBulk(item.candidate));
       state.selectedCandidateIds = new Set((result.skipped || []).map(item => item.id).filter(id => state.currentCandidates.some(candidate => candidate.id === id)));
       showLocalNotice('candidate', result.skippedCount ? '已批准 ' + result.approvedCount + ' 条，跳过 ' + result.skippedCount + ' 条。成员画像必须先选择归属成员。' : '');
@@ -889,14 +932,15 @@ document.addEventListener('click', async (event) => {
     }, '已处理选中的候选记忆');
   }
   if (target.dataset.clearCandidateSelection !== undefined) { state.selectedCandidateIds = new Set(); updateCandidateSelectionUi(); }
-  if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; state.expandedCandidateIds.add(target.dataset.deleteCandidate); replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); state.selectedCandidateIds.delete(target.dataset.deleteCandidate); state.expandedCandidateIds.delete(target.dataset.deleteCandidate); removeCurrentItem('currentCandidates', target.dataset.deleteCandidate); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('candidate'); }, '候选记忆已删除'); }
-  if (target.dataset.saveMemory) { await runAction(target, async () => { const memory = await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); updateCurrentItem('currentMemories', target.dataset.saveMemory, memory); state.editingMemoryId = ''; replaceArticle(target, 'memory', target.dataset.saveMemory); }, '长期记忆已保存'); }
-  if (target.dataset.toggleMemory) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentMemories', target.dataset.toggleMemory, { enabled }); replaceArticle(target, 'memory', target.dataset.toggleMemory); }, '长期记忆状态已更新'); }
-  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; state.expandedMemoryIds.add(target.dataset.deleteMemory); replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); state.selectedMemoryIds.delete(target.dataset.deleteMemory); state.expandedMemoryIds.delete(target.dataset.deleteMemory); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('memory'); updateMemorySelectionUi(); }, '长期记忆已删除'); }
+  if (target.dataset.deleteCandidate) { if (state.pendingDelete !== target.dataset.deleteCandidate) { state.pendingDelete = target.dataset.deleteCandidate; state.expandedCandidateIds.add(target.dataset.deleteCandidate); replaceArticle(target, 'candidate', target.dataset.deleteCandidate); return; } await runAction(target, async () => { await api('/api/memory-candidates/' + target.dataset.deleteCandidate, { method: 'DELETE' }); invalidateCandidateCaches(); state.selectedCandidateIds.delete(target.dataset.deleteCandidate); state.expandedCandidateIds.delete(target.dataset.deleteCandidate); removeCurrentItem('currentCandidates', target.dataset.deleteCandidate); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('candidate'); }, '候选记忆已删除'); }
+  if (target.dataset.saveMemory) { await runAction(target, async () => { const memory = await api('/api/memories/' + target.dataset.saveMemory, { method: 'PUT', body: JSON.stringify(memoryPayload(target.dataset.saveMemory)) }); invalidateMemoryCaches(); updateCurrentItem('currentMemories', target.dataset.saveMemory, memory); state.editingMemoryId = ''; replaceArticle(target, 'memory', target.dataset.saveMemory); }, '长期记忆已保存'); }
+  if (target.dataset.toggleMemory) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/memories/' + target.dataset.toggleMemory, { method: 'PUT', body: JSON.stringify({ enabled }) }); invalidateMemoryCaches(); updateCurrentItem('currentMemories', target.dataset.toggleMemory, { enabled }); replaceArticle(target, 'memory', target.dataset.toggleMemory); }, '长期记忆状态已更新'); }
+  if (target.dataset.deleteMemory) { if (state.pendingDelete !== target.dataset.deleteMemory) { state.pendingDelete = target.dataset.deleteMemory; state.expandedMemoryIds.add(target.dataset.deleteMemory); replaceArticle(target, 'memory', target.dataset.deleteMemory); return; } await runAction(target, async () => { await api('/api/memories/' + target.dataset.deleteMemory, { method: 'DELETE' }); invalidateMemoryCaches(); state.selectedMemoryIds.delete(target.dataset.deleteMemory); state.expandedMemoryIds.delete(target.dataset.deleteMemory); removeCurrentItem('currentMemories', target.dataset.deleteMemory); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('memory'); updateMemorySelectionUi(); }, '长期记忆已删除'); }
   if (target.dataset.bulkDisableMemories !== undefined) {
     await runAction(target, async () => {
       const selectedIds = state.currentMemories.filter(memory => state.selectedMemoryIds.has(memory.id)).map(memory => memory.id);
       const result = await api('/api/memories/bulk', { method: 'POST', body: JSON.stringify({ action: 'disable', ids: selectedIds }) });
+      invalidateMemoryCaches();
       (result.processed || []).forEach(item => updateMemoryFromBulk(item.memory));
       state.selectedMemoryIds = new Set((result.skipped || []).map(item => item.id).filter(id => state.currentMemories.some(memory => memory.id === id)));
       showLocalNotice('memory', result.skippedCount ? '已停用 ' + result.processedCount + ' 条，跳过 ' + result.skippedCount + ' 条。' : '');
@@ -914,6 +958,7 @@ document.addEventListener('click', async (event) => {
     await runAction(target, async () => {
       const selectedIds = state.currentMemories.filter(memory => state.selectedMemoryIds.has(memory.id)).map(memory => memory.id);
       const result = await api('/api/memories/bulk', { method: 'POST', body: JSON.stringify({ action: 'delete', ids: selectedIds }) });
+      invalidateMemoryCaches();
       (result.processed || []).forEach(item => removeMemoryFromBulk(item.id));
       state.selectedMemoryIds = new Set((result.skipped || []).map(item => item.id).filter(id => state.currentMemories.some(memory => memory.id === id)));
       state.pendingDelete = '';
@@ -929,9 +974,9 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.clearKnowledgeFilters !== undefined) { state.knowledgeQuery = ''; state.knowledgePage = 1; state.knowledgePageSize = 20; syncUrlState(); await renderKnowledge(); }
   if (target.dataset.candidateStatusShortcut !== undefined) { state.candidateStatus = target.dataset.candidateStatusShortcut; state.candidatePage = 1; syncUrlState(); await renderCandidates(); }
   if (target.dataset.pageKind && target.dataset.pageStep) { await changePage(target.dataset.pageKind, target.dataset.pageStep === 'next' ? 1 : -1); }
-  if (target.dataset.saveKnowledge) { await runAction(target, async () => { const entry = await api('/api/knowledge/' + target.dataset.saveKnowledge, { method: 'PUT', body: JSON.stringify(knowledgePayload(target.dataset.saveKnowledge)) }); updateCurrentItem('currentKnowledge', target.dataset.saveKnowledge, entry); state.editingKnowledgeId = ''; replaceArticle(target, 'knowledge', target.dataset.saveKnowledge); }, 'FAQ 已保存'); }
-  if (target.dataset.toggleKnowledge) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled }) }); updateCurrentItem('currentKnowledge', target.dataset.toggleKnowledge, { enabled }); replaceArticle(target, 'knowledge', target.dataset.toggleKnowledge); }, 'FAQ 状态已更新'); }
-  if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; replaceArticle(target, 'knowledge', target.dataset.deleteKnowledge); return; } await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); removeCurrentItem('currentKnowledge', target.dataset.deleteKnowledge); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('knowledge'); }, 'FAQ 已删除'); }
+  if (target.dataset.saveKnowledge) { await runAction(target, async () => { const entry = await api('/api/knowledge/' + target.dataset.saveKnowledge, { method: 'PUT', body: JSON.stringify(knowledgePayload(target.dataset.saveKnowledge)) }); invalidateKnowledgeCaches(); updateCurrentItem('currentKnowledge', target.dataset.saveKnowledge, entry); state.editingKnowledgeId = ''; replaceArticle(target, 'knowledge', target.dataset.saveKnowledge); }, 'FAQ 已保存'); }
+  if (target.dataset.toggleKnowledge) { await runAction(target, async () => { const enabled = target.dataset.enabled === 'true'; await api('/api/knowledge/' + target.dataset.toggleKnowledge, { method: 'PUT', body: JSON.stringify({ enabled }) }); invalidateKnowledgeCaches(); updateCurrentItem('currentKnowledge', target.dataset.toggleKnowledge, { enabled }); replaceArticle(target, 'knowledge', target.dataset.toggleKnowledge); }, 'FAQ 状态已更新'); }
+  if (target.dataset.deleteKnowledge) { if (state.pendingDelete !== target.dataset.deleteKnowledge) { state.pendingDelete = target.dataset.deleteKnowledge; replaceArticle(target, 'knowledge', target.dataset.deleteKnowledge); return; } await runAction(target, async () => { await api('/api/knowledge/' + target.dataset.deleteKnowledge, { method: 'DELETE' }); invalidateKnowledgeCaches(); removeCurrentItem('currentKnowledge', target.dataset.deleteKnowledge); state.pendingDelete = ''; removeArticle(target); ensureLocalEmptyState('knowledge'); }, 'FAQ 已删除'); }
 });
 document.addEventListener('focusin', (event) => {
   const target = event.target;
@@ -982,6 +1027,7 @@ document.addEventListener('submit', async (event) => {
   if (form.classList.contains('memberForm')) {
     await runAction(form.querySelector('button'), async () => {
       const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });
+      invalidateMemberCaches();
       updateCurrentMember(result.member);
       state.editingMemberId = '';
       replaceArticle(form, 'member', form.dataset.userId);
@@ -991,6 +1037,7 @@ document.addEventListener('submit', async (event) => {
   if (form.id === 'memoryForm') {
     await runAction(form.querySelector('button'), async () => {
       const memory = await api('/api/memories', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, subjectUserId: data.subjectUserId || null }) });
+      invalidateMemoryCaches();
       form.reset();
       if (!insertMemoryLocally(memory)) showLocalNotice('memory', '长期记忆已新增。当前筛选下不显示，可清空筛选或回到第一页查看。');
     }, '长期记忆已新增');
@@ -998,6 +1045,7 @@ document.addEventListener('submit', async (event) => {
   if (form.id === 'knowledgeForm') {
     await runAction(form.querySelector('button'), async () => {
       const entry = await api('/api/knowledge', { method: 'POST', body: JSON.stringify({ ...data, groupId: state.groupId, keywords: String(data.keywords || '').split(/[,，、]+/) }) });
+      invalidateKnowledgeCaches();
       form.reset();
       if (!insertKnowledgeLocally(entry)) showLocalNotice('knowledge', 'FAQ 已新增。当前搜索下不显示，可清空搜索或回到第一页查看。');
     }, 'FAQ 已新增');
