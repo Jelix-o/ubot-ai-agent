@@ -138,7 +138,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     </main>
   </div>
   <script>
-    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentCandidates: [], currentMemories: [], currentKnowledge: [] };
+    const state = { view: 'overview', groups: [], groupId: '', members: [], memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [] };
     const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
     const content = () => document.querySelector('#content');
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -196,7 +196,9 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
     async function loadMembers(force = false) {
       if (!state.groupId) return [];
       if (!force && state.members.length > 0) return state.members;
-      const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members' + (force ? '?refresh=1' : ''));
+      const params = new URLSearchParams({ all: '1' });
+      if (force) params.set('refresh', '1');
+      const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + params.toString());
       state.members = data.members || [];
       return state.members;
     }
@@ -252,13 +254,14 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       content().innerHTML = '<section class="panel"><h2>群配置</h2><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
     }
     async function renderMembers() {
-      await loadMembers();
-      const query = state.memberQuery.trim().toLowerCase();
-      const members = state.members.filter(m => !query || [m.userId, m.displayName, m.card, m.nickname, m.note, ...(m.aliases || [])].some(v => String(v || '').toLowerCase().includes(query)));
-      const pageInfo = paginateLocal(members, state.memberPage, state.memberPageSize);
+      const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
+      if (state.memberQuery.trim()) query.set('q', state.memberQuery.trim());
+      const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + query.toString());
+      const pageInfo = data.pagination || { page: state.memberPage, pageSize: state.memberPageSize, total: (data.members || []).length, totalPages: 1 };
+      state.currentMembers = data.members || [];
       state.memberPage = pageInfo.page;
-      const pageMembers = members.slice(pageInfo.startIndex, pageInfo.endIndex);
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>刷新</button></div><div class="member-grid">' + pageMembers.map(rowMember).join('') + '</div>' + memberPagination(pageInfo) + '</section>';
+      const empty = state.currentMembers.length ? '' : '<p class="message">没有符合筛选条件的成员。</p>';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>刷新</button></div>' + empty + '<div class="member-grid">' + state.currentMembers.map(rowMember).join('') + '</div>' + listPagination('member', pageInfo, '成员') + '</section>';
       document.querySelector('#memberSearch')?.addEventListener('input', debounce(event => { state.memberQuery = event.target.value; state.memberPage = 1; renderMembers(); }, 180));
       document.querySelector('#memberPageSize')?.addEventListener('change', event => { state.memberPageSize = Number(event.target.value) || 24; state.memberPage = 1; renderMembers(); });
     }

@@ -145,7 +145,7 @@ export class AdminHttpServer {
 
     const membersRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members$/);
     if (membersRoute && req.method === "GET") {
-      await this.handleGroupMembers(res, membersRoute.groupId, url.searchParams.get("refresh") === "1");
+      await this.handleGroupMembers(res, membersRoute.groupId, url);
       return;
     }
 
@@ -368,15 +368,34 @@ export class AdminHttpServer {
     this.sendJson(res, { error: "method_not_allowed" }, 405);
   }
 
-  private async handleGroupMembers(res: ServerResponse, groupId: string, force = false): Promise<void> {
+  private async handleGroupMembers(res: ServerResponse, groupId: string, url: URL): Promise<void> {
+    const force = url.searchParams.get("refresh") === "1";
     const profiles = await this.getCachedMemberProfileData(groupId, force);
     if (!profiles) {
       this.sendJson(res, { error: "not_found" }, 404);
       return;
     }
 
+    const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
+    const returnAll = url.searchParams.get("all") === "1";
+    const pagination = paginationParams(url, 24, 100);
+    const filteredMembers = profiles.members.filter((member) => !query || memberMatchesQuery(member, query));
+    if (returnAll) {
+      this.sendJson(res, {
+        members: filteredMembers,
+        pagination: {
+          page: 1,
+          pageSize: Math.max(1, filteredMembers.length),
+          total: filteredMembers.length,
+          totalPages: 1,
+        },
+      });
+      return;
+    }
+    const page = paginateItems(filteredMembers, pagination);
     this.sendJson(res, {
-      members: profiles.members,
+      members: page.items,
+      pagination: page.pagination,
     });
   }
 
@@ -763,6 +782,18 @@ function candidateMatchesQuery(candidate: GroupMemoryCandidate, query: string): 
     candidate.source,
     candidate.evidence?.summary,
     ...(candidate.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
+}
+
+function memberMatchesQuery(member: GroupMemberProfile, query: string): boolean {
+  return [
+    member.userId,
+    member.displayName,
+    member.card,
+    member.nickname,
+    member.role,
+    member.note,
+    ...(member.aliases ?? []),
   ].some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 
