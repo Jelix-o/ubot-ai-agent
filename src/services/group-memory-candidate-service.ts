@@ -52,6 +52,10 @@ export class GroupMemoryCandidateService {
     return this.candidateStore.listPage(args);
   }
 
+  async countPendingBySubject(groupId: string): Promise<Array<{ userId: string; count: number }>> {
+    return this.candidateStore.countPendingBySubject(groupId);
+  }
+
   async approve(
     id: string,
     patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "evidence">> = {},

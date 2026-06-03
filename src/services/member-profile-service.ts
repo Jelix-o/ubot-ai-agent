@@ -15,11 +15,18 @@ export interface SubjectLabel {
   unresolved: boolean;
 }
 
+export interface SubjectCount {
+  userId: string;
+  count: number;
+}
+
 export function buildGroupMemberProfiles(args: {
   groupConfig: GroupBotConfig;
   napcatMembers?: NapcatGroupMember[];
   memories?: GroupMemory[];
   candidates?: GroupMemoryCandidate[];
+  memoryCounts?: SubjectCount[];
+  pendingCandidateCounts?: SubjectCount[];
 }): GroupMemberProfile[] {
   const profiles = new Map<string, GroupMemberProfile>();
 
@@ -73,11 +80,25 @@ export function buildGroupMemberProfiles(args: {
     ensureProfile(profiles, args.groupConfig.manualIdentities, memory.subjectUserId).memoryCount += 1;
   }
 
+  for (const item of args.memoryCounts ?? []) {
+    if (!item.userId || item.count <= 0) {
+      continue;
+    }
+    ensureProfile(profiles, args.groupConfig.manualIdentities, item.userId).memoryCount += item.count;
+  }
+
   for (const candidate of args.candidates ?? []) {
     if (!candidate.subjectUserId || candidate.status !== "pending") {
       continue;
     }
     ensureProfile(profiles, args.groupConfig.manualIdentities, candidate.subjectUserId).pendingCandidateCount += 1;
+  }
+
+  for (const item of args.pendingCandidateCounts ?? []) {
+    if (!item.userId || item.count <= 0) {
+      continue;
+    }
+    ensureProfile(profiles, args.groupConfig.manualIdentities, item.userId).pendingCandidateCount += item.count;
   }
 
   return [...profiles.values()].sort((left, right) => {

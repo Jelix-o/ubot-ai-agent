@@ -31,6 +31,11 @@ export interface GroupMemoryListPageResult {
   };
 }
 
+export interface SubjectCount {
+  userId: string;
+  count: number;
+}
+
 export type GroupMemoryInput = {
   groupId: string;
   type: GroupMemoryType;
@@ -94,6 +99,18 @@ export class GroupMemoryStore {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, limit)
       .map(cloneMemory);
+  }
+
+  async countBySubject(groupId: string): Promise<SubjectCount[]> {
+    const data = await this.readData();
+    const counts = new Map<string, number>();
+    for (const memory of data.memories) {
+      if (memory.groupId !== groupId || !memory.subjectUserId) {
+        continue;
+      }
+      counts.set(memory.subjectUserId, (counts.get(memory.subjectUserId) ?? 0) + 1);
+    }
+    return [...counts.entries()].map(([userId, count]) => ({ userId, count }));
   }
 
   async create(input: GroupMemoryInput): Promise<GroupMemory> {

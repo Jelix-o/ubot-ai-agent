@@ -39,6 +39,7 @@ test("group memory store initializes, persists, filters, updates and removes", a
 
     assert.equal((await store.list("67890")).length, 1);
     assert.equal((await store.listEnabled("67890")).length, 1);
+    assert.deepEqual(await store.countBySubject("67890"), [{ userId: "20001", count: 1 }]);
     assert.equal((await store.get(memory.id))?.title, "Tester preference");
     assert.equal(await store.get("missing"), undefined);
 
@@ -62,6 +63,7 @@ test("group memory store initializes, persists, filters, updates and removes", a
       },
     });
     assert.equal(longEvidenceMemory.evidence?.summary.length, longEvidenceSummary.length);
+    assert.deepEqual(await store.countBySubject("67890"), [{ userId: "20001", count: 1 }]);
 
     assert.equal(await store.remove(memory.id), true);
     assert.equal(await store.remove(memory.id), false);
@@ -694,6 +696,14 @@ test("candidate store pages filtered candidates newest first", async () => {
       title: "Other group profile",
       content: "Other group should not match.",
     });
+
+    assert.deepEqual(
+      (await store.countPendingBySubject("67890")).sort((left, right) => left.userId.localeCompare(right.userId)),
+      [
+        { userId: "20001", count: 1 },
+        { userId: "20002", count: 1 },
+      ],
+    );
 
     const subjectPage = await store.listPage({
       groupId: "67890",

@@ -651,14 +651,14 @@ export class AdminHttpServer {
       return undefined;
     }
 
-    const [memories, candidates, napcatMembers] = await Promise.all([
-      this.options.groupMemoryStore.list(groupId),
-      this.options.groupMemoryCandidateService.list({ groupId }),
+    const [memoryCounts, pendingCandidateCounts, napcatMembers] = await Promise.all([
+      this.options.groupMemoryStore.countBySubject(groupId),
+      this.options.groupMemoryCandidateService.countPendingBySubject(groupId),
       includeNapcatMembers ? this.safeListGroupMembers(groupId) : Promise.resolve([]),
     ]);
     const data = {
       groupConfig,
-      members: buildGroupMemberProfiles({ groupConfig, napcatMembers, memories, candidates }),
+      members: buildGroupMemberProfiles({ groupConfig, napcatMembers, memoryCounts, pendingCandidateCounts }),
     };
     this.memberProfileCache.set(groupId, {
       ...data,
@@ -690,9 +690,9 @@ export class AdminHttpServer {
     groupConfig: GroupBotConfig,
     currentProfile?: GroupMemberProfile,
   ): Promise<GroupMemberProfile> {
-    const [memories, candidates] = await Promise.all([
-      this.options.groupMemoryStore.list(groupId),
-      this.options.groupMemoryCandidateService.list({ groupId }),
+    const [memoryCounts, pendingCandidateCounts] = await Promise.all([
+      this.options.groupMemoryStore.countBySubject(groupId),
+      this.options.groupMemoryCandidateService.countPendingBySubject(groupId),
     ]);
     const napcatMembers: NapcatGroupMember[] = currentProfile
       ? [{
@@ -705,8 +705,8 @@ export class AdminHttpServer {
     return buildGroupMemberProfiles({
       groupConfig,
       napcatMembers,
-      memories,
-      candidates,
+      memoryCounts,
+      pendingCandidateCounts,
     }).find((member) => member.userId === userId) ?? {
       userId,
       displayName: userId,

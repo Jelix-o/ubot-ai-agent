@@ -54,6 +54,11 @@ export interface GroupMemoryCandidateAddResult {
   created: boolean;
 }
 
+export interface SubjectCount {
+  userId: string;
+  count: number;
+}
+
 export class GroupMemoryCandidateStore {
   private cachedData?: GroupMemoryCandidateFile;
 
@@ -98,6 +103,18 @@ export class GroupMemoryCandidateStore {
         totalPages,
       },
     };
+  }
+
+  async countPendingBySubject(groupId: string): Promise<SubjectCount[]> {
+    const data = await this.readData();
+    const counts = new Map<string, number>();
+    for (const candidate of data.candidates) {
+      if (candidate.groupId !== groupId || candidate.status !== "pending" || !candidate.subjectUserId) {
+        continue;
+      }
+      counts.set(candidate.subjectUserId, (counts.get(candidate.subjectUserId) ?? 0) + 1);
+    }
+    return [...counts.entries()].map(([userId, count]) => ({ userId, count }));
   }
 
   async addCandidate(input: GroupMemoryCandidateInput): Promise<GroupMemoryCandidate> {
