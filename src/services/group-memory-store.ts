@@ -9,6 +9,26 @@ interface GroupMemoryFile {
   memories: GroupMemory[];
 }
 
+export interface GroupMemoryListPageArgs {
+  groupId?: string;
+  subjectUserId?: string;
+  type?: GroupMemoryType;
+  enabled?: boolean;
+  query?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface GroupMemoryListPageResult {
+  items: GroupMemory[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 export type GroupMemoryInput = {
   groupId: string;
   type: GroupMemoryType;
@@ -31,6 +51,32 @@ export class GroupMemoryStore {
     const data = await this.readData();
     const memories = groupId ? data.memories.filter((memory) => memory.groupId === groupId) : data.memories;
     return memories.map(cloneMemory);
+  }
+
+  async listPage(args: GroupMemoryListPageArgs): Promise<GroupMemoryListPageResult> {
+    const data = await this.readData();
+    const query = normalizeSearchQuery(args.query);
+    const pageSize = Math.max(1, args.pageSize);
+    const matched = data.memories
+      .filter((memory) => !args.groupId || memory.groupId === args.groupId)
+      .filter((memory) => !args.subjectUserId || memory.subjectUserId === args.subjectUserId)
+      .filter((memory) => !args.type || memory.type === args.type)
+      .filter((memory) => args.enabled === undefined || memory.enabled === args.enabled)
+      .filter((memory) => !query || memoryMatchesQuery(memory, query))
+      .sort(compareMemoriesNewestFirst);
+    const total = matched.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(1, args.page), totalPages);
+    const start = (page - 1) * pageSize;
+    return {
+      items: matched.slice(start, start + pageSize).map(cloneMemory),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    };
   }
 
   async listEnabled(groupId: string, limit = 20): Promise<GroupMemory[]> {
@@ -156,6 +202,14 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
   };
 }
 
+function compareMemoriesNewestFirst(left: GroupMemory, right: GroupMemory): number {
+  return (
+    right.createdAt.localeCompare(left.createdAt) ||
+    right.updatedAt.localeCompare(left.updatedAt) ||
+    right.id.localeCompare(left.id)
+  );
+}
+
 function cloneMemory(memory: GroupMemory): GroupMemory {
   return {
     ...memory,
@@ -168,6 +222,24 @@ function cloneMemory(memory: GroupMemory): GroupMemory {
         }
       : {}),
   };
+}
+
+function normalizeSearchQuery(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function memoryMatchesQuery(memory: GroupMemory, query: string): boolean {
+  return [
+    memory.id,
+    memory.groupId,
+    memory.type,
+    memory.subjectUserId,
+    memory.title,
+    memory.content,
+    memory.source,
+    memory.evidence?.summary,
+    ...(memory.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
+  ].some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 
 function normalizeEvidence(value: GroupMemory["evidence"] | undefined): GroupMemoryEvidence | undefined {

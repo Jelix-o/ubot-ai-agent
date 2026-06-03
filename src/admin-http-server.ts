@@ -289,12 +289,14 @@ export class AdminHttpServer {
       const enabled = normalizeOptionalBoolean(url.searchParams.get("enabled") ?? undefined);
       const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
       const pagination = paginationParams(url, 20, 100);
-      const rawMemories = sortMemoriesNewestFirst(await this.options.groupMemoryStore.list(groupId))
-        .filter((memory) => !subjectUserId || memory.subjectUserId === subjectUserId)
-        .filter((memory) => !type || memory.type === type)
-        .filter((memory) => enabled === undefined || memory.enabled === enabled)
-        .filter((memory) => !query || memoryMatchesQuery(memory, query));
-      const page = paginateItems(rawMemories, pagination);
+      const page = await this.options.groupMemoryStore.listPage({
+        groupId,
+        subjectUserId,
+        type,
+        enabled,
+        query,
+        ...pagination,
+      });
       const memories = await this.enrichMemories(page.items, groupId);
       this.sendJson(res, {
         memories,
@@ -813,20 +815,6 @@ function normalizeOptionalBoolean(value: string | undefined): boolean | undefine
     return false;
   }
   return undefined;
-}
-
-function memoryMatchesQuery(memory: GroupMemory, query: string): boolean {
-  return [
-    memory.id,
-    memory.groupId,
-    memory.type,
-    memory.subjectUserId,
-    memory.title,
-    memory.content,
-    memory.source,
-    memory.evidence?.summary,
-    ...(memory.evidence?.speakers.map((speaker) => `${speaker.userId} ${speaker.userName}`) ?? []),
-  ].some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 
 function candidateMatchesQuery(candidate: GroupMemoryCandidate, query: string): boolean {

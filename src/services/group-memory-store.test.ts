@@ -52,6 +52,107 @@ test("group memory store initializes, persists, filters, updates and removes", a
   }
 });
 
+test("group memory store pages filtered memories newest first without cloning full lists", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-page-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Older tester preference",
+      content: "Tester likes concise answers.",
+      confidence: 0.9,
+      source: "test",
+      createdAt: "2026-06-01T10:00:00.000Z",
+    });
+    await store.create({
+      groupId: "67890",
+      type: "group_fact",
+      title: "Newest group fact",
+      content: "The group prefers direct answers.",
+      confidence: 0.8,
+      source: "test",
+      createdAt: "2026-06-03T10:00:00.000Z",
+    });
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Evidence match",
+      content: "Tester prefers code references.",
+      confidence: 0.7,
+      source: "test",
+      createdAt: "2026-06-02T10:00:00.000Z",
+      evidence: {
+        startAt: "2026-06-02T09:59:00.000Z",
+        endAt: "2026-06-02T10:00:00.000Z",
+        messageCount: 2,
+        speakers: [{ userId: "20001", userName: "EvidenceSpeaker" }],
+        summary: "Tester mentioned source evidence.",
+      },
+    });
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20002",
+      title: "Disabled profile",
+      content: "Disabled memories can be filtered.",
+      enabled: false,
+      createdAt: "2026-06-04T10:00:00.000Z",
+    });
+    await store.create({
+      groupId: "99999",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Other group profile",
+      content: "Other group should not match.",
+      createdAt: "2026-06-05T10:00:00.000Z",
+    });
+
+    const firstPage = await store.listPage({
+      groupId: "67890",
+      page: 1,
+      pageSize: 2,
+    });
+    assert.equal(firstPage.pagination.total, 4);
+    assert.equal(firstPage.pagination.totalPages, 2);
+    assert.equal(firstPage.items.length, 2);
+    assert.deepEqual(firstPage.items.map((memory) => memory.title), ["Disabled profile", "Newest group fact"]);
+
+    const subjectPage = await store.listPage({
+      groupId: "67890",
+      subjectUserId: "20001",
+      type: "member_profile",
+      enabled: true,
+      page: 1,
+      pageSize: 10,
+    });
+    assert.deepEqual(subjectPage.items.map((memory) => memory.title), ["Evidence match", "Older tester preference"]);
+    assert.equal(subjectPage.pagination.total, 2);
+
+    const evidenceSearch = await store.listPage({
+      groupId: "67890",
+      query: "evidencespeaker",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(evidenceSearch.pagination.total, 1);
+    assert.equal(evidenceSearch.items[0]?.title, "Evidence match");
+    assert.equal(evidenceSearch.items[0]?.evidence?.speakers[0]?.userName, "EvidenceSpeaker");
+
+    const overlargePage = await store.listPage({
+      groupId: "67890",
+      page: 99,
+      pageSize: 3,
+    });
+    assert.equal(overlargePage.pagination.page, 2);
+    assert.equal(overlargePage.items.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("candidate service deduplicates and approves candidates into long term memory", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-candidate-"));
   try {
