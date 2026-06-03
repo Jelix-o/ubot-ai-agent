@@ -84,13 +84,23 @@ article span { color: var(--muted); overflow-wrap: anywhere; }
 .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: oklch(34% 0.12 168); font-size: 12px; }
 .badge.warn { background: oklch(94% 0.06 78); color: oklch(42% 0.09 78); }
 .group-block { display: grid; gap: 8px; margin-bottom: 18px; }
+.settings-form { display: grid; gap: 14px; }
+.settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.settings-grid label { min-width: 0; }
+.settings-grid textarea { min-height: 96px; }
+.settings-wide { grid-column: 1 / -1; }
+.health-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.health-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--panel); display: grid; gap: 8px; }
+.health-card.ok { border-color: oklch(78% 0.08 168); }
+.health-card.bad { border-color: oklch(78% 0.09 28); }
+.health-card p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .inline-editor { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; background: var(--panel); }
 .inline-editor summary { cursor: pointer; font-weight: 600; }
 .inline-editor form { margin-top: 10px; margin-bottom: 0; }
 .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .workbench-grid, .grid-form, .candidate-form, .memory-form, .evidence summary { grid-template-columns: 1fr; } .memory-form textarea { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
+@media (max-width: 860px) { .app-shell { grid-template-columns: 1fr; } aside { position: static; border-right: 0; border-bottom: 1px solid var(--line); } nav { grid-template-columns: repeat(2, 1fr); } .metric-row, .workbench-grid, .grid-form, .candidate-form, .memory-form, .settings-grid, .health-grid, .evidence summary { grid-template-columns: 1fr; } .memory-form textarea, .settings-wide { grid-column: auto; } header { align-items: start; flex-direction: column; } header select { width: 100%; } }
 `;
 
 

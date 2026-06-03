@@ -291,6 +291,8 @@ class FakeAiService {
     assistantReply: string;
     identityContext: AiIdentityContext;
   }> = [];
+  healthOk = true;
+  healthCalls = 0;
 
   constructor(
     private readonly responder: () => Promise<AiReply>,
@@ -308,6 +310,27 @@ class FakeAiService {
   }): Promise<AiReply> {
     this.calls.push(args);
     return this.responder();
+  }
+
+  async checkHealth(): Promise<{
+    ok: boolean;
+    detail: string;
+    model: string;
+    baseUrl: string;
+    checkedAt: string;
+    latencyMs: number;
+    cached: boolean;
+  }> {
+    this.healthCalls += 1;
+    return {
+      ok: this.healthOk,
+      detail: this.healthOk ? "profile ok" : "profile down",
+      model: "profile-model",
+      baseUrl: "https://profile.example/v1",
+      checkedAt: "2026-06-03T00:00:00.000Z",
+      latencyMs: 10,
+      cached: false,
+    };
   }
 
   async evaluateControlledMention(args: {
@@ -3318,6 +3341,23 @@ test("periodically flushes queued memory candidate messages", async () => {
   await (app as unknown as { runMemoryCandidateFlushTick(): Promise<void> }).runMemoryCandidateFlushTick();
 
   assert.equal(groupMemoryCandidateService.flushAllCalls, 1);
+});
+
+test("skips memory candidate flush when profile AI is unhealthy", async () => {
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const profileAiService = new FakeAiService(async () => ({
+    text: "profile reply",
+    model: "profile-model",
+    skillId: "assistant",
+  }));
+  profileAiService.healthOk = false;
+  const { app, aiService } = createApp({ groupMemoryCandidateService, profileAiService });
+
+  await (app as unknown as { runMemoryCandidateFlushTick(): Promise<void> }).runMemoryCandidateFlushTick();
+
+  assert.equal(profileAiService.healthCalls, 1);
+  assert.equal(groupMemoryCandidateService.flushAllCalls, 0);
+  assert.equal(aiService.calls.length, 0);
 });
 
 test("profile commands allow self and admin queries with member aliases", async () => {

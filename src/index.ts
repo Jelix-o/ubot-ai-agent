@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   );
 
   const adminHttpServer = config.adminHttpEnabled
-    ? createAdminHttpServer(config, groupConfigService, groupMemoryStore, groupMemoryCandidateService, knowledgeBaseStore, app, napcatRuntime)
+    ? createAdminHttpServer(config, groupConfigService, groupMemoryStore, groupMemoryCandidateService, knowledgeBaseStore, app, napcatRuntime, profileAiService)
     : undefined;
 
   napcatRuntime.on("groupMessage", async (event) => {
@@ -144,6 +144,7 @@ function createAdminHttpServer(
   knowledgeBaseStore: KnowledgeBaseStore,
   app: BotApplication,
   napcatRuntime: NapCatRuntime,
+  profileAiService: AiService,
 ): AdminHttpServer {
   if (!config.adminUsername || !config.adminPassword || !config.adminSessionSecret) {
     throw new Error("ADMIN_USERNAME, ADMIN_PASSWORD and ADMIN_SESSION_SECRET are required when ADMIN_HTTP_ENABLED=true.");
@@ -162,6 +163,7 @@ function createAdminHttpServer(
     knowledgeBaseStore,
     adminOperationLogService: new AdminOperationLogService(config.adminOperationLogPath),
     getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),
+    getProfileAiHealthStatus: (options) => profileAiService.checkHealth(options),
     listGroupMembers: (groupId) => napcatRuntime.listGroupMembers ? napcatRuntime.listGroupMembers(groupId) : Promise.resolve([]),
   });
 }

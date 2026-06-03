@@ -3,6 +3,32 @@ import { writeFile } from "node:fs/promises";
 import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ReplyModelMode } from "../types.js";
 import { readJsonFile } from "../utils/json-file.js";
 
+export class GroupConfigValidationError extends Error {
+  constructor(public readonly code: string, message = code) {
+    super(message);
+  }
+}
+
+export type GroupConfigUpdateInput = Partial<Pick<
+  GroupBotConfig,
+  | "currentSkillId"
+  | "replyModelMode"
+  | "allowedSkillIds"
+  | "switcherUserIds"
+  | "liveChatUserIds"
+  | "manualIdentities"
+  | "liveChatDelaySeconds"
+  | "dailyReportEnabled"
+  | "dailyReportTime"
+  | "dailyReportTopUserCount"
+  | "holidayCountdownEnabled"
+  | "holidayCountdownTime"
+  | "botMuted"
+  | "scheduledRemindersEnabled"
+  | "blacklistedUserIds"
+  | "opsAlertsEnabled"
+>>;
+
 export class GroupConfigService {
   private cachedConfig?: GroupsConfigFile;
 
@@ -17,6 +43,21 @@ export class GroupConfigService {
     const data = await this.readConfig();
     const group = data.groups.find((item) => item.groupId === groupId);
     return group ? normalizeGroupConfig(group) : undefined;
+  }
+
+  async updateGroupConfig(groupId: string, input: GroupConfigUpdateInput): Promise<GroupBotConfig> {
+    const data = await this.readConfig();
+    const index = data.groups.findIndex((group) => group.groupId === groupId);
+    if (index === -1) {
+      throw new Error(`Group ${groupId} is not configured.`);
+    }
+
+    const current = normalizeGroupConfig(data.groups[index]);
+    const next = normalizeGroupConfigPatch(current, input);
+    data.groups[index] = next;
+
+    await this.writeConfig(data);
+    return next;
   }
 
   async updateCurrentSkill(groupId: string, skillId: string): Promise<GroupBotConfig> {
@@ -409,8 +450,170 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
   };
 }
 
+function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUpdateInput): GroupBotConfig {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new GroupConfigValidationError("invalid_group_config");
+  }
+
+  const next: GroupBotConfig = { ...current };
+
+  if ("currentSkillId" in input) {
+    next.currentSkillId = normalizeRequiredString(input.currentSkillId, "invalid_group_config");
+  }
+  if ("replyModelMode" in input) {
+    next.replyModelMode = normalizeReplyModelModeStrict(input.replyModelMode);
+  }
+  if ("allowedSkillIds" in input) {
+    next.allowedSkillIds = normalizeSkillIds(input.allowedSkillIds);
+  }
+  if ("switcherUserIds" in input) {
+    next.switcherUserIds = normalizeUserIdsStrict(input.switcherUserIds);
+  }
+  if ("liveChatUserIds" in input) {
+    next.liveChatUserIds = normalizeUserIdsStrict(input.liveChatUserIds);
+  }
+  if ("manualIdentities" in input) {
+    next.manualIdentities = normalizeManualIdentitiesStrict(input.manualIdentities);
+  }
+  if ("liveChatDelaySeconds" in input) {
+    next.liveChatDelaySeconds = normalizePositiveInteger(input.liveChatDelaySeconds, "invalid_group_config");
+    delete next.liveChatDelayMinutes;
+  }
+  if ("dailyReportEnabled" in input) {
+    next.dailyReportEnabled = normalizeBoolean(input.dailyReportEnabled, "invalid_group_config");
+  }
+  if ("dailyReportTime" in input) {
+    next.dailyReportTime = normalizeTimeStrict(input.dailyReportTime);
+  }
+  if ("dailyReportTopUserCount" in input) {
+    next.dailyReportTopUserCount = normalizePositiveInteger(input.dailyReportTopUserCount, "invalid_group_config");
+  }
+  if ("holidayCountdownEnabled" in input) {
+    next.holidayCountdownEnabled = normalizeBoolean(input.holidayCountdownEnabled, "invalid_group_config");
+  }
+  if ("holidayCountdownTime" in input) {
+    next.holidayCountdownTime = normalizeTimeStrict(input.holidayCountdownTime);
+  }
+  if ("botMuted" in input) {
+    next.botMuted = normalizeBoolean(input.botMuted, "invalid_group_config");
+  }
+  if ("scheduledRemindersEnabled" in input) {
+    next.scheduledRemindersEnabled = normalizeBoolean(input.scheduledRemindersEnabled, "invalid_group_config");
+  }
+  if ("blacklistedUserIds" in input) {
+    next.blacklistedUserIds = normalizeUserIdsStrict(input.blacklistedUserIds);
+  }
+  if ("opsAlertsEnabled" in input) {
+    next.opsAlertsEnabled = normalizeBoolean(input.opsAlertsEnabled, "invalid_group_config");
+  }
+
+  return normalizeGroupConfig(next);
+}
+
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
   return value === "mimo" ? "mimo" : "gpt";
+}
+
+function normalizeReplyModelModeStrict(value: unknown): ReplyModelMode {
+  if (value === "gpt" || value === "mimo") {
+    return value;
+  }
+  throw new GroupConfigValidationError("invalid_group_config");
+}
+
+function normalizeRequiredString(value: unknown, code: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) {
+    throw new GroupConfigValidationError(code);
+  }
+  return text;
+}
+
+function normalizeBoolean(value: unknown, code: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new GroupConfigValidationError(code);
+  }
+  return value;
+}
+
+function normalizePositiveInteger(value: unknown, code: string): number {
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isInteger(numberValue) || numberValue <= 0) {
+    throw new GroupConfigValidationError(code);
+  }
+  return numberValue;
+}
+
+function normalizeTimeStrict(value: unknown): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!/^\d{2}:\d{2}$/.test(text)) {
+    throw new GroupConfigValidationError("invalid_time");
+  }
+  const [hourText, minuteText] = text.split(":");
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    throw new GroupConfigValidationError("invalid_time");
+  }
+  return text;
+}
+
+function normalizeSkillIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new GroupConfigValidationError("invalid_group_config");
+  }
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item).trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function normalizeUserIdsStrict(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new GroupConfigValidationError("invalid_user_ids");
+  }
+  const normalized = value.map((userId) => String(userId).trim()).filter(Boolean);
+  if (normalized.some((userId) => !/^\d+$/.test(userId))) {
+    throw new GroupConfigValidationError("invalid_user_ids");
+  }
+  return Array.from(new Set(normalized));
+}
+
+function normalizeManualIdentitiesStrict(value: unknown): GroupManualIdentity[] {
+  if (!Array.isArray(value)) {
+    throw new GroupConfigValidationError("invalid_manual_identities");
+  }
+
+  const identities = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new GroupConfigValidationError("invalid_manual_identities");
+    }
+    const record = item as Partial<GroupManualIdentity>;
+    const userIds = normalizeManualIdentityUserIds(record.userIds);
+    const names = normalizeNames(record.names);
+    const note = typeof record.note === "string" ? record.note.trim() : undefined;
+    if (userIds.length === 0 || names.length === 0) {
+      throw new GroupConfigValidationError("invalid_manual_identities");
+    }
+    return {
+      userIds,
+      names,
+      ...(note ? { note } : {}),
+    };
+  });
+
+  return normalizeManualIdentities(identities) ?? [];
+}
+
+function normalizeManualIdentityUserIds(value: unknown): string[] {
+  try {
+    return normalizeUserIdsStrict(value);
+  } catch {
+    throw new GroupConfigValidationError("invalid_manual_identities");
+  }
 }
 
 function normalizeUserIds(value: string[] | undefined): string[] {

@@ -884,6 +884,19 @@ export class BotApplication {
 
     this.memoryCandidateFlushTickRunning = true;
     try {
+      if (this.profileReplyAiService) {
+        const health = await this.profileReplyAiService.checkHealth();
+        if (!health.ok) {
+          logWarn("Skipped group memory candidate flush because profile AI is unhealthy.", {
+            detail: health.detail,
+            model: health.model,
+            baseUrl: health.baseUrl,
+            checkedAt: health.checkedAt,
+            cached: health.cached,
+          });
+          return;
+        }
+      }
       const results = await this.groupMemoryCandidateService.flushAll();
       for (const result of results) {
         logInfo("Flushed buffered group memory messages.", { ...result });

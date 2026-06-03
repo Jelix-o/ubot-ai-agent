@@ -32,6 +32,16 @@ export interface NapcatGroupMessageEvent {
   sender?: NapcatSender;
 }
 
+export interface AiHealthStatus {
+  ok: boolean;
+  detail: string;
+  model: string;
+  baseUrl: string;
+  checkedAt: string;
+  latencyMs: number;
+  cached: boolean;
+}
+
 export interface SkillDefinition {
   id: string;
   name: string;

@@ -124,6 +124,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     keywords: ["会议室"],
   });
   let listGroupMembersCalls = 0;
+  let profileHealthCalls = 0;
+  let lastProfileHealthRefresh = false;
   const service = new AdminHttpServer({
     host: "127.0.0.1",
     port: 0,
@@ -146,6 +148,19 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     adminOperationLogService: new AdminOperationLogService(path.join(dir, "ops.jsonl")),
     async getTransportHealthStatus() {
       return { ok: true, detail: "ok" };
+    },
+    async getProfileAiHealthStatus(options) {
+      profileHealthCalls += 1;
+      lastProfileHealthRefresh = options?.refresh === true;
+      return {
+        ok: true,
+        detail: options?.refresh ? "profile refreshed" : "profile ok",
+        model: "mimo-v2.5-pro",
+        baseUrl: "https://profile.example/v1",
+        checkedAt: "2026-06-03T00:00:00.000Z",
+        latencyMs: 12,
+        cached: false,
+      };
     },
     async listGroupMembers(): Promise<NapcatGroupMember[]> {
       listGroupMembersCalls += 1;
@@ -263,6 +278,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const overviewBody = await overview.json() as {
       groupId?: string;
       stats: { groupCount: number; memoryCount: number; pendingCandidateCount: number; knowledgeCount: number };
+      profileAiHealth?: { ok: boolean; detail: string; model: string; baseUrl: string; latencyMs: number; cached: boolean };
       recent?: {
         candidates: Array<{ id: string; title: string; subjectLabel?: { label: string } }>;
         memories: Array<{ title: string; subjectLabel?: { label: string } }>;
@@ -274,6 +290,15 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(overviewBody.stats.memoryCount, 3);
     assert.equal(overviewBody.stats.pendingCandidateCount, 2);
     assert.equal(overviewBody.stats.knowledgeCount, 2);
+    assert.deepEqual(overviewBody.profileAiHealth, {
+      ok: true,
+      detail: "profile ok",
+      model: "mimo-v2.5-pro",
+      baseUrl: "https://profile.example/v1",
+      checkedAt: "2026-06-03T00:00:00.000Z",
+      latencyMs: 12,
+      cached: false,
+    });
     assert.equal(overviewBody.recent?.candidates.some((candidate) => candidate.id === orphanCandidate.id), true);
     assert.equal(overviewBody.recent?.candidates.some((candidate) => candidate.id === batchFactCandidate.id), true);
     assert.equal(overviewBody.recent?.memories[0]?.title, "Another fact");
@@ -281,6 +306,73 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
 
     const unauthorizedMembers = await fetch(`${baseUrl}/api/groups/67890/members`);
     assert.equal(unauthorizedMembers.status, 401);
+
+    const unauthorizedGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`);
+    assert.equal(unauthorizedGroupConfig.status, 401);
+
+    const groupConfig = await fetch(`${baseUrl}/api/groups/67890/config`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(groupConfig.status, 200);
+    const groupConfigBody = await groupConfig.json() as { groupId: string; replyModelMode: string; dailyReportEnabled: boolean };
+    assert.equal(groupConfigBody.groupId, "67890");
+    assert.equal(groupConfigBody.replyModelMode, "gpt");
+    assert.equal(groupConfigBody.dailyReportEnabled, true);
+
+    const invalidGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ ...groupConfigBody, switcherUserIds: ["bad"] }),
+    });
+    assert.equal(invalidGroupConfig.status, 400);
+    assert.deepEqual(await invalidGroupConfig.json(), { error: "invalid_user_ids" });
+
+    const updateGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentSkillId: "assistant",
+        replyModelMode: "mimo",
+        allowedSkillIds: ["assistant", "assistant", "zxp"],
+        switcherUserIds: ["99999"],
+        liveChatUserIds: ["20001"],
+        manualIdentities: [],
+        liveChatDelaySeconds: 45,
+        dailyReportEnabled: true,
+        dailyReportTime: "18:30",
+        dailyReportTopUserCount: 5,
+        holidayCountdownEnabled: true,
+        holidayCountdownTime: "08:15",
+        botMuted: false,
+        scheduledRemindersEnabled: true,
+        blacklistedUserIds: ["30002"],
+        opsAlertsEnabled: true,
+      }),
+    });
+    assert.equal(updateGroupConfig.status, 200);
+    const updateGroupConfigBody = await updateGroupConfig.json() as {
+      replyModelMode: string;
+      allowedSkillIds: string[];
+      liveChatDelaySeconds: number;
+      dailyReportEnabled: boolean;
+      botMuted: boolean;
+      manualIdentities?: Array<{ userIds: string[]; names: string[]; note?: string }>;
+    };
+    assert.equal(updateGroupConfigBody.replyModelMode, "mimo");
+    assert.deepEqual(updateGroupConfigBody.allowedSkillIds, ["assistant", "zxp"]);
+    assert.equal(updateGroupConfigBody.liveChatDelaySeconds, 45);
+    assert.equal(updateGroupConfigBody.dailyReportEnabled, true);
+    assert.equal(updateGroupConfigBody.botMuted, false);
+    assert.deepEqual(updateGroupConfigBody.manualIdentities ?? [], []);
+
+    const health = await fetch(`${baseUrl}/api/health?refresh=1`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(health.status, 200);
+    const healthBody = await health.json() as { profileAiHealth?: { detail: string } };
+    assert.equal(healthBody.profileAiHealth?.detail, "profile refreshed");
+    assert.equal(lastProfileHealthRefresh, true);
+    assert.ok(profileHealthCalls >= 2);
 
     const members = await fetch(`${baseUrl}/api/groups/67890/members`, {
       headers: { Cookie: cookie ?? "" },

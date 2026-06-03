@@ -385,7 +385,10 @@ async function renderOverview() {
   const data = await apiForRender('/api/overview' + groupQuery);
   if (!data || !isLatestRender(token)) return;
   const recent = data.recent || {};
-  content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><h2>当前群待处理</h2>' + overviewCandidates(recent.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><h2>运行状态</h2><p>' + esc(data.transportHealth.detail) + '</p><div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><h2>最新长期记忆</h2>' + overviewMemories(recent.memories || []) + '</section><section class="panel"><h2>知识库</h2>' + overviewKnowledge(recent.knowledge || []) + '<div class="quick-actions"><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div></section></div>';
+  content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><h2>当前群待处理</h2>' + overviewCandidates(recent.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><h2>运行状态</h2>' + healthSummaryHtml(data.transportHealth, data.profileAiHealth) + '<div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><h2>最新长期记忆</h2>' + overviewMemories(recent.memories || []) + '</section><section class="panel"><h2>知识库</h2>' + overviewKnowledge(recent.knowledge || []) + '<div class="quick-actions"><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div></section></div>';
+}
+function healthSummaryHtml(transportHealth, profileAiHealth) {
+  return '<div class="compact-list"><div class="compact-row"><b>NapCat 连接</b><span>' + esc(transportHealth?.ok ? '正常' : '异常') + '</span><span>' + esc(transportHealth?.detail || '暂无详情') + '</span></div><div class="compact-row"><b>画像/记忆模型</b><span>' + esc(profileAiHealth?.ok ? '正常' : '异常') + (profileAiHealth?.cached ? ' · 缓存' : '') + '</span><span>' + esc(profileAiHealth?.detail || '暂无详情') + '</span></div></div>';
 }
 function overviewCandidates(candidates) {
   if (!candidates.length) return '<p class="message">当前群没有待审候选。</p>';
@@ -402,10 +405,17 @@ function overviewKnowledge(entries) {
 async function renderGroups() {
   const token = nextRenderToken();
   setPageLoading('正在更新群配置...');
-  await loadGroups({ maxAgeMs: 5 * 60 * 1000 });
+  const data = await apiForRender('/api/groups');
   if (!isLatestRender(token)) return;
-  content().innerHTML = '<section class="panel"><div class="toolbar"><h2>群配置</h2><button type="button" class="ghost" data-refresh-groups>刷新群配置</button><span class="meta">群配置会缓存 5 分钟，手动刷新才重新读取。</span></div><div class="list">' + state.groups.map(g => '<article><b>群 ' + esc(g.groupId) + '</b><span>当前技能 ' + esc(g.currentSkillId) + '，管理员 ' + g.switcherUserIds.length + ' 人，实时对话 ' + g.liveChatUserIds.length + ' 人，人工身份 ' + (g.manualIdentities || []).length + ' 条</span></article>').join('') + '</div></section>';
+  state.groups = data?.groups || [];
+  groupsLoadedAt = Date.now();
+  content().innerHTML = '<section class="panel"><div class="toolbar"><h2>群配置</h2><button type="button" class="ghost" data-refresh-groups>刷新群配置</button><span class="meta">编辑会直接写入当前群配置文件，请确认 QQ 和 JSON 后保存。</span></div><div class="list">' + state.groups.map(rowGroupConfig).join('') + '</div></section>';
 }
+function rowGroupConfig(g) {
+  return '<article data-group-config-id="' + esc(g.groupId) + '"><details' + (g.groupId === state.groupId ? ' open' : '') + '><summary><b>群 ' + esc(g.groupId) + '</b> <span class="meta">技能 ' + esc(g.currentSkillId) + '，管理员 ' + esc((g.switcherUserIds || []).length) + ' 人，实时对话 ' + esc((g.liveChatUserIds || []).length) + ' 人，黑名单 ' + esc((g.blacklistedUserIds || []).length) + ' 人</span></summary><form class="settings-form groupConfigForm" data-group-id="' + esc(g.groupId) + '"><div class="settings-grid"><label>当前技能<input name="currentSkillId" value="' + esc(g.currentSkillId) + '" required></label><label>回复模型<select name="replyModelMode"><option value="gpt"' + selected(g.replyModelMode || 'gpt', 'gpt') + '>GPT</option><option value="mimo"' + selected(g.replyModelMode || 'gpt', 'mimo') + '>Mimo/Profile</option></select></label><label>实时对话延迟秒数<input name="liveChatDelaySeconds" type="number" min="1" value="' + esc(g.liveChatDelaySeconds || ((g.liveChatDelayMinutes || 5) * 60)) + '"></label><label>日报时间<input name="dailyReportTime" type="time" value="' + esc(g.dailyReportTime || '17:59') + '"></label><label>日报人数<input name="dailyReportTopUserCount" type="number" min="1" value="' + esc(g.dailyReportTopUserCount || 5) + '"></label><label>节日倒计时<input name="holidayCountdownTime" type="time" value="' + esc(g.holidayCountdownTime || '09:00') + '"></label><label>允许技能<textarea name="allowedSkillIds">' + esc(lines(g.allowedSkillIds)) + '</textarea></label><label>管理员 QQ<textarea name="switcherUserIds">' + esc(lines(g.switcherUserIds)) + '</textarea></label><label>实时对话 QQ<textarea name="liveChatUserIds">' + esc(lines(g.liveChatUserIds)) + '</textarea></label><label>黑名单 QQ<textarea name="blacklistedUserIds">' + esc(lines(g.blacklistedUserIds)) + '</textarea></label><label><input type="checkbox" name="dailyReportEnabled"' + checked(g.dailyReportEnabled !== false) + '> 群聊日报</label><label><input type="checkbox" name="holidayCountdownEnabled"' + checked(g.holidayCountdownEnabled !== false) + '> 节日倒计时</label><label><input type="checkbox" name="scheduledRemindersEnabled"' + checked(g.scheduledRemindersEnabled !== false) + '> 定时提醒</label><label><input type="checkbox" name="opsAlertsEnabled"' + checked(g.opsAlertsEnabled !== false) + '> 运维告警</label><label><input type="checkbox" name="botMuted"' + checked(g.botMuted === true) + '> 机器人静音</label><label class="settings-wide">人工身份 JSON<textarea name="manualIdentities" spellcheck="false">' + esc(JSON.stringify(g.manualIdentities || [], null, 2)) + '</textarea></label></div><div class="actions"><button type="submit">保存群配置</button><button type="button" class="ghost" data-reload-group-config="' + esc(g.groupId) + '">重新读取</button></div></form></details></article>';
+}
+const checked = (value) => value ? ' checked' : '';
+const lines = (value) => (value || []).join('\n');
 async function renderMembers(force = false) {
   const token = nextRenderToken();
   setPageLoading(force ? '正在同步群成员...' : '正在更新成员列表...');
@@ -681,7 +691,11 @@ async function renderHealth() {
   setPageLoading('正在读取健康状态...');
   const data = await apiForRender('/api/health');
   if (!data || !isLatestRender(token)) return;
-  content().innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
+  content().innerHTML = '<section class="panel"><div class="toolbar"><h2>健康状态</h2><button type="button" class="ghost" data-refresh-health>立即检测画像/记忆模型</button></div><div class="health-grid">' + healthCardHtml('NapCat 连接', data.transportHealth) + healthCardHtml('画像/记忆模型', data.profileAiHealth) + '</div><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
+}
+function healthCardHtml(title, status) {
+  const ok = status?.ok === true;
+  return '<div class="health-card ' + (ok ? 'ok' : 'bad') + '"><h3>' + esc(title) + '：' + esc(ok ? '正常' : '异常') + '</h3><p>' + esc(status?.detail || '暂无详情') + '</p><p>模型：' + esc(status?.model || 'n/a') + '</p><p>地址：' + esc(status?.baseUrl || 'n/a') + '</p><p>检测：' + esc(status?.checkedAt || 'n/a') + ' · ' + esc(status?.latencyMs ?? 0) + 'ms' + (status?.cached ? ' · 缓存' : '') + '</p></div>';
 }
 function candidatePayload(id) {
   const form = document.querySelector('.candidateForm[data-candidate-id="' + CSS.escape(id) + '"]');
@@ -709,6 +723,45 @@ function knowledgePayload(id) {
   }
   const data = Object.fromEntries(new FormData(form).entries());
   return { title: data.title, question: data.question, answer: data.answer, keywords: String(data.keywords || '').split(/[,，、]+/), enabled: data.enabled === 'true' };
+}
+function groupConfigPayload(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  let manualIdentities;
+  try {
+    manualIdentities = JSON.parse(String(data.manualIdentities || '[]'));
+  } catch {
+    throw new Error('人工身份 JSON 格式不正确');
+  }
+  return {
+    currentSkillId: String(data.currentSkillId || '').trim(),
+    replyModelMode: data.replyModelMode,
+    allowedSkillIds: splitLines(data.allowedSkillIds),
+    switcherUserIds: splitLines(data.switcherUserIds),
+    liveChatUserIds: splitLines(data.liveChatUserIds),
+    manualIdentities,
+    liveChatDelaySeconds: Number(data.liveChatDelaySeconds),
+    dailyReportEnabled: data.dailyReportEnabled === 'on',
+    dailyReportTime: data.dailyReportTime,
+    dailyReportTopUserCount: Number(data.dailyReportTopUserCount),
+    holidayCountdownEnabled: data.holidayCountdownEnabled === 'on',
+    holidayCountdownTime: data.holidayCountdownTime,
+    botMuted: data.botMuted === 'on',
+    scheduledRemindersEnabled: data.scheduledRemindersEnabled === 'on',
+    blacklistedUserIds: splitLines(data.blacklistedUserIds),
+    opsAlertsEnabled: data.opsAlertsEnabled === 'on',
+  };
+}
+function splitLines(value) {
+  return String(value || '').split(/[\n,，、\s]+/).map(item => item.trim()).filter(Boolean);
+}
+function replaceGroupConfigArticle(target, group) {
+  const article = target.closest('article');
+  if (!article) return false;
+  article.outerHTML = rowGroupConfig(group);
+  const index = state.groups.findIndex(item => item.groupId === group.groupId);
+  if (index >= 0) state.groups[index] = group;
+  else state.groups.push(group);
+  return true;
 }
 function replaceArticle(target, kind, id) {
   const article = target.closest('article');
@@ -904,6 +957,8 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.view) { await navigateTo(target.dataset.view); }
   if (target.dataset.jumpView) { await navigateTo(target.dataset.jumpView); }
   if (target.dataset.refreshGroups !== undefined) { await runAction(target, async () => { invalidateGroupsCache(); await loadGroups({ refresh: true }); await renderGroups(); }, '群配置已刷新'); }
+  if (target.dataset.reloadGroupConfig) { await runAction(target, async () => { const group = await api('/api/groups/' + encodeURIComponent(target.dataset.reloadGroupConfig) + '/config'); replaceGroupConfigArticle(target, group); }, '群配置已重新读取'); }
+  if (target.dataset.refreshHealth !== undefined) { await runAction(target, async () => { invalidateRenderCache('/api/health'); const data = await api('/api/health?refresh=1'); renderCache.set('/api/health', { time: Date.now(), data: cloneData(data) }); await renderHealth(); }, '画像/记忆模型已重新检测'); }
   if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { invalidateMemberCaches(); state.memberPage = 1; syncUrlState(); await renderMembers(true); }, '群成员已同步'); }
   if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; clearTransientState(); syncUrlState(); await render(); }
   if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); invalidateMemberCaches(); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
@@ -1024,6 +1079,16 @@ document.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
   const data = Object.fromEntries(new FormData(form).entries());
+  if (form.classList.contains('groupConfigForm')) {
+    await runAction(form.querySelector('button'), async () => {
+      const group = await api('/api/groups/' + encodeURIComponent(form.dataset.groupId) + '/config', { method: 'PUT', body: JSON.stringify(groupConfigPayload(form)) });
+      invalidateGroupsCache();
+      invalidateMemberCaches();
+      invalidateMemoryCaches();
+      replaceGroupConfigArticle(form, group);
+    }, '群配置已保存');
+    return;
+  }
   if (form.classList.contains('memberForm')) {
     await runAction(form.querySelector('button'), async () => {
       const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(form.dataset.userId) + '/identity', { method: 'PUT', body: JSON.stringify({ names: String(data.names || '').split(/[,，、]+/), note: data.note }) });

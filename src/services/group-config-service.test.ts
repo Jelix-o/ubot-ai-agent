@@ -70,6 +70,80 @@ test("group config updates reply model mode", async () => {
   );
 });
 
+test("group config updates full editable config with validation", async () => {
+  await withService(
+    {
+      groups: [
+        {
+          groupId: "67890",
+          currentSkillId: "assistant",
+          allowedSkillIds: ["assistant"],
+          switcherUserIds: [],
+          liveChatUserIds: [],
+        },
+      ],
+    },
+    async (service) => {
+      const updated = await service.updateGroupConfig("67890", {
+        currentSkillId: "zxp",
+        replyModelMode: "mimo",
+        allowedSkillIds: ["zxp", "zxp", "assistant"],
+        switcherUserIds: ["10001", "10001"],
+        liveChatUserIds: ["20001"],
+        manualIdentities: [{ userIds: ["20001"], names: ["Tester"], note: "note" }],
+        liveChatDelaySeconds: 30,
+        dailyReportEnabled: false,
+        dailyReportTime: "18:05",
+        dailyReportTopUserCount: 5,
+        holidayCountdownEnabled: false,
+        holidayCountdownTime: "09:30",
+        botMuted: true,
+        scheduledRemindersEnabled: false,
+        blacklistedUserIds: ["30001"],
+        opsAlertsEnabled: false,
+      });
+
+      assert.equal(updated.currentSkillId, "zxp");
+      assert.equal(updated.replyModelMode, "mimo");
+      assert.deepEqual(updated.allowedSkillIds, ["zxp", "assistant"]);
+      assert.deepEqual(updated.switcherUserIds, ["10001"]);
+      assert.deepEqual(updated.liveChatUserIds, ["20001"]);
+      assert.equal(updated.liveChatDelaySeconds, 30);
+      assert.equal(updated.dailyReportEnabled, false);
+      assert.equal(updated.dailyReportTime, "18:05");
+      assert.equal(updated.dailyReportTopUserCount, 5);
+      assert.equal(updated.holidayCountdownEnabled, false);
+      assert.equal(updated.holidayCountdownTime, "09:30");
+      assert.equal(updated.botMuted, true);
+      assert.equal(updated.scheduledRemindersEnabled, false);
+      assert.deepEqual(updated.blacklistedUserIds, ["30001"]);
+      assert.equal(updated.opsAlertsEnabled, false);
+      assert.deepEqual(updated.manualIdentities?.[0], { userIds: ["20001"], names: ["Tester"], note: "note" });
+
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { dailyReportTime: "24:00" }),
+        { code: "invalid_time" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { switcherUserIds: ["bad"] }),
+        { code: "invalid_user_ids" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { replyModelMode: "bad" as never }),
+        { code: "invalid_group_config" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { manualIdentities: [{ userIds: ["20001"], names: [] }] }),
+        { code: "invalid_manual_identities" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { manualIdentities: [{ userIds: ["bad"], names: ["Tester"] }] }),
+        { code: "invalid_manual_identities" },
+      );
+    },
+  );
+});
+
 test("group config adds and removes blacklisted users", async () => {
   await withService(
     {

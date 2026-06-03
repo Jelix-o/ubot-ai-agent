@@ -6,6 +6,7 @@ import { URL } from "node:url";
 import { ADMIN_APP_HTML_V2, ADMIN_CSS, LOGIN_HTML } from "./admin-ui.js";
 import { ADMIN_APP_JS, LOGIN_JS } from "./admin-scripts.js";
 import { logInfo, logWarn } from "./logger.js";
+import { GroupConfigValidationError } from "./services/group-config-service.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
@@ -13,7 +14,7 @@ import type { GroupMemoryCandidateService } from "./services/group-memory-candid
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
-import type { GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupMember } from "./types.js";
+import type { AiHealthStatus, GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupMember } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -28,6 +29,7 @@ interface AdminHttpServerOptions {
   knowledgeBaseStore: KnowledgeBaseStore;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
+  getProfileAiHealthStatus?: (options?: { refresh?: boolean }) => Promise<AiHealthStatus>;
   listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
 }
 
@@ -142,6 +144,7 @@ export class AdminHttpServer {
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
         : { ok: true, detail: "未配置传输层自检" };
+      const profileAiHealth = await this.getProfileAiHealthStatus();
       this.sendJson(res, {
         groups,
         groupId,
@@ -157,12 +160,19 @@ export class AdminHttpServer {
           knowledge: knowledgePage.items,
         },
         transportHealth,
+        profileAiHealth,
       });
       return;
     }
 
     if (req.method === "GET" && pathname === "/api/groups") {
       this.sendJson(res, { groups: await this.options.groupConfigService.getAll() });
+      return;
+    }
+
+    const groupConfigRoute = matchRoute(pathname, /^\/api\/groups\/([^/]+)\/config$/);
+    if (groupConfigRoute) {
+      await this.handleGroupConfig(req, res, groupConfigRoute);
       return;
     }
 
@@ -182,8 +192,10 @@ export class AdminHttpServer {
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
         : { ok: true, detail: "未配置传输层自检" };
+      const profileAiHealth = await this.getProfileAiHealthStatus({ refresh: url.searchParams.get("refresh") === "1" });
       this.sendJson(res, {
         transportHealth,
+        profileAiHealth,
         uptimeSeconds: Math.floor(process.uptime()),
         nodeVersion: process.version,
         pid: process.pid,
@@ -586,6 +598,36 @@ export class AdminHttpServer {
     this.sendJson(res, { error: "method_not_allowed" }, 405);
   }
 
+  private async handleGroupConfig(req: IncomingMessage, res: ServerResponse, params: RouteParams): Promise<void> {
+    if (req.method === "GET") {
+      const group = await this.options.groupConfigService.getGroup(params.id);
+      this.sendJson(res, group ?? { error: "not_found" }, group ? 200 : 404);
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const body = await readJsonBody(req);
+      try {
+        const group = await this.options.groupConfigService.updateGroupConfig(params.id, body);
+        this.invalidateMemberProfileCache(params.id);
+        this.sendJson(res, group);
+      } catch (error) {
+        if (error instanceof GroupConfigValidationError) {
+          this.sendJson(res, { error: error.code }, 400);
+          return;
+        }
+        if ((error as Error).message.includes("is not configured")) {
+          this.sendJson(res, { error: "not_found" }, 404);
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+
+    this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
   private async enrichMemories(
     memories: GroupMemory[],
     preferredGroupId?: string,
@@ -760,6 +802,22 @@ export class AdminHttpServer {
       });
       return [];
     }
+  }
+
+  private async getProfileAiHealthStatus(options: { refresh?: boolean } = {}): Promise<AiHealthStatus> {
+    if (!this.options.getProfileAiHealthStatus) {
+      return {
+        ok: true,
+        detail: "未配置画像/记忆模型自检",
+        model: "unknown",
+        baseUrl: "",
+        checkedAt: new Date().toISOString(),
+        latencyMs: 0,
+        cached: false,
+      };
+    }
+
+    return this.options.getProfileAiHealthStatus(options);
   }
 
   private async findCandidate(id: string): Promise<GroupMemoryCandidate | undefined> {

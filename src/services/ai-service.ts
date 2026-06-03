@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
 import type {
+  AiHealthStatus,
   ControlledMentionDecision,
   AiIdentityContext,
   AiReply,
@@ -96,15 +97,64 @@ export interface MemberProfileMemoryInput {
 export class AiService {
   private readonly client: OpenAI;
   private readonly chatCompletions: ChatCompletionsClient;
+  private cachedHealth?: AiHealthStatus;
 
   constructor(
-    baseURL: string,
+    private readonly baseURL: string,
     apiKey: string,
     private readonly model: string,
     chatCompletions?: ChatCompletionsClient,
   ) {
     this.client = new OpenAI({ baseURL, apiKey });
     this.chatCompletions = chatCompletions ?? this.client.chat.completions;
+  }
+
+  async checkHealth(options: { refresh?: boolean; cacheTtlMs?: number } = {}): Promise<AiHealthStatus> {
+    const cacheTtlMs = options.cacheTtlMs ?? 5 * 60 * 1000;
+    if (
+      !options.refresh &&
+      this.cachedHealth &&
+      Date.now() - Date.parse(this.cachedHealth.checkedAt) < cacheTtlMs
+    ) {
+      return { ...this.cachedHealth, cached: true };
+    }
+
+    const startedAt = Date.now();
+    try {
+      const completion = await this.chatCompletions.create({
+        model: this.model,
+        temperature: 0,
+        max_tokens: 8,
+        messages: [
+          { role: "system", content: "You are a health check endpoint. Reply with OK." },
+          { role: "user", content: "health" },
+        ],
+      });
+      const content = completion.choices[0]?.message?.content?.trim() ?? "";
+      const status: AiHealthStatus = {
+        ok: Boolean(content),
+        detail: content ? "画像/记忆模型可用" : "画像/记忆模型返回空内容",
+        model: completion.model ?? this.model,
+        baseUrl: this.baseURL,
+        checkedAt: new Date().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        cached: false,
+      };
+      this.cachedHealth = status;
+      return status;
+    } catch (error) {
+      const status: AiHealthStatus = {
+        ok: false,
+        detail: `画像/记忆模型不可用：${(error as Error).message}`,
+        model: this.model,
+        baseUrl: this.baseURL,
+        checkedAt: new Date().toISOString(),
+        latencyMs: Date.now() - startedAt,
+        cached: false,
+      };
+      this.cachedHealth = status;
+      return status;
+    }
   }
 
   async generateReply(args: {
