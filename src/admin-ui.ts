@@ -244,7 +244,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       state.currentMembers = data.members || [];
       state.memberPage = pageInfo.page;
       const empty = state.currentMembers.length ? '' : '<p class="message">没有符合筛选条件的成员。</p>';
-      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>刷新</button></div>' + empty + '<div class="member-grid">' + state.currentMembers.map(rowMember).join('') + '</div>' + listPagination('member', pageInfo, '成员') + '</section>';
+      content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>同步群成员</button><span class="meta">默认显示本地身份和已有记忆，必要时再同步 NapCat 群成员。</span></div>' + empty + '<div class="member-grid">' + state.currentMembers.map(rowMember).join('') + '</div>' + listPagination('member', pageInfo, '成员') + '</section>';
       document.querySelector('#memberSearch')?.addEventListener('input', debounce(event => { state.memberQuery = event.target.value; state.memberPage = 1; renderMembers(); }, 180));
       document.querySelector('#memberPageSize')?.addEventListener('change', event => { state.memberPageSize = Number(event.target.value) || 24; state.memberPage = 1; renderMembers(); });
     }
@@ -441,7 +441,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
       if (!(target instanceof HTMLButtonElement)) return;
       if (target.dataset.view) { state.view = target.dataset.view; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
       if (target.dataset.jumpView) { state.view = target.dataset.jumpView; state.subjectUserId = ''; state.memberPage = 1; state.memoryPage = 1; state.candidatePage = 1; state.knowledgePage = 1; await render(); }
-      if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.memberPage = 1; await renderMembers(true); }, '成员列表已刷新'); }
+      if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { state.memberPage = 1; await renderMembers(true); }, '群成员已同步'); }
       if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; await render(); }
       if (target.dataset.deleteIdentity) { await runAction(target, async () => { await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); state.editingMemberId = ''; await renderMembers(); }, '成员备注已删除'); }
       if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; await renderMembers(); }

@@ -36,6 +36,7 @@ export class AdminHttpServer {
     expiresAt: number;
     groupConfig: GroupBotConfig;
     members: GroupMemberProfile[];
+    includesNapcatMembers: boolean;
   }>();
 
   private readonly memberProfileInflight = new Map<string, Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined>>();
@@ -370,7 +371,8 @@ export class AdminHttpServer {
 
   private async handleGroupMembers(res: ServerResponse, groupId: string, url: URL): Promise<void> {
     const force = url.searchParams.get("refresh") === "1";
-    const profiles = await this.getCachedMemberProfileData(groupId, force);
+    const includeNapcatMembers = force || url.searchParams.get("includeNapcat") === "1";
+    const profiles = await this.getCachedMemberProfileData(groupId, { force, includeNapcatMembers });
     if (!profiles) {
       this.sendJson(res, { error: "not_found" }, 404);
       return;
@@ -478,47 +480,37 @@ export class AdminHttpServer {
     return result;
   }
 
-  private async loadMemberProfilesByGroup(
-    groupIds: string[],
-    preferredGroupId?: string,
-  ): Promise<Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>> {
-    const uniqueGroupIds = [...new Set([preferredGroupId, ...groupIds].filter((groupId): groupId is string => Boolean(groupId)))];
-    const result = new Map<string, { groupConfig: GroupBotConfig; members: GroupMemberProfile[] }>();
-    await Promise.all(uniqueGroupIds.map(async (groupId) => {
-      const profiles = await this.getCachedMemberProfileData(groupId);
-      if (!profiles) {
-        return;
-      }
-      result.set(groupId, profiles);
-    }));
-    return result;
-  }
-
   private async getCachedMemberProfileData(
     groupId: string,
-    force = false,
+    options: { force?: boolean; includeNapcatMembers?: boolean } = {},
   ): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
+    const force = options.force === true;
+    const includeNapcatMembers = options.includeNapcatMembers === true;
     const cached = this.memberProfileCache.get(groupId);
-    if (!force && cached && cached.expiresAt > Date.now()) {
+    if (!force && cached && cached.expiresAt > Date.now() && (!includeNapcatMembers || cached.includesNapcatMembers)) {
       return { groupConfig: cached.groupConfig, members: cached.members };
     }
-    const inflight = this.memberProfileInflight.get(groupId);
+    const inflightKey = `${groupId}:${includeNapcatMembers ? "full" : "light"}`;
+    const inflight = this.memberProfileInflight.get(inflightKey);
     if (!force && inflight) {
       return inflight;
     }
 
-    const loading = this.loadMemberProfileData(groupId);
-    this.memberProfileInflight.set(groupId, loading);
+    const loading = this.loadMemberProfileData(groupId, includeNapcatMembers);
+    this.memberProfileInflight.set(inflightKey, loading);
     try {
       return await loading;
     } finally {
-      if (this.memberProfileInflight.get(groupId) === loading) {
-        this.memberProfileInflight.delete(groupId);
+      if (this.memberProfileInflight.get(inflightKey) === loading) {
+        this.memberProfileInflight.delete(inflightKey);
       }
     }
   }
 
-  private async loadMemberProfileData(groupId: string): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
+  private async loadMemberProfileData(
+    groupId: string,
+    includeNapcatMembers: boolean,
+  ): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
     const groupConfig = await this.options.groupConfigService.getGroup(groupId);
     if (!groupConfig) {
       this.memberProfileCache.delete(groupId);
@@ -528,7 +520,7 @@ export class AdminHttpServer {
     const [memories, candidates, napcatMembers] = await Promise.all([
       this.options.groupMemoryStore.list(groupId),
       this.options.groupMemoryCandidateService.list({ groupId }),
-      this.safeListGroupMembers(groupId),
+      includeNapcatMembers ? this.safeListGroupMembers(groupId) : Promise.resolve([]),
     ]);
     const data = {
       groupConfig,
@@ -536,6 +528,7 @@ export class AdminHttpServer {
     };
     this.memberProfileCache.set(groupId, {
       ...data,
+      includesNapcatMembers: includeNapcatMembers,
       expiresAt: Date.now() + 30_000,
     });
     return data;
