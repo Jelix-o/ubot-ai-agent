@@ -11,6 +11,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 export const ADMIN_APP_JS = String.raw`
 const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [] };
 let renderVersion = 0;
+let renderAbortController = null;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
 const content = () => document.querySelector('#content');
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -23,7 +24,11 @@ const shortText = (value, limit = 160) => {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit) + '...' : text;
 };
-const nextRenderToken = () => ++renderVersion;
+const nextRenderToken = () => {
+  renderAbortController?.abort();
+  renderAbortController = new AbortController();
+  return ++renderVersion;
+};
 const isLatestRender = (token) => token === renderVersion;
 const toast = (message, type = 'ok') => {
   const node = document.querySelector('#toast');
@@ -48,6 +53,14 @@ const api = async (url, options = {}) => {
     throw new Error(message || '请求失败');
   }
   return res.json();
+};
+const apiForRender = async (url) => {
+  try {
+    return await api(url, { signal: renderAbortController?.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') return null;
+    throw error;
+  }
 };
 const runAction = async (button, work, success = '操作完成') => {
   try {
@@ -74,22 +87,27 @@ function ownerInput(name, selectedUserId = '', label = '') {
   return '<label class="owner-field"><input name="' + name + '" value="' + esc(selectedUserId) + '" placeholder="归属 QQ，留空为群整体"><span>' + esc(label || (selectedUserId ? '当前 QQ ' + selectedUserId : '群整体')) + '</span></label>';
 }
 async function render() {
-  document.querySelector('#viewTitle').textContent = titleByView[state.view];
-  document.querySelectorAll('nav button').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view));
-  state.pendingDelete = '';
-  if (state.view === 'overview') return renderOverview();
-  if (state.view === 'groups') return renderGroups();
-  if (state.view === 'members') return renderMembers();
-  if (state.view === 'candidates') return renderCandidates();
-  if (state.view === 'memories') return renderMemories();
-  if (state.view === 'knowledge') return renderKnowledge();
-  return renderHealth();
+  try {
+    document.querySelector('#viewTitle').textContent = titleByView[state.view];
+    document.querySelectorAll('nav button').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view));
+    state.pendingDelete = '';
+    if (state.view === 'overview') return await renderOverview();
+    if (state.view === 'groups') return await renderGroups();
+    if (state.view === 'members') return await renderMembers();
+    if (state.view === 'candidates') return await renderCandidates();
+    if (state.view === 'memories') return await renderMemories();
+    if (state.view === 'knowledge') return await renderKnowledge();
+    return await renderHealth();
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+    toast(error.message || '页面加载失败', 'error');
+  }
 }
 async function renderOverview() {
   const token = nextRenderToken();
   const groupQuery = state.groupId ? '?groupId=' + encodeURIComponent(state.groupId) : '';
-  const data = await api('/api/overview' + groupQuery);
-  if (!isLatestRender(token)) return;
+  const data = await apiForRender('/api/overview' + groupQuery);
+  if (!data || !isLatestRender(token)) return;
   const recent = data.recent || {};
   content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><h2>当前群待处理</h2>' + overviewCandidates(recent.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><h2>运行状态</h2><p>' + esc(data.transportHealth.detail) + '</p><div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><h2>最新长期记忆</h2>' + overviewMemories(recent.memories || []) + '</section><section class="panel"><h2>知识库</h2>' + overviewKnowledge(recent.knowledge || []) + '<div class="quick-actions"><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div></section></div>';
 }
@@ -116,8 +134,8 @@ async function renderMembers(force = false) {
   const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
   if (state.memberQuery.trim()) query.set('q', state.memberQuery.trim());
   if (force) query.set('refresh', '1');
-  const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + query.toString());
-  if (!isLatestRender(token)) return;
+  const data = await apiForRender('/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + query.toString());
+  if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.memberPage, pageSize: state.memberPageSize, total: (data.members || []).length, totalPages: 1 };
   state.currentMembers = data.members || [];
   state.memberPage = pageInfo.page;
@@ -143,8 +161,8 @@ async function renderCandidates() {
   if (state.candidateQuery.trim()) query.set('q', state.candidateQuery.trim());
   query.set('page', String(state.candidatePage));
   query.set('pageSize', String(state.candidatePageSize));
-  const data = await api('/api/memory-candidates?' + query.toString());
-  if (!isLatestRender(token)) return;
+  const data = await apiForRender('/api/memory-candidates?' + query.toString());
+  if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.candidatePage, pageSize: state.candidatePageSize, total: (data.candidates || []).length, totalPages: 1 };
   state.currentCandidates = data.candidates || [];
   const currentCandidateIds = new Set(state.currentCandidates.map(candidate => candidate.id));
@@ -200,8 +218,8 @@ async function renderMemories() {
   if (state.memoryQuery.trim()) query.set('q', state.memoryQuery.trim());
   query.set('page', String(state.memoryPage));
   query.set('pageSize', String(state.memoryPageSize));
-  const data = await api('/api/memories?' + query.toString());
-  if (!isLatestRender(token)) return;
+  const data = await apiForRender('/api/memories?' + query.toString());
+  if (!data || !isLatestRender(token)) return;
   const memories = data.memories || [];
   state.currentMemories = memories;
   const pageInfo = data.pagination || { page: state.memoryPage, pageSize: state.memoryPageSize, total: memories.length, totalPages: 1 };
@@ -270,8 +288,8 @@ async function renderKnowledge() {
   const token = nextRenderToken();
   const query = new URLSearchParams({ groupId: state.groupId, page: String(state.knowledgePage), pageSize: String(state.knowledgePageSize) });
   if (state.knowledgeQuery.trim()) query.set('q', state.knowledgeQuery.trim());
-  const data = await api('/api/knowledge?' + query.toString());
-  if (!isLatestRender(token)) return;
+  const data = await apiForRender('/api/knowledge?' + query.toString());
+  if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.knowledgePage, pageSize: state.knowledgePageSize, total: (data.entries || []).length, totalPages: 1 };
   state.currentKnowledge = data.entries || [];
   state.knowledgePage = pageInfo.page;
@@ -291,8 +309,8 @@ function rowKnowledge(k) {
 }
 async function renderHealth() {
   const token = nextRenderToken();
-  const data = await api('/api/health');
-  if (!isLatestRender(token)) return;
+  const data = await apiForRender('/api/health');
+  if (!data || !isLatestRender(token)) return;
   content().innerHTML = '<section class="panel"><h2>健康状态</h2><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
 }
 function candidatePayload(id) {
