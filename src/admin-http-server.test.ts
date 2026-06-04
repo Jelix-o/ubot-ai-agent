@@ -187,6 +187,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const loginPageText = await loginPage.text();
     assert.equal(loginPageText.includes('href="/admin.css"'), true);
     assert.equal(loginPageText.includes('src="/admin-login.js"'), true);
+    assert.equal(loginPageText.includes("ubot-admin-theme"), true);
 
     const adminCss = await fetch(`${baseUrl}/admin.css`);
     assert.equal(adminCss.status, 200);
@@ -196,6 +197,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminCssText.includes(".filter-summary"), true);
     assert.equal(adminCssText.includes(".detail-block"), true);
     assert.equal(adminCssText.includes(".page-loading"), true);
+    assert.equal(adminCssText.includes('html[data-theme="dark"]'), true);
+    assert.equal(adminCssText.includes(".theme-control"), true);
 
     const adminLoginJs = await fetch(`${baseUrl}/admin-login.js`);
     assert.equal(adminLoginJs.status, 200);
@@ -237,7 +240,11 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(dashboardPage.status, 200);
-    assert.equal((await dashboardPage.text()).includes('src="/admin-app.js"'), true);
+    const dashboardPageText = await dashboardPage.text();
+    assert.equal(dashboardPageText.includes('src="/admin-app.js"'), true);
+    assert.equal(dashboardPageText.includes('data-theme-option="light"'), true);
+    assert.equal(dashboardPageText.includes('data-theme-option="dark"'), true);
+    assert.equal(dashboardPageText.includes('data-theme-option="system"'), true);
 
     const adminAppJs = await fetch(`${baseUrl}/admin-app.js`);
     assert.equal(adminAppJs.status, 200);
@@ -263,6 +270,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("renderCacheTtlMs"), true);
     assert.equal(adminAppJsText.includes("invalidateRenderCache"), true);
     assert.equal(adminAppJsText.includes("cloneData"), true);
+    assert.equal(adminAppJsText.includes("themeStorageKey"), true);
+    assert.equal(adminAppJsText.includes("applyTheme"), true);
+    assert.equal(adminAppJsText.includes("prefers-color-scheme"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const compressedAdminAppJs = await rawGet(`${baseUrl}/admin-app.js`, { "Accept-Encoding": "gzip" });

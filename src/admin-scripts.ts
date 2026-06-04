@@ -23,6 +23,15 @@ const validViews = new Set(Object.keys(titleByView));
 const content = () => document.querySelector('#content');
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const selected = (left, right) => left === right ? ' selected' : '';
+const themeStorageKey = 'ubot-admin-theme';
+function resolveTheme(mode) {
+  return mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : mode === 'dark' ? 'dark' : 'light';
+}
+function applyTheme(mode = localStorage.getItem(themeStorageKey) || 'system') {
+  document.documentElement.dataset.theme = resolveTheme(mode);
+  document.documentElement.dataset.themeMode = mode;
+  document.querySelectorAll('[data-theme-option]').forEach(button => button.classList.toggle('active', button.dataset.themeOption === mode));
+}
 const typeText = (value) => value === 'member_profile' ? '成员画像' : '群事实';
 const statusText = (value) => ({ pending: '待审', approved: '已批准', rejected: '已拒绝' }[value] || value);
 const enabledText = (value) => value ? '启用' : '停用';
@@ -954,6 +963,7 @@ function replaceEditedArticle(target) {
 document.addEventListener('click', async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement)) return;
+  if (target.dataset.themeOption) { localStorage.setItem(themeStorageKey, target.dataset.themeOption); applyTheme(target.dataset.themeOption); return; }
   if (target.dataset.view) { await navigateTo(target.dataset.view); }
   if (target.dataset.jumpView) { await navigateTo(target.dataset.jumpView); }
   if (target.dataset.refreshGroups !== undefined) { await runAction(target, async () => { invalidateGroupsCache(); await loadGroups({ refresh: true }); await renderGroups(); }, '群配置已刷新'); }
@@ -1121,6 +1131,9 @@ document.addEventListener('submit', async (event) => {
 });
 document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; resetGroupScopedState(); syncUrlState(); await render(); });
 document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if ((localStorage.getItem(themeStorageKey) || 'system') === 'system') applyTheme('system');
+});
 window.addEventListener('popstate', async () => {
   isApplyingHistoryState = true;
   readStateFromUrl();
@@ -1128,6 +1141,7 @@ window.addEventListener('popstate', async () => {
   isApplyingHistoryState = false;
   await render();
 });
+applyTheme();
 readStateFromUrl();
 loadGroups().then(() => {
   syncUrlState({ replace: true });
