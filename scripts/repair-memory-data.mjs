@@ -12,7 +12,10 @@ const args = parseArgs(process.argv.slice(2));
 const apply = args.apply === true;
 const dataDir = args.dataDir || DEFAULT_DATA_DIR;
 const envPath = args.env || DEFAULT_ENV_PATH;
+const maxAiItems = Number.isFinite(args.maxAiItems) ? Math.max(0, args.maxAiItems) : Number.POSITIVE_INFINITY;
+const requestTimeoutMs = Number.isFinite(args.timeoutMs) ? Math.max(1000, args.timeoutMs) : 12000;
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+let aiItemsUsed = 0;
 
 const env = await readEnv(envPath);
 const profileAi = {
@@ -262,20 +265,36 @@ async function chatText(messages, maxTokens) {
     report.skippedAiCalls += 1;
     return null;
   }
+  if (aiItemsUsed >= maxAiItems) {
+    report.skippedAiCalls += 1;
+    return null;
+  }
+  aiItemsUsed += 1;
   const baseUrl = profileAi.baseUrl.replace(/\/+$/, "");
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${profileAi.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: profileAi.model,
-      temperature: 0,
-      max_tokens: maxTokens,
-      messages,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${profileAi.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: profileAi.model,
+        temperature: 0,
+        max_tokens: maxTokens,
+        messages,
+      }),
+    });
+  } catch (error) {
+    report.warnings.push(error?.name === "AbortError" ? "profile_ai_timeout" : "profile_ai_request_failed");
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     report.warnings.push(`profile_ai_http_${response.status}`);
     return null;
@@ -415,6 +434,8 @@ function parseArgs(values) {
     else if (value === "--dry-run") parsed.apply = false;
     else if (value === "--data-dir") parsed.dataDir = values[++index];
     else if (value === "--env") parsed.env = values[++index];
+    else if (value === "--max-ai-items") parsed.maxAiItems = Number(values[++index]);
+    else if (value === "--timeout-ms") parsed.timeoutMs = Number(values[++index]);
   }
   return parsed;
 }
