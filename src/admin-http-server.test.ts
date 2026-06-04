@@ -14,7 +14,7 @@ import { GroupMemoryCandidateService } from "./services/group-memory-candidate-s
 import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
-import type { NapcatGroupMember } from "./types.js";
+import type { GroupBotConfig, GroupMemberProfile, NapcatGroupMember } from "./types.js";
 
 async function rawGet(url: string, headers: Record<string, string> = {}): Promise<{
   statusCode: number;
@@ -146,6 +146,24 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     ),
     knowledgeBaseStore,
     adminOperationLogService: new AdminOperationLogService(path.join(dir, "ops.jsonl")),
+    dailyProfileReviewService: ({
+      async summarizeOverallProfileDetail(args: { groupConfig: GroupBotConfig; userId: string; members?: GroupMemberProfile[] }) {
+        return {
+          summary: `${args.userId} 完整群聊画像。`,
+          generatedAt: "2026-06-03T10:00:00.000Z",
+          memoryCount: 3,
+          cached: false,
+        };
+      },
+      async getYesterdaySummaryDetail(args: { groupConfig: GroupBotConfig; userId: string; members?: GroupMemberProfile[] }) {
+        return {
+          summary: `${args.userId} 完整昨日画像。`,
+          generatedAt: "2026-06-03T11:00:00.000Z",
+          memoryCount: 1,
+          cached: true,
+        };
+      },
+    } as never),
     async getTransportHealthStatus() {
       return { ok: true, detail: "ok" };
     },
@@ -273,6 +291,10 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(adminAppJsText.includes("themeStorageKey"), true);
     assert.equal(adminAppJsText.includes("applyTheme"), true);
     assert.equal(adminAppJsText.includes("prefers-color-scheme"), true);
+    assert.equal(adminAppJsText.includes("data-load-profile-summary"), true);
+    assert.equal(adminAppJsText.includes("profile-summary?type="), true);
+    assert.equal(adminAppJsText.includes("查看群聊画像"), true);
+    assert.equal(adminAppJsText.includes("查看昨日画像"), true);
     assert.doesNotThrow(() => new Function(adminAppJsText));
 
     const compressedAdminAppJs = await rawGet(`${baseUrl}/admin-app.js`, { "Accept-Encoding": "gzip" });
@@ -316,6 +338,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
 
     const unauthorizedMembers = await fetch(`${baseUrl}/api/groups/67890/members`);
     assert.equal(unauthorizedMembers.status, 401);
+
+    const unauthorizedProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall`);
+    assert.equal(unauthorizedProfileSummary.status, 401);
 
     const unauthorizedGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`);
     assert.equal(unauthorizedGroupConfig.status, 401);
@@ -443,6 +468,30 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(cachedMembers.status, 200);
     assert.equal(listGroupMembersCalls, callsAfterFirstMemberLoad);
+
+    const overallProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(overallProfileSummary.status, 200);
+    const overallProfileSummaryBody = await overallProfileSummary.json() as { groupId: string; userId: string; type: string; summary: string; generatedAt: string; memoryCount: number; cached: boolean; subjectLabel?: { label: string } };
+    assert.equal(overallProfileSummaryBody.groupId, "67890");
+    assert.equal(overallProfileSummaryBody.userId, "20001");
+    assert.equal(overallProfileSummaryBody.type, "overall");
+    assert.equal(overallProfileSummaryBody.summary, "20001 完整群聊画像。");
+    assert.equal(overallProfileSummaryBody.generatedAt, "2026-06-03T10:00:00.000Z");
+    assert.equal(overallProfileSummaryBody.memoryCount, 3);
+    assert.equal(overallProfileSummaryBody.cached, false);
+    assert.equal(overallProfileSummaryBody.subjectLabel?.label.includes("QQ 20001"), true);
+
+    const yesterdayProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=yesterday`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(yesterdayProfileSummary.status, 200);
+    const yesterdayProfileSummaryBody = await yesterdayProfileSummary.json() as { type: string; summary: string; memoryCount: number; cached: boolean };
+    assert.equal(yesterdayProfileSummaryBody.type, "yesterday");
+    assert.equal(yesterdayProfileSummaryBody.summary, "20001 完整昨日画像。");
+    assert.equal(yesterdayProfileSummaryBody.memoryCount, 1);
+    assert.equal(yesterdayProfileSummaryBody.cached, true);
 
     const updateIdentity = await fetch(`${baseUrl}/api/groups/67890/members/30002/identity`, {
       method: "PUT",

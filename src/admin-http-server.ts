@@ -13,6 +13,7 @@ import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { getYesterdayDateKey, type DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
 import type { AiHealthStatus, GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupMember } from "./types.js";
 
@@ -26,6 +27,7 @@ interface AdminHttpServerOptions {
   groupConfigService: GroupConfigService;
   groupMemoryStore: GroupMemoryStore;
   groupMemoryCandidateService: GroupMemoryCandidateService;
+  dailyProfileReviewService?: DailyProfileReviewService;
   knowledgeBaseStore: KnowledgeBaseStore;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
@@ -185,6 +187,12 @@ export class AdminHttpServer {
     const identityRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members\/([^/]+)\/identity$/);
     if (identityRoute?.userId) {
       await this.handleMemberIdentity(req, res, { groupId: identityRoute.groupId, userId: identityRoute.userId });
+      return;
+    }
+
+    const profileSummaryRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members\/([^/]+)\/profile-summary$/);
+    if (profileSummaryRoute?.userId && req.method === "GET") {
+      await this.handleMemberProfileSummary(res, { groupId: profileSummaryRoute.groupId, userId: profileSummaryRoute.userId }, url);
       return;
     }
 
@@ -596,6 +604,52 @@ export class AdminHttpServer {
     }
 
     this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async handleMemberProfileSummary(
+    res: ServerResponse,
+    route: { groupId: string; userId: string },
+    url: URL,
+  ): Promise<void> {
+    if (!/^\d+$/.test(route.userId)) {
+      this.sendJson(res, { error: "invalid_user_id" }, 400);
+      return;
+    }
+    if (!this.options.dailyProfileReviewService) {
+      this.sendJson(res, { error: "profile_review_unavailable" }, 503);
+      return;
+    }
+    const groupConfig = await this.options.groupConfigService.getGroup(route.groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    const profiles = await this.getCachedMemberProfileData(route.groupId);
+    const members = profiles?.members ?? [];
+    const type = url.searchParams.get("type") === "yesterday" ? "yesterday" : "overall";
+    const result = type === "yesterday"
+      ? await this.options.dailyProfileReviewService.getYesterdaySummaryDetail({
+          groupConfig,
+          userId: route.userId,
+          dateKey: getYesterdayDateKey(new Date()),
+          members,
+        })
+      : await this.options.dailyProfileReviewService.summarizeOverallProfileDetail({
+          groupConfig,
+          userId: route.userId,
+          members,
+        });
+    if (!result) {
+      this.sendJson(res, { error: "profile_summary_empty" }, 404);
+      return;
+    }
+    this.sendJson(res, {
+      groupId: route.groupId,
+      userId: route.userId,
+      type,
+      subjectLabel: buildSubjectLabel(groupConfig, route.userId, members, "member_profile"),
+      ...result,
+    });
   }
 
   private async handleGroupConfig(req: IncomingMessage, res: ServerResponse, params: RouteParams): Promise<void> {

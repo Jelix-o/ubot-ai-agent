@@ -362,12 +362,72 @@ test("extractGroupMemoryCandidates leaves room for reasoning model output", asyn
 
   const request = calls[0] as { max_tokens?: number; messages?: Array<{ content: string }> };
   assert.equal(request.max_tokens, 8000);
-  assert.match(request.messages?.[0]?.content ?? "", /deduplication reference/);
+  assert.match(request.messages?.[0]?.content ?? "", /必须使用简体中文/);
+  assert.match(request.messages?.[0]?.content ?? "", /含义相同或高度相似时不要新增/);
   assert.match(request.messages?.[1]?.content ?? "", /Existing approved long-term memories/);
   assert.match(request.messages?.[1]?.content ?? "", /Tester already prefers concise replies/);
   assert.match(request.messages?.[1]?.content ?? "", /Existing memory candidates/);
   assert.match(request.messages?.[1]?.content ?? "", /already asks for context/);
   assert.equal(candidates[0]?.subjectUserId, "20001");
+});
+
+test("normalizeMemoryCandidateLanguage rewrites English candidate to Chinese JSON", async () => {
+  const calls: unknown[] = [];
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create(args: unknown) {
+      calls.push(args);
+      return {
+        choices: [
+          {
+            message: {
+              content: "{\"title\":\"饮食忌口\",\"content\":\"Tester 不能吃太油的食物。\"}",
+            },
+          },
+        ],
+      };
+    },
+  } as never);
+
+  const candidate = await service.normalizeMemoryCandidateLanguage({
+    type: "member_profile",
+    subjectUserId: "20001",
+    title: "Food sensitivity",
+    content: "Tester cannot eat oily food.",
+    confidence: 0.8,
+  });
+
+  assert.equal(candidate?.title, "饮食忌口");
+  assert.equal(candidate?.content, "Tester 不能吃太油的食物。");
+  const request = calls[0] as { messages?: Array<{ content: string }> };
+  assert.match(request.messages?.[0]?.content ?? "", /长期记忆中文化助手/);
+});
+
+test("profile summary normalization keeps complete sentence beyond old 260 char limit", async () => {
+  const longSentence = "徐美宜是台湾人，在半导体行业工作，拥有硬体工程师经验，日常负责收集机台异常和撰写分析报告，自称内向且皮肤颜色较黑。";
+  const summary = `${longSentence.repeat(6)}她自述这些信息主要来自群聊中的长期互动。`;
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create() {
+      return {
+        choices: [
+          {
+            message: { content: summary },
+          },
+        ],
+      };
+    },
+  } as never);
+
+  const result = await service.summarizeOverallMemberProfile({
+    groupId: "67890",
+    userId: "3951154629",
+    displayName: "徐美宜",
+    memories: [{ title: "画像", content: summary }],
+  });
+
+  assert.ok(result);
+  assert.ok(result.length > 260);
+  assert.doesNotMatch(result, /她自述$/);
+  assert.match(result, /[。！？.!?]$/);
 });
 
 test("profile summaries use expanded Mimo budgets and broad memory context", async () => {

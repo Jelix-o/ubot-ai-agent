@@ -128,12 +128,29 @@ test("daily profile review can create yesterday summary on demand and summarize 
     });
     assert.equal(daily?.content, "20001 昨日新增画像总结");
 
+    const dailyDetail = await service.getYesterdaySummaryDetail({
+      groupConfig,
+      userId: "20001",
+      dateKey: yesterday,
+    });
+    assert.equal(dailyDetail?.summary, "20001 昨日新增画像总结");
+    assert.equal(dailyDetail?.memoryCount, 1);
+    assert.equal(typeof dailyDetail?.generatedAt, "string");
+
     const overall = await service.summarizeOverallProfile({
       groupConfig,
       userId: "20001",
     });
     assert.equal(overall, "20001 整体画像总结");
     assert.equal(ai.overallCalls.length, 1);
+
+    const overallDetail = await service.summarizeOverallProfileDetail({
+      groupConfig,
+      userId: "20001",
+    });
+    assert.equal(overallDetail?.summary, "20001 整体画像总结");
+    assert.equal(overallDetail?.memoryCount, 2);
+    assert.equal(overallDetail?.cached, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

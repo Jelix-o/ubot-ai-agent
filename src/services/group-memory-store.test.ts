@@ -233,8 +233,8 @@ test("candidate evidence keeps detailed summaries when approved into memory", as
         return [
           {
             type: "group_fact",
-            title: "Detailed evidence",
-            content: "Detailed evidence should survive approval.",
+            title: "详细证据",
+            content: "详细来源证据需要在批准后保留下来。",
             confidence: 0.55,
           },
         ];
@@ -384,8 +384,8 @@ test("candidate service skips candidates similar to approved memories", async ()
       groupId: "67890",
       type: "member_profile",
       subjectUserId: "20001",
-      title: "Tester answer preference",
-      content: "Tester prefers concise answers with direct conclusions.",
+      title: "回答偏好",
+      content: "Tester 喜欢简洁回答，并希望直接给结论。",
       confidence: 0.9,
       source: "test",
     });
@@ -395,8 +395,8 @@ test("candidate service skips candidates similar to approved memories", async ()
           {
             type: "member_profile",
             subjectUserId: "20001",
-            title: "Tester answer preference",
-            content: "Tester prefers concise answers with direct conclusions.",
+            title: "回答偏好",
+            content: "Tester 喜欢简洁回答，并希望直接给结论。",
             confidence: 0.95,
           },
         ];
@@ -407,7 +407,7 @@ test("candidate service skips candidates similar to approved memories", async ()
       groupId: "67890",
       userId: "20001",
       userName: "Tester",
-      text: "I still prefer concise answers with direct conclusions.",
+      text: "我还是喜欢简洁回答，最好直接给结论。",
       timestamp: new Date().toISOString(),
     });
     const stats = await service.flushGroup("67890");
@@ -429,8 +429,8 @@ test("candidate service refines similar approved memories when new detail is str
       groupId: "67890",
       type: "member_profile",
       subjectUserId: "20001",
-      title: "Tester game preference",
-      content: "Tester plays League of Legends.",
+      title: "游戏偏好",
+      content: "Tester 平时玩英雄联盟。",
       confidence: 0.82,
       source: "test",
       evidence: {
@@ -447,8 +447,8 @@ test("candidate service refines similar approved memories when new detail is str
           {
             type: "member_profile",
             subjectUserId: "20001",
-            title: "Tester game preference",
-            content: "Tester mainly plays League of Legends, prefers five-stack games, and dislikes solo queue.",
+            title: "游戏偏好",
+            content: "Tester 平时主要玩英雄联盟，喜欢和固定朋友五排开黑，不太喜欢单排，也会关注队友配合体验。",
             confidence: 0.9,
           },
         ];
@@ -470,7 +470,7 @@ test("candidate service refines similar approved memories when new detail is str
     assert.equal(stats?.pendingCount, 0);
     assert.equal((await memoryStore.listEnabled("67890")).length, 1);
     assert.equal((await service.list({ groupId: "67890" })).length, 0);
-    assert.match(refined?.content ?? "", /five-stack games/);
+    assert.match(refined?.content ?? "", /固定朋友五排/);
     assert.equal(refined?.confidence, 0.9);
     assert.equal(refined?.evidence?.messageCount, 2);
   } finally {
@@ -498,8 +498,8 @@ test("candidate service ignores daily profile summaries for duplicate blocking",
           {
             type: "member_profile",
             subjectUserId: "20001",
-            title: "Tester game preference",
-            content: "Tester mainly plays League of Legends and prefers five-stack games.",
+            title: "游戏偏好",
+            content: "Tester 主要玩英雄联盟，并且喜欢五排。",
             confidence: 0.86,
           },
         ];
@@ -562,8 +562,8 @@ test("candidate service merges candidates similar to pending candidates", async 
       groupId: "67890",
       type: "member_profile",
       subjectUserId: "20001",
-      title: "Tester game preference",
-      content: "Tester mainly plays League of Legends and likes five-stack games.",
+      title: "游戏偏好",
+      content: "Tester 主要玩英雄联盟，并且喜欢五排。",
       confidence: 0.62,
       evidence: {
         startAt: "2026-06-01T10:00:00.000Z",
@@ -573,7 +573,7 @@ test("candidate service merges candidates similar to pending candidates", async 
         summary: "Tester mentioned League of Legends.",
       },
     });
-    assert.equal((await candidateStore.get(existingCandidate.id))?.title, "Tester game preference");
+    assert.equal((await candidateStore.get(existingCandidate.id))?.title, "游戏偏好");
     assert.equal(await candidateStore.get("missing"), undefined);
     const service = new GroupMemoryCandidateService(candidateStore, memoryStore, {
       async extractGroupMemoryCandidates() {
@@ -581,8 +581,8 @@ test("candidate service merges candidates similar to pending candidates", async 
           {
             type: "member_profile",
             subjectUserId: "20001",
-            title: "Tester game preference",
-            content: "Tester mainly plays League of Legends and likes five-stack games.",
+            title: "游戏偏好",
+            content: "Tester 主要玩英雄联盟，并且喜欢五排。",
             confidence: 0.7,
           },
         ];
@@ -593,7 +593,7 @@ test("candidate service merges candidates similar to pending candidates", async 
       groupId: "67890",
       userId: "20001",
       userName: "Tester",
-      text: "I mainly play League of Legends and like five-stack games.",
+      text: "我主要玩英雄联盟，也喜欢五排。",
       timestamp: "2026-06-02T10:00:00.000Z",
     });
     const stats = await service.flushGroup("67890");
@@ -618,8 +618,8 @@ test("candidate service still approves new non-duplicate facts after duplicate f
       groupId: "67890",
       type: "member_profile",
       subjectUserId: "20001",
-      title: "Tester answer preference",
-      content: "Tester prefers concise answers with direct conclusions.",
+      title: "回答偏好",
+      content: "Tester 喜欢简洁回答，并希望直接给结论。",
       confidence: 0.9,
       source: "test",
     });
@@ -629,8 +629,8 @@ test("candidate service still approves new non-duplicate facts after duplicate f
           {
             type: "member_profile",
             subjectUserId: "20001",
-            title: "Tester game preference",
-            content: "Tester mainly plays League of Legends and likes five-stack games.",
+            title: "游戏偏好",
+            content: "Tester 主要玩英雄联盟，并且喜欢五排。",
             confidence: 0.85,
           },
         ];
@@ -641,7 +641,7 @@ test("candidate service still approves new non-duplicate facts after duplicate f
       groupId: "67890",
       userId: "20001",
       userName: "Tester",
-      text: "I mainly play League of Legends and like five-stack games.",
+      text: "我主要玩英雄联盟，也喜欢五排。",
       timestamp: new Date().toISOString(),
     });
     const stats = await service.flushGroup("67890");

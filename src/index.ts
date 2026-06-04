@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   );
 
   const adminHttpServer = config.adminHttpEnabled
-    ? createAdminHttpServer(config, groupConfigService, groupMemoryStore, groupMemoryCandidateService, knowledgeBaseStore, app, napcatRuntime, profileAiService)
+    ? createAdminHttpServer(config, groupConfigService, groupMemoryStore, groupMemoryCandidateService, dailyProfileReviewService, knowledgeBaseStore, app, napcatRuntime, profileAiService)
     : undefined;
 
   napcatRuntime.on("groupMessage", async (event) => {
@@ -141,6 +141,7 @@ function createAdminHttpServer(
   groupConfigService: GroupConfigService,
   groupMemoryStore: GroupMemoryStore,
   groupMemoryCandidateService: GroupMemoryCandidateService,
+  dailyProfileReviewService: DailyProfileReviewService,
   knowledgeBaseStore: KnowledgeBaseStore,
   app: BotApplication,
   napcatRuntime: NapCatRuntime,
@@ -160,6 +161,7 @@ function createAdminHttpServer(
     groupConfigService,
     groupMemoryStore,
     groupMemoryCandidateService,
+    dailyProfileReviewService,
     knowledgeBaseStore,
     adminOperationLogService: new AdminOperationLogService(config.adminOperationLogPath),
     getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),

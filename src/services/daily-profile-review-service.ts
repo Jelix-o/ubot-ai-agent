@@ -20,6 +20,13 @@ export interface DailyProfileReviewResult {
   createdCount: number;
 }
 
+export interface MemberProfileSummaryResult {
+  summary: string;
+  generatedAt: string;
+  memoryCount: number;
+  cached: boolean;
+}
+
 export class DailyProfileReviewService {
   private cachedData?: DailyProfileReviewFile;
 
@@ -77,19 +84,54 @@ export class DailyProfileReviewService {
     userId: string;
     members?: GroupMemberProfile[];
   }): Promise<string | null> {
-    const memories = (await this.memoryStore.list(args.groupConfig.groupId))
-      .filter((memory) => isUsableMemberProfile(memory, args.userId))
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const result = await this.summarizeOverallProfileDetail(args);
+    return result?.summary ?? null;
+  }
+
+  async summarizeOverallProfileDetail(args: {
+    groupConfig: GroupBotConfig;
+    userId: string;
+    members?: GroupMemberProfile[];
+  }): Promise<MemberProfileSummaryResult | null> {
+    const memories = await this.listUsableMemberProfileMemories(args.groupConfig.groupId, args.userId);
     if (memories.length === 0) {
       return null;
     }
 
-    return this.aiService.summarizeOverallMemberProfile({
+    const summary = await this.aiService.summarizeOverallMemberProfile({
       groupId: args.groupConfig.groupId,
       userId: args.userId,
       displayName: buildSubjectLabel(args.groupConfig, args.userId, args.members ?? [], "member_profile").label,
       memories: memories.map(toProfileMemoryInput),
     });
+    return summary
+      ? {
+          summary,
+          generatedAt: new Date().toISOString(),
+          memoryCount: memories.length,
+          cached: false,
+        }
+      : null;
+  }
+
+  async getYesterdaySummaryDetail(args: {
+    groupConfig: GroupBotConfig;
+    userId: string;
+    dateKey: string;
+    members?: GroupMemberProfile[];
+  }): Promise<MemberProfileSummaryResult | null> {
+    const summary = await this.getOrCreateYesterdaySummary(args);
+    if (!summary) {
+      return null;
+    }
+    const sourceMemories = (await this.memoryStore.list(args.groupConfig.groupId))
+      .filter((memory) => isNewDailyMemberProfile(memory, args.dateKey) && memory.subjectUserId === args.userId);
+    return {
+      summary: summary.content,
+      generatedAt: summary.updatedAt,
+      memoryCount: sourceMemories.length,
+      cached: summary.createdAt !== summary.updatedAt || Boolean(summary.id),
+    };
   }
 
   private async createDailySummaries(args: {
@@ -180,6 +222,12 @@ export class DailyProfileReviewService {
       memory.source === source &&
       memory.enabled
     );
+  }
+
+  private async listUsableMemberProfileMemories(groupId: string, userId: string): Promise<GroupMemory[]> {
+    return (await this.memoryStore.list(groupId))
+      .filter((memory) => isUsableMemberProfile(memory, userId))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   private async markReviewed(groupId: string, dateKey: string): Promise<void> {

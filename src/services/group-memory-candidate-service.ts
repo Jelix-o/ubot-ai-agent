@@ -1,6 +1,6 @@
 import { logInfo, logWarn } from "../logger.js";
 import type { GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryType } from "../types.js";
-import type { AiService, MemoryCandidateExtractionMessage } from "./ai-service.js";
+import type { AiService, ExtractedGroupMemoryCandidate, MemoryCandidateExtractionMessage } from "./ai-service.js";
 import type { GroupMemoryCandidateListPageArgs, GroupMemoryCandidateListPageResult, GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
 import type { GroupMemoryStore } from "./group-memory-store.js";
 
@@ -36,7 +36,8 @@ export class GroupMemoryCandidateService {
   constructor(
     private readonly candidateStore: GroupMemoryCandidateStore,
     private readonly memoryStore: GroupMemoryStore,
-    private readonly aiService: Pick<AiService, "extractGroupMemoryCandidates">,
+    private readonly aiService: Pick<AiService, "extractGroupMemoryCandidates"> &
+      Partial<Pick<AiService, "normalizeMemoryCandidateLanguage" | "judgeMemorySemanticRelation">>,
     private readonly batchSize = 8,
   ) {}
 
@@ -133,7 +134,12 @@ export class GroupMemoryCandidateService {
       let skippedDuplicateCount = 0;
       let mergedCandidateCount = 0;
       let refinedMemoryCount = 0;
-      for (const candidate of candidates) {
+      for (const rawCandidate of candidates) {
+        const candidate = await this.normalizeCandidate(rawCandidate);
+        if (!candidate) {
+          pendingCount += 1;
+          continue;
+        }
         const subjectUserId =
           candidate.type === "member_profile" && candidate.subjectUserId && speakerIds.has(candidate.subjectUserId)
             ? candidate.subjectUserId
@@ -149,15 +155,19 @@ export class GroupMemoryCandidateService {
           source: "auto",
           evidence,
         };
-        const duplicateDecision = findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, existingCandidates);
+        const duplicateDecision = await this.findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, existingCandidates);
         if (duplicateDecision.kind === "skip" || duplicateDecision.kind === "skip_candidate") {
           skippedDuplicateCount += 1;
           continue;
         }
         if (duplicateDecision.kind === "refine_memory") {
           const refined = await this.memoryStore.update(duplicateDecision.memory.id, {
-            title: chooseMoreSpecificText(duplicateDecision.memory.title, candidate.title, 80),
-            content: chooseMoreSpecificText(duplicateDecision.memory.content, candidate.content, 600),
+            title: chooseMoreSpecificText(duplicateDecision.memory.title, duplicateDecision.mergedTitle ?? candidate.title, 80),
+            content: chooseMoreSpecificText(
+              duplicateDecision.memory.content,
+              duplicateDecision.mergedContent ?? candidate.content,
+              600,
+            ),
             confidence: Math.max(duplicateDecision.memory.confidence, candidate.confidence),
             evidence: mergeEvidence(duplicateDecision.memory.evidence, evidence),
           });
@@ -172,8 +182,12 @@ export class GroupMemoryCandidateService {
         }
         if (duplicateDecision.kind === "merge") {
           const merged = await this.candidateStore.update(duplicateDecision.candidate.id, {
-            title: chooseMoreSpecificText(duplicateDecision.candidate.title, candidate.title, 80),
-            content: chooseMoreSpecificText(duplicateDecision.candidate.content, candidate.content, 600),
+            title: chooseMoreSpecificText(duplicateDecision.candidate.title, duplicateDecision.mergedTitle ?? candidate.title, 80),
+            content: chooseMoreSpecificText(
+              duplicateDecision.candidate.content,
+              duplicateDecision.mergedContent ?? candidate.content,
+              600,
+            ),
             confidence: Math.max(duplicateDecision.candidate.confidence, candidate.confidence),
             source: "auto",
             evidence: mergeEvidence(duplicateDecision.candidate.evidence, evidence),
@@ -245,6 +259,87 @@ export class GroupMemoryCandidateService {
       });
     }
   }
+
+  private async normalizeCandidate(candidate: ExtractedGroupMemoryCandidate): Promise<ExtractedGroupMemoryCandidate | undefined> {
+    if (isMostlyChinese(`${candidate.title} ${candidate.content}`)) {
+      return candidate;
+    }
+
+    const normalized = await this.aiService.normalizeMemoryCandidateLanguage?.(candidate);
+    if (normalized && isMostlyChinese(`${normalized.title} ${normalized.content}`)) {
+      return normalized;
+    }
+
+    logWarn("Skipped non-Chinese memory candidate.", {
+      type: candidate.type,
+      subjectUserId: candidate.subjectUserId,
+      title: candidate.title,
+    });
+    return undefined;
+  }
+
+  private async findDuplicateDecision(
+    candidate: CandidateLike,
+    memories: GroupMemory[],
+    candidates: GroupMemoryCandidate[],
+  ): Promise<DuplicateDecision> {
+    const localDecision = findDuplicateDecision(candidate, memories, candidates);
+    if (
+      (localDecision.kind === "skip" ||
+        localDecision.kind === "skip_candidate" ||
+        localDecision.kind === "refine_memory" ||
+        localDecision.kind === "merge") &&
+      localDecision.similarity >= DUPLICATE_SIMILARITY_THRESHOLD
+    ) {
+      return localDecision;
+    }
+
+    const semanticTargets = [
+      ...memories.filter((memory) => memory.enabled && sameScope(candidate, memory)),
+      ...candidates.filter((item) => item.status !== "rejected" && sameScope(candidate, item)),
+    ]
+      .map((item) => ({ item, score: memorySimilarity(candidate, item) }))
+      .filter((item) => item.score >= 0.36)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 3);
+
+    for (const target of semanticTargets) {
+      const result = await this.aiService.judgeMemorySemanticRelation?.({
+        candidate,
+        existing: target.item,
+      });
+      if (!result || result.action === "new") {
+        continue;
+      }
+      if (result.action === "duplicate") {
+        return isMemory(target.item)
+          ? { kind: "skip", memory: target.item, similarity: target.score }
+          : { kind: "skip_candidate", candidate: target.item, similarity: target.score };
+      }
+      if (result.action === "merge") {
+        const mergedTitle = result.title && isMostlyChinese(result.title) ? result.title : undefined;
+        const mergedContent = result.content && isMostlyChinese(result.content) ? result.content : undefined;
+        if (isMemory(target.item)) {
+          return {
+            kind: "refine_memory",
+            memory: target.item,
+            similarity: target.score,
+            ...(mergedTitle ? { mergedTitle } : {}),
+            ...(mergedContent ? { mergedContent } : {}),
+          };
+        }
+        return {
+          kind: "merge",
+          candidate: target.item,
+          similarity: target.score,
+          ...(mergedTitle ? { mergedTitle } : {}),
+          ...(mergedContent ? { mergedContent } : {}),
+        };
+      }
+    }
+
+    return localDecision;
+  }
 }
 
 function shouldAutoApprove(candidate: GroupMemoryCandidate): boolean {
@@ -262,9 +357,9 @@ type CandidateLike = Pick<
 type DuplicateDecision =
   | { kind: "none" }
   | { kind: "skip"; memory: GroupMemory; similarity: number }
-  | { kind: "refine_memory"; memory: GroupMemory; similarity: number }
+  | { kind: "refine_memory"; memory: GroupMemory; similarity: number; mergedTitle?: string; mergedContent?: string }
   | { kind: "skip_candidate"; candidate: GroupMemoryCandidate; similarity: number }
-  | { kind: "merge"; candidate: GroupMemoryCandidate; similarity: number };
+  | { kind: "merge"; candidate: GroupMemoryCandidate; similarity: number; mergedTitle?: string; mergedContent?: string };
 
 function findDuplicateDecision(
   candidate: CandidateLike,
@@ -474,6 +569,20 @@ function replaceCandidate(candidates: GroupMemoryCandidate[], candidate: GroupMe
     return;
   }
   candidates[index] = candidate;
+}
+
+function isMemory(item: GroupMemory | GroupMemoryCandidate): item is GroupMemory {
+  return "enabled" in item;
+}
+
+function isMostlyChinese(value: string): boolean {
+  const letters = value.match(/\p{L}/gu) ?? [];
+  if (letters.length === 0) {
+    return true;
+  }
+  const han = value.match(/\p{Script=Han}/gu) ?? [];
+  const asciiWords = value.match(/[A-Za-z]{4,}/g) ?? [];
+  return han.length >= Math.max(2, letters.length * 0.25) || asciiWords.length <= 1;
 }
 
 function buildEvidence(messages: BufferedMemoryMessage[]): GroupMemoryEvidence {

@@ -9,7 +9,7 @@ document.querySelector('#loginForm').addEventListener('submit', async (event) =>
 `.trimStart();
 
 export const ADMIN_APP_JS = String.raw`
-const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), selectedMemoryIds: new Set(), expandedCandidateIds: new Set(), expandedMemoryIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
+const state = { view: 'overview', groups: [], groupId: '', memberQuery: '', memberPage: 1, memberPageSize: 24, editingMemberId: '', expandedProfileMemberId: '', subjectUserId: '', candidateType: '', candidateStatus: 'pending', candidateQuery: '', selectedCandidateIds: new Set(), selectedMemoryIds: new Set(), expandedCandidateIds: new Set(), expandedMemoryIds: new Set(), memoryQuery: '', memoryType: '', memoryEnabled: '', knowledgeQuery: '', pendingDelete: '', notice: '', memoryPage: 1, memoryPageSize: 20, candidatePage: 1, candidatePageSize: 20, knowledgePage: 1, knowledgePageSize: 20, editingCandidateId: '', editingMemoryId: '', editingKnowledgeId: '', currentMembers: [], currentCandidates: [], currentMemories: [], currentKnowledge: [], profileSummaries: new Map(), ownerMembersByGroup: new Map(), ownerMembersInflight: new Map(), ownerMemberVersions: new Map() };
 let renderVersion = 0;
 let renderAbortController = null;
 let groupsLoadedAt = 0;
@@ -343,6 +343,7 @@ function clearOwnerMemberInflight(groupId) {
   }
 }
 function invalidateMemberCaches() {
+  state.profileSummaries = new Map();
   invalidateGroupsCache();
   invalidateRenderCache('/api/overview');
 }
@@ -353,6 +354,7 @@ function invalidateCandidateCaches() {
   invalidateGroupsCache();
 }
 function invalidateMemoryCaches() {
+  state.profileSummaries = new Map();
   invalidateRenderCache('/api/memories');
   invalidateRenderCache('/api/overview');
   invalidateGroupsCache();
@@ -456,10 +458,64 @@ async function renderMembers(force = false) {
 function rowMember(m) {
   const meta = '<div class="member-meta">QQ ' + esc(m.userId) + (m.card ? ' · 群名片 ' + esc(m.card) : '') + (m.nickname ? ' · 昵称 ' + esc(m.nickname) : '') + (m.role ? ' · 角色 ' + esc(m.role) : '') + (m.note ? ' · 备注：' + esc(m.note) : '') + '</div>';
   const badges = '<div><span class="badge">' + m.memoryCount + ' 条记忆</span> <span class="badge warn">' + m.pendingCandidateCount + ' 条待审</span>' + ((m.aliases || []).length ? ' <span class="badge">' + esc((m.aliases || []).join('、')) + '</span>' : '') + '</div>';
+  const profileActions = '<button type="button" class="ghost" data-load-profile-summary="' + esc(m.userId) + '" data-profile-type="overall">查看群聊画像</button><button type="button" class="ghost" data-load-profile-summary="' + esc(m.userId) + '" data-profile-type="yesterday">查看昨日画像</button>';
+  const profileSummary = profileSummaryHtml(m.userId);
   if (state.editingMemberId !== m.userId) {
-    return '<article data-member-id="' + esc(m.userId) + '"><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<div class="actions"><button type="button" data-edit-member="' + esc(m.userId) + '">编辑备注</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">' + (state.pendingDelete === 'identity:' + m.userId ? '确认删除备注' : '删除备注') + '</button>' : '') + '</div></article>';
+    return '<article data-member-id="' + esc(m.userId) + '"><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<div class="actions"><button type="button" data-edit-member="' + esc(m.userId) + '">编辑备注</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + profileActions + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">' + (state.pendingDelete === 'identity:' + m.userId ? '确认删除备注' : '删除备注') + '</button>' : '') + '</div>' + profileSummary + '</article>';
   }
-  return '<article><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" data-cancel-edit>收起</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">' + (state.pendingDelete === 'identity:' + m.userId ? '确认删除备注' : '删除备注') + '</button>' : '') + '</div></form></article>';
+  return '<article data-member-id="' + esc(m.userId) + '"><h3>' + esc(m.displayName) + '</h3>' + meta + badges + '<form class="memberForm" data-user-id="' + esc(m.userId) + '"><input name="names" value="' + esc((m.aliases || []).join(', ')) + '" placeholder="别名，用逗号分隔"><input name="note" value="' + esc(m.note || '') + '" placeholder="系统备注"><div class="actions"><button>保存备注</button><button type="button" data-cancel-edit>收起</button><button type="button" class="ghost" data-view-member="' + esc(m.userId) + '">查看记忆</button>' + profileActions + (m.hasManualIdentity ? '<button type="button" class="ghost" data-delete-identity="' + esc(m.userId) + '">' + (state.pendingDelete === 'identity:' + m.userId ? '确认删除备注' : '删除备注') + '</button>' : '') + '</div></form>' + profileSummary + '</article>';
+}
+function profileSummaryKey(userId, type) {
+  return state.groupId + ':' + userId + ':' + type;
+}
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+function profileSummaryHtml(userId) {
+  if (state.expandedProfileMemberId !== userId) return '';
+  const entries = ['overall', 'yesterday']
+    .map(type => state.profileSummaries.get(profileSummaryKey(userId, type)))
+    .filter(Boolean);
+  if (!entries.length) return '';
+  return entries.map(entry => {
+    const title = entry.type === 'yesterday' ? '昨日画像全文' : '群聊画像全文';
+    if (entry.loading) {
+      return '<div class="detail-block profile-summary"><b>' + title + '</b><p class="message">正在生成画像...</p></div>';
+    }
+    if (entry.error) {
+      return '<div class="detail-block profile-summary"><b>' + title + '</b><p class="message danger">' + esc(entry.error) + '</p></div>';
+    }
+    const data = entry.data || {};
+    const meta = [
+      data.generatedAt ? '生成：' + formatDateTime(data.generatedAt) : '',
+      Number.isFinite(data.memoryCount) ? '来源记忆：' + data.memoryCount + ' 条' : '',
+      data.cached ? '缓存' : '新生成',
+    ].filter(Boolean).join(' · ');
+    return '<div class="detail-block profile-summary"><b>' + title + '</b><span>' + esc(meta) + '</span><pre>' + esc(data.summary || '暂无画像') + '</pre></div>';
+  }).join('');
+}
+async function loadProfileSummary(userId, type) {
+  const normalizedType = type === 'yesterday' ? 'yesterday' : 'overall';
+  const key = profileSummaryKey(userId, normalizedType);
+  state.expandedProfileMemberId = userId;
+  state.profileSummaries.set(key, { type: normalizedType, loading: true });
+  replaceMemberById(userId);
+  try {
+    const data = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(userId) + '/profile-summary?type=' + encodeURIComponent(normalizedType));
+    state.profileSummaries.set(key, { type: normalizedType, data });
+  } catch (error) {
+    state.profileSummaries.set(key, { type: normalizedType, error: error.message || '画像生成失败' });
+  }
+  replaceMemberById(userId);
+}
+function replaceMemberById(userId) {
+  const article = document.querySelector('article[data-member-id="' + cssEscape(userId) + '"]');
+  if (!article) return false;
+  const member = state.currentMembers.find(item => item.userId === userId);
+  if (!member) return false;
+  article.outerHTML = rowMember(member);
+  return true;
 }
 async function renderCandidates() {
   const token = nextRenderToken();
@@ -978,6 +1034,7 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.editKnowledge) { state.editingKnowledgeId = target.dataset.editKnowledge; replaceArticle(target, 'knowledge', target.dataset.editKnowledge); }
   if (target.dataset.cancelEdit !== undefined) { state.editingMemberId = ''; state.editingCandidateId = ''; state.editingMemoryId = ''; state.editingKnowledgeId = ''; replaceEditedArticle(target); }
   if (target.dataset.loadEvidence) { await runAction(target, async () => { await loadFullEvidence(target); }, '来源证据已展开'); }
+  if (target.dataset.loadProfileSummary) { await runAction(target, async () => { await loadProfileSummary(target.dataset.loadProfileSummary, target.dataset.profileType || 'overall'); }, '画像已加载'); }
   if (target.dataset.toggleCandidateDetails) { const id = target.dataset.toggleCandidateDetails; state.pendingDelete = ''; if (state.expandedCandidateIds.has(id)) state.expandedCandidateIds.delete(id); else state.expandedCandidateIds.add(id); replaceArticle(target, 'candidate', id); }
   if (target.dataset.toggleMemoryDetails) { const id = target.dataset.toggleMemoryDetails; state.pendingDelete = ''; if (state.expandedMemoryIds.has(id)) state.expandedMemoryIds.delete(id); else state.expandedMemoryIds.add(id); replaceArticle(target, 'memory', id); }
   if (target.dataset.saveCandidate) { await runAction(target, async () => { const candidate = await api('/api/memory-candidates/' + target.dataset.saveCandidate, { method: 'PUT', body: JSON.stringify(candidatePayload(target.dataset.saveCandidate)) }); invalidateCandidateCaches(); updateCurrentItem('currentCandidates', target.dataset.saveCandidate, candidate); state.editingCandidateId = ''; replaceArticle(target, 'candidate', target.dataset.saveCandidate); }, '候选记忆已保存'); }

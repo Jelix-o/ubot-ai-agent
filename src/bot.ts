@@ -2320,7 +2320,11 @@ export class BotApplication {
 
     await this.sendText(
       groupConfig.groupId,
-      [`${label} 的昨日画像（${dateKey}）：`, summary.content].join("\n"),
+      [
+        `${label} 的昨日画像（${dateKey}）：`,
+        buildProfileShortSummary(summary.content),
+        buildAdminProfileHint(this.adminPublicBaseUrl, groupConfig.groupId, target.userId, "yesterday"),
+      ].join("\n"),
     );
   }
 
@@ -2354,7 +2358,11 @@ export class BotApplication {
 
     await this.sendText(
       groupConfig.groupId,
-      [`${label} 的群聊画像：`, summary].join("\n"),
+      [
+        `${label} 的群聊画像：`,
+        buildProfileShortSummary(summary),
+        buildAdminProfileHint(this.adminPublicBaseUrl, groupConfig.groupId, target.userId, "overall"),
+      ].join("\n"),
     );
   }
 
@@ -3536,6 +3544,46 @@ function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
 function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
   const seconds = getLiveChatDelaySeconds(groupConfig);
   return seconds % 60 === 0 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
+}
+
+function buildProfileShortSummary(summary: string): string {
+  const normalized = summary.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 140) {
+    return normalized;
+  }
+  const clipped = normalized.slice(0, 180);
+  const sentenceEnd = Math.max(
+    clipped.lastIndexOf("。"),
+    clipped.lastIndexOf("！"),
+    clipped.lastIndexOf("？"),
+    clipped.lastIndexOf("."),
+    clipped.lastIndexOf("!"),
+    clipped.lastIndexOf("?"),
+  );
+  if (sentenceEnd >= 60) {
+    return clipped.slice(0, sentenceEnd + 1).trim();
+  }
+  return `${normalized.slice(0, 140).replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim()}。`;
+}
+
+function buildAdminProfileHint(
+  adminPublicBaseUrl: string | undefined,
+  groupId: string,
+  userId: string,
+  type: "overall" | "yesterday",
+): string {
+  if (!adminPublicBaseUrl) {
+    return "完整画像请到后台成员管理查看。";
+  }
+  try {
+    const url = new URL(adminPublicBaseUrl);
+    url.searchParams.set("view", "members");
+    url.searchParams.set("groupId", groupId);
+    url.searchParams.set("memberQuery", userId);
+    return `完整${type === "yesterday" ? "昨日画像" : "群聊画像"}请到后台成员管理查看：${url.toString()}`;
+  } catch {
+    return "完整画像请到后台成员管理查看。";
+  }
 }
 
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {

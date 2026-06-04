@@ -26,6 +26,7 @@ const DAILY_PROFILE_MEMORY_LIMIT = 200;
 const OVERALL_PROFILE_MEMORY_LIMIT = 500;
 const PROFILE_EXTRACTION_EXISTING_MEMORY_LIMIT = 1000;
 const PROFILE_EXTRACTION_EXISTING_CANDIDATE_LIMIT = 1000;
+const PROFILE_SUMMARY_MAX_CHARS = 1800;
 
 export interface DailyReportTopicInsight {
   title: string;
@@ -85,6 +86,18 @@ export interface ExtractedGroupMemoryCandidate {
   title: string;
   content: string;
   confidence: number;
+}
+
+export interface MemorySemanticJudgeInput {
+  candidate: Pick<ExtractedGroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence">;
+  existing: Pick<GroupMemory | GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence">;
+}
+
+export interface MemorySemanticJudgeResult {
+  action: "duplicate" | "merge" | "new";
+  title?: string;
+  content?: string;
+  reason?: string;
 }
 
 export interface MemberProfileMemoryInput {
@@ -323,20 +336,19 @@ export class AiService {
     const existingMemoryLines = formatExistingMemoryContext(args.existingMemories ?? []);
     const existingCandidateLines = formatExistingCandidateContext(args.existingCandidates ?? []);
     const extractionSystemPrompt = [
-      "You are a QQ group long-term memory candidate extractor.",
-      "Extract only stable, durable facts that help the bot understand members or the group over time.",
-      "Allowed types: member_profile for a member's stable profile, preferences, habits, identity or interaction style; group_fact for group rules, fixed memes, recurring facts, or shared long-term conventions.",
-      "For member_profile, subjectUserId MUST be a real QQ userId from the provided recent chat lines. If personal ownership is uncertain, output group_fact instead.",
-      "Do not record short-lived emotions, casual one-off chatter, private sensitive data, insults, attacks, or unverified serious accusations.",
-      "Use all existing approved memories and existing candidates as a strict deduplication reference. Do not create a candidate that has the same meaning as an existing memory even if the wording, title, or language is different.",
-      "If the new chat meaningfully updates an existing memory, output one stronger refined candidate for the same subject and same topic. The content should merge old meaning plus the new specific detail, not merely restate the old memory.",
-      "Prefer fewer high-value candidates over many tiny fragments. Merge closely related facts about the same subject into one precise candidate, but keep unrelated stable topics separate.",
-      "Be generous with reasoning and context use before answering. The token budget is sufficient; inspect the existing memory list carefully before deciding whether something is truly new.",
-      "Good member_profile content is concrete and durable, for example: game preference plus play style, work role plus responsibility, stable communication habit, recurring preference. Bad content is a one-off joke, vague mood, or generic restatement.",
-      "Confidence guidance: use >=0.85 only when the speaker directly states a stable fact about themselves or the group clearly confirms a stable group fact; use 0.65-0.79 for plausible but less explicit facts; use no candidate if too weak.",
-      "Return JSON only, no markdown.",
-      'Schema: {"candidates":[{"type":"member_profile","subjectUserId":"123","title":"short title","content":"stable fact","confidence":0.7}]}',
-      "If nothing is worth recording, return {\"candidates\":[]}.",
+      "你是 QQ 群长期记忆候选提炼器。",
+      "只提炼稳定、耐久、能长期帮助机器人理解成员或群聊的信息。",
+      "允许类型：member_profile 表示成员稳定画像、偏好、习惯、身份或互动方式；group_fact 表示群规则、固定梗、长期事实或共享约定。",
+      "member_profile 的 subjectUserId 必须来自最近群聊行里真实出现的 QQ userId；如果不能确认归属到某个 QQ，就改为 group_fact。",
+      "不要记录短期情绪、临时闲聊、隐私敏感信息、辱骂攻击、未确认的严重指控。",
+      "必须仔细对照已有长期记忆和候选记忆。含义相同或高度相似时不要新增，即使标题、措辞或语言不同。",
+      "如果新聊天对已有记忆有实质补充，只输出同一 subject、同一主题的更完整中文候选，内容要合并旧含义和新细节。",
+      "优先输出少量高价值候选；同一 subject 的紧密相关事实合并成一条，互不相关的稳定主题才拆开。",
+      "title 和 content 必须使用简体中文。不要输出英文标题或英文内容，除非英文是专有名词、产品名或原文称呼。",
+      "置信度：发言人直接说明自己的稳定事实或群内明确确认的稳定群事实用 >=0.85；较弱但可用的事实用 0.65-0.79；太弱则不输出。",
+      "只返回 JSON，不要 markdown。",
+      'Schema: {"candidates":[{"type":"member_profile","subjectUserId":"123","title":"简短中文标题","content":"中文稳定事实","confidence":0.7}]}',
+      "如果没有值得记录的内容，返回 {\"candidates\":[]}。",
     ].join("\n");
     const extractionUserContent = [
       `Group ID: ${args.groupId}`,
@@ -386,6 +398,103 @@ export class AiService {
       return parseMemoryCandidateExtraction(text);
     } catch {
       return [];
+    }
+  }
+
+  async normalizeMemoryCandidateLanguage(
+    candidate: ExtractedGroupMemoryCandidate,
+  ): Promise<ExtractedGroupMemoryCandidate | null> {
+    if (isMostlyChinese(`${candidate.title} ${candidate.content}`)) {
+      return candidate;
+    }
+
+    try {
+      const completion = await this.chatCompletions.create({
+        model: this.model,
+        temperature: 0,
+        max_tokens: 600,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "你是长期记忆中文化助手。",
+              "把输入的记忆标题和内容改写为简体中文，保留原事实，不新增事实。",
+              "保留 QQ、产品名、模型名、英文专有名词。",
+              "只返回 JSON，不要 markdown。",
+              'Schema: {"title":"中文标题","content":"中文内容"}',
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              type: candidate.type,
+              subjectUserId: candidate.subjectUserId,
+              title: candidate.title,
+              content: candidate.content,
+            }),
+          },
+        ],
+      });
+      const jsonText = extractJsonObject(completion.choices[0]?.message?.content ?? "");
+      if (!jsonText) {
+        return null;
+      }
+      const parsed = JSON.parse(jsonText) as { title?: unknown; content?: unknown };
+      const title = typeof parsed.title === "string" ? parsed.title.trim().slice(0, 80) : "";
+      const content = typeof parsed.content === "string" ? parsed.content.trim().slice(0, 600) : "";
+      if (!title || !content || !isMostlyChinese(`${title} ${content}`)) {
+        return null;
+      }
+      return { ...candidate, title, content };
+    } catch {
+      return null;
+    }
+  }
+
+  async judgeMemorySemanticRelation(args: MemorySemanticJudgeInput): Promise<MemorySemanticJudgeResult | null> {
+    try {
+      const completion = await this.chatCompletions.create({
+        model: this.model,
+        temperature: 0,
+        max_tokens: 700,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "你是长期记忆语义去重审核器。",
+              "比较候选记忆和已有记忆是否表达同一事实或同一主题。",
+              "只在同一群、同一类型、同一归属对象已由程序保证的前提下判断语义。",
+              "action 规则：duplicate=候选没有新增实质信息；merge=候选与已有记忆同主题且提供更完整或更新细节；new=候选是不同主题，应新增。",
+              "merge 时必须返回简体中文 title 和 content，content 合并已有事实和候选新增细节，不编造。",
+              "只返回 JSON，不要 markdown。",
+              'Schema: {"action":"duplicate|merge|new","title":"可选中文标题","content":"可选中文内容","reason":"简短原因"}',
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: JSON.stringify(args),
+          },
+        ],
+      });
+      const jsonText = extractJsonObject(completion.choices[0]?.message?.content ?? "");
+      if (!jsonText) {
+        return null;
+      }
+      const parsed = JSON.parse(jsonText) as Partial<MemorySemanticJudgeResult>;
+      const action = parsed.action === "duplicate" || parsed.action === "merge" || parsed.action === "new"
+        ? parsed.action
+        : undefined;
+      if (!action) {
+        return null;
+      }
+      return {
+        action,
+        ...(typeof parsed.title === "string" && parsed.title.trim() ? { title: parsed.title.trim().slice(0, 80) } : {}),
+        ...(typeof parsed.content === "string" && parsed.content.trim() ? { content: parsed.content.trim().slice(0, 600) } : {}),
+        ...(typeof parsed.reason === "string" && parsed.reason.trim() ? { reason: parsed.reason.trim().slice(0, 160) } : {}),
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -961,9 +1070,38 @@ function normalizeProfileSummary(text: string): string | null {
     .replace(/^[\s-]*画像总结[:：]\s*/i, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{2,}/g, "\n")
-    .trim()
-    .slice(0, 260);
-  return normalized || null;
+    .trim();
+  return trimToCompleteSentence(normalized, PROFILE_SUMMARY_MAX_CHARS) || null;
+}
+
+function trimToCompleteSentence(value: string, maxChars: number): string {
+  const text = value.trim();
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const clipped = text.slice(0, maxChars);
+  const sentenceEnd = Math.max(
+    clipped.lastIndexOf("。"),
+    clipped.lastIndexOf("！"),
+    clipped.lastIndexOf("？"),
+    clipped.lastIndexOf("."),
+    clipped.lastIndexOf("!"),
+    clipped.lastIndexOf("?"),
+  );
+  if (sentenceEnd >= Math.floor(maxChars * 0.6)) {
+    return clipped.slice(0, sentenceEnd + 1).trim();
+  }
+  return clipped.replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim();
+}
+
+function isMostlyChinese(value: string): boolean {
+  const letters = value.match(/\p{L}/gu) ?? [];
+  if (letters.length === 0) {
+    return true;
+  }
+  const han = value.match(/\p{Script=Han}/gu) ?? [];
+  const asciiWords = value.match(/[A-Za-z]{4,}/g) ?? [];
+  return han.length >= Math.max(2, letters.length * 0.25) || asciiWords.length <= 1;
 }
 
 function formatExistingMemoryContext(
