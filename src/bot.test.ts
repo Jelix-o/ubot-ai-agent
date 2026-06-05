@@ -537,9 +537,26 @@ class FakeDailyProfileReviewService {
   overallCalls: Array<{ groupId: string; userId: string }> = [];
   reviewCalls: Array<{ groupId: string; dateKey: string }> = [];
 
-  async reviewGroup(args: { groupConfig: GroupBotConfig; dateKey: string }): Promise<{ reviewedDate: string; createdCount: number }> {
+  async reviewGroup(args: { groupConfig: GroupBotConfig; dateKey: string }): Promise<{ reviewedDate: string; createdCount: number; createdSummaries: GroupMemory[] }> {
     this.reviewCalls.push({ groupId: args.groupConfig.groupId, dateKey: args.dateKey });
-    return { reviewedDate: args.dateKey, createdCount: 1 };
+    const now = new Date().toISOString();
+    return {
+      reviewedDate: args.dateKey,
+      createdCount: 1,
+      createdSummaries: [{
+        id: `daily-profile-${args.dateKey}`,
+        groupId: args.groupConfig.groupId,
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: `${args.dateKey} 昨日画像总结`,
+        content: "Tester 昨日新增画像总结",
+        source: `daily_profile_review:${args.dateKey}`,
+        confidence: 0.8,
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+      }],
+    };
   }
 
   async getOrCreateYesterdaySummary(args: { groupConfig: GroupBotConfig; userId: string; dateKey: string }): Promise<GroupMemory | undefined> {
@@ -4029,7 +4046,7 @@ test("profile commands allow any member to query others and report ambiguous tar
 
 test("daily profile review tick runs at Hong Kong midnight", async () => {
   const dailyProfileReviewService = new FakeDailyProfileReviewService();
-  const { app } = createApp({ dailyProfileReviewService });
+  const { app, profileRecordStore } = createApp({ dailyProfileReviewService });
 
   await (app as unknown as { runDailyProfileReviewTick(now?: Date): Promise<void> }).runDailyProfileReviewTick(
     new Date("2026-06-01T23:59:00+08:00"),
@@ -4040,6 +4057,11 @@ test("daily profile review tick runs at Hong Kong midnight", async () => {
 
   assert.equal(dailyProfileReviewService.reviewCalls.length, 1);
   assert.equal(dailyProfileReviewService.reviewCalls[0]?.dateKey, "2026-06-01");
+  const records = await profileRecordStore.listPage({ groupId: "67890", userId: "20001", type: "yesterday", page: 1, pageSize: 10 });
+  assert.equal(records.items.length, 1);
+  assert.equal(records.items[0]?.summary, "Tester 昨日新增画像总结");
+  assert.equal(records.items[0]?.createdBy, "daily_profile_review");
+  assert.match(records.items[0]?.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
 });
 
 test("daily profile review tick follows system schedule settings", async () => {

@@ -258,7 +258,7 @@ export class AdminHttpServer {
         : allKnowledge.filter((item) => visibleGroupIds.has(item.groupId)).length;
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
-        : { ok: true, detail: "鏈厤缃紶杈撳眰鑷" };
+        : { ok: true, detail: "未配置传输层自检" };
       const profileAiHealth = await this.getProfileAiHealthStatus();
       const modelStatuses = await this.getModelHealthStatuses();
       const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
@@ -434,7 +434,7 @@ export class AdminHttpServer {
     if (req.method === "GET" && pathname === "/api/health") {
       const transportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
-        : { ok: true, detail: "鏈厤缃紶杈撳眰鑷" };
+        : { ok: true, detail: "未配置传输层自检" };
       const profileAiHealth = await this.getProfileAiHealthStatus({ refresh: url.searchParams.get("refresh") === "1" });
       const modelStatuses = await this.getModelHealthStatuses({ refresh: url.searchParams.get("refresh") === "1" });
       const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
@@ -1836,7 +1836,7 @@ export class AdminHttpServer {
     if (!this.options.getProfileAiHealthStatus) {
       return {
         ok: true,
-        detail: "鏈厤缃敾鍍?璁板繂妯″瀷鑷",
+        detail: "未配置模型检测",
         model: "unknown",
         baseUrl: "",
         checkedAt: new Date().toISOString(),
@@ -2435,10 +2435,10 @@ function normalizeOptionalBoolean(value: string | undefined): boolean | undefine
     return undefined;
   }
   const normalized = value.toLowerCase();
-  if (["1", "true", "yes", "enabled", "鍚敤"].includes(normalized)) {
+  if (["1", "true", "yes", "enabled", "启用"].includes(normalized)) {
     return true;
   }
-  if (["0", "false", "no", "disabled", "鍋滅敤"].includes(normalized)) {
+  if (["0", "false", "no", "disabled", "停用"].includes(normalized)) {
     return false;
   }
   return undefined;

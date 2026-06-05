@@ -33,6 +33,7 @@ import type {
   GroupMemberProfile,
   GroupMemberIdentity,
   GroupBotConfig,
+  GroupMemory,
   MessageImageInput,
   NapcatGroupInfo,
   NapcatGroupMember,
@@ -998,6 +999,7 @@ export class BotApplication {
             dateKey,
             members,
           });
+          await this.createDailyProfileRecords(groupConfig, result.createdSummaries ?? []);
           if (result.createdCount > 0) {
             logInfo("Reviewed daily member profiles.", {
               groupId: groupConfig.groupId,
@@ -1054,6 +1056,36 @@ export class BotApplication {
       });
     } finally {
       this.memoryCandidateFlushTickRunning = false;
+    }
+  }
+
+  private async createDailyProfileRecords(groupConfig: GroupBotConfig, summaries: GroupMemory[]): Promise<void> {
+    if (!this.profileRecordStore || summaries.length === 0) {
+      return;
+    }
+
+    for (const summary of summaries) {
+      if (!summary.subjectUserId) {
+        continue;
+      }
+      try {
+        await this.profileRecordStore.create({
+          groupId: groupConfig.groupId,
+          userId: summary.subjectUserId,
+          type: "yesterday",
+          summary: summary.content,
+          sourceMemoryCount: 1,
+          generatedAt: summary.updatedAt,
+          createdBy: "daily_profile_review",
+        });
+      } catch (error) {
+        logWarn("Failed to create daily profile public record.", {
+          groupId: groupConfig.groupId,
+          userId: summary.subjectUserId,
+          memoryId: summary.id,
+          error: (error as Error).message,
+        });
+      }
     }
   }
 

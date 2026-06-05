@@ -18,6 +18,7 @@ interface DailyProfileReviewFile {
 export interface DailyProfileReviewResult {
   reviewedDate: string;
   createdCount: number;
+  createdSummaries: GroupMemory[];
 }
 
 export interface MemberProfileSummaryResult {
@@ -48,16 +49,16 @@ export class DailyProfileReviewService {
   }): Promise<DailyProfileReviewResult> {
     const groupId = args.groupConfig.groupId;
     if (!(await this.shouldRunGroupReview(groupId, args.dateKey))) {
-      return { reviewedDate: args.dateKey, createdCount: 0 };
+      return { reviewedDate: args.dateKey, createdCount: 0, createdSummaries: [] };
     }
 
-    const createdCount = await this.createDailySummaries({
+    const createdSummaries = await this.createDailySummaries({
       groupConfig: args.groupConfig,
       dateKey: args.dateKey,
       members: args.members ?? [],
     });
     await this.markReviewed(groupId, args.dateKey);
-    return { reviewedDate: args.dateKey, createdCount };
+    return { reviewedDate: args.dateKey, createdCount: createdSummaries.length, createdSummaries };
   }
 
   async getOrCreateYesterdaySummary(args: {
@@ -138,7 +139,7 @@ export class DailyProfileReviewService {
     groupConfig: GroupBotConfig;
     dateKey: string;
     members: GroupMemberProfile[];
-  }): Promise<number> {
+  }): Promise<GroupMemory[]> {
     const memories = await this.memoryStore.list(args.groupConfig.groupId);
     const userIds = Array.from(new Set(
       memories
@@ -146,7 +147,7 @@ export class DailyProfileReviewService {
         .map((memory) => memory.subjectUserId!)
     ));
 
-    let createdCount = 0;
+    const createdSummaries: GroupMemory[] = [];
     for (const userId of userIds) {
       try {
         const created = await this.createDailySummary({
@@ -157,7 +158,7 @@ export class DailyProfileReviewService {
           allMemories: memories,
         });
         if (created) {
-          createdCount += 1;
+          createdSummaries.push(created);
         }
       } catch (error) {
         logWarn("Daily profile review failed for member.", {
@@ -168,7 +169,7 @@ export class DailyProfileReviewService {
         });
       }
     }
-    return createdCount;
+    return createdSummaries;
   }
 
   private async createDailySummary(args: {

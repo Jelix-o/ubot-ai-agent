@@ -845,7 +845,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
         <button data-view="candidates" data-icon="A">候选记忆</button>
         <button data-view="memories" data-icon="▣">长期记忆</button>
         <button data-view="knowledge" data-icon="?">知识库</button>
-        <button data-view="health" data-icon="✓">健康状态</button>
+        <button data-view="health" data-icon="✓">系统状态</button>
       </nav>
       <div class="side-footer">
         <div class="side-status"><strong>系统运行正常</strong><span>UBot v2.0.0</span></div>
@@ -868,7 +868,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
           <label class="global-search" aria-label="全局搜索"><input id="globalSearch" placeholder="搜索成员、记忆、FAQ..."><kbd>⌘ K</kbd></label>
           <select id="groupFilter"></select>
           <button id="refreshCurrent" class="icon-button" type="button" title="刷新当前页面">↻</button>
-          <button class="icon-button" type="button" data-jump-view="health" title="查看健康状态">●</button>
+          <button class="icon-button" type="button" data-jump-view="health" title="查看系统状态">●</button>
           <button class="icon-button" type="button" data-theme-option="system" title="跟随系统主题">⚙</button>
         </div>
       </header>

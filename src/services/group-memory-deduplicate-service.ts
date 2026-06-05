@@ -434,8 +434,8 @@ function optionalNumber(value: unknown): number | undefined {
 function isProfileRecordMemory(memory: GroupMemory): boolean {
   return memory.source.startsWith("daily_profile_review:") ||
     memory.source.startsWith("profile_record:") ||
-    memory.title.includes("鐢诲儚鎬荤粨") ||
-    memory.title.includes("鏄ㄦ棩鐢诲儚") ||
-    memory.title.includes("缇よ亰鐢诲儚");
+    memory.title.includes("画像总结") ||
+    memory.title.includes("昨日画像") ||
+    memory.title.includes("群聊画像");
 }
 
