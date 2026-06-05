@@ -66,6 +66,7 @@ test("group config updates reply model mode", async () => {
       assert.equal((await service.updateReplyModelMode("67890", "mimo")).replyModelMode, "mimo");
       assert.equal((await service.getGroup("67890"))?.replyModelMode, "mimo");
       assert.equal((await service.updateReplyModelMode("67890", "gpt")).replyModelMode, "gpt");
+      assert.equal((await service.updateReplyModelMode("67890", "reply-pro")).replyModelMode, "reply-pro");
     },
   );
 });
@@ -94,9 +95,13 @@ test("group config updates full editable config with validation", async () => {
         liveChatDelaySeconds: 30,
         dailyReportEnabled: false,
         dailyReportTime: "18:05",
+        dailyReportDateRule: "custom",
+        dailyReportWeekdays: [1, 3, 1],
         dailyReportTopUserCount: 5,
         holidayCountdownEnabled: false,
         holidayCountdownTime: "09:30",
+        holidayCountdownDateRule: "workday",
+        holidayCountdownWeekdays: [6],
         botMuted: true,
         scheduledRemindersEnabled: false,
         blacklistedUserIds: ["30001"],
@@ -111,9 +116,13 @@ test("group config updates full editable config with validation", async () => {
       assert.equal(updated.liveChatDelaySeconds, 30);
       assert.equal(updated.dailyReportEnabled, false);
       assert.equal(updated.dailyReportTime, "18:05");
+      assert.equal(updated.dailyReportDateRule, "custom");
+      assert.deepEqual(updated.dailyReportWeekdays, [1, 3]);
       assert.equal(updated.dailyReportTopUserCount, 5);
       assert.equal(updated.holidayCountdownEnabled, false);
       assert.equal(updated.holidayCountdownTime, "09:30");
+      assert.equal(updated.holidayCountdownDateRule, "workday");
+      assert.deepEqual(updated.holidayCountdownWeekdays, [6]);
       assert.equal(updated.botMuted, true);
       assert.equal(updated.scheduledRemindersEnabled, false);
       assert.deepEqual(updated.blacklistedUserIds, ["30001"]);
@@ -125,11 +134,19 @@ test("group config updates full editable config with validation", async () => {
         { code: "invalid_time" },
       );
       await assert.rejects(
+        () => service.updateGroupConfig("67890", { dailyReportDateRule: "bad" as never }),
+        { code: "invalid_group_config" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { holidayCountdownWeekdays: [1, 8] }),
+        { code: "invalid_group_config" },
+      );
+      await assert.rejects(
         () => service.updateGroupConfig("67890", { switcherUserIds: ["bad"] }),
         { code: "invalid_user_ids" },
       );
       await assert.rejects(
-        () => service.updateGroupConfig("67890", { replyModelMode: "bad" as never }),
+        () => service.updateGroupConfig("67890", { replyModelMode: "../bad" }),
         { code: "invalid_group_config" },
       );
       await assert.rejects(

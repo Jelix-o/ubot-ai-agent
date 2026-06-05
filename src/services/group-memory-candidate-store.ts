@@ -194,6 +194,9 @@ export class GroupMemoryCandidateStore {
     if (!candidate) {
       return undefined;
     }
+    if (candidate.status !== "pending") {
+      return undefined;
+    }
 
     const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
     const updatedCandidate = normalizeCandidate({

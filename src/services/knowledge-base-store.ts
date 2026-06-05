@@ -40,6 +40,11 @@ export interface KnowledgeBaseSearchHit {
   score: number;
 }
 
+export interface KnowledgeBaseDuplicateMatch {
+  entry: KnowledgeBaseEntry;
+  field: "question" | "title";
+}
+
 export class KnowledgeBaseStore {
   private cachedData?: KnowledgeBaseFile;
 
@@ -51,6 +56,12 @@ export class KnowledgeBaseStore {
       .filter((entry) => !groupId || entry.groupId === groupId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .map(cloneEntry);
+  }
+
+  async get(id: string): Promise<KnowledgeBaseEntry | undefined> {
+    const data = await this.readData();
+    const entry = data.entries.find((item) => item.id === id);
+    return entry ? cloneEntry(entry) : undefined;
   }
 
   async listPage(args: KnowledgeBaseListPageArgs): Promise<KnowledgeBaseListPageResult> {
@@ -93,6 +104,24 @@ export class KnowledgeBaseStore {
     data.entries.push(entry);
     await this.writeData(data);
     return cloneEntry(entry);
+  }
+
+  async findDuplicate(input: Pick<KnowledgeBaseEntryInput, "groupId" | "title" | "question">): Promise<KnowledgeBaseDuplicateMatch | undefined> {
+    const data = await this.readData();
+    const questionKey = normalizeDuplicateText(input.question);
+    const titleKey = normalizeDuplicateText(input.title);
+    for (const entry of data.entries) {
+      if (entry.groupId !== input.groupId) {
+        continue;
+      }
+      if (questionKey && normalizeDuplicateText(entry.question) === questionKey) {
+        return { entry: cloneEntry(entry), field: "question" };
+      }
+      if (titleKey && normalizeDuplicateText(entry.title) === titleKey) {
+        return { entry: cloneEntry(entry), field: "title" };
+      }
+    }
+    return undefined;
   }
 
   async update(id: string, patch: Partial<KnowledgeBaseEntryInput>): Promise<KnowledgeBaseEntry | undefined> {
@@ -260,6 +289,15 @@ function normalizeSearchText(value: string): string {
 
 function normalizeListQuery(value: string | undefined): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeDuplicateText(value: string): string {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[，。！？、,.!?;；:："'“”‘’（）()[\]【】<>《》\-_\/\\|`~@#$%^&*+=]/g, "")
+    .trim();
 }
 
 function knowledgeEntryMatchesQuery(entry: KnowledgeBaseEntry, query: string): boolean {

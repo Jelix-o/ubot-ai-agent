@@ -78,12 +78,15 @@ export function loadConfig(): AppConfig {
     groupMemoryCandidatesPath: path.join(cwd, "data", "group-memory-candidates.json"),
     dailyProfileReviewPath: path.join(cwd, "data", "daily-profile-review.json"),
     knowledgeBasePath: path.join(cwd, "data", "knowledge-base.json"),
+    systemSettingsPath: path.join(cwd, "data", "system-settings.json"),
+    profileRecordsPath: path.join(cwd, "data", "profile-records.json"),
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,
     adminPublicBaseUrl: optionalEnv("ADMIN_PUBLIC_BASE_URL") ?? "https://bot.9958.uk",
     adminUsername: optionalEnv("ADMIN_USERNAME"),
     adminPassword: optionalEnv("ADMIN_PASSWORD"),
+    adminGroupPassword: optionalEnv("ADMIN_GROUP_PASSWORD") ?? optionalEnv("ADMIN_PASSWORD"),
     adminSessionSecret: optionalEnv("ADMIN_SESSION_SECRET"),
   };
 }

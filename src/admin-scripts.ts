@@ -19,6 +19,15 @@ const renderCacheTtlMs = 8000;
 let ownerMemberSearchTimer = null;
 let isApplyingHistoryState = false;
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '健康状态' };
+const subtitleByView = {
+  overview: '掌握当前群聊助手的关键数据与运行状态',
+  groups: '管理自动回复、定时规则、权限和人工身份，让每个群有独立策略',
+  members: '查看成员备注、长期记忆和完整画像，快速定位需要维护的人',
+  candidates: '审核模型提取的候选记忆，决定是否进入长期记忆库',
+  memories: '维护已批准的长期记忆，控制归属、状态和来源证据',
+  knowledge: '管理群内 FAQ 和可复用回答，减少重复解释',
+  health: '监控 NapCat、画像模型和运行环境，及时发现异常',
+};
 const validViews = new Set(Object.keys(titleByView));
 const content = () => document.querySelector('#content');
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -258,6 +267,9 @@ function filterSummaryHtml(kind, items) {
     : '<span class="filter-chip muted">显示当前群默认列表</span>';
   return '<div class="filter-summary"><div><strong>' + countText + '</strong><span>' + chips + '</span></div><button type="button" class="ghost" ' + clearAction + (activeItems.length ? '' : ' disabled') + '>清空筛选</button></div>';
 }
+function pageStatStrip(items) {
+  return '<div class="stat-strip">' + items.map(item => '<div><b>' + esc(item.value) + '</b><span>' + esc(item.label) + '</span></div>').join('') + '</div>';
+}
 function resetGroupScopedState() {
   state.memberQuery = '';
   state.subjectUserId = '';
@@ -373,9 +385,97 @@ function scheduleOwnerMemberSearch(value) {
     void ensureOwnerMembers(options).catch(error => toast(error.message || '成员搜索失败', 'error'));
   }, query ? 180 : 0);
 }
+function syncGlobalSearchInput() {
+  const input = document.querySelector('#globalSearch');
+  if (!(input instanceof HTMLInputElement)) return;
+  const value = state.view === 'members'
+    ? state.memberQuery
+    : state.view === 'candidates'
+      ? state.candidateQuery
+      : state.view === 'memories'
+        ? state.memoryQuery
+        : state.view === 'knowledge'
+          ? state.knowledgeQuery
+          : '';
+  if (input.value !== value) input.value = value;
+}
+async function applyGlobalSearch(value) {
+  const query = String(value || '').trim();
+  if (state.view === 'overview' || state.view === 'groups' || state.view === 'health') {
+    clearTransientState();
+    if (looksLikeMemberSearch(query)) {
+      state.view = 'members';
+      state.memberQuery = query;
+      state.memberPage = 1;
+    } else if (/faq|知识|问答|问题|答案/i.test(query)) {
+      state.view = 'knowledge';
+      state.knowledgeQuery = query.replace(/faq|知识|问答|问题|答案/ig, '').trim();
+      state.knowledgePage = 1;
+    } else if (/候选|待审|审核/i.test(query)) {
+      state.view = 'candidates';
+      state.candidateQuery = query.replace(/候选|待审|审核/ig, '').trim();
+      state.candidatePage = 1;
+    } else {
+      state.view = 'memories';
+      state.memoryQuery = query;
+      state.memoryPage = 1;
+    }
+    syncUrlState();
+    await render();
+    return;
+  }
+  if (state.view === 'members') {
+    state.memberQuery = query;
+    state.memberPage = 1;
+    syncUrlState({ replace: true });
+    await renderMembers();
+    return;
+  }
+  if (state.view === 'candidates') {
+    state.candidateQuery = query;
+    state.candidatePage = 1;
+    syncUrlState({ replace: true });
+    await renderCandidates();
+    return;
+  }
+  if (state.view === 'memories') {
+    state.memoryQuery = query;
+    state.memoryPage = 1;
+    syncUrlState({ replace: true });
+    await renderMemories();
+    return;
+  }
+  if (state.view === 'knowledge') {
+    state.knowledgeQuery = query;
+    state.knowledgePage = 1;
+    syncUrlState({ replace: true });
+    await renderKnowledge();
+  }
+}
+function looksLikeMemberSearch(query) {
+  if (!query) return false;
+  if (/^\d{5,12}$/.test(query)) return true;
+  if (/[成员|用户|昵称|备注|画像]/.test(query)) return true;
+  if (/^[\u4e00-\u9fff]{2,8}$/.test(query) && !/记忆|长期|群聊|知识|问答|候选|审核|健康/.test(query)) return true;
+  return false;
+}
+async function refreshCurrentView() {
+  invalidateRenderCache();
+  if (state.view === 'members') {
+    await renderMembers(true);
+    return;
+  }
+  if (state.view === 'groups') {
+    await loadGroups({ refresh: true });
+  }
+  await render();
+}
 async function render() {
   try {
     document.querySelector('#viewTitle').textContent = titleByView[state.view];
+    const subtitle = document.querySelector('#viewSubtitle');
+    if (subtitle) subtitle.textContent = subtitleByView[state.view] || '';
+    syncGlobalSearchInput();
     document.querySelectorAll('nav button').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view));
     state.pendingDelete = '';
     if (state.view === 'overview') return await renderOverview();
@@ -396,10 +496,10 @@ async function renderOverview() {
   const data = await apiForRender('/api/overview' + groupQuery);
   if (!data || !isLatestRender(token)) return;
   const recent = data.recent || {};
-  content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><h2>当前群待处理</h2>' + overviewCandidates(recent.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><h2>运行状态</h2>' + healthSummaryHtml(data.transportHealth, data.profileAiHealth) + '<div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><h2>最新长期记忆</h2>' + overviewMemories(recent.memories || []) + '</section><section class="panel"><h2>知识库</h2>' + overviewKnowledge(recent.knowledge || []) + '<div class="quick-actions"><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div></section></div>';
+  content().innerHTML = '<div class="metric-row"><div><b>' + data.stats.groupCount + '</b><span>已配置群</span></div><div><b>' + data.stats.pendingCandidateCount + '</b><span>当前群待审记忆</span></div><div><b>' + data.stats.memoryCount + '</b><span>当前群长期记忆</span></div><div><b>' + data.stats.knowledgeCount + '</b><span>当前群 FAQ</span></div></div><div class="workbench-grid"><section class="panel"><div class="section-head"><div><h2>当前群待处理</h2><p>优先处理待审候选，避免有价值的信息堆积。</p></div><button data-jump-view="candidates" class="ghost">进入审核</button></div>' + overviewCandidates(recent.candidates || []) + '<div class="quick-actions"><button data-jump-view="candidates">审核候选记忆</button><button data-jump-view="members" class="ghost">维护成员备注</button><button data-jump-view="memories" class="ghost">查看长期记忆</button></div></section><section class="panel"><div class="section-head"><div><h2>运行状态</h2><p>模型和传输层异常会影响画像、记忆或消息收发。</p></div><button data-jump-view="health" class="ghost">查看详情</button></div>' + healthSummaryHtml(data.transportHealth, data.profileAiHealth) + '<div class="quick-actions"><button data-jump-view="health" class="ghost">查看健康状态</button><button data-jump-view="groups" class="ghost">查看群配置</button></div></section><section class="panel"><div class="section-head"><div><h2>最新长期记忆</h2><p>最近写入或更新的正式记忆。</p></div></div>' + overviewMemories(recent.memories || []) + '</section><section class="panel"><div class="section-head"><div><h2>知识库</h2><p>当前群可复用 FAQ。</p></div><button data-jump-view="knowledge" class="ghost">维护 FAQ</button></div>' + overviewKnowledge(recent.knowledge || []) + '</section></div>';
 }
 function healthSummaryHtml(transportHealth, profileAiHealth) {
-  return '<div class="compact-list"><div class="compact-row"><b>NapCat 连接</b><span>' + esc(transportHealth?.ok ? '正常' : '异常') + '</span><span>' + esc(transportHealth?.detail || '暂无详情') + '</span></div><div class="compact-row"><b>画像/记忆模型</b><span>' + esc(profileAiHealth?.ok ? '正常' : '异常') + (profileAiHealth?.cached ? ' · 缓存' : '') + '</span><span>' + esc(profileAiHealth?.detail || '暂无详情') + '</span></div></div>';
+  return '<div class="compact-list"><div class="compact-row"><b><span class="status-dot ' + (transportHealth?.ok ? '' : 'bad') + '"></span>NapCat 连接</b><span>' + esc(transportHealth?.ok ? '正常' : '异常') + '</span><span>' + esc(transportHealth?.detail || '暂无详情') + '</span></div><div class="compact-row"><b><span class="status-dot ' + (profileAiHealth?.ok ? '' : 'bad') + '"></span>画像/记忆模型</b><span>' + esc(profileAiHealth?.ok ? '正常' : '异常') + (profileAiHealth?.cached ? ' · 缓存' : '') + '</span><span>' + esc(profileAiHealth?.detail || '暂无详情') + '</span></div></div>';
 }
 function overviewCandidates(candidates) {
   if (!candidates.length) return '<p class="message">当前群没有待审候选。</p>';
@@ -420,10 +520,24 @@ async function renderGroups() {
   if (!isLatestRender(token)) return;
   state.groups = data?.groups || [];
   groupsLoadedAt = Date.now();
-  content().innerHTML = '<section class="panel"><div class="toolbar"><h2>群配置</h2><button type="button" class="ghost" data-refresh-groups>刷新群配置</button><span class="meta">编辑会直接写入当前群配置文件，请确认 QQ 和 JSON 后保存。</span></div><div class="list">' + state.groups.map(rowGroupConfig).join('') + '</div></section>';
+  const activeGroup = state.groups.find(group => group.groupId === state.groupId) || state.groups[0] || {};
+  const stats = pageStatStrip([
+    { label: '已配置群', value: state.groups.length },
+    { label: '当前技能', value: activeGroup.currentSkillId || '-' },
+    { label: '管理员', value: (activeGroup.switcherUserIds || []).length },
+    { label: '实时对话', value: (activeGroup.liveChatUserIds || []).length },
+  ]);
+  content().innerHTML = '<section class="panel"><div class="section-head"><div><h2>群配置</h2><p>编辑自动回复、定时规则、权限和人工身份。保存后当前群会按新策略运行。</p></div><button type="button" data-refresh-groups>刷新群配置</button></div>' + stats + '<div class="group-config-list">' + state.groups.map(rowGroupConfig).join('') + '</div></section>';
 }
 function rowGroupConfig(g) {
-  return '<article data-group-config-id="' + esc(g.groupId) + '"><details' + (g.groupId === state.groupId ? ' open' : '') + '><summary><b>群 ' + esc(g.groupId) + '</b> <span class="meta">技能 ' + esc(g.currentSkillId) + '，管理员 ' + esc((g.switcherUserIds || []).length) + ' 人，实时对话 ' + esc((g.liveChatUserIds || []).length) + ' 人，黑名单 ' + esc((g.blacklistedUserIds || []).length) + ' 人</span></summary><form class="settings-form groupConfigForm" data-group-id="' + esc(g.groupId) + '"><div class="settings-grid"><label>当前技能<input name="currentSkillId" value="' + esc(g.currentSkillId) + '" required></label><label>回复模型<select name="replyModelMode"><option value="gpt"' + selected(g.replyModelMode || 'gpt', 'gpt') + '>GPT</option><option value="mimo"' + selected(g.replyModelMode || 'gpt', 'mimo') + '>Mimo/Profile</option></select></label><label>实时对话延迟秒数<input name="liveChatDelaySeconds" type="number" min="1" value="' + esc(g.liveChatDelaySeconds || ((g.liveChatDelayMinutes || 5) * 60)) + '"></label><label>日报时间<input name="dailyReportTime" type="time" value="' + esc(g.dailyReportTime || '17:59') + '"></label><label>日报人数<input name="dailyReportTopUserCount" type="number" min="1" value="' + esc(g.dailyReportTopUserCount || 5) + '"></label><label>节日倒计时<input name="holidayCountdownTime" type="time" value="' + esc(g.holidayCountdownTime || '09:00') + '"></label><label>允许技能<textarea name="allowedSkillIds">' + esc(lines(g.allowedSkillIds)) + '</textarea></label><label>管理员 QQ<textarea name="switcherUserIds">' + esc(lines(g.switcherUserIds)) + '</textarea></label><label>实时对话 QQ<textarea name="liveChatUserIds">' + esc(lines(g.liveChatUserIds)) + '</textarea></label><label>黑名单 QQ<textarea name="blacklistedUserIds">' + esc(lines(g.blacklistedUserIds)) + '</textarea></label><label><input type="checkbox" name="dailyReportEnabled"' + checked(g.dailyReportEnabled !== false) + '> 群聊日报</label><label><input type="checkbox" name="holidayCountdownEnabled"' + checked(g.holidayCountdownEnabled !== false) + '> 节日倒计时</label><label><input type="checkbox" name="scheduledRemindersEnabled"' + checked(g.scheduledRemindersEnabled !== false) + '> 定时提醒</label><label><input type="checkbox" name="opsAlertsEnabled"' + checked(g.opsAlertsEnabled !== false) + '> 运维告警</label><label><input type="checkbox" name="botMuted"' + checked(g.botMuted === true) + '> 机器人静音</label><label class="settings-wide">人工身份 JSON<textarea name="manualIdentities" spellcheck="false">' + esc(JSON.stringify(g.manualIdentities || [], null, 2)) + '</textarea></label></div><div class="actions"><button type="submit">保存群配置</button><button type="button" class="ghost" data-reload-group-config="' + esc(g.groupId) + '">重新读取</button></div></form></details></article>';
+  const open = g.groupId === state.groupId ? ' open' : '';
+  const delay = g.liveChatDelaySeconds || ((g.liveChatDelayMinutes || 5) * 60);
+  const summary = '<div class="group-config-summary"><div class="group-avatar">群</div><div><h3>群 ' + esc(g.groupId) + '</h3><span>技能 ' + esc(g.currentSkillId) + ' · 模型 ' + esc((g.replyModelMode || 'gpt').toUpperCase()) + '</span></div><div><span>管理员</span><b>' + esc((g.switcherUserIds || []).length) + '</b></div><div><span>实时对话</span><b>' + esc((g.liveChatUserIds || []).length) + '</b></div><div><span>黑名单</span><b>' + esc((g.blacklistedUserIds || []).length) + '</b></div><div><span>状态</span><b>' + esc(g.botMuted ? '静音' : '运行') + '</b></div></div>';
+  const basic = '<section class="settings-card"><h3>基础设置</h3><div class="settings-grid"><label>当前技能<input name="currentSkillId" value="' + esc(g.currentSkillId) + '" required></label><label>回复模型<select name="replyModelMode"><option value="gpt"' + selected(g.replyModelMode || 'gpt', 'gpt') + '>GPT</option><option value="mimo"' + selected(g.replyModelMode || 'gpt', 'mimo') + '>Mimo/Profile</option></select></label><label>实时对话延迟秒数<input name="liveChatDelaySeconds" type="number" min="1" value="' + esc(delay) + '"></label><label>日报人数<input name="dailyReportTopUserCount" type="number" min="1" value="' + esc(g.dailyReportTopUserCount || 5) + '"></label></div></section>';
+  const strategy = '<section class="settings-card"><h3>回复策略</h3><div class="settings-grid"><label class="settings-wide">允许技能<textarea name="allowedSkillIds">' + esc(lines(g.allowedSkillIds)) + '</textarea></label><label><input type="checkbox" name="dailyReportEnabled"' + checked(g.dailyReportEnabled !== false) + '> 群聊日报</label><label><input type="checkbox" name="holidayCountdownEnabled"' + checked(g.holidayCountdownEnabled !== false) + '> 节日倒计时</label><label><input type="checkbox" name="scheduledRemindersEnabled"' + checked(g.scheduledRemindersEnabled !== false) + '> 定时提醒</label><label><input type="checkbox" name="opsAlertsEnabled"' + checked(g.opsAlertsEnabled !== false) + '> 运维告警</label><label><input type="checkbox" name="botMuted"' + checked(g.botMuted === true) + '> 机器人静音</label></div></section>';
+  const members = '<section class="settings-card"><h3>群管理</h3><div class="settings-grid"><label>管理员 QQ<textarea name="switcherUserIds">' + esc(lines(g.switcherUserIds)) + '</textarea></label><label>实时对话 QQ<textarea name="liveChatUserIds">' + esc(lines(g.liveChatUserIds)) + '</textarea></label><label>黑名单 QQ<textarea name="blacklistedUserIds">' + esc(lines(g.blacklistedUserIds)) + '</textarea></label><label>日报时间<input name="dailyReportTime" type="time" value="' + esc(g.dailyReportTime || '17:59') + '"></label><label>节日倒计时<input name="holidayCountdownTime" type="time" value="' + esc(g.holidayCountdownTime || '09:00') + '"></label></div></section>';
+  const identity = '<section class="settings-card settings-card-wide"><div class="settings-card-head"><h3>人工身份 JSON</h3><span>影响成员识别、画像展示和群聊称呼</span></div><textarea name="manualIdentities" spellcheck="false">' + esc(JSON.stringify(g.manualIdentities || [], null, 2)) + '</textarea></section>';
+  return '<article class="group-config-card" data-group-config-id="' + esc(g.groupId) + '"><details' + open + '><summary>' + summary + '</summary><form class="settings-form groupConfigForm" data-group-id="' + esc(g.groupId) + '"><div class="settings-layout">' + basic + strategy + members + identity + '</div><div class="sticky-actions"><button type="submit">保存群配置</button><button type="button" class="ghost" data-reload-group-config="' + esc(g.groupId) + '">重新读取</button><span class="meta">保存前请确认 QQ、时间和 JSON 格式。</span></div></form></details></article>';
 }
 const checked = (value) => value ? ' checked' : '';
 const lines = (value) => (value || []).join('\n');
@@ -447,11 +561,15 @@ async function renderMembers(force = false) {
   }
   state.memberPage = pageInfo.page;
   const empty = state.currentMembers.length ? '' : '<p class="message">没有符合筛选条件的成员。</p>';
+  const memberMemoryTotal = state.currentMembers.reduce((sum, member) => sum + Number(member.memoryCount || 0), 0);
+  const memberPendingTotal = state.currentMembers.reduce((sum, member) => sum + Number(member.pendingCandidateCount || 0), 0);
+  const manualCount = state.currentMembers.filter(member => member.hasManualIdentity).length;
+  const memberStats = '<div class="stat-strip"><div><b>' + esc(pageInfo.total) + '</b><span>匹配成员</span></div><div><b>' + esc(memberMemoryTotal) + '</b><span>当前页记忆数</span></div><div><b>' + esc(memberPendingTotal) + '</b><span>当前页待审</span></div><div><b>' + esc(manualCount) + '</b><span>已维护身份</span></div></div>';
   const summary = filterSummaryHtml('member', [
     { label: '搜索', value: state.memberQuery },
     { label: '每页', value: String(state.memberPageSize), defaultValue: '24', text: state.memberPageSize + ' 人' },
   ]);
-  content().innerHTML = '<section class="panel"><div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><button data-refresh-members>同步群成员</button><span class="meta">默认显示本地身份和已有记忆，必要时再同步 NapCat 群成员。</span></div>' + summary + empty + '<div class="member-grid">' + state.currentMembers.map(rowMember).join('') + '</div>' + listPagination('member', pageInfo, '成员') + '</section>';
+  content().innerHTML = '<section class="panel"><div class="section-head"><div><h2>成员列表</h2><p>成员备注会影响画像展示和机器人识别，优先维护核心成员。</p></div><button data-refresh-members>同步群成员</button></div>' + memberStats + '<div class="toolbar"><input id="memberSearch" value="' + esc(state.memberQuery) + '" placeholder="搜索 QQ、名字、别名、备注"><select id="memberPageSize"><option value="12"' + selected(String(state.memberPageSize), '12') + '>每页 12 人</option><option value="24"' + selected(String(state.memberPageSize), '24') + '>每页 24 人</option><option value="48"' + selected(String(state.memberPageSize), '48') + '>每页 48 人</option></select><span class="meta">默认显示本地身份和已有记忆，必要时再同步 NapCat 群成员。</span></div>' + summary + empty + '<div class="member-grid">' + state.currentMembers.map(rowMember).join('') + '</div>' + listPagination('member', pageInfo, '成员') + '</section>';
   document.querySelector('#memberSearch')?.addEventListener('input', debounce(event => { state.memberQuery = event.target.value; state.memberPage = 1; syncUrlState({ replace: true }); renderMembers(); }, 180));
   document.querySelector('#memberPageSize')?.addEventListener('change', event => { state.memberPageSize = Number(event.target.value) || 24; state.memberPage = 1; syncUrlState(); renderMembers(); });
 }
@@ -540,6 +658,14 @@ async function renderCandidates() {
   state.notice = '';
   const empty = state.currentCandidates.length ? '' : '<p class="message" data-local-empty="candidate">' + esc(candidateEmptyText()) + '</p>';
   const pagination = listPagination('candidate', pageInfo, '候选记忆', true);
+  const statusCounts = candidateStatusCounts();
+  const stats = pageStatStrip([
+    { label: '匹配候选', value: pageInfo.total },
+    { label: '当前页待处理', value: statusCounts.pending },
+    { label: '当前页已入库', value: statusCounts.approved },
+    { label: '平均置信度', value: averageConfidence(state.currentCandidates) },
+  ]);
+  const tabs = candidateTabs(statusCounts);
   const summary = filterSummaryHtml('candidate', [
     { label: '状态', value: state.candidateStatus, defaultValue: 'pending', text: state.candidateStatus ? statusText(state.candidateStatus) : '全部状态' },
     { label: '类型', value: state.candidateType, text: state.candidateType ? typeText(state.candidateType) : '' },
@@ -547,12 +673,32 @@ async function renderCandidates() {
     { label: '搜索', value: state.candidateQuery },
     { label: '每页', value: String(state.candidatePageSize), defaultValue: '20', text: state.candidatePageSize + ' 条' },
   ]);
-  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="toolbar"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待处理</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已入长期记忆</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>不采纳记录</option><option value=""' + selected(state.candidateStatus, '') + '>全部状态</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>个人画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群整体记忆</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.candidatePageSize), '100') + '>每页 100 条</option></select></div>' + summary + notice + '<div class="hint-row"><b>' + esc(candidateModeTitle()) + '</b><span>' + esc(candidateModeHint()) + '</span></div><div class="quick-actions"><button class="ghost" data-candidate-status-shortcut="pending">待处理工作台</button><button class="ghost" data-candidate-status-shortcut="approved">查看已入库</button><button class="ghost" data-candidate-status-shortcut="rejected">查看不采纳</button><button class="ghost" data-candidate-status-shortcut="">查看全部历史</button></div>' + pagination + candidateSelectionBar() + empty + '<div class="list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + pagination + '</section>';
+  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="section-head"><div><h2>候选记忆审核</h2><p>先确认归属和内容，再决定入库、调整或不采纳。</p></div></div>' + stats + '<div class="filter-panel"><input id="candidateSearch" value="' + esc(state.candidateQuery) + '" placeholder="搜索标题、内容、来源、QQ"><select id="candidateStatus"><option value="pending"' + selected(state.candidateStatus, 'pending') + '>待处理</option><option value="approved"' + selected(state.candidateStatus, 'approved') + '>已入长期记忆</option><option value="rejected"' + selected(state.candidateStatus, 'rejected') + '>不采纳记录</option><option value=""' + selected(state.candidateStatus, '') + '>全部状态</option></select><select id="candidateType"><option value="">全部类型</option><option value="member_profile"' + selected(state.candidateType, 'member_profile') + '>个人画像</option><option value="group_fact"' + selected(state.candidateType, 'group_fact') + '>群整体记忆</option></select>' + memberFilterControl('subjectFilter', state.subjectUserId) + '<select id="candidatePageSize"><option value="10"' + selected(String(state.candidatePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.candidatePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.candidatePageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.candidatePageSize), '100') + '>每页 100 条</option></select></div>' + summary + notice + tabs + '<div class="hint-row"><b>' + esc(candidateModeTitle()) + '</b><span>' + esc(candidateModeHint()) + '</span></div>' + candidateSelectionBar() + empty + '<div class="review-list">' + state.currentCandidates.map(rowCandidate).join('') + '</div>' + pagination + '</section>';
   document.querySelector('#candidateSearch').addEventListener('input', debounce(event => { state.candidateQuery = event.target.value; state.candidatePage = 1; syncUrlState({ replace: true }); renderCandidates(); }, 250));
   document.querySelector('#candidateStatus').addEventListener('change', event => { state.candidateStatus = event.target.value; state.candidatePage = 1; syncUrlState(); renderCandidates(); });
   document.querySelector('#candidateType').addEventListener('change', event => { state.candidateType = event.target.value; state.candidatePage = 1; syncUrlState(); renderCandidates(); });
   document.querySelector('#subjectFilter')?.addEventListener('input', debounce(event => { state.subjectUserId = event.target.value.trim(); state.candidatePage = 1; syncUrlState({ replace: true }); renderCandidates(); }, 250));
   document.querySelector('#candidatePageSize').addEventListener('change', event => { state.candidatePageSize = Number(event.target.value) || 20; state.candidatePage = 1; syncUrlState(); renderCandidates(); });
+}
+function candidateStatusCounts() {
+  return state.currentCandidates.reduce((counts, candidate) => {
+    counts[candidate.status] = (counts[candidate.status] || 0) + 1;
+    return counts;
+  }, { pending: 0, approved: 0, rejected: 0 });
+}
+function averageConfidence(items) {
+  if (!items.length) return '-';
+  const value = items.reduce((sum, item) => sum + Number(item.confidence || 0), 0) / items.length;
+  return Math.round(value * 100) + '%';
+}
+function candidateTabs(counts) {
+  const tabs = [
+    { status: 'pending', label: '待处理', count: counts.pending },
+    { status: 'approved', label: '已入库', count: counts.approved },
+    { status: 'rejected', label: '不采纳', count: counts.rejected },
+    { status: '', label: '全部历史', count: state.currentCandidates.length },
+  ];
+  return '<div class="status-tabs">' + tabs.map(tab => '<button type="button" class="ghost ' + (state.candidateStatus === tab.status ? 'active' : '') + '" data-candidate-status-shortcut="' + esc(tab.status) + '">' + esc(tab.label) + '<span>' + esc(tab.count) + '</span></button>').join('') + '</div>';
 }
 function candidateModeTitle() {
   if (state.candidateStatus === 'approved') return '已入库历史';
@@ -575,7 +721,7 @@ function candidateEmptyText() {
 function candidateSelectionBar() {
   const selectedCount = state.selectedCandidateIds.size;
   const allSelected = state.currentCandidates.length > 0 && state.currentCandidates.every(candidate => state.selectedCandidateIds.has(candidate.id));
-  return '<div class="toolbar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-candidate-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批量入长期记忆</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+  return '<div class="bulk-bar"><label><input type="checkbox" data-select-all-candidates' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-candidate-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-approve-selected' + (selectedCount === 0 ? ' disabled' : '') + '>批量入长期记忆</button><button type="button" class="ghost" data-clear-candidate-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
 }
 function updateCandidateSelectionUi() {
   const selectedCount = state.selectedCandidateIds.size;
@@ -602,7 +748,7 @@ function rowCandidate(c) {
     const checked = state.selectedCandidateIds.has(c.id) ? ' checked' : '';
     const expanded = state.expandedCandidateIds.has(c.id);
     const details = expanded ? '<div class="detail-block">' + evidenceHtml(c) + '<div class="actions secondary-actions"><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">按群整体入库</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></div>' : '';
-    return '<article data-candidate-id="' + esc(c.id) + '"><div class="row-head"><label><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '> 选择</label><div><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content, 120)) + '</span></div></div>' + meta + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">入长期记忆</button><button type="button" data-edit-candidate="' + esc(c.id) + '" class="ghost">调整后处理</button><button type="button" data-toggle-candidate-details="' + esc(c.id) + '" class="ghost">' + (expanded ? '收起详情' : '查看详情') + '</button></div>' + details + '</article>';
+    return '<article class="review-row" data-candidate-id="' + esc(c.id) + '"><label class="row-check"><input type="checkbox" data-select-candidate="' + esc(c.id) + '"' + checked + '></label><div class="row-main"><h3>' + esc(c.title) + '</h3><span>' + esc(shortText(c.content, 150)) + '</span></div><div class="row-meta"><span>归属</span><b>' + esc(ownerLabel(c)) + '</b></div><div class="row-meta"><span>类型</span><b class="badge">' + esc(typeText(c.type)) + '</b></div><div class="row-meta"><span>状态</span><b class="badge ' + (c.status === 'pending' ? 'warn' : '') + '">' + esc(statusText(c.status)) + '</b></div><div class="row-meta"><span>置信度</span><b>' + esc(Math.round(Number(c.confidence || 0) * 100)) + '%</b></div><div class="actions row-actions"><button type="button" data-approve="' + esc(c.id) + '">入长期记忆</button><button type="button" data-edit-candidate="' + esc(c.id) + '" class="ghost">调整后处理</button><button type="button" data-toggle-candidate-details="' + esc(c.id) + '" class="ghost">' + (expanded ? '收起详情' : '查看详情') + '</button></div>' + (needsOwner ? '<p class="message">这条像个人画像，但模型没确定是谁。</p>' : '') + details + '</article>';
   }
   return '<article data-candidate-id="' + esc(c.id) + '"><form class="candidateForm" data-candidate-id="' + esc(c.id) + '"><div class="candidate-form"><select name="type"><option value="member_profile"' + selected(c.type, 'member_profile') + '>个人画像</option><option value="group_fact"' + selected(c.type, 'group_fact') + '>群整体记忆</option></select><input name="title" value="' + esc(c.title) + '" placeholder="记忆标题"><textarea name="content" placeholder="要写入长期记忆的内容">' + esc(c.content) + '</textarea>' + ownerInput('subjectUserId', c.subjectUserId || '', ownerLabel(c)) + '</div><div class="candidate-help"><b>怎么处理：</b><span>入长期记忆：内容和归属都对，写进正式记忆。</span><span>按群整体入库：这不是某个人的画像，而是群规则、群事实或固定梗。</span><span>暂存修改：只保存你的编辑，稍后再决定。</span></div>' + meta + evidenceHtml(c) + '<div class="actions"><button type="button" data-approve="' + esc(c.id) + '">保存并入长期记忆</button><button type="button" data-approve-as-fact="' + esc(c.id) + '" class="ghost">保存为群整体记忆</button><button type="button" data-save-candidate="' + esc(c.id) + '" class="ghost">暂存修改</button><button type="button" data-reject="' + esc(c.id) + '" class="ghost">不采纳</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-candidate="' + esc(c.id) + '" class="ghost">' + (state.pendingDelete === c.id ? '确认删除' : '删除记录') + '</button></div></form></article>';
 }
@@ -627,7 +773,14 @@ async function renderMemories() {
   const pageInfo = data.pagination || { page: state.memoryPage, pageSize: state.memoryPageSize, total: memories.length, totalPages: 1 };
   state.memoryPage = pageInfo.page;
   const groups = groupMemories(memories);
-  const empty = groups.length ? '' : '<p class="message">没有符合筛选条件的长期记忆。</p>';
+  const empty = groups.length ? '' : '<div class="empty-state"><div><b>没有符合筛选条件的长期记忆</b><span>可以清空筛选，或新增一条群事实/成员画像。</span></div></div>';
+  const enabledCount = state.currentMemories.filter(memory => memory.enabled).length;
+  const memoryStats = pageStatStrip([
+    { label: '匹配记忆', value: pageInfo.total },
+    { label: '当前页启用', value: enabledCount },
+    { label: '当前页成员数', value: groups.length },
+    { label: '平均置信度', value: averageConfidence(state.currentMemories) },
+  ]);
   const summary = filterSummaryHtml('memory', [
     { label: '归属 QQ', value: state.subjectUserId },
     { label: '类型', value: state.memoryType, text: state.memoryType ? typeText(state.memoryType) : '' },
@@ -635,7 +788,7 @@ async function renderMemories() {
     { label: '搜索', value: state.memoryQuery },
     { label: '每页', value: String(state.memoryPageSize), defaultValue: '20', text: state.memoryPageSize + ' 条' },
   ]);
-  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="toolbar"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ">' + memberFilterControl('memorySubjectFilter', state.subjectUserId) + '<select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select></div>' + summary + memoryForm() + memorySelectionBar() + empty + groups.map(g => '<div class="group-block"><h3>' + esc(g.label) + '</h3><div class="list">' + g.items.map(rowMemory).join('') + '</div></div>').join('') + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
+  content().innerHTML = '<section class="panel">' + ownerMemberOptionsSlotHtml() + '<div class="section-head"><div><h2>长期记忆库</h2><p>按成员和群事实维护已批准记忆，支持停用、批量处理和证据追溯。</p></div></div>' + memoryStats + '<div class="filter-panel"><input id="memorySearch" value="' + esc(state.memoryQuery) + '" placeholder="搜索标题、内容、来源、QQ">' + memberFilterControl('memorySubjectFilter', state.subjectUserId) + '<select id="memoryTypeFilter"><option value="">全部类型</option><option value="member_profile"' + selected(state.memoryType, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(state.memoryType, 'group_fact') + '>群事实</option></select><select id="memoryEnabledFilter"><option value="">全部状态</option><option value="true"' + selected(state.memoryEnabled, 'true') + '>启用</option><option value="false"' + selected(state.memoryEnabled, 'false') + '>停用</option></select><select id="memoryPageSize"><option value="10"' + selected(String(state.memoryPageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.memoryPageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.memoryPageSize), '50') + '>每页 50 条</option><option value="100"' + selected(String(state.memoryPageSize), '100') + '>每页 100 条</option></select></div>' + summary + '<div class="hint-row memory-hint"><b>按成员分组展示长期记忆</b><span>支持筛选、批量操作与快速查看；完整画像可在成员管理中查看。</span></div>' + memoryForm() + memorySelectionBar() + empty + '<div class="memory-group-list">' + groups.map(memoryGroupBlock).join('') + '</div>' + listPagination('memory', pageInfo, '长期记忆', true) + '</section>';
   document.querySelector('#memorySearch').addEventListener('input', debounce(event => { state.memoryQuery = event.target.value; state.memoryPage = 1; syncUrlState({ replace: true }); renderMemories(); }, 250));
   document.querySelector('#memorySubjectFilter')?.addEventListener('input', debounce(event => { state.subjectUserId = event.target.value.trim(); state.memoryPage = 1; syncUrlState({ replace: true }); renderMemories(); }, 250));
   document.querySelector('#memoryTypeFilter').addEventListener('change', event => { state.memoryType = event.target.value; state.memoryPage = 1; syncUrlState(); renderMemories(); });
@@ -643,12 +796,12 @@ async function renderMemories() {
   document.querySelector('#memoryPageSize').addEventListener('change', event => { state.memoryPageSize = Number(event.target.value) || 20; state.memoryPage = 1; syncUrlState(); renderMemories(); });
 }
 function memoryForm() {
-  return '<details class="inline-editor"><summary>新增长期记忆</summary><form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select>' + ownerInput('subjectUserId') + '<input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form></details>';
+  return '<details class="inline-editor memory-create"><summary><span>新增长期记忆</span><em>待归属成员或群事实完整后再添加</em></summary><form id="memoryForm" class="grid-form"><select name="type"><option value="group_fact">群事实</option><option value="member_profile">成员画像</option></select>' + ownerInput('subjectUserId') + '<input name="title" placeholder="标题"><input name="content" placeholder="内容"><button>新增</button></form></details>';
 }
 function memorySelectionBar() {
   const selectedCount = state.selectedMemoryIds.size;
   const allSelected = state.currentMemories.length > 0 && state.currentMemories.every(memory => state.selectedMemoryIds.has(memory.id));
-  return '<div class="toolbar"><label><input type="checkbox" data-select-all-memories' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-memory-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-disable-memories' + (selectedCount === 0 ? ' disabled' : '') + '>停用已选</button><button type="button" class="ghost" data-bulk-delete-memories' + (selectedCount === 0 ? ' disabled' : '') + '>' + (state.pendingDelete === 'memories:bulk' ? '确认批量删除' : '批量删除') + '</button><button type="button" class="ghost" data-clear-memory-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
+  return '<div class="bulk-bar"><label><input type="checkbox" data-select-all-memories' + (allSelected ? ' checked' : '') + '>选择当前页</label><span class="meta" data-memory-selected-count>已选 ' + selectedCount + ' 条</span><button type="button" data-bulk-disable-memories' + (selectedCount === 0 ? ' disabled' : '') + '>停用已选</button><button type="button" class="ghost" data-bulk-delete-memories' + (selectedCount === 0 ? ' disabled' : '') + '>' + (state.pendingDelete === 'memories:bulk' ? '确认批量删除' : '批量删除') + '</button><button type="button" class="ghost" data-clear-memory-selection' + (selectedCount === 0 ? ' disabled' : '') + '>清空选择</button></div>';
 }
 function updateMemorySelectionUi() {
   const selectedCount = state.selectedMemoryIds.size;
@@ -679,13 +832,17 @@ function groupMemories(memories) {
   }
   return [...map.entries()].map(([label, items]) => ({ label, items }));
 }
+function memoryGroupBlock(group) {
+  const enabled = group.items.filter(item => item.enabled).length;
+  return '<div class="memory-group"><div class="memory-group-head"><label><input type="checkbox" disabled></label><div><h3>' + esc(group.label) + '</h3><span>记忆 ' + esc(group.items.length) + ' 条，启用 ' + esc(enabled) + ' 条</span></div></div><div class="memory-rows">' + group.items.map(rowMemory).join('') + '</div></div>';
+}
 function rowMemory(m) {
   const meta = '<div class="meta">当前归属：' + esc(ownerLabel(m)) + ' · 类型：' + esc(typeText(m.type)) + ' · 状态：' + enabledText(m.enabled) + ' · 置信度：' + esc(m.confidence) + '</div>';
   if (state.editingMemoryId !== m.id) {
     const checked = state.selectedMemoryIds.has(m.id) ? ' checked' : '';
     const expanded = state.expandedMemoryIds.has(m.id);
     const details = expanded ? '<div class="detail-block">' + evidenceHtml(m) + '<div class="actions secondary-actions"><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></div>' : '';
-    return '<article data-memory-id="' + esc(m.id) + '"><div class="row-head"><label><input type="checkbox" data-select-memory="' + esc(m.id) + '"' + checked + '> 选择</label><div><h3>' + esc(m.title) + '</h3><span>' + esc(shortText(m.content, 120)) + '</span></div></div>' + meta + '<div class="actions"><button type="button" data-edit-memory="' + esc(m.id) + '">编辑</button><button type="button" data-toggle-memory-details="' + esc(m.id) + '" class="ghost">' + (expanded ? '收起详情' : '查看详情') + '</button></div>' + details + '</article>';
+    return '<article class="memory-row" data-memory-id="' + esc(m.id) + '"><label class="row-check"><input type="checkbox" data-select-memory="' + esc(m.id) + '"' + checked + '></label><div class="memory-icon">' + (m.type === 'member_profile' ? '人' : '群') + '</div><div class="row-main"><h3>' + esc(m.title) + '</h3><span>' + esc(shortText(m.content, 150)) + '</span></div><div class="row-meta"><span>类型</span><b>' + esc(typeText(m.type)) + '</b></div><div class="row-meta"><span>置信度</span><b>' + esc(Math.round(Number(m.confidence || 0) * 100)) + '%</b></div><div class="row-meta"><span>状态</span><b class="badge ' + (m.enabled ? '' : 'warn') + '">' + enabledText(m.enabled) + '</b></div><div class="actions row-actions"><button type="button" data-edit-memory="' + esc(m.id) + '">编辑</button><button type="button" data-toggle-memory-details="' + esc(m.id) + '" class="ghost">' + (expanded ? '收起详情' : '查看详情') + '</button></div>' + details + '</article>';
   }
   return '<article><form class="memoryItemForm" data-memory-id="' + esc(m.id) + '"><div class="memory-form"><select name="type"><option value="member_profile"' + selected(m.type, 'member_profile') + '>成员画像</option><option value="group_fact"' + selected(m.type, 'group_fact') + '>群事实</option></select>' + ownerInput('subjectUserId', m.subjectUserId || '', ownerLabel(m)) + '<input name="title" value="' + esc(m.title) + '" placeholder="标题"><input name="confidence" type="number" min="0" max="1" step="0.01" value="' + esc(m.confidence) + '" placeholder="置信度"><select name="enabled"><option value="true"' + selected(String(m.enabled), 'true') + '>启用</option><option value="false"' + selected(String(m.enabled), 'false') + '>停用</option></select><textarea name="content" placeholder="内容">' + esc(m.content) + '</textarea></div>' + meta + evidenceHtml(m) + '<div class="actions"><button type="button" data-save-memory="' + esc(m.id) + '">保存编辑</button><button type="button" data-toggle-memory="' + esc(m.id) + '" data-enabled="' + (!m.enabled) + '" class="ghost">' + (m.enabled ? '停用' : '启用') + '</button><button type="button" data-cancel-edit>收起</button><button type="button" data-delete-memory="' + esc(m.id) + '" class="ghost">' + (state.pendingDelete === m.id ? '确认删除' : '删除') + '</button></div></form></article>';
 }
@@ -737,7 +894,10 @@ async function renderKnowledge() {
     { label: '搜索', value: state.knowledgeQuery },
     { label: '每页', value: String(state.knowledgePageSize), defaultValue: '20', text: state.knowledgePageSize + ' 条' },
   ]);
-  content().innerHTML = '<section class="panel"><h2>文本 FAQ</h2><div class="toolbar"><input id="knowledgeSearch" value="' + esc(state.knowledgeQuery) + '" placeholder="搜索标题、问题、答案、关键词"><select id="knowledgePageSize"><option value="10"' + selected(String(state.knowledgePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.knowledgePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.knowledgePageSize), '50') + '>每页 50 条</option></select></div>' + summary + knowledgeForm() + '<div class="list">' + state.currentKnowledge.map(rowKnowledge).join('') + '</div>' + listPagination('knowledge', pageInfo, 'FAQ', true) + '</section>';
+  const empty = state.currentKnowledge.length ? '' : '<div class="empty-state"><div><b>当前没有可显示的 FAQ</b><span>可以新增常见问题，机器人后续会在相关提问中优先引用这些答案。</span></div></div>';
+  const enabledCount = state.currentKnowledge.filter(entry => entry.enabled).length;
+  const knowledgeStats = '<div class="stat-strip"><div><b>' + esc(pageInfo.total) + '</b><span>匹配 FAQ</span></div><div><b>' + esc(enabledCount) + '</b><span>当前页启用</span></div><div><b>' + esc(state.currentKnowledge.reduce((sum, entry) => sum + (entry.keywords || []).length, 0)) + '</b><span>当前页关键词</span></div><div><b>' + esc(state.knowledgePageSize) + '</b><span>每页数量</span></div></div>';
+  content().innerHTML = '<section class="panel"><div class="section-head"><div><h2>知识库</h2><p>维护群内 FAQ，适合固定流程、常见链接、规则说明和标准答案。</p></div></div>' + knowledgeStats + '<div class="toolbar"><input id="knowledgeSearch" value="' + esc(state.knowledgeQuery) + '" placeholder="搜索标题、问题、答案、关键词"><select id="knowledgePageSize"><option value="10"' + selected(String(state.knowledgePageSize), '10') + '>每页 10 条</option><option value="20"' + selected(String(state.knowledgePageSize), '20') + '>每页 20 条</option><option value="50"' + selected(String(state.knowledgePageSize), '50') + '>每页 50 条</option></select></div>' + summary + knowledgeForm() + empty + '<div class="list">' + state.currentKnowledge.map(rowKnowledge).join('') + '</div>' + listPagination('knowledge', pageInfo, 'FAQ', true) + '</section>';
   document.querySelector('#knowledgeSearch').addEventListener('input', debounce(event => { state.knowledgeQuery = event.target.value; state.knowledgePage = 1; syncUrlState({ replace: true }); renderKnowledge(); }, 250));
   document.querySelector('#knowledgePageSize').addEventListener('change', event => { state.knowledgePageSize = Number(event.target.value) || 20; state.knowledgePage = 1; syncUrlState(); renderKnowledge(); });
 }
@@ -756,11 +916,21 @@ async function renderHealth() {
   setPageLoading('正在读取健康状态...');
   const data = await apiForRender('/api/health');
   if (!data || !isLatestRender(token)) return;
-  content().innerHTML = '<section class="panel"><div class="toolbar"><h2>健康状态</h2><button type="button" class="ghost" data-refresh-health>立即检测画像/记忆模型</button></div><div class="health-grid">' + healthCardHtml('NapCat 连接', data.transportHealth) + healthCardHtml('画像/记忆模型', data.profileAiHealth) + '</div><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></section>';
+  content().innerHTML = '<section class="panel"><div class="section-head"><div><h2>健康状态</h2><p>模型异常时会暂停画像/记忆提炼，但普通群聊回复不受影响。</p></div><button type="button" data-refresh-health>立即检测</button></div><div class="health-grid">' + healthCardHtml('NapCat 连接', data.transportHealth) + healthCardHtml('画像/记忆模型', data.profileAiHealth) + healthCardHtml('Node 运行时', { ok: true, detail: data.nodeVersion + ' · PID ' + data.pid, checkedAt: 'uptime ' + data.uptimeSeconds + 's' }) + healthCardHtml('内存占用', memoryHealthStatus(data.memory)) + '</div><details class="health-diagnostics"><summary>查看原始诊断 JSON</summary><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></details></section>';
 }
 function healthCardHtml(title, status) {
   const ok = status?.ok === true;
-  return '<div class="health-card ' + (ok ? 'ok' : 'bad') + '"><h3>' + esc(title) + '：' + esc(ok ? '正常' : '异常') + '</h3><p>' + esc(status?.detail || '暂无详情') + '</p><p>模型：' + esc(status?.model || 'n/a') + '</p><p>地址：' + esc(status?.baseUrl || 'n/a') + '</p><p>检测：' + esc(status?.checkedAt || 'n/a') + ' · ' + esc(status?.latencyMs ?? 0) + 'ms' + (status?.cached ? ' · 缓存' : '') + '</p></div>';
+  return '<div class="health-card ' + (ok ? 'ok' : 'bad') + '"><h3><span class="status-dot ' + (ok ? '' : 'bad') + '"></span>' + esc(title) + '：' + esc(ok ? '正常' : '异常') + '</h3><p>' + esc(status?.detail || '暂无详情') + '</p><p>模型：' + esc(status?.model || 'n/a') + '</p><p>地址：' + esc(status?.baseUrl || 'n/a') + '</p><p>检测：' + esc(status?.checkedAt || 'n/a') + ' · ' + esc(status?.latencyMs ?? 0) + 'ms' + (status?.cached ? ' · 缓存' : '') + '</p></div>';
+}
+function memoryHealthStatus(memory = {}) {
+  const usedMb = Math.round(Number(memory.rss || 0) / 1024 / 1024);
+  const heapMb = Math.round(Number(memory.heapUsed || 0) / 1024 / 1024);
+  return {
+    ok: usedMb < 800,
+    detail: 'RSS ' + usedMb + 'MB，堆内存 ' + heapMb + 'MB',
+    checkedAt: new Date().toISOString(),
+    latencyMs: 0,
+  };
 }
 function candidatePayload(id) {
   const form = document.querySelector('.candidateForm[data-candidate-id="' + CSS.escape(id) + '"]');
@@ -1026,7 +1196,7 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.reloadGroupConfig) { await runAction(target, async () => { const group = await api('/api/groups/' + encodeURIComponent(target.dataset.reloadGroupConfig) + '/config'); replaceGroupConfigArticle(target, group); }, '群配置已重新读取'); }
   if (target.dataset.refreshHealth !== undefined) { await runAction(target, async () => { invalidateRenderCache('/api/health'); const data = await api('/api/health?refresh=1'); renderCache.set('/api/health', { time: Date.now(), data: cloneData(data) }); await renderHealth(); }, '画像/记忆模型已重新检测'); }
   if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { invalidateMemberCaches(); state.memberPage = 1; syncUrlState(); await renderMembers(true); }, '群成员已同步'); }
-  if (target.dataset.viewMember) { state.subjectUserId = target.dataset.viewMember; state.view = 'memories'; state.memoryPage = 1; clearTransientState(); syncUrlState(); await render(); }
+  if (target.dataset.viewMember) { state.view = 'memories'; clearTransientState(); state.subjectUserId = target.dataset.viewMember; state.memoryPage = 1; syncUrlState(); await render(); }
   if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); invalidateMemberCaches(); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }
   if (target.dataset.editMember) { state.editingMemberId = target.dataset.editMember; replaceArticle(target, 'member', target.dataset.editMember); }
   if (target.dataset.editCandidate) { state.editingCandidateId = target.dataset.editCandidate; state.expandedCandidateIds.add(target.dataset.editCandidate); replaceArticle(target, 'candidate', target.dataset.editCandidate); preloadOwnerMembers(); }
@@ -1187,6 +1357,18 @@ document.addEventListener('submit', async (event) => {
   }
 });
 document.querySelector('#groupFilter').addEventListener('change', async (event) => { state.groupId = event.target.value; resetGroupScopedState(); syncUrlState(); await render(); });
+document.querySelector('#refreshCurrent')?.addEventListener('click', async (event) => {
+  await runAction(event.currentTarget, async () => { await refreshCurrentView(); }, '当前页面已刷新');
+});
+document.querySelector('#globalSearch')?.addEventListener('input', debounce(async (event) => {
+  await applyGlobalSearch(event.target.value);
+}, 260));
+document.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    document.querySelector('#globalSearch')?.focus();
+  }
+});
 document.querySelector('#logout').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login'; });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if ((localStorage.getItem(themeStorageKey) || 'system') === 'system') applyTheme('system');

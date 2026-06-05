@@ -32,6 +32,7 @@ export interface GroupMemoryCandidateFlushStats {
 
 export class GroupMemoryCandidateService {
   private readonly buffers = new Map<string, BufferedMemoryMessage[]>();
+  private readonly approveInflight = new Map<string, Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>>>();
 
   constructor(
     private readonly candidateStore: GroupMemoryCandidateStore,
@@ -61,6 +62,103 @@ export class GroupMemoryCandidateService {
     id: string,
     patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "evidence">> = {},
   ): Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>> {
+    const inflight = this.approveInflight.get(id);
+    if (inflight) {
+      return inflight;
+    }
+    const work = this.approveUnlocked(id, patch);
+    this.approveInflight.set(id, work);
+    try {
+      return await work;
+    } finally {
+      this.approveInflight.delete(id);
+    }
+  }
+
+  async approveDirect(
+    id: string,
+    patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "evidence">> = {},
+  ): Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>> {
+    const inflight = this.approveInflight.get(id);
+    if (inflight) {
+      return inflight;
+    }
+    const work = this.candidateStore.approve(id, this.memoryStore, patch);
+    this.approveInflight.set(id, work);
+    try {
+      return await work;
+    } finally {
+      this.approveInflight.delete(id);
+    }
+  }
+
+  private async approveUnlocked(
+    id: string,
+    patch: Partial<Pick<GroupMemoryCandidate, "title" | "content" | "type" | "subjectUserId" | "confidence" | "evidence">> = {},
+  ): Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>> {
+    const current = await this.candidateStore.get(id);
+    if (!current || current.status !== "pending") {
+      return undefined;
+    }
+
+    const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
+    const candidate: CandidateLike = {
+      groupId: current.groupId,
+      type: patch.type ?? current.type,
+      subjectUserId: hasSubjectUserId ? patch.subjectUserId : current.subjectUserId,
+      title: patch.title ?? current.title,
+      content: patch.content ?? current.content,
+      confidence: patch.confidence ?? current.confidence,
+      source: current.source,
+      evidence: patch.evidence ?? current.evidence,
+    };
+    const [existingMemories, existingCandidates] = await Promise.all([
+      this.memoryStore.list(candidate.groupId),
+      this.candidateStore.list({ groupId: candidate.groupId }),
+    ]);
+    const duplicateDecision = await this.findDuplicateDecision(
+      candidate,
+      existingMemories.filter(isDedupReferenceMemory),
+      existingCandidates.filter((item) => item.id !== id),
+    );
+
+    if (duplicateDecision.kind === "skip" || duplicateDecision.kind === "refine_memory") {
+      const memory = duplicateDecision.memory;
+      const shouldRefine = duplicateDecision.kind === "refine_memory" || isMoreSpecificMemory(candidate, memory);
+      const mergedTitle = duplicateDecision.kind === "refine_memory" ? duplicateDecision.mergedTitle : undefined;
+      const mergedContent = duplicateDecision.kind === "refine_memory" ? duplicateDecision.mergedContent : undefined;
+      const updatedMemory = shouldRefine
+        ? await this.memoryStore.update(memory.id, {
+            title: chooseMoreSpecificText(memory.title, mergedTitle ?? candidate.title, 80),
+            content: chooseMoreSpecificText(memory.content, mergedContent ?? candidate.content, 1800),
+            confidence: Math.max(memory.confidence, candidate.confidence),
+            evidence: candidate.evidence ? mergeEvidence(memory.evidence, candidate.evidence) : memory.evidence,
+          })
+        : memory;
+      const updatedCandidate = await this.candidateStore.update(id, {
+        ...patch,
+        status: "approved",
+      });
+      return updatedCandidate && updatedMemory
+        ? { candidate: updatedCandidate, memory: updatedMemory }
+        : undefined;
+    }
+
+    if (duplicateDecision.kind === "skip_candidate" || duplicateDecision.kind === "merge") {
+      const updatedCandidate = await this.candidateStore.update(id, {
+        ...patch,
+        status: "approved",
+      });
+      const approvedMemory = existingMemories.find((memory) =>
+        memory.enabled &&
+        sameScope(candidate, memory) &&
+        memorySimilarity(memory, duplicateDecision.candidate) >= DUPLICATE_SIMILARITY_THRESHOLD
+      );
+      if (updatedCandidate && approvedMemory) {
+        return { candidate: updatedCandidate, memory: approvedMemory };
+      }
+    }
+
     return this.candidateStore.approve(id, this.memoryStore, patch);
   }
 
@@ -97,8 +195,10 @@ export class GroupMemoryCandidateService {
     }
   }
 
-  async flushAll(): Promise<GroupMemoryCandidateFlushStats[]> {
-    const results = await Promise.all([...this.buffers.keys()].map((groupId) => this.flushGroup(groupId)));
+  async flushAll(groupIds?: string[]): Promise<GroupMemoryCandidateFlushStats[]> {
+    const allowedGroupIds = groupIds ? new Set(groupIds) : undefined;
+    const bufferedGroupIds = [...this.buffers.keys()].filter((groupId) => !allowedGroupIds || allowedGroupIds.has(groupId));
+    const results = await Promise.all(bufferedGroupIds.map((groupId) => this.flushGroup(groupId)));
     return results.filter((result): result is GroupMemoryCandidateFlushStats => Boolean(result));
   }
 
@@ -137,6 +237,7 @@ export class GroupMemoryCandidateService {
       for (const rawCandidate of candidates) {
         const candidate = await this.normalizeCandidate(rawCandidate);
         if (!candidate) {
+          await this.addPendingLanguageReviewCandidate(groupId, rawCandidate, evidence);
           pendingCount += 1;
           continue;
         }
@@ -276,6 +377,28 @@ export class GroupMemoryCandidateService {
       title: candidate.title,
     });
     return undefined;
+  }
+
+  private async addPendingLanguageReviewCandidate(
+    groupId: string,
+    candidate: ExtractedGroupMemoryCandidate,
+    evidence: GroupMemoryEvidence,
+  ): Promise<void> {
+    const title = candidate.title.trim().slice(0, 64) || "英文候选";
+    const content = candidate.content.trim().slice(0, 600);
+    if (!content) {
+      return;
+    }
+    await this.candidateStore.addCandidateWithResult({
+      groupId,
+      type: candidate.type,
+      subjectUserId: candidate.type === "member_profile" ? candidate.subjectUserId : undefined,
+      title: `需中文化：${title}`.slice(0, 80),
+      content,
+      confidence: Math.min(candidate.confidence, 0.79),
+      source: "auto:language_review",
+      evidence,
+    });
   }
 
   private async findDuplicateDecision(

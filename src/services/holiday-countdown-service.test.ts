@@ -20,6 +20,7 @@ const baseGroupConfig: GroupBotConfig = {
   dailyReportTopUserCount: 3,
   holidayCountdownEnabled: true,
   holidayCountdownTime: "09:00",
+  holidayCountdownDateRule: "workday",
 };
 
 test("holiday countdown scheduler only fires during the configured minute", async () => {
@@ -98,6 +99,67 @@ test("holiday countdown scheduler skips weekends", async () => {
       await service.shouldSendScheduledMessage(
         baseGroupConfig,
         new Date("2026-04-18T09:00:00"),
+      ),
+      false,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("holiday countdown scheduler follows configured date rules", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "holiday-countdown-date-rule-test-"));
+  const storePath = path.join(tempDir, "holiday-countdown-store.json");
+
+  try {
+    const service = new HolidayCountdownService(
+      new HolidayCountdownStore(storePath),
+      {
+        async generateBroadcastQuip() {
+          return "unused";
+        },
+      } as never,
+    );
+
+    assert.equal(
+      await service.shouldSendScheduledMessage(
+        { ...baseGroupConfig, groupId: "all", holidayCountdownDateRule: "all" },
+        new Date("2026-04-18T09:00:00"),
+      ),
+      true,
+    );
+    assert.equal(
+      await service.shouldSendScheduledMessage(
+        { ...baseGroupConfig, groupId: "custom-ok", holidayCountdownDateRule: "custom", holidayCountdownWeekdays: [6] },
+        new Date("2026-04-18T09:00:00"),
+      ),
+      true,
+    );
+    assert.equal(
+      await service.shouldSendScheduledMessage(
+        { ...baseGroupConfig, groupId: "custom-skip", holidayCountdownDateRule: "custom", holidayCountdownWeekdays: [1] },
+        new Date("2026-04-18T09:00:00"),
+      ),
+      false,
+    );
+    assert.equal(
+      await service.shouldSendScheduledMessage(
+        { ...baseGroupConfig, groupId: "smart-workday-skip", holidayCountdownDateRule: "workday" },
+        new Date("2026-01-01T09:00:00"),
+      ),
+      false,
+    );
+    assert.equal(
+      await service.shouldSendScheduledMessage(
+        { ...baseGroupConfig, groupId: "smart-workday-adjusted", holidayCountdownDateRule: "workday" },
+        new Date("2026-01-04T09:00:00"),
+      ),
+      true,
+    );
+    assert.equal(
+      await service.shouldSendScheduledMessage(
+        { ...baseGroupConfig, groupId: "smart-holiday-adjusted-skip", holidayCountdownDateRule: "holiday" },
+        new Date("2026-01-04T09:00:00"),
       ),
       false,
     );

@@ -173,6 +173,34 @@ test("group memory store pages filtered memories newest first without cloning fu
   }
 });
 
+test("group memory store keeps long profile summary content for admin full view", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-long-profile-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const longSummary = [
+      "徐美宜是台湾人，在半导体行业工作，拥有硬体工程师经验，日常负责收集机台异常和撰写分析报告。",
+      "她偏好蝙蝠侠系列、蜘蛛侠电影、草东没有派对的音乐以及蜡笔小新相关物品。",
+      "饮食方面，她爱吃辣食，但由于肠胃不好，不能吃太油或牛肉。",
+    ].join("").repeat(6);
+
+    const memory = await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "2026-06-03 昨日画像总结",
+      content: longSummary,
+      source: "daily_profile_review:2026-06-03",
+      confidence: 0.8,
+    });
+
+    assert.equal(memory.content.length > 600, true);
+    assert.equal(memory.content.length, Math.min(longSummary.length, 1800));
+    assert.equal((await store.get(memory.id))?.content.length, memory.content.length);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("candidate service deduplicates and approves candidates into long term memory", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-candidate-"));
   try {

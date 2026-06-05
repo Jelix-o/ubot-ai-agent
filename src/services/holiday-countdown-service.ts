@@ -1,6 +1,9 @@
 import type { GroupBotConfig } from "../types.js";
+import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 import type { AiService } from "./ai-service.js";
 import { HolidayCountdownStore } from "./holiday-countdown-store.js";
+
+type HolidayCountdownAiService = Pick<AiService, "generateBroadcastQuip">;
 
 type HolidayDefinition = {
   id: string;
@@ -26,14 +29,14 @@ const HOLIDAY_DEFINITIONS: HolidayDefinition[] = [
 export class HolidayCountdownService {
   constructor(
     private readonly store: HolidayCountdownStore,
-    private readonly aiService: AiService,
+    private readonly aiService: HolidayCountdownAiService,
   ) {}
 
   async shouldSendScheduledMessage(groupConfig: GroupBotConfig, now = new Date()): Promise<boolean> {
     if (groupConfig.holidayCountdownEnabled === false) {
       return false;
     }
-    if (!isLikelyWorkday(now)) {
+    if (!isScheduleDateRuleMatched(groupConfig.holidayCountdownDateRule, groupConfig.holidayCountdownWeekdays, now)) {
       return false;
     }
 

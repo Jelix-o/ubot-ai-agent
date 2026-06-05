@@ -2,6 +2,7 @@ import os from "node:os";
 
 import { logError, logInfo, logWarn } from "./logger.js";
 import type { AiService } from "./services/ai-service.js";
+import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { ConversationStore } from "./services/conversation-store.js";
 import type { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
@@ -10,14 +11,17 @@ import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupLock } from "./services/group-lock.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
+import { GroupMemoryDeduplicateService } from "./services/group-memory-deduplicate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
+import type { ProfileRecordStore } from "./services/profile-record-store.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
 import type { SkillService } from "./services/skill-service.js";
+import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { TtsService } from "./services/tts-service.js";
 import type {
   AiInteractionTarget,
@@ -30,11 +34,14 @@ import type {
   GroupMemberIdentity,
   GroupBotConfig,
   MessageImageInput,
+  NapcatGroupInfo,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
   ReplyModelMode,
   ReferencedMessage,
   SkillDefinition,
+  SystemCommandConfig,
+  SystemSettings,
 } from "./types.js";
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
@@ -72,6 +79,7 @@ const SCHEDULED_REMINDER_TICK_MS = 30 * 1000;
 const OPS_ALERT_TICK_MS = 30 * 1000;
 const DAILY_PROFILE_REVIEW_TICK_MS = 30 * 1000;
 const MEMORY_CANDIDATE_FLUSH_TICK_MS = 2 * 60 * 1000;
+const MEMORY_DEDUP_TICK_MS = 30 * 1000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
@@ -100,15 +108,53 @@ const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 
+const RUNTIME_COMMAND_SPECS = {
+  admin: { builtinPrefix: ADMIN_PREFIX, builtinAliases: [] },
+  blacklist: { builtinPrefix: BLACKLIST_PREFIX, builtinAliases: [] },
+  conversation: { builtinPrefix: CONVERSATION_PREFIX, builtinAliases: [CLEAR_GROUP_CONTEXT_COMMAND] },
+  daily_report: { builtinPrefix: DAILY_REPORT_PREFIX, builtinAliases: [] },
+  health: { builtinPrefix: HEALTH_PREFIX, builtinAliases: [SHORT_HEALTH_PREFIX] },
+  help: { builtinPrefix: HELP_PREFIXES[0]!, builtinAliases: HELP_PREFIXES.slice(1) },
+  holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
+  knowledge: { builtinPrefix: KNOWLEDGE_PREFIX, builtinAliases: [] },
+  live_chat: { builtinPrefix: LIVE_CHAT_PREFIX, builtinAliases: [] },
+  memory: { builtinPrefix: MEMORY_PREFIX, builtinAliases: [] },
+  model: { builtinPrefix: MODEL_PREFIX, builtinAliases: [] },
+  mute: { builtinPrefix: MUTE_COMMAND, builtinAliases: [UNMUTE_COMMAND] },
+  operation_log: { builtinPrefix: OPERATION_LOG_PREFIX, builtinAliases: [] },
+  ops_alert: { builtinPrefix: OPS_ALERT_PREFIX, builtinAliases: [] },
+  profile_overall: { builtinPrefix: GROUP_PROFILE_PREFIX, builtinAliases: [] },
+  profile_yesterday: { builtinPrefix: YESTERDAY_PROFILE_PREFIX, builtinAliases: [] },
+  scheduled_reminder: { builtinPrefix: SCHEDULED_REMINDER_PREFIX, builtinAliases: [] },
+  server: { builtinPrefix: SERVER_PREFIX, builtinAliases: [] },
+  status: { builtinPrefix: STATUS_PREFIX, builtinAliases: [] },
+  skill: { builtinPrefix: SKILL_PREFIX, builtinAliases: [] },
+  voice: { builtinPrefix: VOICE_PREFIX, builtinAliases: [] },
+} as const;
+
+type RuntimeCommandId = keyof typeof RUNTIME_COMMAND_SPECS;
+
+interface RuntimeCommandMatch {
+  rewrittenText: string;
+  matchedPrefix: string;
+  suffix: string;
+}
+
 interface ReplyAiRoute {
   mode: ReplyModelMode;
   label: string;
-  service: AiService;
+  service: Pick<RuntimeAiService, "generateReply">;
   fallback?: {
     mode: ReplyModelMode;
     label: string;
-    service: AiService;
+    service: Pick<RuntimeAiService, "generateReply">;
   };
+}
+
+interface ReplyModelOption {
+  mode: ReplyModelMode;
+  label: string;
+  service: Pick<RuntimeAiService, "generateReply">;
 }
 
 interface ReplyAiResult {
@@ -135,6 +181,7 @@ export interface MessageTransport {
   sendGroupAiRecord(groupId: string, text: string): Promise<void>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
   listGroupMembers?(groupId: string): Promise<NapcatGroupMember[]>;
+  listGroups?(): Promise<NapcatGroupInfo[]>;
   resolveMentionTargets?(groupId: string, candidates: string[]): Promise<string[]>;
   resolveMemberIdentities?(groupId: string, candidates: string[]): Promise<GroupMemberIdentity[]>;
   getMessage?(messageId: string): Promise<ReferencedMessage | undefined>;
@@ -166,6 +213,7 @@ export class BotApplication {
   private opsAlertTimer?: NodeJS.Timeout;
   private dailyProfileReviewTimer?: NodeJS.Timeout;
   private memoryCandidateFlushTimer?: NodeJS.Timeout;
+  private memoryDedupTimer?: NodeJS.Timeout;
   private liveChatTickRunning = false;
   private dailyReportTickRunning = false;
   private holidayCountdownTickRunning = false;
@@ -173,6 +221,8 @@ export class BotApplication {
   private opsAlertTickRunning = false;
   private dailyProfileReviewTickRunning = false;
   private memoryCandidateFlushTickRunning = false;
+  private memoryDedupTickRunning = false;
+  private lastMemoryDedupDateKey?: string;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -187,7 +237,7 @@ export class BotApplication {
     private readonly groupConfigService: GroupConfigService,
     private readonly skillService: SkillService,
     private readonly conversationStore: ConversationStore,
-    private readonly aiService: AiService,
+    private readonly aiService: RuntimeAiService,
     private readonly ttsService: TtsService,
     private readonly dailyReportService: DailyReportService,
     private readonly holidayCountdownService: HolidayCountdownService,
@@ -202,8 +252,10 @@ export class BotApplication {
     private readonly groupMemoryCandidateService?: GroupMemoryCandidateService,
     private readonly dailyProfileReviewService?: DailyProfileReviewService,
     private readonly adminPublicBaseUrl?: string,
-    private readonly profileReplyAiService?: AiService,
+    private readonly profileReplyAiService?: RuntimeAiService,
     private readonly replyModelLabels: Partial<Record<ReplyModelMode, string>> = {},
+    private readonly systemSettingsStore?: SystemSettingsStore,
+    private readonly profileRecordStore?: ProfileRecordStore,
   ) {}
 
   start(): void {
@@ -214,7 +266,8 @@ export class BotApplication {
       this.scheduledReminderTimer ||
       this.opsAlertTimer ||
       this.dailyProfileReviewTimer ||
-      this.memoryCandidateFlushTimer
+      this.memoryCandidateFlushTimer ||
+      this.memoryDedupTimer
     ) {
       return;
     }
@@ -254,6 +307,11 @@ export class BotApplication {
     }, MEMORY_CANDIDATE_FLUSH_TICK_MS);
     this.memoryCandidateFlushTimer.unref();
 
+    this.memoryDedupTimer = setInterval(() => {
+      void this.runMemoryDedupTick();
+    }, MEMORY_DEDUP_TICK_MS);
+    this.memoryDedupTimer.unref();
+
     void this.runOpsAlertTick({ includeStartup: true });
   }
 
@@ -292,6 +350,15 @@ export class BotApplication {
       clearInterval(this.memoryCandidateFlushTimer);
       this.memoryCandidateFlushTimer = undefined;
     }
+
+    if (this.memoryDedupTimer) {
+      clearInterval(this.memoryDedupTimer);
+      this.memoryDedupTimer = undefined;
+    }
+  }
+
+  private async getRuntimeCommands(): Promise<SystemCommandConfig[]> {
+    return readRuntimeCommands(this.systemSettingsStore);
   }
 
   async handleGroupMessage(event: NapcatGroupMessageEvent): Promise<void> {
@@ -307,6 +374,10 @@ export class BotApplication {
       logInfo("Ignored message from unconfigured group.", { groupId, userId });
       return;
     }
+    if (groupConfig.enabled === false) {
+      logInfo("Ignored message from disabled group.", { groupId, userId });
+      return;
+    }
 
     if (
       (typeof event.message === "string" && event.message.trim() === "") ||
@@ -316,9 +387,11 @@ export class BotApplication {
     }
 
     const commandText = extractCommandText(event.message);
+    const runtimeCommands = await this.getRuntimeCommands();
 
-    if (commandText.startsWith(BLACKLIST_PREFIX)) {
-      const handled = await this.handleBlacklistCommand(groupConfig, event, commandText);
+    const blacklistCommand = matchRuntimeCommand(commandText, runtimeCommands, "blacklist");
+    if (blacklistCommand) {
+      const handled = await this.handleBlacklistCommand(groupConfig, event, blacklistCommand.rewrittenText);
       if (handled) {
         return;
       }
@@ -330,74 +403,82 @@ export class BotApplication {
       return;
     }
 
-    if (commandText === MUTE_COMMAND || commandText === UNMUTE_COMMAND) {
-      await this.handleMuteCommand(groupConfig, event, commandText);
+    const muteCommand = matchRuntimeCommand(commandText, runtimeCommands, "mute");
+    if (muteCommand) {
+      await this.handleMuteCommand(groupConfig, event, muteCommand.rewrittenText);
       return;
     }
 
-    if (commandText.toLowerCase() === CLEAR_GROUP_CONTEXT_COMMAND) {
-      await this.handleClearGroupContextCommand(groupConfig, event);
-      return;
-    }
-
-    if (isStatusCommand(commandText)) {
+    const statusCommand = matchRuntimeCommand(commandText, runtimeCommands, "status");
+    if (statusCommand) {
       await this.handleStatusCommand(groupConfig, event);
       return;
     }
 
-    if (isHealthCommand(commandText)) {
+    const healthCommand = matchRuntimeCommand(commandText, runtimeCommands, "health");
+    if (healthCommand) {
       await this.handleHealthCommand(groupConfig, event);
       return;
     }
 
-    if (isOperationLogCommand(commandText)) {
+    const operationLogCommand = matchRuntimeCommand(commandText, runtimeCommands, "operation_log");
+    if (operationLogCommand) {
       await this.handleOperationLogCommand(groupConfig, event);
       return;
     }
 
-    if (isServerCommand(commandText)) {
+    const serverCommand = matchRuntimeCommand(commandText, runtimeCommands, "server");
+    if (serverCommand) {
       await this.handleServerCommand(groupConfig, event);
       return;
     }
 
-    if (isMemoryStatusCommand(commandText)) {
+    const memoryCommand = matchRuntimeCommand(commandText, runtimeCommands, "memory");
+    if (memoryCommand) {
       await this.handleMemoryStatusCommand(groupConfig, event);
       return;
     }
 
-    if (isKnowledgeStatusCommand(commandText)) {
+    const knowledgeCommand = matchRuntimeCommand(commandText, runtimeCommands, "knowledge");
+    if (knowledgeCommand) {
       await this.handleKnowledgeStatusCommand(groupConfig, event);
       return;
     }
 
-    if (commandText.startsWith(YESTERDAY_PROFILE_PREFIX)) {
-      await this.handleYesterdayProfileCommand(groupConfig, event, commandText);
+    const yesterdayProfileCommand = matchRuntimeCommand(commandText, runtimeCommands, "profile_yesterday");
+    if (yesterdayProfileCommand) {
+      await this.handleYesterdayProfileCommand(groupConfig, event, yesterdayProfileCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(GROUP_PROFILE_PREFIX)) {
-      await this.handleGroupProfileCommand(groupConfig, event, commandText);
+    const overallProfileCommand = matchRuntimeCommand(commandText, runtimeCommands, "profile_overall");
+    if (overallProfileCommand) {
+      await this.handleGroupProfileCommand(groupConfig, event, overallProfileCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(OPS_ALERT_PREFIX)) {
-      await this.handleOpsAlertCommand(groupConfig, event, commandText);
+    const opsAlertCommand = matchRuntimeCommand(commandText, runtimeCommands, "ops_alert");
+    if (opsAlertCommand) {
+      await this.handleOpsAlertCommand(groupConfig, event, opsAlertCommand.rewrittenText);
       return;
     }
 
     if (groupConfig.botMuted === true) {
-      if (commandText.startsWith(DAILY_REPORT_PREFIX)) {
-        await this.handleDailyReportCommand(groupConfig, event, commandText);
+      const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
+      if (dailyReportCommand) {
+        await this.handleDailyReportCommand(groupConfig, event, dailyReportCommand.rewrittenText);
         return;
       }
 
-      if (commandText.startsWith(HOLIDAY_COUNTDOWN_PREFIX)) {
-        await this.handleHolidayCountdownCommand(groupConfig, event, commandText);
+      const holidayCountdownCommand = matchRuntimeCommand(commandText, runtimeCommands, "holiday_countdown");
+      if (holidayCountdownCommand) {
+        await this.handleHolidayCountdownCommand(groupConfig, event, holidayCountdownCommand.rewrittenText);
         return;
       }
 
-      if (commandText.startsWith(SCHEDULED_REMINDER_PREFIX)) {
-        await this.handleScheduledReminderCommand(groupConfig, event, commandText);
+      const scheduledReminderCommand = matchRuntimeCommand(commandText, runtimeCommands, "scheduled_reminder");
+      if (scheduledReminderCommand) {
+        await this.handleScheduledReminderCommand(groupConfig, event, scheduledReminderCommand.rewrittenText);
         return;
       }
 
@@ -419,48 +500,61 @@ export class BotApplication {
       return;
     }
 
-    if (commandText.startsWith(LIVE_CHAT_PREFIX)) {
-      await this.handleLiveChatCommand(groupConfig, event, commandText);
+    const liveChatCommand = matchRuntimeCommand(commandText, runtimeCommands, "live_chat");
+    if (liveChatCommand) {
+      await this.handleLiveChatCommand(groupConfig, event, liveChatCommand.rewrittenText);
       return;
     }
 
-    if (isHelpCommand(commandText)) {
-      await this.handleHelpCommand(groupConfig.groupId, commandText);
+    const helpCommand = matchRuntimeCommand(commandText, runtimeCommands, "help");
+    if (helpCommand) {
+      await this.handleHelpCommand(groupConfig.groupId, helpCommand.rewrittenText, runtimeCommands);
       return;
     }
 
-    if (commandText.startsWith(ADMIN_PREFIX)) {
-      await this.handleAdminCommand(groupConfig, event, commandText);
+    const adminCommand = matchRuntimeCommand(commandText, runtimeCommands, "admin");
+    if (adminCommand) {
+      await this.handleAdminCommand(groupConfig, event, adminCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(CONVERSATION_PREFIX)) {
-      await this.handleConversationCommand(groupConfig, event, commandText);
+    const conversationCommand = matchRuntimeCommand(commandText, runtimeCommands, "conversation");
+    if (conversationCommand) {
+      if (conversationCommand.matchedPrefix === CLEAR_GROUP_CONTEXT_COMMAND) {
+        await this.handleClearGroupContextCommand(groupConfig, event);
+      } else {
+        await this.handleConversationCommand(groupConfig, event, conversationCommand.rewrittenText);
+      }
       return;
     }
 
-    if (commandText.startsWith(SKILL_PREFIX)) {
-      await this.handleSkillCommand(groupConfig, event, commandText);
+    const skillCommand = matchRuntimeCommand(commandText, runtimeCommands, "skill");
+    if (skillCommand) {
+      await this.handleSkillCommand(groupConfig, event, skillCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(MODEL_PREFIX)) {
-      await this.handleModelCommand(groupConfig, event, commandText);
+    const modelCommand = matchRuntimeCommand(commandText, runtimeCommands, "model");
+    if (modelCommand) {
+      await this.handleModelCommand(groupConfig, event, modelCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(DAILY_REPORT_PREFIX)) {
-      await this.handleDailyReportCommand(groupConfig, event, commandText);
+    const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
+    if (dailyReportCommand) {
+      await this.handleDailyReportCommand(groupConfig, event, dailyReportCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(HOLIDAY_COUNTDOWN_PREFIX)) {
-      await this.handleHolidayCountdownCommand(groupConfig, event, commandText);
+    const holidayCountdownCommand = matchRuntimeCommand(commandText, runtimeCommands, "holiday_countdown");
+    if (holidayCountdownCommand) {
+      await this.handleHolidayCountdownCommand(groupConfig, event, holidayCountdownCommand.rewrittenText);
       return;
     }
 
-    if (commandText.startsWith(SCHEDULED_REMINDER_PREFIX)) {
-      await this.handleScheduledReminderCommand(groupConfig, event, commandText);
+    const scheduledReminderCommand = matchRuntimeCommand(commandText, runtimeCommands, "scheduled_reminder");
+    if (scheduledReminderCommand) {
+      await this.handleScheduledReminderCommand(groupConfig, event, scheduledReminderCommand.rewrittenText);
       return;
     }
 
@@ -473,9 +567,23 @@ export class BotApplication {
 
     const parsedMessage = parseGroupMessage(event.message, this.botQq);
     const messageContext = await this.buildMessageInteractionContext(groupConfig, parsedMessage);
-    const voiceCommand = parseVoiceCommand(commandText, parsedMessage.text, parsedMessage.hasAtBot);
+    const voiceRuntimeCommand = matchRuntimeCommand(commandText, runtimeCommands, "voice");
+    const voiceCommandEnabled = isRuntimeCommandEnabled(runtimeCommands, "voice");
+    const voiceCommand = parseVoiceCommand(
+      voiceRuntimeCommand?.rewrittenText ?? commandText,
+      parsedMessage.text,
+      parsedMessage.hasAtBot,
+    );
 
     if (voiceCommand.matched) {
+      if (!voiceCommandEnabled) {
+        logInfo("Ignored voice command because runtime command is disabled.", { groupId, userId });
+        return;
+      }
+      if (groupConfig.voiceReplyEnabled === false) {
+        logInfo("Ignored voice command because voice reply is disabled for group.", { groupId, userId });
+        return;
+      }
       if (!voiceCommand.valid) {
         await this.sendText(
           groupId,
@@ -517,6 +625,10 @@ export class BotApplication {
     if (parsedMessage.hasAtBot) {
       const reminderRequest = this.scheduledReminderService.parseCreateRequest(parsedMessage.text);
       if (reminderRequest) {
+        if (!isRuntimeCommandEnabled(runtimeCommands, "scheduled_reminder")) {
+          logInfo("Ignored natural scheduled reminder command because runtime command is disabled.", { groupId, userId });
+          return;
+        }
         const task = await this.scheduledReminderService.createTask({
           groupId,
           creatorUserId: userId,
@@ -534,7 +646,7 @@ export class BotApplication {
     await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
     this.queueMemoryCandidateMessage(groupConfig, event, parsedMessage);
 
-    if (this.shouldTriggerChengfeng(groupId, userId, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
+    if (await this.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
       await this.groupLock.run(groupId, async () => {
         await this.handleConversation(
           groupConfig,
@@ -582,23 +694,42 @@ export class BotApplication {
     return this.getTransportHealthStatus();
   }
 
-  private shouldTriggerChengfeng(
-    groupId: string,
-    _userId: string,
+  private async shouldTriggerKeyword(
+    groupConfig: GroupBotConfig,
     text: string,
     hasAtBot: boolean,
     commandText: string,
-  ): boolean {
+  ): Promise<boolean> {
     if (
-      groupId !== CHENGFENG_TRIGGER_GROUP_ID ||
       hasAtBot ||
-      !text.includes(CHENGFENG_TRIGGER_KEYWORD) ||
       commandText.trim().startsWith("#")
     ) {
       return false;
     }
 
-    return true;
+    const keywords = groupConfig.triggerKeywords && groupConfig.triggerKeywords.length > 0
+      ? groupConfig.triggerKeywords
+      : await this.getDefaultTriggerKeywords(groupConfig.groupId);
+    return keywords.some((item) => item.enabled !== false && item.keyword && text.includes(item.keyword));
+  }
+
+  private async getDefaultTriggerKeywords(groupId: string): Promise<SystemSettings["defaultTriggerKeywords"]> {
+    if (this.systemSettingsStore) {
+      try {
+        const settings = await this.systemSettingsStore.get();
+        if (settings.defaultTriggerKeywords.length > 0) {
+          return settings.defaultTriggerKeywords;
+        }
+      } catch (error) {
+        logWarn("Failed to load system default trigger keywords.", {
+          groupId,
+          error: (error as Error).message,
+        });
+      }
+    }
+    return groupId === CHENGFENG_TRIGGER_GROUP_ID
+      ? [{ keyword: CHENGFENG_TRIGGER_KEYWORD, enabled: true }]
+      : [];
   }
 
   private async runLiveChatTick(): Promise<void> {
@@ -610,7 +741,7 @@ export class BotApplication {
     const now = Date.now();
 
     try {
-      const groups = await this.groupConfigService.getAll();
+      const groups = await this.getEnabledGroupConfigs();
 
       for (const groupConfig of groups) {
         const trackedUserIds = groupConfig.liveChatUserIds;
@@ -707,7 +838,7 @@ export class BotApplication {
     this.dailyReportTickRunning = true;
 
     try {
-      const groups = await this.groupConfigService.getAll();
+      const groups = await this.getEnabledGroupConfigs();
 
       for (const groupConfig of groups) {
         if (!(await this.dailyReportService.shouldSendScheduledReport(groupConfig, now))) {
@@ -748,7 +879,7 @@ export class BotApplication {
     this.holidayCountdownTickRunning = true;
 
     try {
-      const groups = await this.groupConfigService.getAll();
+      const groups = await this.getEnabledGroupConfigs();
 
       for (const groupConfig of groups) {
         if (!(await this.holidayCountdownService.shouldSendScheduledMessage(groupConfig, now))) {
@@ -793,12 +924,12 @@ export class BotApplication {
     this.scheduledReminderTickRunning = true;
 
     try {
-      const groups = await this.groupConfigService.getAll();
+      const groups = await this.getEnabledGroupConfigs();
       const groupsById = new Map(groups.map((group) => [group.groupId, group]));
       const dueTasks = await this.scheduledReminderService.getDueTasks(now);
       for (const task of dueTasks) {
         const groupConfig = groupsById.get(task.groupId);
-        if (!groupConfig || groupConfig.scheduledRemindersEnabled === false) {
+        if (!groupConfig || groupConfig.enabled === false || groupConfig.scheduledRemindersEnabled === false) {
           continue;
         }
 
@@ -835,7 +966,22 @@ export class BotApplication {
       return;
     }
 
-    if (!isScheduledMinute(now, 0, 0)) {
+    let dailyProfileReviewTime = "00:00";
+    if (this.systemSettingsStore) {
+      try {
+        const settings = await this.systemSettingsStore.get();
+        if (settings.dailyProfileReviewEnabled === false) {
+          return;
+        }
+        dailyProfileReviewTime = settings.dailyProfileReviewTime || dailyProfileReviewTime;
+      } catch (error) {
+        logWarn("Failed to read daily profile review settings; continuing with default schedule.", {
+          error: (error as Error).message,
+        });
+      }
+    }
+
+    if (!isScheduledClockMinute(now, dailyProfileReviewTime)) {
       return;
     }
 
@@ -843,7 +989,7 @@ export class BotApplication {
     const dateKey = getYesterdayDateKey(now);
 
     try {
-      const groups = await this.groupConfigService.getAll();
+      const groups = await this.getEnabledGroupConfigs();
       for (const groupConfig of groups) {
         try {
           const members = await this.buildMemberProfiles(groupConfig);
@@ -897,7 +1043,8 @@ export class BotApplication {
           return;
         }
       }
-      const results = await this.groupMemoryCandidateService.flushAll();
+      const enabledGroupIds = (await this.getEnabledGroupConfigs()).map((group) => group.groupId);
+      const results = await this.groupMemoryCandidateService.flushAll(enabledGroupIds);
       for (const result of results) {
         logInfo("Flushed buffered group memory messages.", { ...result });
       }
@@ -907,6 +1054,72 @@ export class BotApplication {
       });
     } finally {
       this.memoryCandidateFlushTickRunning = false;
+    }
+  }
+
+  private async runMemoryDedupTick(now = new Date()): Promise<void> {
+    if (this.memoryDedupTickRunning || !this.groupMemoryStore) {
+      return;
+    }
+
+    let memoryDedupTime = "23:00";
+    if (this.systemSettingsStore) {
+      try {
+        const settings = await this.systemSettingsStore.get();
+        if (settings.memoryDedupEnabled === false) {
+          const dateKey = getHongKongDateKey(now);
+          this.lastMemoryDedupDateKey = dateKey;
+          logInfo("Skipped nightly memory dedup because it is disabled in system settings.", { dateKey });
+          return;
+        }
+        memoryDedupTime = settings.memoryDedupTime || memoryDedupTime;
+      } catch (error) {
+        logWarn("Failed to read memory dedup settings; continuing with nightly dedup.", {
+          error: (error as Error).message,
+        });
+      }
+    }
+
+    if (!isScheduledClockMinute(now, memoryDedupTime)) {
+      return;
+    }
+
+    const dateKey = getHongKongDateKey(now);
+    if (this.lastMemoryDedupDateKey === dateKey) {
+      return;
+    }
+
+    this.memoryDedupTickRunning = true;
+    this.lastMemoryDedupDateKey = dateKey;
+    try {
+      const enabledGroups = await this.getEnabledGroupConfigs();
+      const deduplicateService = new GroupMemoryDeduplicateService(
+        this.groupMemoryStore,
+        this.profileReplyAiService
+          ? (args) => this.profileReplyAiService!.judgeMemorySemanticRelation(args)
+          : undefined,
+      );
+      for (const group of enabledGroups) {
+        try {
+          const result = await deduplicateService.deduplicateMemberMemoriesForGroup(group.groupId);
+          if (result.decisionCount > 0 || result.appliedCount > 0 || result.skippedCount > 0) {
+            logInfo("Nightly member memory dedup completed.", result);
+          }
+        } catch (error) {
+          logWarn("Nightly member memory dedup failed for group.", {
+            groupId: group.groupId,
+            dateKey,
+            error: (error as Error).message,
+          });
+        }
+      }
+    } catch (error) {
+      logWarn("Nightly member memory dedup scheduler failed.", {
+        dateKey,
+        error: (error as Error).message,
+      });
+    } finally {
+      this.memoryDedupTickRunning = false;
     }
   }
 
@@ -920,7 +1133,7 @@ export class BotApplication {
 
     try {
       const [groups, transportHealth] = await Promise.all([
-        this.groupConfigService.getAll(),
+        this.getEnabledGroupConfigs(),
         this.getTransportHealthStatus(),
       ]);
       const enabledGroups = groups.filter((group) => group.opsAlertsEnabled !== false);
@@ -1686,8 +1899,12 @@ export class BotApplication {
     );
   }
 
-  private async handleHelpCommand(groupId: string, commandText: string): Promise<void> {
-    await this.sendText(groupId, buildFeatureListMessage(commandText));
+  private async handleHelpCommand(
+    groupId: string,
+    commandText: string,
+    runtimeCommands: SystemCommandConfig[],
+  ): Promise<void> {
+    await this.sendText(groupId, buildFeatureListMessage(commandText, runtimeCommands));
   }
 
   private async handleAdminCommand(
@@ -2043,7 +2260,7 @@ export class BotApplication {
       identityContext?: AiIdentityContext;
     },
   ): Promise<ReplyAiResult> {
-    const route = this.getReplyAiRoute(groupConfig);
+    const route = await this.getReplyAiRoute(groupConfig);
 
     try {
       return {
@@ -2073,40 +2290,92 @@ export class BotApplication {
     }
   }
 
-  private getReplyAiRoute(groupConfig: GroupBotConfig): ReplyAiRoute {
+  private async getReplyAiRoute(groupConfig: GroupBotConfig): Promise<ReplyAiRoute> {
     const mode = normalizeReplyModelMode(groupConfig.replyModelMode);
-    const gpt = {
-      mode: "gpt" as const,
-      label: this.formatReplyModelName("gpt"),
-      service: this.aiService,
-    };
-    const mimo = this.profileReplyAiService
-      ? {
-          mode: "mimo" as const,
-          label: this.formatReplyModelName("mimo"),
-          service: this.profileReplyAiService,
-        }
-      : undefined;
-
-    if (mode === "mimo" && mimo) {
-      return {
-        ...mimo,
-        fallback: gpt,
-      };
-    }
-
+    const options = await this.getReplyModelOptions();
+    const primary = options.find((option) => option.mode === mode) ?? options.find((option) => option.mode === "gpt") ?? options[0]!;
+    const fallback = options.find((option) => option.mode !== primary.mode);
     return {
-      ...gpt,
-      ...(mimo ? { fallback: mimo } : {}),
+      ...primary,
+      ...(fallback ? { fallback } : {}),
     };
   }
 
-  private formatReplyModelName(mode: ReplyModelMode): string {
-    const configured = this.replyModelLabels[mode]?.trim();
+  private async getReplyModelOptions(): Promise<ReplyModelOption[]> {
+    const options: ReplyModelOption[] = [{
+      mode: "gpt",
+      label: await this.formatReplyModelName("gpt"),
+      service: this.aiService,
+    }];
+    options.push({
+      mode: "mimo",
+      label: await this.formatReplyModelName("mimo"),
+      service: this.profileReplyAiService ?? this.aiService,
+    });
+    if (!this.systemSettingsStore) {
+      return options;
+    }
+
+    try {
+      const settings = await this.systemSettingsStore.get();
+      const existingModes = new Set(options.map((option) => option.mode));
+      for (const model of settings.models) {
+        if (
+          model.purpose !== "reply" ||
+          model.enabled !== true ||
+          model.id === "gpt" ||
+          model.id === "mimo" ||
+          !model.hasApiKey ||
+          existingModes.has(model.id)
+        ) {
+          continue;
+        }
+        options.push({
+          mode: model.id,
+          label: this.formatConfiguredReplyModelLabel(model.id, model.shortName || model.name),
+          service: new ConfiguredAiService(this.aiService, this.systemSettingsStore, "reply", undefined, model.id),
+        });
+        existingModes.add(model.id);
+      }
+    } catch (error) {
+      logWarn("Failed to load configured reply model options.", {
+        error: (error as Error).message,
+      });
+    }
+    return options;
+  }
+
+  private async formatReplyModelName(mode: ReplyModelMode): Promise<string> {
+    const configured = await this.getRuntimeReplyModelLabel(mode) ?? this.replyModelLabels[mode]?.trim();
     if (configured) {
-      return mode === "mimo" ? `Mimo（${configured}）` : `GPT（${configured}）`;
+      return this.formatConfiguredReplyModelLabel(mode, configured);
     }
     return mode === "mimo" ? "Mimo（mimo-v2.5-pro）" : "GPT";
+  }
+
+  private formatConfiguredReplyModelLabel(mode: ReplyModelMode, name: string): string {
+    if (mode === "mimo") return `Mimo（${name}）`;
+    if (mode === "gpt") return `GPT（${name}）`;
+    return `${name}（${mode}）`;
+  }
+
+  private async getRuntimeReplyModelLabel(mode: ReplyModelMode): Promise<string | undefined> {
+    if (!this.systemSettingsStore) {
+      return undefined;
+    }
+    try {
+      const settings = await this.systemSettingsStore.get();
+      const model = mode === "gpt" || mode === "mimo"
+        ? settings.models.find((item) => item.enabled && item.id === mode && item.shortName.trim())
+        : settings.models.find((item) => item.enabled && item.id === mode && item.shortName.trim());
+      return model?.shortName.trim();
+    } catch (error) {
+      logWarn("Failed to load runtime reply model label.", {
+        mode,
+        error: (error as Error).message,
+      });
+      return undefined;
+    }
   }
 
   private async handleVoiceReply(
@@ -2214,16 +2483,22 @@ export class BotApplication {
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
     const currentMode = normalizeReplyModelMode(groupConfig.replyModelMode);
+    const options = await this.getReplyModelOptions();
+    const currentLabel = options.find((option) => option.mode === currentMode)?.label ?? await this.formatReplyModelName(currentMode);
 
-    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX}状态` || normalized === `${MODEL_PREFIX} 状态`) {
-      await this.sendText(groupId, `当前群聊回复模型：${this.formatReplyModelName(currentMode)}`);
+    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX}状态` || normalized === `${MODEL_PREFIX} 状态` || normalized === `${MODEL_PREFIX} 列表`) {
+      const lines = options.map((option) => {
+        const activeMark = option.mode === currentMode ? " [当前]" : "";
+        return `- ${option.mode}: ${option.label}${activeMark}`;
+      });
+      await this.sendText(groupId, `当前群聊回复模型：${currentLabel}\n可切换模型：\n${lines.join("\n")}`);
       return;
     }
 
-    const switchRegex = new RegExp(`^${escapeRegex(MODEL_PREFIX)}\\s*(?:切换\\s*)?(mimo|gpt)$`, "i");
+    const switchRegex = new RegExp(`^${escapeRegex(MODEL_PREFIX)}\\s*(?:切换\\s*)?(.+)$`, "i");
     const match = normalized.match(switchRegex);
     if (!match) {
-      await this.sendText(groupId, "模型命令格式：#模型状态 或 #模型切换 mimo/gpt");
+      await this.sendText(groupId, `模型命令格式：#模型状态 或 #模型切换 <模型ID>\n可用模型：${options.map((option) => option.mode).join("、")}`);
       return;
     }
 
@@ -2232,12 +2507,19 @@ export class BotApplication {
       return;
     }
 
-    const targetMode = match[1]!.toLowerCase() as ReplyModelMode;
+    const rawTarget = match[1]!.trim();
+    const target = options.find((option) => option.mode.toLowerCase() === rawTarget.toLowerCase());
+    if (!target) {
+      await this.sendText(groupId, `模型 ${rawTarget} 不在可切换列表中。可用模型：${options.map((option) => option.mode).join("、")}`);
+      return;
+    }
+
+    const targetMode = target.mode;
     const updated = await this.groupConfigService.updateReplyModelMode(groupId, targetMode);
-    await this.logAdminOperation(groupId, userId, "回复模型切换", targetMode, this.formatReplyModelName(targetMode));
+    await this.logAdminOperation(groupId, userId, "回复模型切换", targetMode, target.label);
     await this.sendText(
       groupId,
-      `已切换群聊回复模型：${this.formatReplyModelName(normalizeReplyModelMode(updated.replyModelMode))}`,
+      `已切换群聊回复模型：${options.find((option) => option.mode === normalizeReplyModelMode(updated.replyModelMode))?.label ?? target.label}`,
     );
   }
 
@@ -2322,8 +2604,15 @@ export class BotApplication {
       groupConfig.groupId,
       [
         `${label} 的昨日画像（${dateKey}）：`,
-        buildProfileShortSummary(summary.content),
-        buildAdminProfileHint(this.adminPublicBaseUrl, groupConfig.groupId, target.userId, "yesterday"),
+        await this.buildConfiguredProfileShortSummary(summary.content),
+        await this.buildPublicProfileShareHint({
+          groupConfig,
+          userId: target.userId,
+          type: "yesterday",
+          summary: summary.content,
+          sourceMemoryCount: 1,
+          generatedAt: summary.updatedAt ?? summary.createdAt,
+        }),
       ].join("\n"),
     );
   }
@@ -2360,10 +2649,52 @@ export class BotApplication {
       groupConfig.groupId,
       [
         `${label} 的群聊画像：`,
-        buildProfileShortSummary(summary),
-        buildAdminProfileHint(this.adminPublicBaseUrl, groupConfig.groupId, target.userId, "overall"),
+        await this.buildConfiguredProfileShortSummary(summary),
+        await this.buildPublicProfileShareHint({
+          groupConfig,
+          userId: target.userId,
+          type: "overall",
+          summary,
+        }),
       ].join("\n"),
     );
+  }
+
+  private async buildPublicProfileShareHint(args: {
+    groupConfig: GroupBotConfig;
+    userId: string;
+    type: "overall" | "yesterday";
+    summary: string;
+    sourceMemoryCount?: number;
+    generatedAt?: string;
+  }): Promise<string> {
+    const label = args.type === "yesterday" ? "昨日画像" : "群聊画像";
+    if (!this.profileRecordStore || !this.adminPublicBaseUrl) {
+      return `完整${label}链接生成失败，请稍后重试`;
+    }
+    try {
+      const record = await this.profileRecordStore.create({
+        groupId: args.groupConfig.groupId,
+        userId: args.userId,
+        type: args.type,
+        summary: args.summary,
+        sourceMemoryCount: args.sourceMemoryCount ?? 0,
+        generatedAt: args.generatedAt,
+        createdBy: "bot_command",
+      });
+      if (!record.shareToken) {
+        return `完整${label}链接生成失败，请稍后重试`;
+      }
+      return `完整${label}：${buildPublicProfileShareUrl(this.adminPublicBaseUrl, record.shareToken)}`;
+    } catch (error) {
+      logWarn("Failed to create public profile record.", {
+        groupId: args.groupConfig.groupId,
+        userId: args.userId,
+        type: args.type,
+        error: (error as Error).message,
+      });
+      return `完整${label}链接生成失败，请稍后重试`;
+    }
   }
 
   private async recordDailyReportMessage(
@@ -2388,6 +2719,25 @@ export class BotApplication {
     });
   }
 
+  private async buildConfiguredProfileShortSummary(summary: string): Promise<string> {
+    return buildProfileShortSummary(summary, await this.getProfileShortSummaryMaxChars());
+  }
+
+  private async getProfileShortSummaryMaxChars(): Promise<number> {
+    if (!this.systemSettingsStore) {
+      return 140;
+    }
+    try {
+      const settings = await this.systemSettingsStore.get();
+      return settings.profileShortSummaryMaxChars;
+    } catch (error) {
+      logWarn("Failed to load profile short summary limit; using default.", {
+        error: (error as Error).message,
+      });
+      return 140;
+    }
+  }
+
   private isLiveChatUser(groupConfig: GroupBotConfig, userId: string): boolean {
     return groupConfig.liveChatUserIds.includes(userId);
   }
@@ -2401,13 +2751,20 @@ export class BotApplication {
     event: NapcatGroupMessageEvent,
     parsedMessage: ReturnType<typeof parseGroupMessage>,
   ): void {
-    if (!this.groupMemoryCandidateService || !parsedMessage.text || parsedMessage.images.length > 0) {
+    const userId = String(event.user_id);
+    if (
+      !this.groupMemoryCandidateService ||
+      groupConfig.enabled === false ||
+      (groupConfig.memoryDisabledUserIds ?? []).includes(userId) ||
+      !parsedMessage.text ||
+      parsedMessage.images.length > 0
+    ) {
       return;
     }
 
     this.groupMemoryCandidateService.queueMessage({
       groupId: groupConfig.groupId,
-      userId: String(event.user_id),
+      userId,
       userName: resolveSenderName(event),
       text: parsedMessage.text,
       timestamp: new Date().toISOString(),
@@ -2485,6 +2842,17 @@ export class BotApplication {
       });
       return [];
     }
+  }
+
+  private async getEnabledGroupConfigs(): Promise<GroupBotConfig[]> {
+    const service = this.groupConfigService as GroupConfigService & {
+      getEnabledGroups?: () => Promise<GroupBotConfig[]>;
+    };
+    if (typeof service.getEnabledGroups === "function") {
+      return service.getEnabledGroups();
+    }
+    const groups = await this.groupConfigService.getAll();
+    return groups.filter((group) => group.enabled !== false);
   }
 
   private async buildMemberProfiles(groupConfig: GroupBotConfig) {
@@ -2612,7 +2980,7 @@ export class BotApplication {
     }
 
     this.opsAlertState.sendFailureAlertActive = true;
-    const groups = (await this.groupConfigService.getAll()).filter((group) => group.opsAlertsEnabled !== false);
+    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled !== false);
     await this.sendOpsAlertToGroups({
       groups,
       type: "send-failure",
@@ -2635,7 +3003,7 @@ export class BotApplication {
       return;
     }
 
-    const groups = (await this.groupConfigService.getAll()).filter((group) => group.opsAlertsEnabled !== false);
+    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled !== false);
     await this.sendOpsAlertToGroups({
       groups,
       type: "send-recovered",
@@ -2867,6 +3235,110 @@ function extractRepeatableText(message: NapcatGroupMessageEvent["message"], botQ
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function readRuntimeCommands(store?: SystemSettingsStore): Promise<SystemCommandConfig[]> {
+  if (!store) {
+    return [];
+  }
+  try {
+    return (await store.get()).commands;
+  } catch (error) {
+    logWarn("Failed to read runtime command settings, using built-in commands.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+function matchRuntimeCommand(
+  commandText: string,
+  commands: SystemCommandConfig[],
+  commandId: RuntimeCommandId,
+): RuntimeCommandMatch | undefined {
+  const spec = RUNTIME_COMMAND_SPECS[commandId];
+  const configured = commands.find((command) => command.id === commandId);
+  if (configured?.enabled === false) {
+    return undefined;
+  }
+
+  if (commandId === "mute") {
+    return matchMuteRuntimeCommand(commandText, configured);
+  }
+
+  const prefixes = configured
+    ? [configured.primary, ...configured.aliases]
+    : [spec.builtinPrefix, ...spec.builtinAliases];
+  return matchCommandPrefix(commandText, normalizeCommandPrefixes(prefixes), spec.builtinPrefix);
+}
+
+function isRuntimeCommandEnabled(commands: SystemCommandConfig[], commandId: RuntimeCommandId): boolean {
+  const configured = commands.find((command) => command.id === commandId);
+  return configured?.enabled !== false;
+}
+
+function runtimeCommandPrimary(commands: SystemCommandConfig[], commandId: RuntimeCommandId): string {
+  const configured = commands.find((command) => command.id === commandId);
+  return configured?.primary?.trim() || RUNTIME_COMMAND_SPECS[commandId].builtinPrefix;
+}
+
+function normalizeCommandPrefixes(prefixes: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const prefix of prefixes) {
+    const value = prefix.replace(/\s+/g, " ").trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    normalized.push(value);
+  }
+  return normalized.sort((left, right) => right.length - left.length);
+}
+
+function matchCommandPrefix(
+  commandText: string,
+  prefixes: string[],
+  builtinPrefix: string,
+): RuntimeCommandMatch | undefined {
+  const normalized = commandText.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  for (const prefix of prefixes) {
+    if (normalized === prefix) {
+      return { matchedPrefix: prefix, suffix: "", rewrittenText: builtinPrefix };
+    }
+    if (normalized.startsWith(`${prefix} `)) {
+      const suffix = normalized.slice(prefix.length).trim();
+      return {
+        matchedPrefix: prefix,
+        suffix,
+        rewrittenText: `${builtinPrefix} ${suffix}`.trim(),
+      };
+    }
+    if (prefix.startsWith("#") && normalized.startsWith(prefix) && normalized.length > prefix.length) {
+      const nextChar = normalized[prefix.length];
+      if (nextChar && !nextChar.startsWith("#")) {
+        const suffix = normalized.slice(prefix.length).trim();
+        return {
+          matchedPrefix: prefix,
+          suffix,
+          rewrittenText: `${builtinPrefix}${suffix}`.trim(),
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function matchMuteRuntimeCommand(commandText: string, configured?: SystemCommandConfig): RuntimeCommandMatch | undefined {
+  const mutePrefixes = normalizeCommandPrefixes([configured?.primary ?? MUTE_COMMAND]);
+  const unmutePrefixes = normalizeCommandPrefixes(configured ? configured.aliases : [UNMUTE_COMMAND]);
+  return matchCommandPrefix(commandText, mutePrefixes, MUTE_COMMAND)
+    ?? matchCommandPrefix(commandText, unmutePrefixes, UNMUTE_COMMAND);
 }
 
 function isHelpCommand(commandText: string): boolean {
@@ -3283,6 +3755,25 @@ function isScheduledMinute(date: Date, hour: number, minute: number): boolean {
   return get("hour") === hour && get("minute") === minute;
 }
 
+function isScheduledClockMinute(date: Date, time: string): boolean {
+  const match = /^(?<hour>[01]\d|2[0-3]):(?<minute>[0-5]\d)$/.exec(time);
+  if (!match?.groups) {
+    return false;
+  }
+  return isScheduledMinute(date, Number(match.groups.hour), Number(match.groups.minute));
+}
+
+function getHongKongDateKey(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 function formatLocalDateTime(date: Date): string {
   return [
     `${date.getMonth() + 1}`.padStart(2, "0"),
@@ -3341,12 +3832,13 @@ function formatDuration(seconds: number): string {
   return parts.join("");
 }
 
-function buildFeatureListMessage(commandText = ""): string {
+function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig[] = []): string {
   const topic = parseHelpTopic(commandText);
-  const sections = buildHelpSections();
+  const helper = createCommandHelpFormatter(commands);
+  const sections = buildHelpSections(helper);
 
   if (!topic) {
-    return buildHelpOverviewMessage(sections);
+    return buildHelpOverviewMessage(sections, helper);
   }
 
   const matchedSection = sections.find((section) => section.aliases.includes(topic));
@@ -3355,9 +3847,9 @@ function buildFeatureListMessage(commandText = ""): string {
       `没找到“${topic}”这个帮助分类`,
       "",
       "可用分类：对话、语音、技能、实时对话、定时任务、日报、节假日、管理员、权限",
-      "示例：#功能 技能",
+      `示例：${helper("help")} 技能`,
       "",
-      buildHelpOverviewMessage(sections),
+      buildHelpOverviewMessage(sections, helper),
     ].join("\n");
   }
 
@@ -3365,7 +3857,7 @@ function buildFeatureListMessage(commandText = ""): string {
     `帮助分类：${matchedSection.title}`,
     ...matchedSection.lines,
     "",
-    "更多帮助：#功能 / #帮助 / #命令",
+    `更多帮助：${helper("help", { includeAliases: true }).join(" / ")}`,
   ].join("\n");
 }
 
@@ -3394,25 +3886,25 @@ type HelpSection = {
   lines: string[];
 };
 
-function buildHelpSections(): HelpSection[] {
+function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
   return [
     {
       title: "对话",
       aliases: ["对话", "聊天", "chat"],
       lines: [
         "1. @机器人 <内容>",
-        "2. #对话 清空",
-        "3. #对话 清空 <QQ号> / 全部",
-        "4. #clear",
+        `2. ${command("conversation")} 清空`,
+        `3. ${command("conversation")} 清空 <QQ号> / 全部`,
+        `4. ${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })}`,
         "作用：使用当前 skill 进行文本对话，或清空当前群上下文",
-        "说明：普通群消息不会触发，必须 @机器人；#clear 需要群管理员或超级管理员",
+        `说明：普通群消息不会触发，必须 @机器人；${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })} 需要群管理员或超级管理员`,
       ],
     },
     {
       title: "语音",
       aliases: ["语音", "tts", "voice"],
       lines: [
-        "1. #语音 <内容>",
+        `1. ${command("voice")} <内容>`,
         "2. @机器人 语音说 <内容>",
         "作用：先生成回复，再把回复转成语音发送",
       ],
@@ -3421,8 +3913,8 @@ function buildHelpSections(): HelpSection[] {
       title: "技能",
       aliases: ["技能", "skill", "skills"],
       lines: [
-        "1. #技能 列表",
-        "2. #技能 切换 <skillId>",
+        `1. ${command("skill")} 列表`,
+        `2. ${command("skill")} 切换 <skillId>`,
         "权限：切换技能需要群管理员或超级管理员",
       ],
     },
@@ -3430,10 +3922,10 @@ function buildHelpSections(): HelpSection[] {
       title: "实时对话",
       aliases: ["实时对话", "实时", "live", "livechat"],
       lines: [
-        "1. #实时对话 列表",
-        "2. #实时对话 添加 <QQ号>",
-        "3. #实时对话 移除 <QQ号>",
-        "4. #实时对话 间隔 <分钟>",
+        `1. ${command("live_chat")} 列表`,
+        `2. ${command("live_chat")} 添加 <QQ号>`,
+        `3. ${command("live_chat")} 移除 <QQ号>`,
+        `4. ${command("live_chat")} 间隔 <分钟>`,
       ],
     },
     {
@@ -3441,11 +3933,11 @@ function buildHelpSections(): HelpSection[] {
       aliases: ["定时任务", "提醒", "reminder"],
       lines: [
         "1. @机器人 设置定时任务一个小时提醒群友喝水",
-        "2. #定时任务 列表",
-        "3. #定时任务 添加 每小时提醒群友喝水",
-        "4. #定时任务 修改 <任务ID> 每30分钟提醒群友喝水",
-        "5. #定时任务 删除 <任务ID>",
-        "6. #定时任务 状态 / 开启 / 关闭",
+        `2. ${command("scheduled_reminder")} 列表`,
+        `3. ${command("scheduled_reminder")} 添加 每小时提醒群友喝水`,
+        `4. ${command("scheduled_reminder")} 修改 <任务ID> 每30分钟提醒群友喝水`,
+        `5. ${command("scheduled_reminder")} 删除 <任务ID>`,
+        `6. ${command("scheduled_reminder")} 状态 / 开启 / 关闭`,
         "作用：按固定间隔在当前群发送提醒，每次尽量换不同说法",
         "限制：定时任务仅在工作日 9:00-18:00 范围内触发",
       ],
@@ -3454,36 +3946,36 @@ function buildHelpSections(): HelpSection[] {
       title: "日报",
       aliases: ["日报", "report"],
       lines: [
-        "1. #日报 状态",
-        "2. #日报 发送",
-        "3. #日报 开启 / 关闭",
-        "4. #日报 时间 <HH:mm>",
+        `1. ${command("daily_report")} 状态`,
+        `2. ${command("daily_report")} 发送`,
+        `3. ${command("daily_report")} 开启 / 关闭`,
+        `4. ${command("daily_report")} 时间 <HH:mm>`,
       ],
     },
     {
       title: "节假日",
       aliases: ["节假日", "假日", "holiday"],
       lines: [
-        "1. #节假日",
-        "2. #节假日 状态",
-        "3. #节假日 发送",
-        "4. #节假日 开启 / 关闭 / 时间 <HH:mm>",
+        `1. ${command("holiday_countdown")}`,
+        `2. ${command("holiday_countdown")} 状态`,
+        `3. ${command("holiday_countdown")} 发送`,
+        `4. ${command("holiday_countdown")} 开启 / 关闭 / 时间 <HH:mm>`,
       ],
     },
     {
       title: "管理员",
       aliases: ["管理员", "管理", "admin"],
       lines: [
-        "1. #管理员 列表",
-        "2. #管理员 添加 <QQ号>",
-        "3. #管理员 移除 <QQ号>",
-        "4. #状态",
-        "5. #健康检查",
-        "6. #服务器",
-        "7. #告警 状态 / 开启 / 关闭",
-        "8. #操作日志",
-        "9. #拉黑 <QQ号>",
-        "10. #拉黑 解除 <QQ号>",
+        `1. ${command("admin")} 列表`,
+        `2. ${command("admin")} 添加 <QQ号>`,
+        `3. ${command("admin")} 移除 <QQ号>`,
+        `4. ${command("status")}`,
+        `5. ${command("health")}`,
+        `6. ${command("server")}`,
+        `7. ${command("ops_alert")} 状态 / 开启 / 关闭`,
+        `8. ${command("operation_log")}`,
+        `9. ${command("blacklist")} <QQ号>`,
+        `10. ${command("blacklist")} 解除 <QQ号>`,
         "说明：添加和移除管理员仅超级管理员可用；拉黑命令群管理员可用",
       ],
     },
@@ -3499,27 +3991,56 @@ function buildHelpSections(): HelpSection[] {
   ];
 }
 
-function buildHelpOverviewMessage(sections: HelpSection[]): string {
+function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpFormatter): string {
   return [
     "系统功能总览：",
     "1. 对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
-    "2. 技能：#技能 列表、#技能 切换 <skillId>",
-    "3. 语音：#语音 <内容> 或 @机器人 语音说 <内容>",
-    "4. 实时对话：#实时对话 列表、添加、移除、间隔 <分钟>",
-    "5. 定时任务：#定时任务 列表、添加、修改、删除、状态、开启、关闭",
-    "6. 日报：#日报 状态、发送、开启、关闭、时间 <HH:mm>",
-    "7. 节假日：#节假日、状态、发送、开启、关闭、时间 <HH:mm>",
-    "8. 管理员：#管理员 列表、添加 <QQ号>、移除 <QQ号>",
-    "9. 状态：#状态、#健康检查、#服务器、#告警、#操作日志（管理员）",
-    "10. 闭嘴：#闭嘴 / #说话（管理员）",
-    "11. 黑名单：#拉黑 <QQ号>、#拉黑 解除 <QQ号>",
-    "12. 帮助：#功能、#帮助、#命令 都能调出本列表",
-    "分类帮助：#功能 对话 / 语音 / 技能 / 实时对话 / 定时任务 / 日报 / 节假日 / 管理员 / 权限",
+    `2. 技能：${command("skill")} 列表、${command("skill")} 切换 <skillId>`,
+    `3. 语音：${command("voice")} <内容> 或 @机器人 语音说 <内容>`,
+    `4. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
+    `5. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
+    `6. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
+    `7. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
+    `8. 管理员：${command("admin")} 列表、添加 <QQ号>、移除 <QQ号>`,
+    `9. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（管理员）`,
+    `10. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（管理员）`,
+    `11. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
+    `12. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+    `分类帮助：${command("help")} 对话 / 语音 / 技能 / 实时对话 / 定时任务 / 日报 / 节假日 / 管理员 / 权限`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
     "权限说明：普通成员可用对话、语音、帮助和部分查询；群管理员可用全部系统指令；超级管理员额外可管理管理员",
-    "提示：#功能 / #帮助 / #命令 只会回帮助信息，不会主动触发日报或节假日发送",
+    `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,
     `可用分类：${sections.map((section) => section.title).join("、")}`,
   ].join("\n");
+}
+
+type CommandHelpFormatter = {
+  (commandId: RuntimeCommandId, options?: { alias?: string }): string;
+  (commandId: RuntimeCommandId, options: { includeAliases: true }): string[];
+};
+
+function createCommandHelpFormatter(commands: SystemCommandConfig[]): CommandHelpFormatter {
+  return ((commandId: RuntimeCommandId, options?: { alias?: string; includeAliases?: true }) => {
+    const configured = commands.find((command) => command.id === commandId);
+    const spec = RUNTIME_COMMAND_SPECS[commandId];
+    const primary = configured?.primary?.trim() || spec.builtinPrefix;
+    const builtinAliases = [...spec.builtinAliases];
+    const aliases = normalizeCommandPrefixes(configured ? configured.aliases : builtinAliases);
+
+    if (options?.includeAliases) {
+      return normalizeCommandPrefixes([primary, ...aliases]);
+    }
+
+    if (options?.alias && aliases.includes(options.alias)) {
+      return options.alias;
+    }
+
+    if (options?.alias && builtinAliases.includes(options.alias)) {
+      return options.alias;
+    }
+
+    return primary;
+  }) as CommandHelpFormatter;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3546,12 +4067,13 @@ function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
   return seconds % 60 === 0 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
 }
 
-function buildProfileShortSummary(summary: string): string {
+function buildProfileShortSummary(summary: string, maxChars = 140): string {
   const normalized = summary.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 140) {
+  const safeMaxChars = Math.max(40, Math.min(600, Math.floor(maxChars)));
+  if (normalized.length <= safeMaxChars) {
     return normalized;
   }
-  const clipped = normalized.slice(0, 180);
+  const clipped = normalized.slice(0, safeMaxChars);
   const sentenceEnd = Math.max(
     clipped.lastIndexOf("。"),
     clipped.lastIndexOf("！"),
@@ -3560,34 +4082,23 @@ function buildProfileShortSummary(summary: string): string {
     clipped.lastIndexOf("!"),
     clipped.lastIndexOf("?"),
   );
-  if (sentenceEnd >= 60) {
+  if (sentenceEnd >= Math.min(60, safeMaxChars)) {
     return clipped.slice(0, sentenceEnd + 1).trim();
   }
-  return `${normalized.slice(0, 140).replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim()}。`;
+  return `${normalized.slice(0, safeMaxChars).replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim()}。`;
 }
 
-function buildAdminProfileHint(
-  adminPublicBaseUrl: string | undefined,
-  groupId: string,
-  userId: string,
-  type: "overall" | "yesterday",
-): string {
-  if (!adminPublicBaseUrl) {
-    return "完整画像请到后台成员管理查看。";
-  }
-  try {
-    const url = new URL(adminPublicBaseUrl);
-    url.searchParams.set("view", "members");
-    url.searchParams.set("groupId", groupId);
-    url.searchParams.set("memberQuery", userId);
-    return `完整${type === "yesterday" ? "昨日画像" : "群聊画像"}请到后台成员管理查看：${url.toString()}`;
-  } catch {
-    return "完整画像请到后台成员管理查看。";
-  }
+function buildPublicProfileShareUrl(adminPublicBaseUrl: string, shareToken: string): string {
+  const url = new URL(adminPublicBaseUrl);
+  url.pathname = `/profile/${encodeURIComponent(shareToken)}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
-  return value === "mimo" ? "mimo" : "gpt";
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || "gpt";
 }
 
 function parseLiveChatDelay(raw: string): { unit: "seconds" | "minutes"; value: number } | undefined {

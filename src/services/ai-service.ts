@@ -146,7 +146,7 @@ export class AiService {
       const content = completion.choices[0]?.message?.content?.trim() ?? "";
       const status: AiHealthStatus = {
         ok: true,
-        detail: content ? "画像/记忆模型可用" : "画像/记忆模型调用成功但返回空内容",
+        detail: content ? "画像/记忆模型可用" : "画像/记忆模型接口可用（空内容响应）",
         model: completion.model ?? this.model,
         baseUrl: this.baseURL,
         checkedAt: new Date().toISOString(),
@@ -462,11 +462,12 @@ export class AiService {
             role: "system",
             content: [
               "你是长期记忆语义去重审核器。",
-              "比较候选记忆和已有记忆是否表达同一事实或同一主题。",
+              "比较 candidate 和 existing 是否表达同一事实、同一偏好、同一身份信息或同一主题。",
               "只在同一群、同一类型、同一归属对象已由程序保证的前提下判断语义。",
+              "如果只是换了说法、中文/英文互译、同义表达、概括与具体描述的关系，应判为 duplicate 或 merge，而不是 new。",
               "action 规则：duplicate=候选没有新增实质信息；merge=候选与已有记忆同主题且提供更完整或更新细节；new=候选是不同主题，应新增。",
               "merge 时必须返回简体中文 title 和 content，content 合并已有事实和候选新增细节，不编造。",
-              "只返回 JSON，不要 markdown。",
+              "只返回 JSON，不要 markdown、解释文字或代码块。",
               'Schema: {"action":"duplicate|merge|new","title":"可选中文标题","content":"可选中文内容","reason":"简短原因"}',
             ].join("\n"),
           },

@@ -17,6 +17,7 @@ const baseGroupConfig: GroupBotConfig = {
   liveChatDelayMinutes: 5,
   dailyReportEnabled: true,
   dailyReportTime: "17:59",
+  dailyReportDateRule: "workday",
   dailyReportTopUserCount: 5,
   holidayCountdownEnabled: true,
   holidayCountdownTime: "09:00",
@@ -60,6 +61,70 @@ test("daily report scheduler only fires during the configured minute on weekdays
       await service.shouldSendScheduledReport(
         baseGroupConfig,
         new Date("2026-04-18T17:59:00"),
+      ),
+      false,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("daily report scheduler follows configured date rules", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-date-rule-test-"));
+  const storePath = path.join(tempDir, "daily-report-store.json");
+
+  try {
+    const service = new DailyReportService(
+      new DailyReportStore(storePath),
+      {
+        async generateChatPeriodSummary() {
+          return null;
+        },
+        async generateBroadcastQuip() {
+          return "unused";
+        },
+      } as never,
+    );
+
+    assert.equal(
+      await service.shouldSendScheduledReport(
+        { ...baseGroupConfig, groupId: "all", dailyReportDateRule: "all" },
+        new Date("2026-04-18T17:59:00"),
+      ),
+      true,
+    );
+    assert.equal(
+      await service.shouldSendScheduledReport(
+        { ...baseGroupConfig, groupId: "custom-ok", dailyReportDateRule: "custom", dailyReportWeekdays: [6] },
+        new Date("2026-04-18T17:59:00"),
+      ),
+      true,
+    );
+    assert.equal(
+      await service.shouldSendScheduledReport(
+        { ...baseGroupConfig, groupId: "custom-skip", dailyReportDateRule: "custom", dailyReportWeekdays: [1] },
+        new Date("2026-04-18T17:59:00"),
+      ),
+      false,
+    );
+    assert.equal(
+      await service.shouldSendScheduledReport(
+        { ...baseGroupConfig, groupId: "smart-workday-skip", dailyReportDateRule: "workday" },
+        new Date("2026-01-01T17:59:00"),
+      ),
+      false,
+    );
+    assert.equal(
+      await service.shouldSendScheduledReport(
+        { ...baseGroupConfig, groupId: "smart-workday-adjusted", dailyReportDateRule: "workday" },
+        new Date("2026-01-04T17:59:00"),
+      ),
+      true,
+    );
+    assert.equal(
+      await service.shouldSendScheduledReport(
+        { ...baseGroupConfig, groupId: "smart-holiday-adjusted-skip", dailyReportDateRule: "holiday" },
+        new Date("2026-01-04T17:59:00"),
       ),
       false,
     );

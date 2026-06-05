@@ -13,9 +13,13 @@ const apply = args.apply === true;
 const dataDir = args.dataDir || DEFAULT_DATA_DIR;
 const envPath = args.env || DEFAULT_ENV_PATH;
 const maxAiItems = Number.isFinite(args.maxAiItems) ? Math.max(0, args.maxAiItems) : Number.POSITIVE_INFINITY;
+const maxSemanticChecks = Number.isFinite(args.maxSemanticChecks)
+  ? Math.max(0, args.maxSemanticChecks)
+  : Number.POSITIVE_INFINITY;
 const requestTimeoutMs = Number.isFinite(args.timeoutMs) ? Math.max(1000, args.timeoutMs) : 12000;
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 let aiItemsUsed = 0;
+let semanticChecksUsed = 0;
 
 const env = await readEnv(envPath);
 const profileAi = {
@@ -42,6 +46,7 @@ const report = {
   mergedCandidates: 0,
   regeneratedDailyProfiles: 0,
   skippedAiCalls: 0,
+  semanticChecksUsed: 0,
   warnings: [],
 };
 
@@ -70,9 +75,10 @@ for (const candidate of candidateData.candidates) {
   report.translatedCandidates += 1;
 }
 
+report.regeneratedDailyProfiles = await regenerateTruncatedDailyProfiles(memoryData.memories);
 report.mergedMemories = await mergeDuplicateMemories(memoryData.memories);
 report.mergedCandidates = await mergeDuplicateCandidates(candidateData.candidates);
-report.regeneratedDailyProfiles = await regenerateTruncatedDailyProfiles(memoryData.memories);
+report.semanticChecksUsed = semanticChecksUsed;
 
 if (apply) {
   await writeFile(memoryPath, `${JSON.stringify(memoryData, null, 2)}\n`, "utf8");
@@ -214,6 +220,11 @@ async function regenerateTruncatedDailyProfiles(memories) {
 }
 
 async function judgeRelation(left, right) {
+  if (semanticChecksUsed >= maxSemanticChecks) {
+    report.skippedAiCalls += 1;
+    return "new";
+  }
+  semanticChecksUsed += 1;
   const result = await chatJson([
     {
       role: "system",
@@ -435,6 +446,7 @@ function parseArgs(values) {
     else if (value === "--data-dir") parsed.dataDir = values[++index];
     else if (value === "--env") parsed.env = values[++index];
     else if (value === "--max-ai-items") parsed.maxAiItems = Number(values[++index]);
+    else if (value === "--max-semantic-checks") parsed.maxSemanticChecks = Number(values[++index]);
     else if (value === "--timeout-ms") parsed.timeoutMs = Number(values[++index]);
   }
   return parsed;

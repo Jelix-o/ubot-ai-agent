@@ -9,6 +9,7 @@ import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
+import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
   AiReply,
@@ -23,6 +24,8 @@ import type {
   NapcatGroupMessageEvent,
   ReferencedMessage,
   SkillDefinition,
+  SystemCommandConfig,
+  SystemSettings,
 } from "./types.js";
 
 class FakeTransport implements MessageTransport {
@@ -125,7 +128,7 @@ class FakeGroupConfigService {
     return cloneGroup(group);
   }
 
-  async updateReplyModelMode(groupId: string, mode: "gpt" | "mimo"): Promise<GroupBotConfig> {
+  async updateReplyModelMode(groupId: string, mode: string): Promise<GroupBotConfig> {
     const group = this.requireGroup(groupId);
     group.replyModelMode = mode;
     return cloneGroup(group);
@@ -235,6 +238,36 @@ class FakeGroupConfigService {
       throw new Error("Group not found");
     }
     return group;
+  }
+}
+
+class FakeSystemSettingsStore {
+  constructor(
+    private readonly commands: SystemCommandConfig[] = [],
+    private readonly defaultTriggerKeywords: SystemSettings["defaultTriggerKeywords"] = [{ keyword: "乘风", enabled: true }],
+    private readonly models: SystemSettings["models"] = [],
+    private readonly profileShortSummaryMaxChars = 140,
+    private readonly scheduler: Partial<Pick<SystemSettings, "dailyProfileReviewEnabled" | "dailyProfileReviewTime" | "memoryDedupEnabled" | "memoryDedupTime">> = {},
+  ) {}
+
+  async get(): Promise<SystemSettings> {
+    return {
+      profileSummaryMaxChars: 1800,
+      profileShortSummaryMaxChars: this.profileShortSummaryMaxChars,
+      dailyProfileReviewEnabled: this.scheduler.dailyProfileReviewEnabled ?? true,
+      dailyProfileReviewTime: this.scheduler.dailyProfileReviewTime ?? "00:00",
+      memoryDedupEnabled: this.scheduler.memoryDedupEnabled ?? true,
+      memoryDedupTime: this.scheduler.memoryDedupTime ?? "23:00",
+      defaultTriggerKeywords: this.defaultTriggerKeywords,
+      models: this.models,
+      selectedModelIds: {},
+      commands: this.commands,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  async getInternal(): Promise<SystemSettings> {
+    return this.get();
   }
 }
 
@@ -540,13 +573,15 @@ class FakeGroupMemoryCandidateService {
   queued: Array<{ groupId: string; userId: string; userName: string; text: string; timestamp: string }> = [];
   candidates: GroupMemoryCandidate[] = [];
   flushAllCalls = 0;
+  flushAllGroupIds: string[] | undefined;
 
   queueMessage(message: { groupId: string; userId: string; userName: string; text: string; timestamp: string }): void {
     this.queued.push(message);
   }
 
-  async flushAll(): Promise<Array<{ groupId: string; messageCount: number; candidateCount: number; autoApprovedCount: number; pendingCount: number }>> {
+  async flushAll(groupIds?: string[]): Promise<Array<{ groupId: string; messageCount: number; candidateCount: number; autoApprovedCount: number; pendingCount: number }>> {
     this.flushAllCalls += 1;
+    this.flushAllGroupIds = groupIds;
     return [];
   }
 
@@ -705,8 +740,10 @@ function createApp(options?: {
   knowledgeBaseStore?: FakeKnowledgeBaseStore;
   groupMemoryCandidateService?: FakeGroupMemoryCandidateService;
   dailyProfileReviewService?: FakeDailyProfileReviewService;
+  profileRecordStore?: ProfileRecordStore;
   allowNapCatAiVoiceFallback?: boolean;
   skills?: SkillDefinition[];
+  systemSettingsStore?: FakeSystemSettingsStore;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -723,6 +760,7 @@ function createApp(options?: {
   knowledgeBaseStore: FakeKnowledgeBaseStore;
   groupMemoryCandidateService: FakeGroupMemoryCandidateService;
   dailyProfileReviewService: FakeDailyProfileReviewService;
+  profileRecordStore: ProfileRecordStore;
 } {
   const transport = options?.transport ?? new FakeTransport();
   const groupConfigService =
@@ -775,6 +813,8 @@ function createApp(options?: {
     options?.groupMemoryCandidateService ?? new FakeGroupMemoryCandidateService();
   const dailyProfileReviewService =
     options?.dailyProfileReviewService ?? new FakeDailyProfileReviewService();
+  const profileRecordStore =
+    options?.profileRecordStore ?? new ProfileRecordStore(`data/test-profile-records-${Date.now()}-${Math.random()}.json`);
 
   const app = new BotApplication(
     transport,
@@ -801,6 +841,8 @@ function createApp(options?: {
       gpt: "gpt-5.5",
       mimo: "mimo-v2.5-pro",
     },
+    options?.systemSettingsStore as never,
+    profileRecordStore,
   );
 
   return {
@@ -819,6 +861,7 @@ function createApp(options?: {
     knowledgeBaseStore,
     groupMemoryCandidateService,
     dailyProfileReviewService,
+    profileRecordStore,
   };
 }
 
@@ -1724,6 +1767,202 @@ test("supports compact reply model commands", async () => {
   assert.match(transport.sent[1]?.text ?? "", /Mimo/);
 });
 
+test("uses configured command primary and aliases at runtime", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      liveChatDelayMinutes: 5,
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+    },
+  ]);
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([
+      {
+        id: "model",
+        title: "模型",
+        primary: "#模式",
+        aliases: ["#模型选择"],
+        permission: "group_admin",
+        enabled: true,
+        help: "查看或切换当前群回复模型",
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模式切换 mimo" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型选择状态" } }], 99999));
+
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "mimo");
+  assert.match(transport.sent[0]?.text ?? "", /已切换群聊回复模型/);
+  assert.match(transport.sent[1]?.text ?? "", /当前群聊回复模型/);
+});
+
+test("disabled configured command does not fall back to built-in prefix", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      liveChatDelayMinutes: 5,
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+    },
+  ]);
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([
+      {
+        id: "model",
+        title: "模型",
+        primary: "#模式",
+        aliases: [],
+        permission: "group_admin",
+        enabled: false,
+        help: "查看或切换当前群回复模型",
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型切换 mimo" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模式切换 mimo" } }], 99999));
+
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, undefined);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("disabled conversation command disables built-in clear alias", async () => {
+  const conversationStore = new FakeConversationStore();
+  conversationStore.turnsByKey[toConversationKey("67890", "20001")] = [{
+    role: "user",
+    content: "hello",
+    groupId: "67890",
+    timestamp: new Date().toISOString(),
+  }];
+  const { app, transport } = createApp({
+    conversationStore,
+    systemSettingsStore: new FakeSystemSettingsStore([
+      {
+        id: "conversation",
+        title: "对话",
+        primary: "#上下文",
+        aliases: ["#清上下文"],
+        permission: "member",
+        enabled: false,
+        help: "清空或管理当前群对话上下文",
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#clear" } }], 20001));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#上下文 清空" } }], 20001));
+
+  assert.deepEqual(conversationStore.clearedUsers, []);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("runtime mute command supports configured primary and alias", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+    },
+  ]);
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([
+      {
+        id: "mute",
+        title: "静默模式",
+        primary: "#安静",
+        aliases: ["#恢复"],
+        permission: "group_admin",
+        enabled: true,
+        help: "让机器人进入或退出静默模式",
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#安静" } }], 99999));
+  assert.equal(groupConfigService.groups[0]?.botMuted, true);
+  assert.match(transport.sent.at(-1)?.text ?? "", /机器人已闭嘴/);
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#恢复" } }], 99999));
+  assert.equal(groupConfigService.groups[0]?.botMuted, false);
+  assert.match(transport.sent.at(-1)?.text ?? "", /机器人已恢复说话/);
+});
+
+test("disabled runtime mute command does not fall back to built-in prefixes", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+    },
+  ]);
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([
+      {
+        id: "mute",
+        title: "静默模式",
+        primary: "#安静",
+        aliases: ["#恢复"],
+        permission: "group_admin",
+        enabled: false,
+        help: "让机器人进入或退出静默模式",
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#安静" } }], 99999));
+
+  assert.equal(groupConfigService.groups[0]?.botMuted, undefined);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("uses system default trigger keywords when group has no trigger keyword override", async () => {
+  const { app, transport, aiService } = createApp({
+    systemSettingsStore: new FakeSystemSettingsStore([], [
+      { keyword: "小U", enabled: true },
+      { keyword: "禁用词", enabled: false },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "小U 今天有什么安排" } }], 20001));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "禁用词 不应该触发" } }], 20001));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.userInput, "小U 今天有什么安排");
+  assert.equal(transport.sent.length, 1);
+});
+
 test("uses mimo service for replies when group reply model mode is mimo", async () => {
   const gptAiService = new FakeAiService(async () => ({
     text: "GPT reply",
@@ -1764,6 +2003,71 @@ test("uses mimo service for replies when group reply model mode is mimo", async 
   assert.equal(gptAiService.calls.length, 0);
   assert.equal(mimoAiService.calls.length, 1);
   assert.equal(transport.sent[0]?.text, "Mimo reply");
+});
+
+test("shows configured reply model in model status list", async () => {
+  const { app, transport } = createApp({
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [
+      {
+        id: "reply-runtime",
+        name: "自定义回复模型",
+        shortName: "reply-pro",
+        baseUrl: "https://reply.example/v1",
+        model: "reply-runtime-model",
+        purpose: "reply",
+        hasApiKey: true,
+        enabled: true,
+        createdAt: "2026-06-04T00:00:00.000Z",
+        updatedAt: "2026-06-04T00:00:00.000Z",
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型状态" } }], 99999));
+
+  assert.match(transport.sent.at(-1)?.text ?? "", /reply-pro（reply-runtime）/);
+});
+
+test("allows enabled configured reply model in switch list", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant", "teacher"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      liveChatDelayMinutes: 5,
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+      holidayCountdownEnabled: true,
+      holidayCountdownTime: "09:00",
+    },
+  ]);
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [
+      {
+        id: "reply-pro",
+        name: "自定义回复模型",
+        shortName: "reply-pro",
+        baseUrl: "https://reply.example/v1",
+        model: "reply-runtime-model",
+        purpose: "reply",
+        hasApiKey: true,
+        enabled: true,
+        createdAt: "2026-06-04T00:00:00.000Z",
+        updatedAt: "2026-06-04T00:00:00.000Z",
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型状态" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型切换 reply-pro" } }], 99999));
+
+  assert.match(transport.sent[0]?.text ?? "", /reply-pro/);
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "reply-pro");
+  assert.match(transport.sent[1]?.text ?? "", /reply-pro/);
 });
 
 test("falls back to mimo when gpt reply model fails", async () => {
@@ -2073,6 +2377,35 @@ test("sends voice reply for voice command", async () => {
   assert.equal(transport.sent.length, 0);
 });
 
+test("disabled voice command also blocks at-mention voice wording", async () => {
+  const { app, transport, aiService, ttsService } = createApp({
+    systemSettingsStore: new FakeSystemSettingsStore([
+      {
+        id: "voice",
+        title: "语音",
+        primary: "#语音",
+        aliases: [],
+        permission: "member",
+        enabled: false,
+        help: "生成语音回复",
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
+  });
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " 语音说 现在怎么做" } },
+    ]),
+  );
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(ttsService.calls.length, 0);
+  assert.equal(transport.sent.length, 0);
+  assert.equal(transport.records.length, 0);
+});
+
 test("falls back to text when both tts and ai voice fail", async () => {
   const transport = new FakeTransport();
   transport.sendGroupAiRecord = async () => {
@@ -2103,6 +2436,35 @@ test("falls back to text when both tts and ai voice fail", async () => {
   assert.equal(transport.aiRecords.length, 0);
   assert.equal(transport.sent[0]?.text, "语音发送失败，我先用文字回复你");
   assert.match(transport.sent[1]?.text ?? "", /先说结论/);
+});
+
+test("group voice reply switch blocks voice command without affecting text replies", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+      voiceReplyEnabled: false,
+    },
+  ]);
+  const { app, transport, aiService, ttsService } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音 现在怎么做" } }]));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 正常问一句" } },
+  ]));
+
+  assert.equal(ttsService.calls.length, 0);
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.userInput, "正常问一句");
+  assert.equal(transport.records.length, 0);
+  assert.equal(transport.sent[0]?.text, "AI reply");
 });
 
 test("manages live chat users through commands", async () => {
@@ -3124,6 +3486,44 @@ test("creates scheduled reminder through natural bot mention and sends due remin
   });
 });
 
+test("disabled scheduled reminder command blocks natural bot mention creation", async () => {
+  const aiService = new FakeAiService(async () => ({
+    text: "AI reply",
+    model: "test-model",
+    skillId: "assistant",
+  }));
+  await withTestScheduledReminderService(aiService, async (scheduledReminderService) => {
+    const { app, transport } = createApp({
+      aiService,
+      scheduledReminderService,
+      systemSettingsStore: new FakeSystemSettingsStore([
+        {
+          id: "scheduled_reminder",
+          title: "定时任务",
+          primary: "#定时任务",
+          aliases: [],
+          permission: "group_admin",
+          enabled: false,
+          help: "管理群定时任务",
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    });
+
+    await withMockedNow(Date.parse("2026-05-27T01:00:00.000Z"), async () => {
+      await app.handleGroupMessage(
+        createEvent([
+          { type: "at", data: { qq: "12345" } },
+          { type: "text", data: { text: " 设置定时任务一个小时提醒群友喝水 " } },
+        ]),
+      );
+    });
+
+    assert.equal(transport.sent.length, 0);
+    assert.equal((await scheduledReminderService.listGroupTasks("67890")).length, 0);
+  });
+});
+
 test("manages scheduled reminder list and delete commands", async () => {
   const aiService = new FakeAiService(async () => ({
       text: "AI reply",
@@ -3334,6 +3734,153 @@ test("queues ordinary messages for memory candidates but skips commands", async 
   assert.equal(groupMemoryCandidateService.queued[0]?.text, "我以后喜欢简短回答");
 });
 
+test("disabled group ignores replies reports and memory collection", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      enabled: false,
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: ["20001"],
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+      triggerKeywords: [{ keyword: "乘风", enabled: true }],
+    },
+  ]);
+  const dailyReportService = new FakeDailyReportService();
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const { app, transport, aiService } = createApp({
+    groupConfigService,
+    dailyReportService,
+    groupMemoryCandidateService,
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 正常问一句" } },
+  ]));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "乘风 今天在吗" } }]));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "普通聊天要进日报和记忆吗" } }]));
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, 0);
+  assert.equal(dailyReportService.recorded.length, 0);
+  assert.equal(groupMemoryCandidateService.queued.length, 0);
+});
+
+test("disabled group is excluded from automatic reports reminders alerts and memory flush", async () => {
+  const aiService = new FakeAiService(async () => ({
+    text: "AI reply",
+    model: "test-model",
+    skillId: "assistant",
+  }));
+  const dailyReportService = new FakeDailyReportService(
+    async () => true,
+    async () => "daily report should not send",
+  );
+  const holidayCountdownService = new FakeHolidayCountdownService(
+    async () => true,
+    () => "holiday countdown should not send",
+  );
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const transport = new FakeTransport();
+  await withTestScheduledReminderService(aiService, async (scheduledReminderService) => {
+    const groupConfigService = new FakeGroupConfigService([
+      {
+        groupId: "67890",
+        enabled: false,
+        currentSkillId: "assistant",
+        allowedSkillIds: ["assistant"],
+        switcherUserIds: ["99999"],
+        liveChatUserIds: [],
+        dailyReportEnabled: true,
+        dailyReportTime: "18:00",
+        dailyReportTopUserCount: 3,
+        holidayCountdownEnabled: true,
+        holidayCountdownTime: "09:00",
+        scheduledRemindersEnabled: true,
+        opsAlertsEnabled: true,
+      },
+    ]);
+    await scheduledReminderService.createTask({
+      groupId: "67890",
+      creatorUserId: "99999",
+      request: { intervalMinutes: 60, topic: "hidden group reminder" },
+      now: new Date("2026-05-27T01:00:00.000Z"),
+    });
+    const { app } = createApp({
+      transport,
+      groupConfigService,
+      aiService,
+      dailyReportService,
+      holidayCountdownService,
+      scheduledReminderService,
+      groupMemoryCandidateService,
+    });
+
+    await (app as unknown as { runDailyReportTick(now?: Date): Promise<void> }).runDailyReportTick(
+      new Date("2026-05-27T02:00:00.000Z"),
+    );
+    await (app as unknown as { runHolidayCountdownTick(now?: Date): Promise<void> }).runHolidayCountdownTick(
+      new Date("2026-05-27T02:00:00.000Z"),
+    );
+    await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
+      new Date("2026-05-27T02:00:00.000Z"),
+    );
+    await (app as unknown as { runOpsAlertTick(options?: { now?: Date; includeStartup?: boolean }): Promise<void> }).runOpsAlertTick({
+      now: new Date("2026-05-27T02:00:00.000Z"),
+      includeStartup: true,
+    });
+    await (app as unknown as { runMemoryCandidateFlushTick(): Promise<void> }).runMemoryCandidateFlushTick();
+
+    assert.equal(transport.sent.length, 0);
+    assert.equal(dailyReportService.reports.length, 0);
+    assert.equal(dailyReportService.marked.length, 0);
+    assert.equal(holidayCountdownService.marked.length, 0);
+    assert.equal(groupMemoryCandidateService.flushAllCalls, 1);
+    assert.deepEqual(groupMemoryCandidateService.flushAllGroupIds, []);
+  });
+});
+
+test("disabled member memory collection still allows reports and replies", async () => {
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      dailyReportEnabled: true,
+      dailyReportTime: "18:00",
+      dailyReportTopUserCount: 3,
+      memoryDisabledUserIds: ["20001"],
+    },
+  ]);
+  const dailyReportService = new FakeDailyReportService();
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const { app, transport, aiService } = createApp({
+    groupConfigService,
+    dailyReportService,
+    groupMemoryCandidateService,
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "我以后喜欢简短回答" } }]));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 正常问一句" } },
+  ]));
+
+  assert.equal(groupMemoryCandidateService.queued.length, 0);
+  assert.equal(dailyReportService.recorded.length, 2);
+  assert.equal(dailyReportService.recorded[0]?.text, "我以后喜欢简短回答");
+  assert.equal(dailyReportService.recorded[1]?.text, "正常问一句");
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.userInput, "正常问一句");
+  assert.equal(transport.sent[0]?.text, "AI reply");
+});
+
 test("periodically flushes queued memory candidate messages", async () => {
   const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
   const { app } = createApp({ groupMemoryCandidateService });
@@ -3341,6 +3888,34 @@ test("periodically flushes queued memory candidate messages", async () => {
   await (app as unknown as { runMemoryCandidateFlushTick(): Promise<void> }).runMemoryCandidateFlushTick();
 
   assert.equal(groupMemoryCandidateService.flushAllCalls, 1);
+  assert.deepEqual(groupMemoryCandidateService.flushAllGroupIds, ["67890"]);
+});
+
+test("memory candidate flush excludes disabled groups", async () => {
+  const groupMemoryCandidateService = new FakeGroupMemoryCandidateService();
+  const groupConfigService = new FakeGroupConfigService([
+    {
+      groupId: "67890",
+      enabled: false,
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+    },
+    {
+      groupId: "24680",
+      enabled: true,
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+    },
+  ]);
+  const { app } = createApp({ groupConfigService, groupMemoryCandidateService });
+
+  await (app as unknown as { runMemoryCandidateFlushTick(): Promise<void> }).runMemoryCandidateFlushTick();
+
+  assert.deepEqual(groupMemoryCandidateService.flushAllGroupIds, ["24680"]);
 });
 
 test("skips memory candidate flush when profile AI is unhealthy", async () => {
@@ -3391,7 +3966,7 @@ test("profile commands allow self and admin queries with member aliases", async 
     updatedAt: "2026-06-02T00:01:00.000Z",
     enabled: true,
   });
-  const { app, transport } = createApp({ groupConfigService, dailyProfileReviewService });
+  const { app, transport, profileRecordStore } = createApp({ groupConfigService, dailyProfileReviewService });
 
   await withMockedNow(Date.parse("2026-06-02T00:10:00+08:00"), async () => {
     await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#昨日画像" } }], 20001));
@@ -3400,8 +3975,33 @@ test("profile commands allow self and admin queries with member aliases", async 
 
   assert.match(transport.sent[0]?.text ?? "", /Tester 昨日新增画像总结/);
   assert.match(transport.sent[1]?.text ?? "", /整体画像总结/);
+  assert.match(transport.sent[0]?.text ?? "", /完整昨日画像：https:\/\/bot\.9958\.uk\/profile\/[A-Za-z0-9_-]{32,}/);
+  assert.match(transport.sent[1]?.text ?? "", /完整群聊画像：https:\/\/bot\.9958\.uk\/profile\/[A-Za-z0-9_-]{32,}/);
+  assert.doesNotMatch(transport.sent[0]?.text ?? "", /view=members/);
+  assert.doesNotMatch(transport.sent[1]?.text ?? "", /view=members/);
+  const yesterdayToken = (transport.sent[0]?.text ?? "").match(/\/profile\/([A-Za-z0-9_-]{32,})/)?.[1];
+  const overallToken = (transport.sent[1]?.text ?? "").match(/\/profile\/([A-Za-z0-9_-]{32,})/)?.[1];
+  assert.ok(yesterdayToken);
+  assert.ok(overallToken);
+  assert.equal((await profileRecordStore.getByShareToken(yesterdayToken))?.summary, "Tester 昨日新增画像总结");
+  assert.equal((await profileRecordStore.getByShareToken(overallToken))?.summary, "整体画像总结");
   assert.equal(dailyProfileReviewService.getOrCreateCalls[0]?.userId, "20001");
   assert.equal(dailyProfileReviewService.overallCalls[0]?.userId, "20001");
+});
+
+test("profile commands honor configured short summary limit", async () => {
+  const dailyProfileReviewService = new FakeDailyProfileReviewService();
+  dailyProfileReviewService.overallSummary = "第一句展示群聊画像重点。第二句包含更多工作偏好和聊天习惯。第三句应该被短摘要配置裁掉。";
+  const { app, transport } = createApp({
+    dailyProfileReviewService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [], 40),
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#群聊画像" } }], 20001));
+
+  const text = transport.sent[0]?.text ?? "";
+  assert.match(text, /第一句展示群聊画像重点。/);
+  assert.doesNotMatch(text, /第三句应该被短摘要配置裁掉/);
 });
 
 test("profile commands allow any member to query others and report ambiguous targets", async () => {
@@ -3436,6 +4036,26 @@ test("daily profile review tick runs at Hong Kong midnight", async () => {
   );
   await (app as unknown as { runDailyProfileReviewTick(now?: Date): Promise<void> }).runDailyProfileReviewTick(
     new Date("2026-06-02T00:00:10+08:00"),
+  );
+
+  assert.equal(dailyProfileReviewService.reviewCalls.length, 1);
+  assert.equal(dailyProfileReviewService.reviewCalls[0]?.dateKey, "2026-06-01");
+});
+
+test("daily profile review tick follows system schedule settings", async () => {
+  const dailyProfileReviewService = new FakeDailyProfileReviewService();
+  const { app } = createApp({
+    dailyProfileReviewService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [], 140, {
+      dailyProfileReviewTime: "01:30",
+    }),
+  });
+
+  await (app as unknown as { runDailyProfileReviewTick(now?: Date): Promise<void> }).runDailyProfileReviewTick(
+    new Date("2026-06-02T00:00:10+08:00"),
+  );
+  await (app as unknown as { runDailyProfileReviewTick(now?: Date): Promise<void> }).runDailyProfileReviewTick(
+    new Date("2026-06-02T01:30:10+08:00"),
   );
 
   assert.equal(dailyProfileReviewService.reviewCalls.length, 1);

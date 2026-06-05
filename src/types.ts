@@ -19,6 +19,13 @@ export interface NapcatGroupMember {
   role?: string;
 }
 
+export interface NapcatGroupInfo {
+  group_id: number;
+  group_name?: string;
+  member_count?: number;
+  max_member_count?: number;
+}
+
 export interface NapcatGroupMessageEvent {
   post_type: "message";
   message_type: "group";
@@ -170,6 +177,7 @@ export interface GroupMemberProfile {
   hasManualIdentity: boolean;
   memoryCount: number;
   pendingCandidateCount: number;
+  memoryDisabled?: boolean;
 }
 
 export interface AiInteractionTarget {
@@ -198,10 +206,13 @@ export interface AiIdentityContext {
   replyContext?: AiReplyContext;
 }
 
-export type ReplyModelMode = "gpt" | "mimo";
+export type ReplyModelMode = string;
+export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
 
 export interface GroupBotConfig {
   groupId: string;
+  groupName?: string;
+  enabled?: boolean;
   currentSkillId: string;
   replyModelMode?: ReplyModelMode;
   allowedSkillIds: string[];
@@ -212,13 +223,23 @@ export interface GroupBotConfig {
   liveChatDelayMinutes?: number;
   dailyReportEnabled?: boolean;
   dailyReportTime?: string;
+  dailyReportDateRule?: ScheduleDateRule;
+  dailyReportWeekdays?: number[];
   dailyReportTopUserCount?: number;
   holidayCountdownEnabled?: boolean;
   holidayCountdownTime?: string;
+  holidayCountdownDateRule?: ScheduleDateRule;
+  holidayCountdownWeekdays?: number[];
   botMuted?: boolean;
   scheduledRemindersEnabled?: boolean;
   blacklistedUserIds?: string[];
   opsAlertsEnabled?: boolean;
+  triggerKeywords?: Array<{
+    keyword: string;
+    enabled: boolean;
+  }>;
+  voiceReplyEnabled?: boolean;
+  memoryDisabledUserIds?: string[];
 }
 
 export interface GroupsConfigFile {
@@ -256,6 +277,13 @@ export interface ScheduledReminderTask {
   creatorUserId: string;
   intervalMinutes: number;
   topic: string;
+  executionStartTime?: string;
+  executionEndTime?: string;
+  executionIntervalMinutes?: number;
+  scheduledTime?: string;
+  advanceMinutes?: number;
+  dateRule?: ScheduleDateRule;
+  weekdays?: number[];
   createdAt: string;
   nextRunAt: string;
   enabled: boolean;
@@ -264,6 +292,83 @@ export interface ScheduledReminderTask {
 
 export interface ScheduledRemindersFile {
   tasks: Record<string, ScheduledReminderTask>;
+}
+
+export type AdminRole = "super_admin" | "group_admin";
+
+export interface AdminSession {
+  role: AdminRole;
+  username: string;
+  userId?: string;
+  allowedGroupIds: string[];
+  expiresAt: string;
+}
+
+export type SystemModelPurpose = "reply" | "profile" | "memory" | "dedup" | "summary" | "knowledge" | "tts" | "custom";
+
+export interface SystemModelConfig {
+  id: string;
+  name: string;
+  shortName: string;
+  baseUrl: string;
+  model: string;
+  purpose: SystemModelPurpose;
+  apiKey?: string;
+  hasApiKey: boolean;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SystemCommandConfig {
+  id: string;
+  title: string;
+  primary: string;
+  aliases: string[];
+  permission: "member" | "group_admin" | "super_admin";
+  enabled: boolean;
+  help: string;
+  updatedAt: string;
+}
+
+export interface SystemSettings {
+  profileSummaryMaxChars: number;
+  profileShortSummaryMaxChars: number;
+  dailyProfileReviewEnabled: boolean;
+  dailyProfileReviewTime: string;
+  memoryDedupEnabled: boolean;
+  memoryDedupTime: string;
+  adminSecretHash?: string;
+  groupAdminSecretHash?: string;
+  adminSecretConfigured?: boolean;
+  groupAdminSecretConfigured?: boolean;
+  defaultTriggerKeywords: Array<{
+    keyword: string;
+    enabled: boolean;
+  }>;
+  models: SystemModelConfig[];
+  selectedModelIds: Partial<Record<SystemModelPurpose, string>>;
+  commands: SystemCommandConfig[];
+  updatedAt: string;
+}
+
+export type ProfileRecordType = "overall" | "yesterday";
+
+export interface ProfileRecord {
+  id: string;
+  groupId: string;
+  userId: string;
+  type: ProfileRecordType;
+  summary: string;
+  shareToken?: string;
+  sourceMemoryCount: number;
+  generatedAt: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface ProfileRecordsFile {
+  records: ProfileRecord[];
 }
 
 export interface AppConfig {
@@ -299,11 +404,14 @@ export interface AppConfig {
   groupMemoryCandidatesPath: string;
   dailyProfileReviewPath: string;
   knowledgeBasePath: string;
+  systemSettingsPath: string;
+  profileRecordsPath: string;
   adminHttpEnabled: boolean;
   adminHttpHost: string;
   adminHttpPort: number;
   adminPublicBaseUrl: string;
   adminUsername?: string;
   adminPassword?: string;
+  adminGroupPassword?: string;
   adminSessionSecret?: string;
 }

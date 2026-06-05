@@ -1,13 +1,16 @@
 import type { GroupBotConfig } from "../types.js";
 import type { ChatSummaryRequest } from "../utils/chat-summary-request.js";
+import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 import type { AiService } from "./ai-service.js";
 import type { DailyReportMessageRecord } from "./daily-report-store.js";
 import { DailyReportStore } from "./daily-report-store.js";
 
+type DailyReportAiService = Pick<AiService, "generateBroadcastQuip" | "generateChatPeriodSummary">;
+
 export class DailyReportService {
   constructor(
     private readonly store: DailyReportStore,
-    private readonly aiService: AiService,
+    private readonly aiService: DailyReportAiService,
   ) {}
 
   async recordMessage(args: {
@@ -36,7 +39,7 @@ export class DailyReportService {
       return false;
     }
 
-    if (!isWeekday(now)) {
+    if (!isScheduleDateRuleMatched(groupConfig.dailyReportDateRule, groupConfig.dailyReportWeekdays, now)) {
       return false;
     }
 

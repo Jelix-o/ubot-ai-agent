@@ -1,10 +1,21 @@
 import type { ScheduledReminderTask } from "../types.js";
+import { isSmartWorkday } from "../utils/china-workday-calendar.js";
+import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 import type { AiService } from "./ai-service.js";
 import { ScheduledReminderStore } from "./scheduled-reminder-store.js";
+
+type ScheduledReminderAiService = Partial<Pick<AiService, "generateScheduledReminderText">>;
 
 export interface ReminderCreateRequest {
   intervalMinutes: number;
   topic: string;
+  executionStartTime?: string;
+  executionEndTime?: string;
+  executionIntervalMinutes?: number;
+  scheduledTime?: string;
+  advanceMinutes?: number;
+  dateRule?: ScheduledReminderTask["dateRule"];
+  weekdays?: number[];
 }
 
 const MIN_INTERVAL_MINUTES = 1;
@@ -15,7 +26,7 @@ const WORK_END_HOUR = 18;
 export class ScheduledReminderService {
   constructor(
     private readonly store: ScheduledReminderStore,
-    private readonly aiService: AiService,
+    private readonly aiService: ScheduledReminderAiService,
   ) {}
 
   parseCreateRequest(input: string): ReminderCreateRequest | undefined {
@@ -67,6 +78,7 @@ export class ScheduledReminderService {
     groupId: string;
     creatorUserId: string;
     request: ReminderCreateRequest;
+    enabled?: boolean;
     now?: Date;
   }): Promise<ScheduledReminderTask> {
     return this.store.addTask({
@@ -74,12 +86,20 @@ export class ScheduledReminderService {
       creatorUserId: args.creatorUserId,
       intervalMinutes: args.request.intervalMinutes,
       topic: args.request.topic,
+      executionStartTime: args.request.executionStartTime,
+      executionEndTime: args.request.executionEndTime,
+      executionIntervalMinutes: args.request.executionIntervalMinutes,
+      scheduledTime: args.request.scheduledTime,
+      advanceMinutes: args.request.advanceMinutes,
+      dateRule: args.request.dateRule,
+      weekdays: args.request.weekdays,
+      enabled: args.enabled,
       now: args.now,
     });
   }
 
-  async listGroupTasks(groupId: string): Promise<ScheduledReminderTask[]> {
-    return this.store.listGroupTasks(groupId);
+  async listGroupTasks(groupId: string, options: { includeDisabled?: boolean } = {}): Promise<ScheduledReminderTask[]> {
+    return this.store.listGroupTasks(groupId, options);
   }
 
   async removeGroupTask(groupId: string, taskId: string): Promise<boolean> {
@@ -87,7 +107,7 @@ export class ScheduledReminderService {
   }
 
   async getDueTasks(now = new Date()): Promise<ScheduledReminderTask[]> {
-    return this.store.getDueTasks(now);
+    return (await this.store.getDueTasks(now)).filter((task) => task.executionStartTime || task.scheduledTime || isDateRuleMatched(task, now));
   }
 
   async buildReminderMessage(task: ScheduledReminderTask): Promise<string> {
@@ -108,7 +128,7 @@ export class ScheduledReminderService {
 
   async markSent(taskId: string, message: string, now = new Date()): Promise<void> {
     const task = await this.store.markSent(taskId, message, now);
-    if (task) {
+    if (task && !task.executionStartTime && !task.scheduledTime) {
       const nextRun = new Date(task.nextRunAt);
       const adjusted = adjustToWorkHours(nextRun);
       if (adjusted.getTime() !== nextRun.getTime()) {
@@ -119,13 +139,35 @@ export class ScheduledReminderService {
 
   async updateTask(
     taskId: string,
-    updates: { intervalMinutes?: number; topic?: string },
+    updates: {
+      intervalMinutes?: number;
+      topic?: string;
+      executionStartTime?: string;
+      executionEndTime?: string;
+      executionIntervalMinutes?: number;
+      scheduledTime?: string;
+      advanceMinutes?: number;
+      enabled?: boolean;
+      dateRule?: ScheduledReminderTask["dateRule"];
+      weekdays?: number[];
+    },
   ): Promise<ScheduledReminderTask | undefined> {
-    const nextRunAt = updates.intervalMinutes
+    const hasRangeScheduleUpdate = updates.executionStartTime !== undefined ||
+      updates.executionEndTime !== undefined ||
+      updates.executionIntervalMinutes !== undefined ||
+      updates.scheduledTime !== undefined ||
+      updates.advanceMinutes !== undefined ||
+      updates.dateRule !== undefined ||
+      updates.weekdays !== undefined;
+    const nextRunAt = !hasRangeScheduleUpdate && updates.intervalMinutes
       ? adjustToWorkHours(new Date(Date.now() + updates.intervalMinutes * 60 * 1000)).toISOString()
       : undefined;
     return this.store.updateTask(taskId, { ...updates, nextRunAt });
   }
+}
+
+function isDateRuleMatched(task: ScheduledReminderTask, now: Date): boolean {
+  return isScheduleDateRuleMatched(task.dateRule, task.weekdays, now);
 }
 
 export function formatIntervalLabel(minutes: number): string {
@@ -138,8 +180,7 @@ export function formatIntervalLabel(minutes: number): string {
 }
 
 export function isWithinWorkHours(date: Date): boolean {
-  const day = date.getDay();
-  if (day === 0 || day === 6) {
+  if (!isSmartWorkday(date)) {
     return false;
   }
   const hour = date.getHours();
@@ -157,7 +198,7 @@ export function adjustToWorkHours(date: Date): Date {
   if (result <= date || !isWithinWorkHours(result)) {
     do {
       result.setDate(result.getDate() + 1);
-    } while (result.getDay() === 0 || result.getDay() === 6);
+    } while (!isSmartWorkday(result));
     result.setHours(WORK_START_HOUR, 0, 0, 0);
   }
 

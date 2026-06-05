@@ -491,7 +491,7 @@ test("checkHealth treats successful empty completions as available", async () =>
   const health = await service.checkHealth({ refresh: true });
 
   assert.equal(health.ok, true);
-  assert.equal(health.detail, "画像/记忆模型调用成功但返回空内容");
+  assert.equal(health.detail, "画像/记忆模型接口可用（空内容响应）");
   assert.equal(health.model, "mimo-v2.5-pro");
   assert.equal(health.baseUrl, "https://example.invalid/v1");
   assert.equal(health.cached, false);

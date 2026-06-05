@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
-import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ReplyModelMode } from "../types.js";
+import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ReplyModelMode, ScheduleDateRule } from "../types.js";
 import { readJsonFile } from "../utils/json-file.js";
 
 export class GroupConfigValidationError extends Error {
@@ -11,6 +11,8 @@ export class GroupConfigValidationError extends Error {
 
 export type GroupConfigUpdateInput = Partial<Pick<
   GroupBotConfig,
+  | "groupName"
+  | "enabled"
   | "currentSkillId"
   | "replyModelMode"
   | "allowedSkillIds"
@@ -20,13 +22,20 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "liveChatDelaySeconds"
   | "dailyReportEnabled"
   | "dailyReportTime"
+  | "dailyReportDateRule"
+  | "dailyReportWeekdays"
   | "dailyReportTopUserCount"
   | "holidayCountdownEnabled"
   | "holidayCountdownTime"
+  | "holidayCountdownDateRule"
+  | "holidayCountdownWeekdays"
   | "botMuted"
   | "scheduledRemindersEnabled"
   | "blacklistedUserIds"
   | "opsAlertsEnabled"
+  | "triggerKeywords"
+  | "voiceReplyEnabled"
+  | "memoryDisabledUserIds"
 >>;
 
 export class GroupConfigService {
@@ -37,6 +46,11 @@ export class GroupConfigService {
   async getAll(): Promise<GroupBotConfig[]> {
     const data = await this.readConfig();
     return data.groups.map((group) => normalizeGroupConfig(group));
+  }
+
+  async getEnabledGroups(): Promise<GroupBotConfig[]> {
+    const groups = await this.getAll();
+    return groups.filter((group) => group.enabled !== false);
   }
 
   async getGroup(groupId: string): Promise<GroupBotConfig | undefined> {
@@ -58,6 +72,36 @@ export class GroupConfigService {
 
     await this.writeConfig(data);
     return next;
+  }
+
+  async upsertGroupsFromNapcat(groups: Array<{ groupId: string; groupName?: string }>): Promise<GroupBotConfig[]> {
+    const data = await this.readConfig();
+    for (const incoming of groups) {
+      const groupId = String(incoming.groupId).trim();
+      if (!/^\d+$/.test(groupId)) {
+        continue;
+      }
+      const index = data.groups.findIndex((group) => group.groupId === groupId);
+      if (index >= 0) {
+        const current = normalizeGroupConfig(data.groups[index]);
+        data.groups[index] = normalizeGroupConfig({
+          ...current,
+          ...(incoming.groupName ? { groupName: incoming.groupName } : {}),
+        });
+        continue;
+      }
+      data.groups.push(normalizeGroupConfig({
+        groupId,
+        ...(incoming.groupName ? { groupName: incoming.groupName } : {}),
+        enabled: false,
+        currentSkillId: "assistant",
+        allowedSkillIds: ["assistant"],
+        switcherUserIds: [],
+        liveChatUserIds: [],
+      }));
+    }
+    await this.writeConfig(data);
+    return data.groups.map((group) => normalizeGroupConfig(group));
   }
 
   async updateCurrentSkill(groupId: string, skillId: string): Promise<GroupBotConfig> {
@@ -431,6 +475,9 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
   return {
     ...group,
+    groupId: String(group.groupId || "").trim(),
+    groupName: normalizeOptionalText(group.groupName, 80),
+    enabled: group.enabled !== false,
     replyModelMode: normalizeReplyModelMode(group.replyModelMode),
     allowedSkillIds: Array.from(new Set(group.allowedSkillIds ?? [])),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
@@ -440,13 +487,20 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     liveChatDelayMinutes: normalizeDelayMinutes(group.liveChatDelayMinutes),
     dailyReportEnabled: group.dailyReportEnabled !== false,
     dailyReportTime: normalizeDailyReportTime(group.dailyReportTime),
+    dailyReportDateRule: normalizeDateRule(group.dailyReportDateRule),
+    dailyReportWeekdays: normalizeWeekdays(group.dailyReportWeekdays),
     dailyReportTopUserCount: normalizeDailyReportTopUserCount(group.dailyReportTopUserCount),
     holidayCountdownEnabled: group.holidayCountdownEnabled !== false,
     holidayCountdownTime: normalizeHolidayCountdownTime(group.holidayCountdownTime),
+    holidayCountdownDateRule: normalizeDateRule(group.holidayCountdownDateRule),
+    holidayCountdownWeekdays: normalizeWeekdays(group.holidayCountdownWeekdays),
     botMuted: group.botMuted === true,
     scheduledRemindersEnabled: group.scheduledRemindersEnabled !== false,
     blacklistedUserIds: normalizeUserIds(group.blacklistedUserIds),
     opsAlertsEnabled: group.opsAlertsEnabled !== false,
+    triggerKeywords: normalizeTriggerKeywords(group.triggerKeywords),
+    voiceReplyEnabled: group.voiceReplyEnabled !== false,
+    memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
   };
 }
 
@@ -457,6 +511,12 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
 
   const next: GroupBotConfig = { ...current };
 
+  if ("groupName" in input) {
+    next.groupName = normalizeOptionalText(input.groupName, 80);
+  }
+  if ("enabled" in input) {
+    next.enabled = normalizeBoolean(input.enabled, "invalid_group_config");
+  }
   if ("currentSkillId" in input) {
     next.currentSkillId = normalizeRequiredString(input.currentSkillId, "invalid_group_config");
   }
@@ -485,6 +545,12 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   if ("dailyReportTime" in input) {
     next.dailyReportTime = normalizeTimeStrict(input.dailyReportTime);
   }
+  if ("dailyReportDateRule" in input) {
+    next.dailyReportDateRule = normalizeDateRuleStrict(input.dailyReportDateRule);
+  }
+  if ("dailyReportWeekdays" in input) {
+    next.dailyReportWeekdays = normalizeWeekdaysStrict(input.dailyReportWeekdays);
+  }
   if ("dailyReportTopUserCount" in input) {
     next.dailyReportTopUserCount = normalizePositiveInteger(input.dailyReportTopUserCount, "invalid_group_config");
   }
@@ -493,6 +559,12 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("holidayCountdownTime" in input) {
     next.holidayCountdownTime = normalizeTimeStrict(input.holidayCountdownTime);
+  }
+  if ("holidayCountdownDateRule" in input) {
+    next.holidayCountdownDateRule = normalizeDateRuleStrict(input.holidayCountdownDateRule);
+  }
+  if ("holidayCountdownWeekdays" in input) {
+    next.holidayCountdownWeekdays = normalizeWeekdaysStrict(input.holidayCountdownWeekdays);
   }
   if ("botMuted" in input) {
     next.botMuted = normalizeBoolean(input.botMuted, "invalid_group_config");
@@ -506,17 +578,33 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   if ("opsAlertsEnabled" in input) {
     next.opsAlertsEnabled = normalizeBoolean(input.opsAlertsEnabled, "invalid_group_config");
   }
+  if ("triggerKeywords" in input) {
+    next.triggerKeywords = normalizeTriggerKeywordsStrict(input.triggerKeywords);
+  }
+  if ("voiceReplyEnabled" in input) {
+    next.voiceReplyEnabled = normalizeBoolean(input.voiceReplyEnabled, "invalid_group_config");
+  }
+  if ("memoryDisabledUserIds" in input) {
+    next.memoryDisabledUserIds = normalizeUserIdsStrict(input.memoryDisabledUserIds);
+  }
 
   return normalizeGroupConfig(next);
 }
 
+function normalizeOptionalText(value: unknown, limit: number): string | undefined {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text ? text.slice(0, limit) : undefined;
+}
+
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
-  return value === "mimo" ? "mimo" : "gpt";
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || "gpt";
 }
 
 function normalizeReplyModelModeStrict(value: unknown): ReplyModelMode {
-  if (value === "gpt" || value === "mimo") {
-    return value;
+  const text = typeof value === "string" ? value.trim() : "";
+  if (/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(text)) {
+    return text;
   }
   throw new GroupConfigValidationError("invalid_group_config");
 }
@@ -569,6 +657,63 @@ function normalizeSkillIds(value: unknown): string[] {
         .filter(Boolean),
     ),
   );
+}
+
+function normalizeDateRule(value: unknown): ScheduleDateRule {
+  return value === "workday" || value === "holiday" || value === "custom" ? value : "all";
+}
+
+function normalizeDateRuleStrict(value: unknown): ScheduleDateRule {
+  if (value === "all" || value === "workday" || value === "holiday" || value === "custom") {
+    return value;
+  }
+  throw new GroupConfigValidationError("invalid_group_config");
+}
+
+function normalizeWeekdays(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(new Set(value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item >= 0 && item <= 6)))
+    .sort((left, right) => left - right);
+}
+
+function normalizeWeekdaysStrict(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    throw new GroupConfigValidationError("invalid_group_config");
+  }
+  if (value.some((item) => !Number.isInteger(Number(item)) || Number(item) < 0 || Number(item) > 6)) {
+    throw new GroupConfigValidationError("invalid_group_config");
+  }
+  return normalizeWeekdays(value);
+}
+
+function normalizeTriggerKeywords(value: GroupBotConfig["triggerKeywords"] | undefined): GroupBotConfig["triggerKeywords"] {
+  if (!Array.isArray(value)) {
+    return [{ keyword: "乘风", enabled: true }];
+  }
+  const normalized = value
+    .map((item) => ({
+      keyword: String(item?.keyword ?? "").trim().slice(0, 40),
+      enabled: item?.enabled !== false,
+    }))
+    .filter((item) => item.keyword);
+  const byKeyword = new Map<string, { keyword: string; enabled: boolean }>();
+  for (const item of normalized) {
+    if (!byKeyword.has(item.keyword)) {
+      byKeyword.set(item.keyword, item);
+    }
+  }
+  return [...byKeyword.values()];
+}
+
+function normalizeTriggerKeywordsStrict(value: unknown): GroupBotConfig["triggerKeywords"] {
+  if (!Array.isArray(value)) {
+    throw new GroupConfigValidationError("invalid_group_config");
+  }
+  return normalizeTriggerKeywords(value as GroupBotConfig["triggerKeywords"]);
 }
 
 function normalizeUserIdsStrict(value: unknown): string[] {

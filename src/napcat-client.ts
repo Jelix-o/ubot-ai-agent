@@ -9,6 +9,7 @@ import type { TransportHealthStatus } from "./bot.js";
 import type {
   MessageImageInput,
   MessageSegment,
+  NapcatGroupInfo,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
   GroupMemberIdentity,
@@ -143,6 +144,11 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
 
   async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
     return this.getGroupMembers(groupId);
+  }
+
+  async listGroups(): Promise<NapcatGroupInfo[]> {
+    const groups = await this.callHttpAction<NapcatGroupInfo[]>("get_group_list", {});
+    return Array.isArray(groups) ? groups : [];
   }
 
   async resolveMemberIdentities(

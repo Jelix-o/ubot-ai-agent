@@ -1,6 +1,6 @@
 {
   "name": "ubot",
-  "version": "3.0.0",
+  "version": "4.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,20 +8,28 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:admin": "vite --config admin/vite.config.ts",
     "start": "node dist/index.js",
-    "build": "tsc -p tsconfig.json",
-    "test": "npm run build && powershell -NoProfile -Command \"node --test --experimental-test-isolation=none (Get-ChildItem -Recurse dist -Filter *.test.js | ForEach-Object { $_.FullName })\"",
+    "build": "npm run build:admin && npm run build:server",
+    "build:admin": "vite build --config admin/vite.config.ts",
+    "build:server": "tsc -p tsconfig.json",
+    "test": "npm run build && powershell -NoProfile -Command \"$node = if ($env:UBOT_NODE) { $env:UBOT_NODE } elseif (Test-Path 'D:\\environment\\nvm\\v22.17.0\\node.exe') { 'D:\\environment\\nvm\\v22.17.0\\node.exe' } else { 'node' }; & $node --test --experimental-test-isolation=none (Get-ChildItem -Recurse dist -Filter *.test.js | ForEach-Object { $_.FullName })\"",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
     "openai": "^4.104.0",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.35",
+    "vue-router": "^4.6.4",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
     "@types/ws": "^8.18.1",
+    "@vitejs/plugin-vue": "^4.6.2",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^4.5.14"
   }
 }

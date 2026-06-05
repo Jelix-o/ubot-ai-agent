@@ -156,6 +156,8 @@ test("isWithinWorkHours returns false outside work hours", () => {
   assert.equal(isWithinWorkHours(new Date("2026-05-30T10:00:00")), false);
   // Sunday
   assert.equal(isWithinWorkHours(new Date("2026-05-31T10:00:00")), false);
+  // Statutory holiday
+  assert.equal(isWithinWorkHours(new Date("2026-01-01T10:00:00")), false);
 });
 
 test("adjustToWorkHours returns same time if within work hours", () => {
@@ -186,6 +188,17 @@ test("adjustToWorkHours moves weekend to Monday 9:00", () => {
   assert.equal(result.getDay(), 1);
   assert.equal(result.getHours(), 9);
   assert.equal(result.getDate(), 1); // June 1
+});
+
+test("adjustToWorkHours respects statutory holidays and adjusted workdays", () => {
+  const holiday = adjustToWorkHours(new Date("2026-01-01T10:00:00"));
+  assert.equal(holiday.getDay(), 0);
+  assert.equal(holiday.getHours(), 9);
+  assert.equal(holiday.getDate(), 4);
+
+  const adjustedWorkday = new Date("2026-01-04T10:00:00");
+  assert.equal(isWithinWorkHours(adjustedWorkday), true);
+  assert.equal(adjustToWorkHours(adjustedWorkday).getTime(), adjustedWorkday.getTime());
 });
 
 test("adjustToWorkHours moves Friday evening to Monday 9:00", () => {

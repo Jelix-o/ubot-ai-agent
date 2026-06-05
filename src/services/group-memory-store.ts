@@ -6,6 +6,7 @@ import type { GroupMemory, GroupMemoryEvidence, GroupMemoryType } from "../types
 import { readJsonFile } from "../utils/json-file.js";
 
 const EVIDENCE_SUMMARY_LIMIT = 2400;
+const MEMORY_CONTENT_LIMIT = 1800;
 
 interface GroupMemoryFile {
   memories: GroupMemory[];
@@ -17,6 +18,7 @@ export interface GroupMemoryListPageArgs {
   type?: GroupMemoryType;
   enabled?: boolean;
   query?: string;
+  excludeProfileRecords?: boolean;
   page: number;
   pageSize: number;
 }
@@ -75,6 +77,7 @@ export class GroupMemoryStore {
       .filter((memory) => !args.subjectUserId || memory.subjectUserId === args.subjectUserId)
       .filter((memory) => !args.type || memory.type === args.type)
       .filter((memory) => args.enabled === undefined || memory.enabled === args.enabled)
+      .filter((memory) => !args.excludeProfileRecords || !isProfileRecordMemory(memory))
       .filter((memory) => !query || memoryMatchesQuery(memory, query))
       .sort(compareMemoriesNewestFirst);
     const total = matched.length;
@@ -217,7 +220,7 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
       ? { subjectUserId: String(value.subjectUserId).trim() }
       : {}),
     title: String(value.title || "").trim().slice(0, 80),
-    content: String(value.content || "").trim().slice(0, 600),
+    content: String(value.content || "").trim().slice(0, MEMORY_CONTENT_LIMIT),
     confidence,
     source: String(value.source || "admin").trim().slice(0, 80),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
@@ -225,6 +228,14 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
     enabled: value.enabled !== false,
     ...(normalizeEvidence(value.evidence) ? { evidence: normalizeEvidence(value.evidence) } : {}),
   };
+}
+
+function isProfileRecordMemory(memory: GroupMemory): boolean {
+  return memory.source.startsWith("daily_profile_review:") ||
+    memory.source.startsWith("profile_record:") ||
+    memory.title.includes("画像总结") ||
+    memory.title.includes("昨日画像") ||
+    memory.title.includes("群聊画像");
 }
 
 function compareMemoriesNewestFirst(left: GroupMemory, right: GroupMemory): number {

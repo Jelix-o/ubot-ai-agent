@@ -29,6 +29,7 @@ export function buildGroupMemberProfiles(args: {
   pendingCandidateCounts?: SubjectCount[];
 }): GroupMemberProfile[] {
   const profiles = new Map<string, GroupMemberProfile>();
+  const disabledUserIds = new Set(args.groupConfig.memoryDisabledUserIds ?? []);
 
   for (const member of args.napcatMembers ?? []) {
     const userId = String(member.user_id);
@@ -45,6 +46,7 @@ export function buildGroupMemberProfiles(args: {
       hasManualIdentity: Boolean(manual),
       memoryCount: 0,
       pendingCandidateCount: 0,
+      memoryDisabled: disabledUserIds.has(userId),
     });
   }
 
@@ -58,6 +60,7 @@ export function buildGroupMemberProfiles(args: {
           aliases: identity.names,
           ...(identity.note ? { note: identity.note } : {}),
           hasManualIdentity: true,
+          memoryDisabled: disabledUserIds.has(userId),
         });
       } else {
         profiles.set(userId, {
@@ -68,6 +71,7 @@ export function buildGroupMemberProfiles(args: {
           hasManualIdentity: true,
           memoryCount: 0,
           pendingCandidateCount: 0,
+          memoryDisabled: disabledUserIds.has(userId),
         });
       }
     }
@@ -77,28 +81,28 @@ export function buildGroupMemberProfiles(args: {
     if (!memory.subjectUserId) {
       continue;
     }
-    ensureProfile(profiles, args.groupConfig.manualIdentities, memory.subjectUserId).memoryCount += 1;
+    ensureProfile(profiles, args.groupConfig, memory.subjectUserId).memoryCount += 1;
   }
 
   for (const item of args.memoryCounts ?? []) {
     if (!item.userId || item.count <= 0) {
       continue;
     }
-    ensureProfile(profiles, args.groupConfig.manualIdentities, item.userId).memoryCount += item.count;
+    ensureProfile(profiles, args.groupConfig, item.userId).memoryCount += item.count;
   }
 
   for (const candidate of args.candidates ?? []) {
     if (!candidate.subjectUserId || candidate.status !== "pending") {
       continue;
     }
-    ensureProfile(profiles, args.groupConfig.manualIdentities, candidate.subjectUserId).pendingCandidateCount += 1;
+    ensureProfile(profiles, args.groupConfig, candidate.subjectUserId).pendingCandidateCount += 1;
   }
 
   for (const item of args.pendingCandidateCounts ?? []) {
     if (!item.userId || item.count <= 0) {
       continue;
     }
-    ensureProfile(profiles, args.groupConfig.manualIdentities, item.userId).pendingCandidateCount += item.count;
+    ensureProfile(profiles, args.groupConfig, item.userId).pendingCandidateCount += item.count;
   }
 
   return [...profiles.values()].sort((left, right) => {
@@ -141,7 +145,7 @@ export function buildSubjectLabel(
 
 function ensureProfile(
   profiles: Map<string, GroupMemberProfile>,
-  manualIdentities: GroupManualIdentity[] | undefined,
+  groupConfig: GroupBotConfig,
   userId: string,
 ): GroupMemberProfile {
   const existing = profiles.get(userId);
@@ -149,7 +153,7 @@ function ensureProfile(
     return existing;
   }
 
-  const manual = findManualIdentity(manualIdentities, userId);
+  const manual = findManualIdentity(groupConfig.manualIdentities, userId);
   const created: GroupMemberProfile = {
     userId,
     displayName: firstNonEmpty(manual?.names[0], userId),
@@ -158,6 +162,7 @@ function ensureProfile(
     hasManualIdentity: Boolean(manual),
     memoryCount: 0,
     pendingCandidateCount: 0,
+    memoryDisabled: (groupConfig.memoryDisabledUserIds ?? []).includes(userId),
   };
   profiles.set(userId, created);
   return created;

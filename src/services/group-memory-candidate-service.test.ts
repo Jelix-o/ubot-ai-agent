@@ -65,7 +65,7 @@ test("English memory candidates are normalized to Chinese before auto approval",
   }
 });
 
-test("English memory candidates are not stored when normalization fails", async () => {
+test("English memory candidates stay pending for manual language review when normalization fails", async () => {
   const fixture = await createFixture();
   try {
     fixture.ai.candidates = [
@@ -84,7 +84,50 @@ test("English memory candidates are not stored when normalization fails", async 
 
     assert.equal(stats?.pendingCount, 1);
     assert.equal((await fixture.memoryStore.list("67890")).length, 0);
-    assert.equal((await fixture.candidateStore.list({ groupId: "67890" })).length, 0);
+    const pending = await fixture.candidateStore.list({ groupId: "67890", status: "pending" });
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.title, "需中文化：Food sensitivity");
+    assert.equal(pending[0]?.source, "auto:language_review");
+    assert.equal(pending[0]?.confidence, 0.79);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("manual approval merges semantic duplicate into existing memory instead of creating another memory", async () => {
+  const fixture = await createFixture();
+  try {
+    const existing = await fixture.memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "饮食偏好",
+      content: "Tester 肠胃不好，不能吃太油的食物。",
+      confidence: 0.86,
+      source: "auto",
+    });
+    const candidate = await fixture.candidateStore.addCandidate({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "饮食忌口",
+      content: "Tester 肠胃敏感，平时避免油腻食物，还会主动避开太油的快餐。",
+      confidence: 0.9,
+    });
+    fixture.ai.judgeResult = {
+      action: "merge",
+      title: "饮食忌口",
+      content: "Tester 肠胃不好，不能吃太油或油腻的食物，会主动避开太油的快餐。",
+    };
+
+    const approved = await fixture.service.approve(candidate.id);
+
+    assert.equal(approved?.candidate.status, "approved");
+    assert.equal(approved?.memory.id, existing.id);
+    assert.equal(fixture.ai.judgeCalls.length, 1);
+    const memories = await fixture.memoryStore.list("67890");
+    assert.equal(memories.length, 1);
+    assert.equal(memories[0]?.content, "Tester 肠胃不好，不能吃太油或油腻的食物，会主动避开太油的快餐。");
   } finally {
     await fixture.cleanup();
   }
@@ -185,6 +228,55 @@ test("semantic judge failure falls back to local rules without blocking new memo
 
     assert.equal(stats?.autoApprovedCount, 1);
     assert.equal((await fixture.memoryStore.list("67890")).length, 1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("concurrent manual approvals of the same candidate create only one memory", async () => {
+  const fixture = await createFixture();
+  try {
+    const candidate = await fixture.candidateStore.addCandidate({
+      groupId: "67890",
+      type: "group_fact",
+      title: "Shared schedule",
+      content: "The group shares deployment notes every Friday.",
+      confidence: 0.92,
+    });
+
+    const [first, second] = await Promise.all([
+      fixture.service.approve(candidate.id),
+      fixture.service.approve(candidate.id),
+    ]);
+
+    assert.equal(first?.candidate.status, "approved");
+    assert.equal(second?.candidate.status, "approved");
+    assert.equal(first?.memory.id, second?.memory.id);
+    const memories = await fixture.memoryStore.list("67890");
+    assert.equal(memories.length, 1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("approving an already approved candidate is idempotent and does not create another memory", async () => {
+  const fixture = await createFixture();
+  try {
+    const candidate = await fixture.candidateStore.addCandidate({
+      groupId: "67890",
+      type: "group_fact",
+      title: "Shared schedule",
+      content: "The group shares deployment notes every Friday.",
+      confidence: 0.92,
+    });
+
+    const first = await fixture.service.approve(candidate.id);
+    const second = await fixture.service.approve(candidate.id);
+
+    assert.equal(first?.candidate.status, "approved");
+    assert.equal(second, undefined);
+    const memories = await fixture.memoryStore.list("67890");
+    assert.equal(memories.length, 1);
   } finally {
     await fixture.cleanup();
   }

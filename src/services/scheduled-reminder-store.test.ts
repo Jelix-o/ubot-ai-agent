@@ -67,3 +67,101 @@ test("ScheduledReminderStore updates task interval, topic, and nextRunAt", async
     assert.equal(await store.updateTask("nonexistent", { intervalMinutes: 10 }), undefined);
   });
 });
+
+test("ScheduledReminderStore schedules fixed-time reminders with advance minutes and date rules", async () => {
+  await withStore(async (store) => {
+    const task = await store.addTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      intervalMinutes: 30,
+      topic: "喝水提醒",
+      scheduledTime: "10:00",
+      advanceMinutes: 15,
+      dateRule: "workday",
+      now: new Date("2026-06-05T09:30:00"),
+    });
+
+    assert.equal(task.scheduledTime, "10:00");
+    assert.equal(task.advanceMinutes, 15);
+    assert.equal(task.nextRunAt, new Date("2026-06-05T09:45:00").toISOString());
+
+    await store.markSent(task.id, "记得喝水", new Date("2026-06-05T09:45:00"));
+    const [updated] = await store.listGroupTasks("67890");
+    assert.equal(updated?.nextRunAt, new Date("2026-06-08T09:45:00").toISOString());
+  });
+});
+
+test("ScheduledReminderStore uses smart workdays for fixed-time reminders", async () => {
+  await withStore(async (store) => {
+    const task = await store.addTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      intervalMinutes: 30,
+      topic: "元旦后提醒",
+      scheduledTime: "10:00",
+      advanceMinutes: 15,
+      dateRule: "workday",
+      now: new Date("2026-01-01T09:30:00"),
+    });
+
+    assert.equal(task.nextRunAt, new Date("2026-01-04T09:45:00").toISOString());
+  });
+});
+
+test("ScheduledReminderStore treats smart non-workday as workday complement", async () => {
+  await withStore(async (store) => {
+    const holidayTask = await store.addTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      intervalMinutes: 30,
+      topic: "放假提醒",
+      scheduledTime: "10:00",
+      advanceMinutes: 15,
+      dateRule: "holiday",
+      now: new Date("2026-01-03T09:30:00"),
+    });
+
+    assert.equal(holidayTask.nextRunAt, new Date("2026-01-03T09:45:00").toISOString());
+
+    const adjustedWorkdayTask = await store.addTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      intervalMinutes: 30,
+      topic: "非工作日提醒",
+      scheduledTime: "10:00",
+      advanceMinutes: 15,
+      dateRule: "holiday",
+      now: new Date("2026-01-04T09:30:00"),
+    });
+
+    assert.equal(adjustedWorkdayTask.nextRunAt, new Date("2026-01-10T09:45:00").toISOString());
+  });
+});
+
+test("ScheduledReminderStore updates fixed-time reminder schedule fields", async () => {
+  await withStore(async (store) => {
+    const task = await store.addTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      intervalMinutes: 30,
+      topic: "喝水提醒",
+      scheduledTime: "10:00",
+      advanceMinutes: 15,
+      now: new Date("2026-06-05T09:30:00"),
+    });
+
+    const updated = await store.updateTask(task.id, {
+      topic: "整理日报",
+      scheduledTime: "17:45",
+      advanceMinutes: 10,
+      dateRule: "all",
+      weekdays: [],
+    });
+
+    assert.ok(updated);
+    assert.equal(updated!.topic, "整理日报");
+    assert.equal(updated!.scheduledTime, "17:45");
+    assert.equal(updated!.advanceMinutes, 10);
+    assert.ok(new Date(updated!.nextRunAt).getTime() > Date.now());
+  });
+});
