@@ -5,7 +5,7 @@ import AppIcon from "../components/AppIcon.vue";
 import DateRulePicker from "../components/DateRulePicker.vue";
 import MultiTagSelect from "../components/MultiTagSelect.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
-import { api, queryString, type GroupConfig, type MemberProfile, type ModelOption, type Pagination, type ScheduleDateRule, type ScheduledReminderTask, type SkillOption } from "../services/api";
+import { api, queryString, type GroupConfig, type MemberProfile, type ModelOption, type Pagination, type ScheduleDateRule, type SchedulePreviewDay, type ScheduledReminderTask, type SkillOption } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
@@ -15,6 +15,7 @@ const saving = shallowRef(false);
 const remindersLoading = shallowRef(false);
 const manualIdentitiesText = shallowRef("[]");
 const reminders = shallowRef<ScheduledReminderTask[]>([]);
+const schedulePreview = shallowRef<SchedulePreviewDay[]>([]);
 const replyModels = shallowRef<ModelOption[]>([]);
 const skillOptions = shallowRef<SkillOption[]>([]);
 const memberOptions = shallowRef<MemberProfile[]>([]);
@@ -114,9 +115,16 @@ async function load(): Promise<void> {
     resetForm(data);
     manualIdentitiesText.value = JSON.stringify(data.manualIdentities || [], null, 2);
     await loadReminders(groupId, serial);
+    await loadSchedulePreview(groupId, serial);
   } finally {
     if (serial === loadSerial) loading.value = false;
   }
+}
+
+async function loadSchedulePreview(groupId = app.groupId, serial = loadSerial): Promise<void> {
+  if (!groupId) return;
+  const data = await api<{ previews: SchedulePreviewDay[] }>(`/api/groups/${encodeURIComponent(groupId)}/schedule-preview?days=7`);
+  if (serial === loadSerial && groupId === app.groupId) schedulePreview.value = data.previews;
 }
 
 async function loadModelOptions(): Promise<void> {
@@ -296,6 +304,7 @@ async function submitReminder(): Promise<void> {
     });
     resetReminderForm();
     await loadReminders();
+    await loadSchedulePreview();
     app.showToast(wasEditing ? "定时任务已保存" : "定时任务已创建");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -325,6 +334,7 @@ async function updateReminder(reminder: ScheduledReminderTask): Promise<void> {
       }),
     });
     await loadReminders();
+    await loadSchedulePreview();
     app.showToast("定时任务已保存");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -339,6 +349,7 @@ async function deleteReminder(reminder: ScheduledReminderTask): Promise<void> {
   try {
     await api(`/api/groups/${encodeURIComponent(app.groupId)}/reminders/${encodeURIComponent(reminder.id)}`, { method: "DELETE" });
     await loadReminders();
+    await loadSchedulePreview();
     app.showToast("定时任务已删除");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -524,6 +535,27 @@ watch(() => app.groupId, () => {
             </div>
           </section>
         </div>
+
+        <section class="schedule-preview">
+          <div class="sub-head">
+            <div>
+              <h4>未来 7 天执行预览</h4>
+              <p class="muted">服务端按当前日报、节日倒计时和群定时任务规则计算。</p>
+            </div>
+            <button class="ghost-btn" type="button" @click="loadSchedulePreview()">刷新预览</button>
+          </div>
+          <div class="preview-days">
+            <article v-for="day in schedulePreview" :key="day.date" class="preview-day">
+              <strong>{{ day.date }}</strong>
+              <div v-if="day.items.length" class="preview-items">
+                <span v-for="item in day.items" :key="`${day.date}:${item.type}:${item.taskId || item.title}:${item.time}`" :class="{ disabled: !item.enabled }">
+                  {{ item.time }} {{ item.title }}
+                </span>
+              </div>
+              <small v-else class="muted">无计划任务</small>
+            </article>
+          </div>
+        </section>
       </section>
 
       <section class="panel reminders-card">
@@ -897,6 +929,72 @@ dd {
   display: grid;
   grid-template-columns: 1fr;
   gap: 14px;
+}
+
+.schedule-preview {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.sub-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sub-head h4,
+.sub-head p {
+  margin: 0;
+}
+
+.sub-head p {
+  margin-top: 5px;
+}
+
+.preview-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(130px, 1fr));
+  gap: 10px;
+  overflow: auto;
+}
+
+.preview-day {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 128px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  padding: 12px;
+}
+
+.preview-day strong {
+  font-size: 13px;
+}
+
+.preview-items {
+  display: grid;
+  gap: 6px;
+}
+
+.preview-items span {
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.preview-items span.disabled {
+  background: var(--surface-soft);
+  color: var(--muted);
+  text-decoration: line-through;
 }
 
 .reminders-card {

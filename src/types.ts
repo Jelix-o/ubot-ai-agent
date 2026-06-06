@@ -49,6 +49,32 @@ export interface AiHealthStatus {
   cached: boolean;
 }
 
+export type AdminTaskType = "memory-dedup" | "profile-generate" | "model-check" | "bulk-review";
+export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface AdminTaskRecord {
+  id: string;
+  type: AdminTaskType;
+  status: AdminTaskStatus;
+  title: string;
+  groupId?: string;
+  subjectUserId?: string;
+  operatorUserId: string;
+  progress: number;
+  detail?: string;
+  error?: string;
+  result?: unknown;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+export interface AdminTasksFile {
+  tasks: AdminTaskRecord[];
+}
+
 export interface SkillDefinition {
   id: string;
   name: string;
@@ -361,6 +387,10 @@ export interface ProfileRecord {
   type: ProfileRecordType;
   summary: string;
   shareToken?: string;
+  publicEnabled?: boolean;
+  expiresAt?: string;
+  accessCount?: number;
+  revokedAt?: string;
   sourceMemoryCount: number;
   generatedAt: string;
   createdAt: string;
@@ -406,6 +436,8 @@ export interface AppConfig {
   knowledgeBasePath: string;
   systemSettingsPath: string;
   profileRecordsPath: string;
+  adminTasksPath: string;
+  modelHealthHistoryPath: string;
   adminHttpEnabled: boolean;
   adminHttpHost: string;
   adminHttpPort: number;

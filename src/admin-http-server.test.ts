@@ -804,6 +804,25 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(updateGroupConfigBody.botMuted, false);
     assert.deepEqual(updateGroupConfigBody.manualIdentities ?? [], []);
 
+    const schedulePreview = await fetch(`${baseUrl}/api/groups/67890/schedule-preview?days=2`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(schedulePreview.status, 200);
+    const schedulePreviewBody = await schedulePreview.json() as {
+      days: number;
+      previews: Array<{ date: string; items: Array<{ type: string; time: string; enabled: boolean }> }>;
+    };
+    const localToday = new Date();
+    localToday.setHours(0, 0, 0, 0);
+    assert.equal(schedulePreviewBody.days, 2);
+    assert.equal(schedulePreviewBody.previews.length, 2);
+    assert.equal(schedulePreviewBody.previews[0]?.date, formatTestLocalDateKey(localToday));
+    assert.equal(schedulePreviewBody.previews[1]?.date, formatTestLocalDateKey(new Date(localToday.getFullYear(), localToday.getMonth(), localToday.getDate() + 1)));
+    assert.deepEqual(
+      schedulePreviewBody.previews[0]?.items.map((item) => [item.type, item.time, item.enabled]),
+      [["holiday_countdown", "08:15", true], ["daily_report", "18:30", true]],
+    );
+
     const health = await fetch(`${baseUrl}/api/health?refresh=1`, {
       headers: { Cookie: cookie ?? "" },
     });
@@ -1843,3 +1862,11 @@ test("overview global stats count all visible items beyond the recent page", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+function formatTestLocalDateKey(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}

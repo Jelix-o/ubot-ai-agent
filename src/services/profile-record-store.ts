@@ -32,6 +32,8 @@ export interface ProfileRecordInput {
   sourceMemoryCount?: number;
   generatedAt?: string;
   createdBy?: string;
+  publicEnabled?: boolean;
+  expiresAt?: string;
 }
 
 export class ProfileRecordStore {
@@ -81,6 +83,20 @@ export class ProfileRecordStore {
     return record ? cloneRecord(record) : undefined;
   }
 
+  async recordShareAccess(id: string): Promise<ProfileRecord | undefined> {
+    const data = await this.readData();
+    const index = data.records.findIndex((record) => record.id === id);
+    if (index === -1) return undefined;
+    const current = data.records[index]!;
+    const record = normalizeRecord({
+      ...current,
+      accessCount: normalizeCount(current.accessCount) + 1,
+    });
+    data.records[index] = record;
+    await this.writeData(data);
+    return cloneRecord(record);
+  }
+
   async create(input: ProfileRecordInput): Promise<ProfileRecord> {
     const data = await this.readData();
     const now = new Date().toISOString();
@@ -91,6 +107,9 @@ export class ProfileRecordStore {
       type: input.type,
       summary: input.summary,
       shareToken: createShareToken(),
+      publicEnabled: input.publicEnabled ?? true,
+      expiresAt: input.expiresAt,
+      accessCount: 0,
       sourceMemoryCount: input.sourceMemoryCount ?? 0,
       generatedAt: input.generatedAt ?? now,
       createdAt: now,
@@ -116,6 +135,8 @@ export class ProfileRecordStore {
       type: input.type ?? current.type,
       summary: input.summary ?? current.summary,
       shareToken: current.shareToken || createShareToken(),
+      publicEnabled: input.publicEnabled ?? current.publicEnabled ?? true,
+      expiresAt: input.expiresAt ?? current.expiresAt,
       sourceMemoryCount: input.sourceMemoryCount ?? current.sourceMemoryCount,
       generatedAt: input.generatedAt ?? new Date().toISOString(),
       createdAt: current.createdAt,
@@ -135,6 +156,22 @@ export class ProfileRecordStore {
     data.records = next;
     await this.writeData(data);
     return true;
+  }
+
+  async updateShareState(id: string, input: { publicEnabled?: boolean; expiresAt?: string | null; revokedAt?: string | null }): Promise<ProfileRecord | undefined> {
+    const data = await this.readData();
+    const index = data.records.findIndex((record) => record.id === id);
+    if (index === -1) return undefined;
+    const current = data.records[index]!;
+    const record = normalizeRecord({
+      ...current,
+      publicEnabled: input.publicEnabled ?? current.publicEnabled ?? true,
+      expiresAt: input.expiresAt === null ? undefined : input.expiresAt ?? current.expiresAt,
+      revokedAt: input.revokedAt === null ? undefined : input.revokedAt ?? current.revokedAt,
+    });
+    data.records[index] = record;
+    await this.writeData(data);
+    return cloneRecord(record);
   }
 
   private async readData(): Promise<ProfileRecordsFile> {
@@ -180,11 +217,21 @@ function normalizeRecord(value: Partial<ProfileRecord>): ProfileRecord {
     type,
     summary: String(value.summary || "").trim().slice(0, 6000),
     ...(shareToken ? { shareToken } : {}),
+    publicEnabled: value.publicEnabled !== false,
+    ...(normalizeIso(value.expiresAt) ? { expiresAt: normalizeIso(value.expiresAt) } : {}),
+    accessCount: normalizeCount(value.accessCount),
+    ...(normalizeIso(value.revokedAt) ? { revokedAt: normalizeIso(value.revokedAt) } : {}),
     sourceMemoryCount: normalizeCount(value.sourceMemoryCount),
     generatedAt: typeof value.generatedAt === "string" ? value.generatedAt : now,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     createdBy: String(value.createdBy || "system").trim().slice(0, 80),
   };
+}
+
+function normalizeIso(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
 }
 
 function createShareToken(): string {

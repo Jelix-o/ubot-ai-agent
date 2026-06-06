@@ -5,6 +5,7 @@ import { NapCatReverseServer } from "./napcat-reverse-server.js";
 import { BotApplication } from "./bot.js";
 import { AiService } from "./services/ai-service.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
+import { AdminTaskStore } from "./services/admin-task-store.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
 import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
@@ -24,6 +25,7 @@ import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SkillService } from "./services/skill-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { ProfileRecordStore } from "./services/profile-record-store.js";
+import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
 import { TtsService } from "./services/tts-service.js";
 import { logError, logInfo } from "./logger.js";
 import type { NapcatGroupMessageEvent, SystemModelConfig } from "./types.js";
@@ -67,6 +69,8 @@ async function main(): Promise<void> {
     runtimeReplyAiService,
   );
   const profileRecordStore = new ProfileRecordStore(config.profileRecordsPath);
+  const adminTaskStore = new AdminTaskStore(config.adminTasksPath);
+  const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath);
   const napcatRuntime: NapCatRuntime =
     config.napcatMode === "reverse"
       ? new NapCatReverseServer({
@@ -135,6 +139,8 @@ async function main(): Promise<void> {
         skillService,
         systemSettingsStore,
         profileRecordStore,
+        adminTaskStore,
+        modelHealthHistoryStore,
         app,
         napcatRuntime,
         runtimeProfileAiService,
@@ -172,6 +178,8 @@ function createAdminHttpServer(
   skillService: SkillService,
   systemSettingsStore: SystemSettingsStore,
   profileRecordStore: ProfileRecordStore,
+  adminTaskStore: AdminTaskStore,
+  modelHealthHistoryStore: ModelHealthHistoryStore,
   app: BotApplication,
   napcatRuntime: NapCatRuntime,
   profileAiService: RuntimeAiService,
@@ -197,6 +205,8 @@ function createAdminHttpServer(
     skillService,
     systemSettingsStore,
     profileRecordStore,
+    adminTaskStore,
+    modelHealthHistoryStore,
     adminOperationLogService: new AdminOperationLogService(config.adminOperationLogPath),
     getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),
     getProfileAiHealthStatus: (options) => profileAiService.checkHealth(options),

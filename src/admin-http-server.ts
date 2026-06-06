@@ -21,6 +21,7 @@ import { logInfo, logWarn } from "./logger.js";
 import { GroupConfigValidationError } from "./services/group-config-service.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
+import type { AdminTaskStore } from "./services/admin-task-store.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import {
@@ -35,9 +36,11 @@ import type { ScheduledReminderService } from "./services/scheduled-reminder-ser
 import type { SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { ProfileRecordStore } from "./services/profile-record-store.js";
+import type { ModelHealthHistoryStore, ModelHealthHistoryEntry } from "./services/model-health-history-store.js";
 import { getYesterdayDateKey, type DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
-import type { AdminSession, AiHealthStatus, GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupInfo, NapcatGroupMember, ProfileRecordType, SkillDefinition, SystemCommandConfig, SystemSettings } from "./types.js";
+import { isScheduleDateRuleMatched } from "./utils/schedule-date-rule.js";
+import type { AdminSession, AdminTaskStatus, AdminTaskType, AiHealthStatus, GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupInfo, NapcatGroupMember, ProfileRecord, ProfileRecordType, ScheduleDateRule, SkillDefinition, SystemCommandConfig, SystemModelPurpose, SystemSettings } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -56,6 +59,8 @@ interface AdminHttpServerOptions {
   skillService?: SkillService;
   systemSettingsStore?: SystemSettingsStore;
   profileRecordStore?: ProfileRecordStore;
+  adminTaskStore?: AdminTaskStore;
+  modelHealthHistoryStore?: ModelHealthHistoryStore;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
   getProfileAiHealthStatus?: (options?: { refresh?: boolean }) => Promise<AiHealthStatus>;
@@ -300,6 +305,17 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/tasks") {
+      await this.handleTasks(req, res, url, session);
+      return;
+    }
+
+    const taskRoute = matchRoute(pathname, /^\/api\/tasks\/([^/]+)$/);
+    if (taskRoute && req.method === "GET") {
+      await this.handleTaskItem(res, taskRoute.id, session);
+      return;
+    }
+
     const groupConfigRoute = matchRoute(pathname, /^\/api\/groups\/([^/]+)\/config$/);
     if (groupConfigRoute) {
       if (!(await this.canAccessGroup(session, groupConfigRoute.id))) {
@@ -360,12 +376,20 @@ export class AdminHttpServer {
     const modelTestRoute = matchRoute(pathname, /^\/api\/models\/([^/]+)\/test$/);
     if (modelTestRoute && req.method === "POST") {
       if (!this.requireSuperAdmin(session, res)) return;
-      await this.handleModelConnectionTest(res, modelTestRoute.id);
+      await this.handleModelConnectionTest(res, modelTestRoute.id, session);
       return;
     }
 
     if (req.method === "GET" && pathname === "/api/model-options") {
       await this.handleModelOptions(res, session);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/model-health-history") {
+      if (!this.requireSuperAdmin(session, res)) return;
+      this.sendJson(res, {
+        models: this.options.modelHealthHistoryStore ? await this.options.modelHealthHistoryStore.list() : [],
+      });
       return;
     }
 
@@ -397,6 +421,22 @@ export class AdminHttpServer {
         return;
       }
       await this.handleGroupReminderItem(req, res, reminderItemRoute.groupId, reminderItemRoute.id);
+      return;
+    }
+
+    const schedulePreviewRoute = matchRoute(pathname, /^\/api\/groups\/([^/]+)\/schedule-preview$/);
+    if (schedulePreviewRoute && req.method === "GET") {
+      if (!(await this.canAccessGroup(session, schedulePreviewRoute.id))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      await this.handleSchedulePreview(res, schedulePreviewRoute.id, url);
+      return;
+    }
+
+    const profileRecordShareRoute = matchRoute(pathname, /^\/api\/profile-records\/([^/]+)\/share$/);
+    if (profileRecordShareRoute) {
+      await this.handleProfileRecordShare(req, res, profileRecordShareRoute.id, session);
       return;
     }
 
@@ -462,8 +502,17 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "forbidden" }, 403);
         return;
       }
+      if (!groupId && session.role !== "super_admin") {
+        this.sendJson(res, { error: "group_id_required" }, 400);
+        return;
+      }
       this.sendJson(res, {
-        entries: groupId ? await this.options.adminOperationLogService.listRecent(groupId, 20) : [],
+        entries: await this.options.adminOperationLogService.list({
+          ...(groupId ? { groupId } : {}),
+          action: url.searchParams.get("action") ?? undefined,
+          q: url.searchParams.get("q") ?? undefined,
+          limit: normalizeLogLimit(url.searchParams.get("limit") ?? undefined),
+        }),
       });
       return;
     }
@@ -604,6 +653,14 @@ export class AdminHttpServer {
       });
       return;
     }
+    if (!isProfileSharePublic(record)) {
+      this.sendText(res, publicProfileNotFoundHtml(), "text/html; charset=utf-8", {
+        statusCode: 404,
+        cacheControl: "no-store",
+      });
+      return;
+    }
+    await this.options.profileRecordStore?.recordShareAccess(record.id);
     this.sendText(res, publicProfileHtml(record.summary), "text/html; charset=utf-8", {
       cacheControl: "private, no-store",
     });
@@ -651,6 +708,56 @@ export class AdminHttpServer {
     const nextSession: AdminSession = { ...session, expiresAt: expires.toISOString() };
     this.setSessionCookie(res, this.signSession(nextSession), expires);
     this.sendJson(res, { ok: true, session: this.publicSession(nextSession) });
+  }
+
+  private async handleTasks(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
+    if (!this.options.adminTaskStore) {
+      this.sendJson(res, { error: "tasks_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "GET") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    const requestedGroupId = url.searchParams.get("groupId") ?? undefined;
+    const groupId = await this.normalizeAccessibleGroupId(session, requestedGroupId);
+    if (groupId === false) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const effectiveGroupId = session.role === "super_admin" ? groupId : groupId ?? session.allowedGroupIds[0];
+    const page = await this.options.adminTaskStore.listPage({
+      groupId: effectiveGroupId,
+      type: normalizeTaskType(url.searchParams.get("type") ?? undefined),
+      status: normalizeTaskStatus(url.searchParams.get("status") ?? undefined),
+      ...paginationParams(url, 20, 100),
+    });
+    const visibleGroupIds = new Set((await this.visibleGroups(session)).map((group) => group.groupId));
+    this.sendJson(res, {
+      tasks: page.tasks.filter((task) => !task.groupId || visibleGroupIds.has(task.groupId) || session.role === "super_admin"),
+      pagination: page.pagination,
+    });
+  }
+
+  private async handleTaskItem(res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    if (!this.options.adminTaskStore) {
+      this.sendJson(res, { error: "tasks_unavailable" }, 503);
+      return;
+    }
+    const task = await this.options.adminTaskStore.get(id);
+    if (!task) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (task.groupId && !(await this.canAccessGroup(session, task.groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    if (!task.groupId && session.role !== "super_admin") {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    this.sendJson(res, task);
   }
 
   private async handleMemories(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -858,9 +965,29 @@ export class AdminHttpServer {
           subjectUserId: subjectUserId!,
           semanticMode: "member",
         })).decisions;
-    const result = await service.apply(groupId, decisions);
+    const wrapped = this.options.adminTaskStore
+      ? await this.options.adminTaskStore.run({
+          type: "memory-dedup",
+          title: `记忆去重 ${subjectUserId}`,
+          groupId,
+          subjectUserId,
+          operatorUserId: session.userId ?? session.username,
+          detail: `${decisions.length} decisions`,
+        }, () => service.apply(groupId, decisions))
+      : { result: await service.apply(groupId, decisions), task: undefined };
+    const result = wrapped.result;
     this.invalidateMemberProfileCache(groupId);
-    this.sendJson(res, result);
+    await this.recordOperation({
+      session,
+      groupId,
+      action: "memory_dedup_apply",
+      target: subjectUserId,
+      detail: `applied=${result.appliedCount}; skipped=${result.skippedCount}`,
+    });
+    this.sendJson(res, {
+      ...result,
+      ...(wrapped.task ? { task: wrapped.task } : {}),
+    });
   }
 
   private async handleCandidates(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -924,6 +1051,21 @@ export class AdminHttpServer {
 
     const requestedCandidates = await Promise.all(ids.map(async (id) => [id, await this.findCandidate(id)] as const));
     const candidatesById = new Map(requestedCandidates);
+    const candidateGroupIds = Array.from(new Set(requestedCandidates
+      .map(([, candidate]) => candidate?.groupId)
+      .filter((groupId): groupId is string => Boolean(groupId))));
+    const task = this.options.adminTaskStore
+      ? await this.options.adminTaskStore.create({
+          type: "bulk-review",
+          title: `批量审核 ${ids.length} 条候选记忆`,
+          ...(candidateGroupIds.length === 1 ? { groupId: candidateGroupIds[0] } : {}),
+          operatorUserId: session.userId ?? session.username,
+          detail: ids.join(",").slice(0, 500),
+        })
+      : undefined;
+    if (task) {
+      await this.options.adminTaskStore?.update(task.id, { status: "running", progress: 10, startedAt: new Date().toISOString() });
+    }
     const approved: Array<NonNullable<Awaited<ReturnType<GroupMemoryCandidateService["approve"]>>>> = [];
     const alreadyApproved: Array<{ id: string; candidate: GroupMemoryCandidate }> = [];
     const skipped: Array<{ id: string; error: string }> = [];
@@ -974,7 +1116,7 @@ export class AdminHttpServer {
       this.invalidateMemberProfileCache(groupId);
     }
 
-    this.sendJson(res, {
+    const result = {
       approved,
       alreadyApproved,
       skipped,
@@ -983,6 +1125,27 @@ export class AdminHttpServer {
       alreadyApprovedCount: alreadyApproved.length,
       skippedCount: skipped.length,
       errorCount: errors.length,
+    };
+    const finishedTask = task
+      ? await this.options.adminTaskStore?.update(task.id, {
+          status: errors.length > 0 ? "failed" : "succeeded",
+          progress: 100,
+          result,
+          finishedAt: new Date().toISOString(),
+          error: errors.length > 0 ? `${errors.length} candidates failed` : undefined,
+        })
+      : undefined;
+    for (const groupId of changedGroupIds) {
+      await this.recordOperation({
+        session,
+        groupId,
+        action: "candidate_bulk_approve",
+        detail: `approved=${approved.length}; skipped=${skipped.length}; errors=${errors.length}`,
+      });
+    }
+    this.sendJson(res, {
+      ...result,
+      ...(finishedTask ? { task: finishedTask } : {}),
     });
   }
 
@@ -1224,7 +1387,7 @@ export class AdminHttpServer {
     }
   }
 
-  private async handleModelConnectionTest(res: ServerResponse, modelId: string): Promise<void> {
+  private async handleModelConnectionTest(res: ServerResponse, modelId: string, session: AdminSession): Promise<void> {
     if (!this.options.systemSettingsStore) {
       this.sendJson(res, { error: "system_settings_unavailable" }, 503);
       return;
@@ -1239,24 +1402,66 @@ export class AdminHttpServer {
       this.sendJson(res, { ok: false, error: "api_key_missing", detail: "模型未配置 API Key。" }, 400);
       return;
     }
-    const startedAt = Date.now();
-    try {
+    const apiKey = model.apiKey;
+    const runCheck = async () => {
+      const startedAt = Date.now();
       const { AiService } = await import("./services/ai-service.js");
-      const health = await new AiService(model.baseUrl, model.apiKey, model.model).checkHealth({ refresh: true, cacheTtlMs: 0 });
-      this.sendJson(res, {
+      const health = await new AiService(model.baseUrl, apiKey, model.model).checkHealth({ refresh: true, cacheTtlMs: 0 });
+      const status = {
+        id: model.id,
+        purpose: model.purpose,
+        name: model.name,
+        shortName: model.shortName,
+        selected: settings.selectedModelIds?.[model.purpose] === model.id,
         ok: health.ok,
         latencyMs: health.latencyMs || Date.now() - startedAt,
         detail: health.detail,
-        model: health.model,
-        baseUrl: health.baseUrl,
-      }, health.ok ? 200 : 502);
-    } catch (error) {
+        model: health.model || model.model,
+        baseUrl: health.baseUrl || model.baseUrl || "",
+        checkedAt: health.checkedAt || new Date().toISOString(),
+        cached: false,
+      };
+      await this.recordModelHealth(status, "manual");
+      return status;
+    };
+    try {
+      const wrapped = this.options.adminTaskStore
+        ? await this.options.adminTaskStore.run({
+            type: "model-check",
+            title: `模型检测 ${model.name}`,
+            operatorUserId: session.userId ?? session.username,
+            detail: model.id,
+          }, runCheck)
+        : { result: await runCheck(), task: undefined };
+      await this.recordOperation({
+        session,
+        groupId: "system",
+        action: "model_check",
+        target: model.id,
+        detail: wrapped.result.ok ? `ok ${wrapped.result.latencyMs}ms` : wrapped.result.detail,
+      });
       this.sendJson(res, {
+        ...wrapped.result,
+        ...(wrapped.task ? { task: wrapped.task } : {}),
+      }, wrapped.result.ok ? 200 : 502);
+    } catch (error) {
+      const status = {
+        id: model.id,
+        purpose: model.purpose,
+        name: model.name,
+        shortName: model.shortName,
+        selected: settings.selectedModelIds?.[model.purpose] === model.id,
         ok: false,
         error: "connection_failed",
         detail: (error as Error).message,
-        latencyMs: Date.now() - startedAt,
-      }, 502);
+        latencyMs: 0,
+        model: model.model,
+        baseUrl: model.baseUrl || "",
+        checkedAt: new Date().toISOString(),
+        cached: false,
+      };
+      await this.recordModelHealth(status, "manual");
+      this.sendJson(res, status, 502);
     }
   }
 
@@ -1390,6 +1595,20 @@ export class AdminHttpServer {
     this.sendJson(res, { error: "method_not_allowed" }, 405);
   }
 
+  private async handleSchedulePreview(res: ServerResponse, groupId: string, url: URL): Promise<void> {
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    const days = Math.max(1, Math.min(14, Number(url.searchParams.get("days") ?? 7) || 7));
+    const reminders = this.options.scheduledReminderService
+      ? await this.options.scheduledReminderService.listGroupTasks(groupId, { includeDisabled: true })
+      : [];
+    const previews = buildSchedulePreview(groupConfig, reminders, days);
+    this.sendJson(res, { groupId, days, previews });
+  }
+
   private async handleProfileRecords(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
     if (!this.options.profileRecordStore) {
       this.sendJson(res, { error: "profile_records_unavailable" }, 503);
@@ -1425,14 +1644,39 @@ export class AdminHttpServer {
         return;
       }
       try {
-        const generated = await this.generateProfileRecordResponse({
+        const wrapped = this.options.adminTaskStore
+          ? await this.options.adminTaskStore.run({
+              type: "profile-generate",
+              title: `画像生成 ${userId}`,
+              groupId,
+              subjectUserId: userId,
+              operatorUserId: session.userId ?? session.username,
+              detail: type,
+            }, () => this.generateProfileRecordResponse({
+              groupId,
+              userId,
+              type,
+              refresh: true,
+              createdBy: session.username,
+            }))
+          : { result: await this.generateProfileRecordResponse({
+              groupId,
+              userId,
+              type,
+              refresh: true,
+              createdBy: session.username,
+            }), task: undefined };
+        await this.recordOperation({
+          session,
           groupId,
-          userId,
-          type,
-          refresh: true,
-          createdBy: session.username,
+          action: "profile_generate",
+          target: userId,
+          detail: type,
         });
-        this.sendJson(res, generated, 201);
+        this.sendJson(res, {
+          ...wrapped.result,
+          ...(wrapped.task ? { task: wrapped.task } : {}),
+        }, 201);
       } catch (error) {
         this.sendProfileRecordGenerationError(res, error);
       }
@@ -1465,15 +1709,41 @@ export class AdminHttpServer {
         return;
       }
       try {
-        const generated = await this.generateProfileRecordResponse({
+        const wrapped = this.options.adminTaskStore
+          ? await this.options.adminTaskStore.run({
+              type: "profile-generate",
+              title: `画像刷新 ${record.userId}`,
+              groupId: record.groupId,
+              subjectUserId: record.userId,
+              operatorUserId: session.userId ?? session.username,
+              detail: record.type,
+            }, () => this.generateProfileRecordResponse({
+              groupId: record.groupId,
+              userId: record.userId,
+              type: record.type,
+              refresh: true,
+              createdBy: session.username,
+              replaceRecordId: record.id,
+            }))
+          : { result: await this.generateProfileRecordResponse({
+              groupId: record.groupId,
+              userId: record.userId,
+              type: record.type,
+              refresh: true,
+              createdBy: session.username,
+              replaceRecordId: record.id,
+            }), task: undefined };
+        await this.recordOperation({
+          session,
           groupId: record.groupId,
-          userId: record.userId,
-          type: record.type,
-          refresh: true,
-          createdBy: session.username,
-          replaceRecordId: record.id,
+          action: "profile_refresh",
+          target: record.userId,
+          detail: record.type,
         });
-        this.sendJson(res, generated);
+        this.sendJson(res, {
+          ...wrapped.result,
+          ...(wrapped.task ? { task: wrapped.task } : {}),
+        });
       } catch (error) {
         this.sendProfileRecordGenerationError(res, error);
       }
@@ -1484,6 +1754,43 @@ export class AdminHttpServer {
       return;
     }
     this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async handleProfileRecordShare(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    if (!this.options.profileRecordStore) {
+      this.sendJson(res, { error: "profile_records_unavailable" }, 503);
+      return;
+    }
+    const record = await this.options.profileRecordStore.get(id);
+    if (!record) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (!(await this.canAccessGroup(session, record.groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    if (req.method !== "PUT") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    const body = await readJsonBody(req);
+    const publicEnabled = optionalBoolean(body.publicEnabled);
+    const expiresAt = body.expiresAt === null ? null : normalizeOptionalIso(body.expiresAt);
+    const revokedAt = publicEnabled === false ? new Date().toISOString() : body.revokedAt === null ? null : normalizeOptionalIso(body.revokedAt);
+    const updated = await this.options.profileRecordStore.updateShareState(id, {
+      ...(publicEnabled !== undefined ? { publicEnabled } : {}),
+      ...(body.expiresAt !== undefined ? { expiresAt } : {}),
+      ...(publicEnabled === false || body.revokedAt !== undefined ? { revokedAt } : {}),
+    });
+    await this.recordOperation({
+      session,
+      groupId: record.groupId,
+      action: publicEnabled === false ? "profile_share_revoke" : "profile_share_update",
+      target: id,
+      detail: publicEnabled === false ? "revoked public profile link" : "updated public profile link",
+    });
+    this.sendJson(res, updated ? this.withProfileShareUrl(updated) : { error: "not_found" }, updated ? 200 : 404);
   }
 
   private async generateProfileRecordResponse(args: {
@@ -1854,6 +2161,7 @@ export class AdminHttpServer {
     }
     const settings = await this.options.systemSettingsStore.getInternal();
     const enabledModels = settings.models.filter((model) => model.enabled);
+    const source = options.refresh ? "health" : "overview";
     const statuses = await Promise.all(enabledModels.map(async (model) => {
       const selected = settings.selectedModelIds?.[model.purpose] === model.id;
       const cached = this.modelHealthCache.get(model.id);
@@ -1879,6 +2187,7 @@ export class AdminHttpServer {
           cached: false,
         };
         this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
+        await this.recordModelHealth(status, source);
         return status;
       }
       const startedAt = Date.now();
@@ -1896,6 +2205,7 @@ export class AdminHttpServer {
           cached: false,
         };
         this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
+        await this.recordModelHealth(status, source);
         return status;
       } catch (error) {
         const status = {
@@ -1909,10 +2219,23 @@ export class AdminHttpServer {
           cached: false,
         };
         this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
+        await this.recordModelHealth(status, source);
         return status;
       }
     }));
     return statuses;
+  }
+
+  private async recordModelHealth(
+    status: AiHealthStatus & { id: string; purpose: string; name: string; shortName: string; selected: boolean },
+    source: ModelHealthHistoryEntry["source"],
+  ): Promise<void> {
+    if (!this.options.modelHealthHistoryStore) return;
+    await this.options.modelHealthHistoryStore.record({
+      ...status,
+      purpose: normalizeModelPurpose(status.purpose),
+      source,
+    });
   }
 
   private async findCandidate(id: string): Promise<GroupMemoryCandidate | undefined> {
@@ -2206,6 +2529,22 @@ export class AdminHttpServer {
     }
     this.sendJson(res, { error: "forbidden" }, 403);
     return false;
+  }
+
+  private async recordOperation(args: {
+    session: AdminSession;
+    groupId: string;
+    action: string;
+    target?: string;
+    detail?: string;
+  }): Promise<void> {
+    await this.options.adminOperationLogService.record({
+      groupId: args.groupId,
+      operatorUserId: args.session.userId ?? args.session.username,
+      action: args.action,
+      ...(args.target ? { target: args.target } : {}),
+      ...(args.detail ? { detail: args.detail } : {}),
+    });
   }
 
   private async normalizeAccessibleGroupId(session: AdminSession, groupId: string | undefined): Promise<string | undefined | false> {
@@ -2572,6 +2911,157 @@ function normalizeReminderWeekdays(value: unknown): number[] {
     .map((item) => Number(item))
     .filter((item) => Number.isInteger(item) && item >= 0 && item <= 6)))
     .sort((left, right) => left - right);
+}
+
+function normalizeTaskType(value: string | undefined): AdminTaskType | undefined {
+  return value === "memory-dedup" || value === "profile-generate" || value === "model-check" || value === "bulk-review"
+    ? value
+    : undefined;
+}
+
+function normalizeTaskStatus(value: string | undefined): AdminTaskStatus | undefined {
+  return value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled"
+    ? value
+    : undefined;
+}
+
+function normalizeModelPurpose(value: string): SystemModelPurpose {
+  return value === "reply" ||
+    value === "profile" ||
+    value === "memory" ||
+    value === "dedup" ||
+    value === "summary" ||
+    value === "knowledge" ||
+    value === "tts" ||
+    value === "custom"
+    ? value
+    : "custom";
+}
+
+function normalizeLogLimit(value: string | undefined): number {
+  const parsed = value ? Number(value) : 50;
+  return Number.isInteger(parsed) ? Math.max(1, Math.min(200, parsed)) : 50;
+}
+
+function normalizeOptionalIso(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string") return undefined;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
+
+function isProfileSharePublic(record: ProfileRecord): boolean {
+  if (record.publicEnabled === false || record.revokedAt) {
+    return false;
+  }
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
+    return false;
+  }
+  return Boolean(record.shareToken);
+}
+
+function buildSchedulePreview(groupConfig: GroupBotConfig, reminders: Array<{
+  id: string;
+  topic: string;
+  enabled: boolean;
+  executionStartTime?: string;
+  executionEndTime?: string;
+  executionIntervalMinutes?: number;
+  scheduledTime?: string;
+  intervalMinutes: number;
+  dateRule?: ScheduleDateRule;
+  weekdays?: number[];
+}>, days: number): Array<{
+  date: string;
+  items: Array<{ type: "daily_report" | "holiday_countdown" | "scheduled_reminder"; title: string; time: string; enabled: boolean; taskId?: string }>;
+}> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const previews = [];
+  for (let offset = 0; offset < days; offset += 1) {
+    const day = new Date(today);
+    day.setDate(today.getDate() + offset);
+    const items: Array<{ type: "daily_report" | "holiday_countdown" | "scheduled_reminder"; title: string; time: string; enabled: boolean; taskId?: string }> = [];
+    if (groupConfig.dailyReportTime && isScheduleDateRuleMatched(groupConfig.dailyReportDateRule, groupConfig.dailyReportWeekdays, day)) {
+      items.push({
+        type: "daily_report",
+        title: "日报",
+        time: groupConfig.dailyReportTime,
+        enabled: groupConfig.dailyReportEnabled === true,
+      });
+    }
+    if (groupConfig.holidayCountdownTime && isScheduleDateRuleMatched(groupConfig.holidayCountdownDateRule, groupConfig.holidayCountdownWeekdays, day)) {
+      items.push({
+        type: "holiday_countdown",
+        title: "节日倒计时",
+        time: groupConfig.holidayCountdownTime,
+        enabled: groupConfig.holidayCountdownEnabled === true,
+      });
+    }
+    for (const reminder of reminders) {
+      if (!isScheduleDateRuleMatched(reminder.dateRule, reminder.weekdays, day)) {
+        continue;
+      }
+      for (const time of buildReminderPreviewTimes(reminder)) {
+        items.push({
+          type: "scheduled_reminder",
+          title: reminder.topic,
+          time,
+          enabled: reminder.enabled,
+          taskId: reminder.id,
+        });
+      }
+    }
+    previews.push({
+      date: formatLocalDateKey(day),
+      items: items.sort((left, right) => left.time.localeCompare(right.time)),
+    });
+  }
+  return previews;
+}
+
+function formatLocalDateKey(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function buildReminderPreviewTimes(reminder: {
+  executionStartTime?: string;
+  executionEndTime?: string;
+  executionIntervalMinutes?: number;
+  scheduledTime?: string;
+  intervalMinutes: number;
+}): string[] {
+  if (!reminder.executionStartTime) {
+    return reminder.scheduledTime ? [reminder.scheduledTime] : [];
+  }
+  const start = timeToMinutes(reminder.executionStartTime);
+  const end = Math.max(start, timeToMinutes(reminder.executionEndTime ?? reminder.executionStartTime));
+  const interval = Math.max(1, Math.min(24 * 60, reminder.executionIntervalMinutes ?? reminder.intervalMinutes));
+  const times: string[] = [];
+  for (let value = start; value <= end && times.length < 24; value += interval) {
+    times.push(minutesToTime(value));
+  }
+  return times;
+}
+
+function timeToMinutes(value: string): number {
+  const [hour = "0", minute = "0"] = value.split(":");
+  const parsedHour = Number(hour);
+  const parsedMinute = Number(minute);
+  if (!Number.isInteger(parsedHour) || !Number.isInteger(parsedMinute)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(24 * 60 - 1, parsedHour * 60 + parsedMinute));
+}
+
+function minutesToTime(value: number): string {
+  const normalized = Math.max(0, Math.min(24 * 60 - 1, Math.floor(value)));
+  return `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
 }
 
 function normalizeCommandConfigList(value: unknown, current: SystemCommandConfig[]): SystemCommandConfig[] {

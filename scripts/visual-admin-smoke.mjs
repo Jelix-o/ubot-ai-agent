@@ -8,12 +8,14 @@ import { WebSocket } from "ws";
 
 import { AdminHttpServer } from "../dist/admin-http-server.js";
 import { AdminOperationLogService } from "../dist/services/admin-operation-log-service.js";
+import { AdminTaskStore } from "../dist/services/admin-task-store.js";
 import { GroupConfigService } from "../dist/services/group-config-service.js";
 import { GroupMemoryCandidateService } from "../dist/services/group-memory-candidate-service.js";
 import { GroupMemoryCandidateStore } from "../dist/services/group-memory-candidate-store.js";
 import { GroupMemoryStore } from "../dist/services/group-memory-store.js";
 import { KnowledgeBaseStore } from "../dist/services/knowledge-base-store.js";
 import { ProfileRecordStore } from "../dist/services/profile-record-store.js";
+import { ModelHealthHistoryStore } from "../dist/services/model-health-history-store.js";
 import { ScheduledReminderService } from "../dist/services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "../dist/services/scheduled-reminder-store.js";
 import { SkillService } from "../dist/services/skill-service.js";
@@ -192,6 +194,24 @@ try {
     });
   }
 
+  const adminTaskStore = new AdminTaskStore(path.join(tmp, "admin-tasks.json"));
+  const smokeTask = await adminTaskStore.create({
+    type: "profile-generate",
+    title: "画像生成 3951154629",
+    groupId: "866209871",
+    subjectUserId: "3951154629",
+    operatorUserId: "99999",
+    detail: "overall",
+  });
+  await adminTaskStore.update(smokeTask.id, {
+    status: "succeeded",
+    progress: 100,
+    startedAt: "2026-06-04T10:00:00.000Z",
+    finishedAt: "2026-06-04T10:00:02.000Z",
+    durationMs: 2000,
+    result: { recordId: "profile-smoke", sourceMemoryCount: 4 },
+  });
+
   service = new AdminHttpServer({
     host: "127.0.0.1",
     port: 0,
@@ -208,6 +228,8 @@ try {
     }),
     knowledgeBaseStore: knowledgeStore,
     profileRecordStore: new ProfileRecordStore(path.join(tmp, "profile-records.json")),
+    adminTaskStore,
+    modelHealthHistoryStore: new ModelHealthHistoryStore(path.join(tmp, "model-health-history.json")),
     systemSettingsStore: new SystemSettingsStore(path.join(tmp, "system-settings.json"), [
       {
         id: "gpt",
@@ -296,6 +318,7 @@ try {
     ["memories", "/memories"],
     ["profiles", "/profiles"],
     ["knowledge", "/knowledge"],
+    ["tasks", "/tasks"],
     ["health", "/health"],
     ["skills", "/skills"],
     ["commands", "/commands"],

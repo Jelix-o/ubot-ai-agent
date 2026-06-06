@@ -147,6 +147,10 @@ export interface ModelHealthStatus extends HealthStatus {
   selected: boolean;
 }
 
+export interface ModelHealthHistoryEntry extends ModelHealthStatus {
+  source: "manual" | "overview" | "health" | "runtime";
+}
+
 export interface OverviewData {
   groups: GroupConfig[];
   groupId?: string;
@@ -283,10 +287,47 @@ export interface ProfileRecord {
   summary: string;
   shareToken?: string;
   shareUrl?: string;
+  publicEnabled?: boolean;
+  expiresAt?: string;
+  accessCount?: number;
+  revokedAt?: string;
   sourceMemoryCount: number;
   generatedAt: string;
   createdAt: string;
   createdBy: string;
+}
+
+export type AdminTaskType = "memory-dedup" | "profile-generate" | "model-check" | "bulk-review";
+export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface AdminTaskRecord {
+  id: string;
+  type: AdminTaskType;
+  status: AdminTaskStatus;
+  title: string;
+  groupId?: string;
+  subjectUserId?: string;
+  operatorUserId: string;
+  progress: number;
+  detail?: string;
+  error?: string;
+  result?: unknown;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+export interface SchedulePreviewDay {
+  date: string;
+  items: Array<{
+    type: "daily_report" | "holiday_countdown" | "scheduled_reminder";
+    title: string;
+    time: string;
+    enabled: boolean;
+    taskId?: string;
+  }>;
 }
 
 export interface GlobalSearchResult {

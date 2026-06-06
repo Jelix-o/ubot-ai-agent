@@ -28,6 +28,10 @@ export class AdminOperationLogService {
   }
 
   async listRecent(groupId: string, limit = 10): Promise<AdminOperationLogEntry[]> {
+    return this.list({ groupId, limit });
+  }
+
+  async list(args: { groupId?: string; action?: string; q?: string; limit?: number } = {}): Promise<AdminOperationLogEntry[]> {
     let content: string;
     try {
       content = await readFile(this.filePath, "utf8");
@@ -40,6 +44,8 @@ export class AdminOperationLogService {
     }
 
     const entries: AdminOperationLogEntry[] = [];
+    const query = args.q?.trim().toLowerCase() ?? "";
+    const action = args.action?.trim().toLowerCase() ?? "";
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) {
@@ -49,25 +55,39 @@ export class AdminOperationLogService {
       try {
         const parsed = JSON.parse(trimmed) as Partial<AdminOperationLogEntry>;
         if (
-          parsed.groupId === groupId &&
+          (!args.groupId || parsed.groupId === args.groupId) &&
           typeof parsed.timestamp === "string" &&
+          typeof parsed.groupId === "string" &&
           typeof parsed.operatorUserId === "string" &&
           typeof parsed.action === "string"
         ) {
-          entries.push({
+          const entry = {
             timestamp: parsed.timestamp,
-            groupId,
+            groupId: parsed.groupId,
             operatorUserId: parsed.operatorUserId,
             action: parsed.action,
             ...(typeof parsed.target === "string" && parsed.target ? { target: parsed.target } : {}),
             ...(typeof parsed.detail === "string" && parsed.detail ? { detail: parsed.detail } : {}),
-          });
+          };
+          if (action && !entry.action.toLowerCase().includes(action)) {
+            continue;
+          }
+          if (query && ![
+            entry.groupId,
+            entry.operatorUserId,
+            entry.action,
+            entry.target,
+            entry.detail,
+          ].some((value) => String(value ?? "").toLowerCase().includes(query))) {
+            continue;
+          }
+          entries.push(entry);
         }
       } catch {
         continue;
       }
     }
 
-    return entries.slice(-limit).reverse();
+    return entries.slice(-(args.limit ?? 10)).reverse();
   }
 }

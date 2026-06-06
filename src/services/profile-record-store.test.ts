@@ -73,3 +73,36 @@ test("ProfileRecordStore preserves share token on update and old records without
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("ProfileRecordStore manages public share state and access count", async () => {
+  await withStore(async (store) => {
+    const created = await store.create({
+      groupId: "67890",
+      userId: "20001",
+      type: "overall",
+      summary: "shareable profile",
+    });
+
+    assert.equal(created.publicEnabled, true);
+    assert.equal(created.accessCount, 0);
+
+    const accessed = await store.recordShareAccess(created.id);
+    assert.equal(accessed?.accessCount, 1);
+
+    const revoked = await store.updateShareState(created.id, {
+      publicEnabled: false,
+      revokedAt: "2026-06-05T00:00:00.000Z",
+    });
+    assert.equal(revoked?.publicEnabled, false);
+    assert.equal(revoked?.revokedAt, "2026-06-05T00:00:00.000Z");
+
+    const restored = await store.updateShareState(created.id, {
+      publicEnabled: true,
+      revokedAt: null,
+      expiresAt: "2026-06-10T00:00:00.000Z",
+    });
+    assert.equal(restored?.publicEnabled, true);
+    assert.equal(restored?.revokedAt, undefined);
+    assert.equal(restored?.expiresAt, "2026-06-10T00:00:00.000Z");
+  });
+});

@@ -129,6 +129,26 @@ function openShareUrl(record?: ProfileRecord): void {
   window.open(record.shareUrl, "_blank", "noopener,noreferrer");
 }
 
+function shareStatusLabel(record?: ProfileRecord): string {
+  if (!record?.shareToken) return "No link";
+  if (record.revokedAt || record.publicEnabled === false) return "Revoked";
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) return "Expired";
+  return "Public";
+}
+
+async function updateShareState(record: ProfileRecord, publicEnabled: boolean): Promise<void> {
+  const updated = await api<ProfileRecord>(`/api/profile-records/${encodeURIComponent(record.id)}/share`, {
+    method: "PUT",
+    body: JSON.stringify({
+      publicEnabled,
+      revokedAt: publicEnabled ? null : new Date().toISOString(),
+    }),
+  });
+  if (activeRecord.value?.id === record.id) activeRecord.value = updated;
+  records.value = records.value.map((item) => item.id === record.id ? updated : item);
+  app.showToast(publicEnabled ? "Profile link restored" : "Profile link revoked");
+}
+
 function memberLabel(userId?: string): string {
   if (!userId) return "未选择成员";
   const member = memberOptions.value.find((item) => item.userId === userId);
@@ -212,6 +232,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <div class="row-actions">
             <button class="ghost-btn" type="button" :disabled="!record.shareUrl" @click="openShareUrl(record)">查看链接</button>
             <button class="ghost-btn" type="button" :disabled="!record.shareUrl" @click="copyShareUrl(record)">复制链接</button>
+            <span class="tag" :class="{ danger: record.publicEnabled === false || Boolean(record.revokedAt) }">{{ shareStatusLabel(record) }}</span>
             <button class="ghost-btn" type="button" :disabled="generating" @click="regenerate(record)">重新生成</button>
             <button class="ghost-btn danger" type="button" @click="removeRecord(record)">删除</button>
           </div>
@@ -234,6 +255,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <div v-if="activeRecord" class="detail-actions">
           <button class="ghost-btn" type="button" :disabled="!activeRecord.shareUrl" @click="openShareUrl(activeRecord)">查看链接</button>
           <button class="ghost-btn" type="button" :disabled="!activeRecord.shareUrl" @click="copyShareUrl(activeRecord)">复制链接</button>
+          <button v-if="activeRecord.publicEnabled !== false && !activeRecord.revokedAt" class="ghost-btn danger" type="button" @click="updateShareState(activeRecord, false)">撤销公开</button>
+          <button v-else class="ghost-btn" type="button" @click="updateShareState(activeRecord, true)">恢复公开</button>
         </div>
       </div>
       <div v-if="detailLoading" class="empty compact">正在读取画像详情...</div>
@@ -243,6 +266,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <div><dt>生成时间</dt><dd>{{ formatDateTime(activeRecord.generatedAt) }}</dd></div>
           <div><dt>来源记忆</dt><dd>{{ activeRecord.sourceMemoryCount }} 条</dd></div>
           <div><dt>创建人</dt><dd>{{ activeRecord.createdBy }}</dd></div>
+          <div><dt>公开链接</dt><dd>{{ shareStatusLabel(activeRecord) }} / {{ activeRecord.accessCount || 0 }} 次访问</dd></div>
+          <div v-if="activeRecord.expiresAt"><dt>过期时间</dt><dd>{{ formatDateTime(activeRecord.expiresAt) }}</dd></div>
         </dl>
         <article class="summary-text">{{ activeRecord.summary }}</article>
       </template>

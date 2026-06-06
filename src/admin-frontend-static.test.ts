@@ -137,7 +137,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v4\.4\.0/);
+  assert.match(appShell, /UBot v4\.6\.0/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="top-popover theme-popover"/);
@@ -159,16 +159,25 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(overviewView, /模型检测/);
   assert.match(overviewView, /to="\/health"/);
   assert.match(routerFile, /title:\s*"系统状态"/);
+  assert.match(routerFile, /path:\s*"\/tasks"/);
+  assert.match(routerFile, /TasksView\.vue/);
 
+  assert.match(routerFile, /path:\s*"\/tasks"[\s\S]*path:\s*"\/skills"/);
   assert.match(routerFile, /path:\s*"\/health"[\s\S]*path:\s*"\/settings"/);
   assert.match(routerFile, /name:\s*"settings"[\s\S]*superOnly:\s*true/);
   assert.match(routerFile, /component:\s*\(\)\s*=>\s*import\("\.\/views\/OverviewView\.vue"\)/);
+
+  const adminServer = await readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8");
+  assert.match(adminServer, /title:\s*`记忆去重/);
+  assert.match(adminServer, /title:\s*`批量审核/);
+  assert.match(adminServer, /title:\s*`画像生成/);
+  assert.match(adminServer, /title:\s*`模型检测/);
 });
 
 test("admin visual smoke covers all routes and key mobile viewports", async () => {
   const smokeScript = await readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8");
 
-  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "health", "skills", "commands", "settings"]) {
+  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "tasks", "health", "skills", "commands", "settings"]) {
     assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
   }
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
@@ -199,6 +208,9 @@ test("admin group config reloads on group switch and uses selectable config cont
   assert.match(groupsView, /form\.dailyReportDateRule/);
   assert.match(groupsView, /form\.holidayCountdownDateRule/);
   assert.match(groupsView, /class="schedule-layout"/);
+  assert.match(groupsView, /\/schedule-preview\?days=7/);
+  assert.match(groupsView, /schedulePreview/);
+  assert.match(groupsView, /未来 7 天执行预览/);
   assert.match(groupsView, /class="date-rule-panel"/);
   assert.match(groupsView, /class="schedule-effect"/);
   assert.match(groupsView, /class="schedule-column schedule-basic"/);

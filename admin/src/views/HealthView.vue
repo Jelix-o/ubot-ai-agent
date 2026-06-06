@@ -3,8 +3,9 @@ import { onMounted, shallowRef } from "vue";
 
 import StatusCard from "../components/StatusCard.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
-import { api, type HealthStatus, type ModelHealthStatus } from "../services/api";
+import { api, type HealthStatus, type ModelHealthHistoryEntry, type ModelHealthStatus } from "../services/api";
 import { useAppStore } from "../stores/app";
+import { formatDateTime } from "../utils/format";
 
 interface HealthData {
   transportHealth: HealthStatus;
@@ -24,12 +25,17 @@ interface HealthData {
 
 const app = useAppStore();
 const data = shallowRef<HealthData>();
+const modelHistory = shallowRef<ModelHealthHistoryEntry[]>([]);
 const loading = shallowRef(false);
 
 async function load(refresh = false): Promise<void> {
   loading.value = true;
   try {
     data.value = await api<HealthData>(`/api/health${refresh ? "?refresh=1" : ""}`);
+    if (app.role === "super_admin") {
+      const history = await api<{ models: ModelHealthHistoryEntry[] }>("/api/model-health-history");
+      modelHistory.value = history.models;
+    }
     if (refresh) app.showToast("系统状态检测已完成");
   } finally {
     loading.value = false;
@@ -48,7 +54,7 @@ function memoryStatus(): HealthStatus {
 
 function nodeStatus(): HealthStatus {
   if (!data.value) return { ok: true, detail: "暂无数据" };
-  return { ok: true, detail: `${data.value.nodeVersion} · PID ${data.value.pid}`, checkedAt: `uptime ${data.value.uptimeSeconds}s`, latencyMs: 0 };
+  return { ok: true, detail: `${data.value.nodeVersion} / PID ${data.value.pid}`, checkedAt: `uptime ${data.value.uptimeSeconds}s`, latencyMs: 0 };
 }
 
 function onRefresh(): void {
@@ -111,6 +117,34 @@ useRefreshEvents({ refresh: onRefresh });
       </div>
     </section>
 
+    <section v-if="app.role === 'super_admin'" class="status-section">
+      <div class="sub-head">
+        <div>
+          <h3>最近检测历史</h3>
+          <p>记录每个模型最近一次检测来源、延迟和结果。</p>
+        </div>
+      </div>
+      <div v-if="!modelHistory.length" class="empty compact">暂无模型检测历史。</div>
+      <div v-else class="history-table">
+        <div class="history-head">
+          <span>模型</span>
+          <span>分类</span>
+          <span>状态</span>
+          <span>延迟</span>
+          <span>来源</span>
+          <span>检测时间</span>
+        </div>
+        <article v-for="model in modelHistory" :key="model.id" class="history-row">
+          <strong>{{ model.shortName || model.name }}</strong>
+          <span>{{ model.purpose }}</span>
+          <span class="tag" :class="{ danger: !model.ok }">{{ model.ok ? "OK" : "Fail" }}</span>
+          <span>{{ model.latencyMs || 0 }}ms</span>
+          <span>{{ model.source }}</span>
+          <span class="muted">{{ formatDateTime(model.checkedAt) }}</span>
+        </article>
+      </div>
+    </section>
+
     <details class="diagnostics">
       <summary>查看原始诊断 JSON</summary>
       <pre>{{ JSON.stringify(data, null, 2) }}</pre>
@@ -154,6 +188,34 @@ useRefreshEvents({ refresh: onRefresh });
 .sub-head p {
   margin-top: 5px;
   color: var(--muted);
+}
+
+.history-table {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.history-head,
+.history-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 100px 90px 90px 100px 180px;
+  gap: 12px;
+  align-items: center;
+  min-width: 760px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.history-head {
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.history-row:last-child {
+  border-bottom: 0;
 }
 
 .compact {
