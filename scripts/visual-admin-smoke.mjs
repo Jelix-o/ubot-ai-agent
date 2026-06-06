@@ -695,6 +695,20 @@ async function captureCdpScreenshots(baseUrl, cookie, targets) {
         httpOnly: true,
       });
 
+      try {
+        await runTopbarInteractionSmoke(cdp, baseUrl);
+      } catch (error) {
+        throw new Error(`Admin topbar interaction smoke failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const refreshedAuth = await loginAndGetAuth(baseUrl);
+      await cdp.send("Network.setCookie", {
+        name: "admin_session",
+        value: refreshedAuth.cookie.replace(/^admin_session=/, ""),
+        url: baseUrl,
+        path: "/",
+        httpOnly: true,
+      });
+
       for (const [name, route, viewport] of targets) {
         await cdp.send("Emulation.setDeviceMetricsOverride", {
           width: viewport.width,
@@ -756,11 +770,103 @@ async function captureCdpScreenshots(baseUrl, cookie, targets) {
       cdp.close();
     }
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Admin topbar interaction smoke failed:")) {
+      throw error;
+    }
     screenshotWarnings.push(error instanceof Error ? error.message : String(error));
   } finally {
     chrome.kill();
     await delay(300);
   }
+}
+
+async function runTopbarInteractionSmoke(cdp, baseUrl) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1600,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await navigateAndWait(cdp, `${baseUrl}/`);
+  await waitForUiStable(cdp);
+
+  await realClick(cdp, ".notify-btn");
+  await delay(200);
+  await assertElementVisible(cdp, '[data-smoke="review-candidates"]', "review candidates popover action");
+  await realClick(cdp, '[data-smoke="review-candidates"]');
+  await waitForLocationPath(cdp, "/candidates");
+
+  await navigateAndWait(cdp, `${baseUrl}/`);
+  await waitForUiStable(cdp);
+  await realClick(cdp, 'button[title="Theme"]');
+  await delay(200);
+  await assertElementVisible(cdp, '[data-smoke="theme-dark"]', "theme dark action");
+  await realClick(cdp, '[data-smoke="theme-dark"]');
+  await waitForExpression(cdp, "document.documentElement.dataset.themeMode === 'dark'", "theme mode to become dark");
+
+  await realClick(cdp, ".user-chip");
+  await delay(200);
+  await assertElementVisible(cdp, '[data-smoke="logout"]', "logout action");
+  await realClick(cdp, '[data-smoke="logout"]');
+  await waitForLocationPath(cdp, "/login");
+}
+
+async function realClick(cdp, selector) {
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const target = document.querySelector(${JSON.stringify(selector)});
+      if (!(target instanceof HTMLElement)) return null;
+      const rect = target.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const box = result.result?.value;
+  if (!box || box.width <= 0 || box.height <= 0) {
+    throw new Error(`Cannot click hidden or missing selector: ${selector}`);
+  }
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y, button: "none" });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+}
+
+async function assertElementVisible(cdp, selector, label) {
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(() => {
+      const target = document.querySelector(${JSON.stringify(selector)});
+      if (!(target instanceof HTMLElement)) return false;
+      const rect = target.getBoundingClientRect();
+      const style = getComputedStyle(target);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    })()`,
+    returnByValue: true,
+  });
+  if (result.result?.value !== true) {
+    throw new Error(`Expected visible element for ${label}: ${selector}`);
+  }
+}
+
+async function waitForLocationPath(cdp, expectedPath) {
+  await waitForExpression(
+    cdp,
+    `location.pathname === ${JSON.stringify(expectedPath)}`,
+    `location path ${expectedPath}`,
+  );
+}
+
+async function waitForExpression(cdp, expression, label) {
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    const result = await cdp.send("Runtime.evaluate", { expression, returnByValue: true });
+    if (result.result?.value === true) return;
+    await delay(150);
+  }
+  throw new Error(`Timed out waiting for ${label}.`);
 }
 
 async function waitForPageWebSocket(remotePort, getStderr) {

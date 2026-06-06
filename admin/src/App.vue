@@ -274,7 +274,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
             <div v-if="notificationsOpen" class="top-popover notify-popover">
               <strong>候选记忆提醒</strong>
               <p>{{ app.notifications.pendingCandidateCount }} 条候选等待处理</p>
-              <button class="btn" type="button" @click="go('/candidates')">去审核</button>
+              <button class="btn" type="button" data-smoke="review-candidates" @click="go('/candidates')">去审核</button>
               <div class="notify-list">
                 <div v-for="item in app.notifications.latestCandidates" :key="item.id" class="notify-item">
                   <span>{{ item.title }}</span>
@@ -294,9 +294,9 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
             </button>
             <div v-if="themeOpen" class="top-popover theme-popover">
               <strong>主题</strong>
-              <button :class="{ active: app.themeMode === 'light' }" type="button" @click="app.applyTheme('light')">浅色</button>
-              <button :class="{ active: app.themeMode === 'dark' }" type="button" @click="app.applyTheme('dark')">深色</button>
-              <button :class="{ active: app.themeMode === 'system' }" type="button" @click="app.applyTheme('system')">跟随系统</button>
+              <button :class="{ active: app.themeMode === 'light' }" type="button" data-smoke="theme-light" @click="app.applyTheme('light')">浅色</button>
+              <button :class="{ active: app.themeMode === 'dark' }" type="button" data-smoke="theme-dark" @click="app.applyTheme('dark')">深色</button>
+              <button :class="{ active: app.themeMode === 'system' }" type="button" data-smoke="theme-system" @click="app.applyTheme('system')">跟随系统</button>
             </div>
           </div>
 
@@ -308,7 +308,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
               <strong>{{ app.username }}</strong>
               <p>{{ roleLabel }}</p>
               <p v-if="app.role !== 'super_admin'">可管理 {{ app.allowedGroupIds.length }} 个群</p>
-              <button class="ghost-btn logout" type="button" @click="app.logout()">退出登录</button>
+              <button class="ghost-btn logout" type="button" data-smoke="logout" @click="app.logout()">退出登录</button>
             </div>
           </div>
         </div>
@@ -489,7 +489,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: 30;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
