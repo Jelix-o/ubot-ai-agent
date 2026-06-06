@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, shallowRef } from "vue";
+import { computed, onMounted, shallowRef } from "vue";
 
 import StatusCard from "../components/StatusCard.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
@@ -26,7 +26,24 @@ interface HealthData {
 const app = useAppStore();
 const data = shallowRef<HealthData>();
 const modelHistory = shallowRef<ModelHealthHistoryEntry[]>([]);
+const activeModel = shallowRef<ModelHealthHistoryEntry | null>(null);
 const loading = shallowRef(false);
+
+const activeModelMeta = computed(() => {
+  const model = activeModel.value;
+  if (!model) return [];
+  return [
+    { label: "模型 ID", value: model.id },
+    { label: "模型分类", value: purposeLabel(model.purpose) },
+    { label: "检测状态", value: model.ok ? "正常" : "异常" },
+    { label: "连接延迟", value: `${model.latencyMs || 0}ms` },
+    { label: "检测来源", value: sourceLabel(model.source) },
+    { label: "检测时间", value: formatDateTime(model.checkedAt) },
+    { label: "缓存状态", value: model.cached ? "缓存结果" : "实时检测" },
+    { label: "模型名称", value: model.model || "-" },
+    { label: "服务地址", value: model.baseUrl || "-" },
+  ];
+});
 
 async function load(refresh = false): Promise<void> {
   loading.value = true;
@@ -55,6 +72,36 @@ function memoryStatus(): HealthStatus {
 function nodeStatus(): HealthStatus {
   if (!data.value) return { ok: true, detail: "暂无数据" };
   return { ok: true, detail: `${data.value.nodeVersion} / PID ${data.value.pid}`, checkedAt: `uptime ${data.value.uptimeSeconds}s`, latencyMs: 0 };
+}
+
+function purposeLabel(purpose: ModelHealthHistoryEntry["purpose"]): string {
+  return ({
+    reply: "回复模型",
+    profile: "画像模型",
+    memory: "记忆模型",
+    dedup: "去重模型",
+    summary: "总结模型",
+    knowledge: "知识库模型",
+    tts: "语音模型",
+    custom: "自定义",
+  } as Record<ModelHealthHistoryEntry["purpose"], string>)[purpose] || purpose;
+}
+
+function sourceLabel(source: ModelHealthHistoryEntry["source"]): string {
+  return ({
+    manual: "手动检测",
+    overview: "总览刷新",
+    health: "系统状态",
+    runtime: "运行时",
+  } as Record<ModelHealthHistoryEntry["source"], string>)[source] || source;
+}
+
+function openModelDetail(model: ModelHealthHistoryEntry): void {
+  activeModel.value = model;
+}
+
+function closeModelDetail(): void {
+  activeModel.value = null;
 }
 
 function onRefresh(): void {
@@ -133,16 +180,40 @@ useRefreshEvents({ refresh: onRefresh });
           <span>延迟</span>
           <span>来源</span>
           <span>检测时间</span>
+          <span>操作</span>
         </div>
-        <article v-for="model in modelHistory" :key="model.id" class="history-row">
+        <article v-for="model in modelHistory" :key="model.id" class="history-row" :class="{ active: activeModel?.id === model.id }">
           <strong>{{ model.shortName || model.name }}</strong>
-          <span>{{ model.purpose }}</span>
+          <span>{{ purposeLabel(model.purpose) }}</span>
           <span class="tag" :class="{ danger: !model.ok }">{{ model.ok ? "OK" : "Fail" }}</span>
           <span>{{ model.latencyMs || 0 }}ms</span>
-          <span>{{ model.source }}</span>
+          <span>{{ sourceLabel(model.source) }}</span>
           <span class="muted">{{ formatDateTime(model.checkedAt) }}</span>
+          <button class="link-btn row-action" type="button" @click="openModelDetail(model)">查看详情</button>
         </article>
       </div>
+
+      <section v-if="activeModel" class="model-detail" aria-live="polite">
+        <div class="detail-head">
+          <div>
+            <h3>{{ activeModel.shortName || activeModel.name }}</h3>
+            <p>{{ purposeLabel(activeModel.purpose) }} / {{ activeModel.ok ? "连接正常" : "连接异常" }}</p>
+          </div>
+          <button class="ghost-btn" type="button" @click="closeModelDetail">收起</button>
+        </div>
+        <div class="detail-body">
+          <dl class="detail-list">
+            <template v-for="item in activeModelMeta" :key="item.label">
+              <dt>{{ item.label }}</dt>
+              <dd>{{ item.value }}</dd>
+            </template>
+          </dl>
+          <div class="detail-text">
+            <h4>完整详情</h4>
+            <p>{{ activeModel.detail || "暂无详情。" }}</p>
+          </div>
+        </div>
+      </section>
     </section>
 
     <details class="diagnostics">
@@ -199,10 +270,10 @@ useRefreshEvents({ refresh: onRefresh });
 .history-head,
 .history-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 100px 90px 90px 100px 180px;
+  grid-template-columns: minmax(180px, 1fr) 110px 90px 90px 110px 180px 90px;
   gap: 12px;
   align-items: center;
-  min-width: 760px;
+  min-width: 920px;
   border-bottom: 1px solid var(--line);
   padding: 12px 14px;
 }
@@ -216,6 +287,76 @@ useRefreshEvents({ refresh: onRefresh });
 
 .history-row:last-child {
   border-bottom: 0;
+}
+
+.history-row.active {
+  background: var(--surface-soft);
+}
+
+.model-detail {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  padding: 16px;
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-head h3,
+.detail-head p,
+.detail-text h4,
+.detail-text p {
+  margin: 0;
+}
+
+.detail-head p {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.detail-body {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 14px;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px 12px;
+  margin: 0;
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.detail-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-text {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+}
+
+.detail-text p {
+  color: var(--muted);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .compact {
@@ -238,6 +379,17 @@ pre {
 @media (max-width: 760px) {
   .health-grid {
     grid-template-columns: 1fr;
+  }
+
+  .detail-body {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-text {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    padding-top: 14px;
   }
 }
 </style>

@@ -228,6 +228,37 @@ try {
     target: "mimo",
     detail: "ok 126ms",
   });
+  const modelHealthHistoryStore = new ModelHealthHistoryStore(path.join(tmp, "model-health-history.json"));
+  await modelHealthHistoryStore.record({
+    id: "gpt",
+    purpose: "reply",
+    name: "Env Reply Model",
+    shortName: "gpt-env",
+    selected: true,
+    ok: true,
+    detail: "Reply model health check is ok.",
+    model: "gpt-env-model",
+    baseUrl: "https://reply.example/v1",
+    checkedAt: "2026-06-04T10:02:30.000Z",
+    latencyMs: 88,
+    cached: false,
+    source: "manual",
+  });
+  await modelHealthHistoryStore.record({
+    id: "mimo",
+    purpose: "profile",
+    name: "Env Profile Model",
+    shortName: "mimo-v2.5-pro",
+    selected: true,
+    ok: true,
+    detail: "Profile model health check is ok.",
+    model: "mimo-v2.5-pro",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    checkedAt: "2026-06-04T10:02:45.000Z",
+    latencyMs: 126,
+    cached: false,
+    source: "health",
+  });
 
   service = new AdminHttpServer({
     host: "127.0.0.1",
@@ -246,7 +277,7 @@ try {
     knowledgeBaseStore: knowledgeStore,
     profileRecordStore: new ProfileRecordStore(path.join(tmp, "profile-records.json")),
     adminTaskStore,
-    modelHealthHistoryStore: new ModelHealthHistoryStore(path.join(tmp, "model-health-history.json")),
+    modelHealthHistoryStore,
     systemSettingsStore: new SystemSettingsStore(path.join(tmp, "system-settings.json"), [
       {
         id: "gpt",
@@ -353,6 +384,7 @@ try {
       ...pages.map(([name, route]) => [name, route, { width: 1600, height: 1000 }]),
       ["tasks-detail", "/tasks", { width: 1600, height: 1000, click: ".task-row .row-action", afterClickScrollTo: ".task-detail" }],
       ["audit-detail", "/audit", { width: 1600, height: 1000, click: ".audit-row .row-action", afterClickScrollTo: ".audit-detail" }],
+      ["health-detail", "/health", { width: 1600, height: 1000, click: ".history-row .row-action", afterClickScrollTo: ".model-detail" }],
       ["groups-schedule", "/groups", { width: 1600, height: 1000, scrollTo: ".reminders-card" }],
       ["members-scrolled", "/members", { width: 1600, height: 1000, scrollY: 520 }],
       ["overview-mobile", "/", { width: 390, height: 844 }],

@@ -189,6 +189,9 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["audit-detail",\s*"\/audit"/);
   assert.match(smokeScript, /click:\s*"\.audit-row \.row-action"/);
   assert.match(smokeScript, /afterClickScrollTo:\s*"\.audit-detail"/);
+  assert.match(smokeScript, /\["health-detail",\s*"\/health"/);
+  assert.match(smokeScript, /click:\s*"\.history-row \.row-action"/);
+  assert.match(smokeScript, /afterClickScrollTo:\s*"\.model-detail"/);
   assert.match(smokeScript, /\["groups-mobile",\s*"\/groups"/);
   assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
@@ -234,6 +237,22 @@ test("admin audit view exposes operation log filters and table", async () => {
   assert.match(auditView, /查看详情/);
   assert.match(auditView, /formatDateTime\(entry\.timestamp\)/);
   assert.match(auditView, /actionLabel\(entry\.action\)/);
+});
+
+test("admin health view exposes model health history details", async () => {
+  const healthView = await readAdminFile(path.join("views", "HealthView.vue"));
+
+  assert.match(healthView, /activeModel = shallowRef<ModelHealthHistoryEntry \| null>\(null\)/);
+  assert.match(healthView, /activeModelMeta = computed/);
+  assert.match(healthView, /function purposeLabel/);
+  assert.match(healthView, /function sourceLabel/);
+  assert.match(healthView, /function openModelDetail/);
+  assert.match(healthView, /class="model-detail"/);
+  assert.match(healthView, /class="history-row"[\s\S]*row-action/);
+  assert.match(healthView, /查看详情/);
+  assert.match(healthView, /完整详情/);
+  assert.match(healthView, /服务地址/);
+  assert.match(healthView, /缓存状态/);
 });
 
 test("admin group config reloads on group switch and uses selectable config controls", async () => {
