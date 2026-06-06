@@ -211,6 +211,23 @@ try {
     durationMs: 2000,
     result: { recordId: "profile-smoke", sourceMemoryCount: 4 },
   });
+  const adminOperationLogService = new AdminOperationLogService(path.join(tmp, "ops.jsonl"));
+  await adminOperationLogService.record({
+    timestamp: "2026-06-04T10:00:03.000Z",
+    groupId: "866209871",
+    operatorUserId: "99999",
+    action: "profile_generate",
+    target: "3951154629",
+    detail: "overall",
+  });
+  await adminOperationLogService.record({
+    timestamp: "2026-06-04T10:02:00.000Z",
+    groupId: "866209871",
+    operatorUserId: "99999",
+    action: "model_check",
+    target: "mimo",
+    detail: "ok 126ms",
+  });
 
   service = new AdminHttpServer({
     host: "127.0.0.1",
@@ -259,7 +276,7 @@ try {
       scheduledReminderStore,
       { async generateScheduledReminderText() { return "Remember to handle pending work."; } },
     ),
-    adminOperationLogService: new AdminOperationLogService(path.join(tmp, "ops.jsonl")),
+    adminOperationLogService,
     dailyProfileReviewService: {
       async summarizeOverallProfileDetail(args) {
         return {
@@ -319,6 +336,7 @@ try {
     ["profiles", "/profiles"],
     ["knowledge", "/knowledge"],
     ["tasks", "/tasks"],
+    ["audit", "/audit"],
     ["health", "/health"],
     ["skills", "/skills"],
     ["commands", "/commands"],

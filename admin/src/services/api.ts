@@ -319,6 +319,15 @@ export interface AdminTaskRecord {
   durationMs?: number;
 }
 
+export interface AdminOperationLogEntry {
+  timestamp: string;
+  groupId: string;
+  operatorUserId: string;
+  action: string;
+  target?: string;
+  detail?: string;
+}
+
 export interface SchedulePreviewDay {
   date: string;
   items: Array<{

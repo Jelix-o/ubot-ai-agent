@@ -47,6 +47,7 @@ function iconFor(name: unknown): string {
     profiles: "users",
     knowledge: "knowledge",
     tasks: "list",
+    audit: "list",
     health: "health",
     settings: "settings",
     skills: "candidate",

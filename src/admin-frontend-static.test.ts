@@ -161,8 +161,10 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(routerFile, /title:\s*"系统状态"/);
   assert.match(routerFile, /path:\s*"\/tasks"/);
   assert.match(routerFile, /TasksView\.vue/);
+  assert.match(routerFile, /path:\s*"\/audit"/);
+  assert.match(routerFile, /AuditView\.vue/);
 
-  assert.match(routerFile, /path:\s*"\/tasks"[\s\S]*path:\s*"\/skills"/);
+  assert.match(routerFile, /path:\s*"\/tasks"[\s\S]*path:\s*"\/audit"[\s\S]*path:\s*"\/skills"/);
   assert.match(routerFile, /path:\s*"\/health"[\s\S]*path:\s*"\/settings"/);
   assert.match(routerFile, /name:\s*"settings"[\s\S]*superOnly:\s*true/);
   assert.match(routerFile, /component:\s*\(\)\s*=>\s*import\("\.\/views\/OverviewView\.vue"\)/);
@@ -177,7 +179,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
 test("admin visual smoke covers all routes and key mobile viewports", async () => {
   const smokeScript = await readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8");
 
-  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "tasks", "health", "skills", "commands", "settings"]) {
+  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "tasks", "audit", "health", "skills", "commands", "settings"]) {
     assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
   }
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
@@ -186,6 +188,23 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
   assert.match(smokeScript, /\["memories-mobile",\s*"\/memories"/);
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
+});
+
+test("admin audit view exposes operation log filters and table", async () => {
+  const [auditView, apiTypes] = await Promise.all([
+    readAdminFile(path.join("views", "AuditView.vue")),
+    readAdminFile(path.join("services", "api.ts")),
+  ]);
+
+  assert.match(apiTypes, /interface AdminOperationLogEntry/);
+  assert.match(auditView, /\/api\/logs/);
+  assert.match(auditView, /groupId/);
+  assert.match(auditView, /filters\.scope/);
+  assert.match(auditView, /filters\.action/);
+  assert.match(auditView, /filters\.limit/);
+  assert.match(auditView, /class="audit-table"/);
+  assert.match(auditView, /formatDateTime\(entry\.timestamp\)/);
+  assert.match(auditView, /actionLabel\(entry\.action\)/);
 });
 
 test("admin group config reloads on group switch and uses selectable config controls", async () => {
