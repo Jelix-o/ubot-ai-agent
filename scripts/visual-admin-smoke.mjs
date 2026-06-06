@@ -352,6 +352,7 @@ try {
       ["login", "/login", { width: 1600, height: 1000 }],
       ...pages.map(([name, route]) => [name, route, { width: 1600, height: 1000 }]),
       ["tasks-detail", "/tasks", { width: 1600, height: 1000, click: ".task-row .row-action", afterClickScrollTo: ".task-detail" }],
+      ["audit-detail", "/audit", { width: 1600, height: 1000, click: ".audit-row .row-action", afterClickScrollTo: ".audit-detail" }],
       ["groups-schedule", "/groups", { width: 1600, height: 1000, scrollTo: ".reminders-card" }],
       ["members-scrolled", "/members", { width: 1600, height: 1000, scrollY: 520 }],
       ["overview-mobile", "/", { width: 390, height: 844 }],

@@ -186,6 +186,9 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["tasks-detail",\s*"\/tasks"/);
   assert.match(smokeScript, /click:\s*"\.task-row \.row-action"/);
   assert.match(smokeScript, /afterClickScrollTo:\s*"\.task-detail"/);
+  assert.match(smokeScript, /\["audit-detail",\s*"\/audit"/);
+  assert.match(smokeScript, /click:\s*"\.audit-row \.row-action"/);
+  assert.match(smokeScript, /afterClickScrollTo:\s*"\.audit-detail"/);
   assert.match(smokeScript, /\["groups-mobile",\s*"\/groups"/);
   assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
@@ -220,6 +223,11 @@ test("admin audit view exposes operation log filters and table", async () => {
   assert.match(auditView, /filters\.action/);
   assert.match(auditView, /filters\.limit/);
   assert.match(auditView, /class="audit-table"/);
+  assert.match(auditView, /activeEntry = shallowRef<AdminOperationLogEntry \| null>\(null\)/);
+  assert.match(auditView, /activeEntryMeta = computed/);
+  assert.match(auditView, /class="audit-detail"/);
+  assert.match(auditView, /完整详情/);
+  assert.match(auditView, /查看详情/);
   assert.match(auditView, /formatDateTime\(entry\.timestamp\)/);
   assert.match(auditView, /actionLabel\(entry\.action\)/);
 });

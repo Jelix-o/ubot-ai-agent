@@ -8,6 +8,7 @@ import { formatDateTime } from "../utils/format";
 
 const app = useAppStore();
 const entries = shallowRef<AdminOperationLogEntry[]>([]);
+const activeEntry = shallowRef<AdminOperationLogEntry | null>(null);
 const loading = shallowRef(false);
 const filters = reactive({
   q: "",
@@ -18,6 +19,18 @@ const filters = reactive({
 
 const visibleEntries = computed(() => entries.value);
 const canUseAllGroups = computed(() => app.role === "super_admin");
+const activeEntryMeta = computed(() => {
+  const entry = activeEntry.value;
+  if (!entry) return [];
+  return [
+    { label: "操作时间", value: formatDateTime(entry.timestamp) },
+    { label: "动作", value: actionLabel(entry.action) },
+    { label: "动作代码", value: entry.action },
+    { label: "操作者", value: entry.operatorUserId },
+    { label: "群 ID", value: entry.groupId || "-" },
+    { label: "目标", value: entry.target || "-" },
+  ];
+});
 const currentGroupLabel = computed(() => {
   const group = app.groups.find((item) => item.groupId === app.groupId);
   return group?.groupName ? `${group.groupName} / ${group.groupId}` : app.groupId || "未选择群";
@@ -61,6 +74,14 @@ function resetFilters(): void {
   filters.scope = "current";
   filters.limit = 50;
   applyFilters();
+}
+
+function openEntryDetail(entry: AdminOperationLogEntry): void {
+  activeEntry.value = entry;
+}
+
+function closeEntryDetail(): void {
+  activeEntry.value = null;
 }
 
 function onRefresh(): void {
@@ -143,16 +164,45 @@ watch(() => app.role, () => {
           <span>群</span>
           <span>目标</span>
           <span>详情</span>
+          <span>操作</span>
         </div>
-        <article v-for="entry in visibleEntries" :key="`${entry.timestamp}:${entry.groupId}:${entry.action}:${entry.target || ''}`" class="audit-row">
+        <article
+          v-for="entry in visibleEntries"
+          :key="`${entry.timestamp}:${entry.groupId}:${entry.action}:${entry.target || ''}`"
+          class="audit-row"
+          :class="{ active: activeEntry === entry }"
+        >
           <span class="muted">{{ formatDateTime(entry.timestamp) }}</span>
           <span class="tag">{{ actionLabel(entry.action) }}</span>
           <strong>{{ entry.operatorUserId }}</strong>
           <span>{{ entry.groupId }}</span>
           <span class="muted">{{ entry.target || "-" }}</span>
           <span class="detail">{{ entry.detail || "-" }}</span>
+          <button class="link-btn row-action" type="button" @click="openEntryDetail(entry)">查看详情</button>
         </article>
       </div>
+
+      <section v-if="activeEntry" class="audit-detail" aria-live="polite">
+        <div class="detail-head">
+          <div>
+            <h3>{{ actionLabel(activeEntry.action) }}</h3>
+            <p>{{ activeEntry.target || "无目标对象" }}</p>
+          </div>
+          <button class="ghost-btn" type="button" @click="closeEntryDetail">收起</button>
+        </div>
+        <div class="detail-body">
+          <dl class="detail-list">
+            <template v-for="item in activeEntryMeta" :key="item.label">
+              <dt>{{ item.label }}</dt>
+              <dd>{{ item.value }}</dd>
+            </template>
+          </dl>
+          <div class="detail-text">
+            <h4>完整详情</h4>
+            <p>{{ activeEntry.detail || "暂无详情。" }}</p>
+          </div>
+        </div>
+      </section>
     </section>
   </section>
 </template>
@@ -221,10 +271,10 @@ watch(() => app.role, () => {
 .audit-head,
 .audit-row {
   display: grid;
-  grid-template-columns: 180px 110px 130px 140px 150px minmax(260px, 1fr);
+  grid-template-columns: 180px 110px 130px 140px 150px minmax(260px, 1fr) 96px;
   gap: 14px;
   align-items: center;
-  min-width: 1080px;
+  min-width: 1190px;
   border-bottom: 1px solid var(--line);
   padding: 12px 16px;
 }
@@ -242,11 +292,93 @@ watch(() => app.role, () => {
   border-bottom: 0;
 }
 
+.audit-row.active {
+  background: var(--surface-soft);
+}
+
 .detail {
   overflow: hidden;
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row-action {
+  justify-self: start;
+}
+
+.audit-detail {
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.detail-head h3,
+.detail-head p,
+.detail-list,
+.detail-text h4,
+.detail-text p {
+  margin: 0;
+}
+
+.detail-head h3 {
+  font-size: 16px;
+}
+
+.detail-head p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.detail-body {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 10px 12px;
+  padding: 16px;
+  border-right: 1px solid var(--line);
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.detail-list dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-text {
+  min-width: 0;
+  padding: 16px;
+}
+
+.detail-text h4 {
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.detail-text p {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  line-height: 1.7;
 }
 
 .compact {
@@ -266,6 +398,15 @@ watch(() => app.role, () => {
   .filter-actions .btn,
   .filter-actions .ghost-btn {
     flex: 1;
+  }
+
+  .detail-body {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 }
 </style>
