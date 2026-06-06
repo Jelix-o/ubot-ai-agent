@@ -71,10 +71,7 @@ async function probeTtsModel(model: Pick<SystemModelConfig, "baseUrl" | "model" 
       body: JSON.stringify({
         model: model.model,
         messages: [{ role: "assistant", content: "系统状态检测" }],
-        audio: {
-          voice: "mimo_default",
-          format: "wav",
-        },
+        audio: buildTtsProbeAudio(model.model),
       }),
     });
     const latencyMs = Date.now() - startedAt;
@@ -120,7 +117,24 @@ async function probeTtsModel(model: Pick<SystemModelConfig, "baseUrl" | "model" 
 }
 
 function buildChatCompletionsUrl(baseUrl: string): string {
-  return new URL("chat/completions", `${baseUrl.replace(/\/+$/, "")}/`).toString();
+  const normalized = baseUrl.trim();
+  if (/\/chat\/completions\/?$/i.test(normalized)) {
+    return normalized.replace(/\/+$/, "");
+  }
+  return new URL("chat/completions", `${normalized.replace(/\/+$/, "")}/`).toString();
+}
+
+function buildTtsProbeAudio(model: string): Record<string, string | boolean> {
+  if (model.includes("voicedesign")) {
+    return {
+      format: "wav",
+      optimize_text_preview: true,
+    };
+  }
+  return {
+    voice: "mimo_default",
+    format: "wav",
+  };
 }
 
 function normalizeProbeDetail(detail: string): string {

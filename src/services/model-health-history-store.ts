@@ -84,6 +84,7 @@ function normalizeEntry(value: Partial<ModelHealthHistoryEntry>): ModelHealthHis
     checkedAt: normalizeIso(value.checkedAt) ?? new Date().toISOString(),
     latencyMs: normalizeLatency(value.latencyMs),
     cached: value.cached === true,
+    skipped: value.skipped === true,
     source: value.source === "manual" || value.source === "overview" || value.source === "runtime" ? value.source : "health",
   };
 }

@@ -14,9 +14,7 @@ body {
   min-width: 320px;
   overflow-x: hidden;
   overflow-y: auto;
-  background:
-    radial-gradient(circle at 12% 0%, oklch(0.93 0.05 165 / 38%), transparent 35rem),
-    linear-gradient(135deg, var(--surface), var(--bg));
+  background: color-mix(in oklch, var(--bg) 86%, var(--surface));
   color: var(--text);
   font-family: var(--font);
   letter-spacing: 0;
@@ -96,7 +94,7 @@ a {
 .card {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  background: color-mix(in oklch, var(--surface) 88%, transparent);
+  background: color-mix(in oklch, var(--surface) 92%, var(--bg));
   box-shadow: var(--shadow-sm);
 }
 

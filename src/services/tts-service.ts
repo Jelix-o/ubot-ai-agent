@@ -15,6 +15,11 @@ interface TtsCompletionResponse {
   }>;
 }
 
+type TtsMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export interface TtsSynthesisResult {
   filePath: string;
   recordFile: string;
@@ -39,25 +44,19 @@ export class TtsService {
       throw new Error("TTS input text was empty after normalization.");
     }
 
+    const request = buildTtsRequest({
+      model: this.model,
+      spokenText,
+      audioFormat: this.audioFormat,
+      voice: this.voice,
+    });
     const response = await fetch(buildTtsUrl(this.baseUrl), {
       method: "POST",
       headers: {
         "api-key": this.apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [
-          {
-            role: "assistant",
-            content: spokenText,
-          },
-        ],
-        audio: {
-          format: this.audioFormat,
-          voice: this.voice,
-        },
-      }),
+      body: JSON.stringify(request),
     });
 
     if (!response.ok) {
@@ -86,7 +85,7 @@ export class TtsService {
     return {
       filePath,
       recordFile: `base64://${buffer.toString("base64")}`,
-      spokenText,
+      spokenText: request.spokenText,
       async cleanup(): Promise<void> {
         await unlink(filePath);
       },
@@ -95,5 +94,52 @@ export class TtsService {
 }
 
 function buildTtsUrl(baseUrl: string): string {
-  return new URL("chat/completions", `${baseUrl.replace(/\/+$/, "")}/`).toString();
+  const normalized = baseUrl.trim();
+  if (/\/chat\/completions\/?$/i.test(normalized)) {
+    return normalized.replace(/\/+$/, "");
+  }
+  return new URL("chat/completions", `${normalized.replace(/\/+$/, "")}/`).toString();
+}
+
+function buildTtsRequest(input: {
+  model: string;
+  spokenText: string;
+  audioFormat: "wav" | "mp3" | "pcm" | "pcm16";
+  voice: string;
+}): {
+  model: string;
+  messages: TtsMessage[];
+  audio: Record<string, string | boolean>;
+  spokenText: string;
+} {
+  const { styleInstruction, text } = extractStyleInstruction(input.spokenText);
+  const messages: TtsMessage[] = [
+    ...(styleInstruction ? [{ role: "user" as const, content: styleInstruction }] : []),
+    { role: "assistant", content: text },
+  ];
+  const audio: Record<string, string | boolean> = { format: input.audioFormat };
+  if (input.model.includes("voicedesign")) {
+    audio.optimize_text_preview = true;
+  } else {
+    audio.voice = input.voice;
+  }
+  return {
+    model: input.model,
+    messages,
+    audio,
+    spokenText: text,
+  };
+}
+
+function extractStyleInstruction(value: string): { styleInstruction?: string; text: string } {
+  const match = value.match(/^<style>(.*?)<\/style>(.*)$/su);
+  if (!match) {
+    return { text: value };
+  }
+  const styleInstruction = match[1]?.trim();
+  const text = match[2]?.trim() || value;
+  return {
+    ...(styleInstruction ? { styleInstruction } : {}),
+    text,
+  };
 }

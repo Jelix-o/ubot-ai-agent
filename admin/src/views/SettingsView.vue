@@ -49,11 +49,11 @@ const activePurposeModels = computed(() => settings.models.filter((model) => mod
 const modelPurposeHealth = computed(() => {
   const result: Partial<Record<SystemModelPurpose, { failed: number; total: number }>> = {};
   for (const model of settings.models) {
+    if (!model.enabled) continue;
     const health = modelHealthById.value[model.id];
-    if (!health) continue;
     const current = result[model.purpose] ?? { failed: 0, total: 0 };
     current.total += 1;
-    if (!health.ok) current.failed += 1;
+    if (health && !health.ok && !health.skipped) current.failed += 1;
     result[model.purpose] = current;
   }
   return result;
@@ -252,9 +252,20 @@ function purposeHasFailure(purpose: SystemModelPurpose): boolean {
   return (modelPurposeHealth.value[purpose]?.failed ?? 0) > 0;
 }
 
+function modelHasFailure(model: SystemModelConfig): boolean {
+  const health = modelHealthById.value[model.id];
+  return model.enabled && Boolean(health && !health.ok && !health.skipped);
+}
+
+function modelHasPassed(model: SystemModelConfig): boolean {
+  const health = modelHealthById.value[model.id];
+  return model.enabled && Boolean(health?.ok && !health.skipped);
+}
+
 function modelHealthLabel(model: SystemModelConfig): string {
   const health = modelHealthById.value[model.id];
   if (!health) return "";
+  if (health.skipped || !model.enabled) return "已停用，跳过检测";
   return health.ok ? `通过 ${health.latencyMs ?? 0}ms` : health.detail;
 }
 
@@ -369,7 +380,7 @@ onMounted(() => {
           <span>API Key</span>
           <span>操作</span>
         </div>
-        <article v-for="model in activePurposeModels" :key="modelRowKey(model)" class="table-row" :class="{ failed: modelHealthById[model.id]?.ok === false, passed: modelHealthById[model.id]?.ok === true }">
+        <article v-for="model in activePurposeModels" :key="modelRowKey(model)" class="table-row" :class="{ disabled: !model.enabled, failed: modelHasFailure(model), passed: modelHasPassed(model) }">
           <div class="radio-cell">
             <span v-if="isReplyModel(model)" class="tag" :class="{ danger: !model.enabled || !model.hasApiKey }">
               {{ model.enabled && model.hasApiKey ? "可选择" : "不可用" }}
@@ -389,7 +400,7 @@ onMounted(() => {
           <div class="row-actions">
             <button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? "检测中" : "检测连接" }}</button>
             <button class="link-btn danger" type="button" @click="removeModel(modelIndex(model), model)">删除</button>
-            <small v-if="modelHealthById[model.id]" class="model-health-text" :class="{ failed: modelHealthById[model.id]?.ok === false }">{{ modelHealthLabel(model) }}</small>
+            <small v-if="modelHealthById[model.id]" class="model-health-text" :class="{ failed: modelHasFailure(model), skipped: modelHealthById[model.id]?.skipped || !model.enabled }">{{ modelHealthLabel(model) }}</small>
           </div>
         </article>
       </div>
@@ -585,6 +596,11 @@ onMounted(() => {
   background: var(--surface-raised);
 }
 
+.table-row.disabled {
+  background: color-mix(in oklch, var(--surface-soft) 42%, var(--surface-raised));
+  color: color-mix(in oklch, var(--muted) 78%, var(--text));
+}
+
 .table-row.failed {
   border-color: color-mix(in oklch, var(--danger) 42%, var(--line));
   background: color-mix(in oklch, var(--danger-soft) 46%, var(--surface-raised));
@@ -648,6 +664,10 @@ onMounted(() => {
 
 .model-health-text.failed {
   color: var(--danger);
+}
+
+.model-health-text.skipped {
+  color: var(--muted);
 }
 
 .compact {

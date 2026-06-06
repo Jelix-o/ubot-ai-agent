@@ -19,7 +19,7 @@ const activeModelMeta = computed(() => {
   return [
     { label: "模型 ID", value: model.id },
     { label: "模型分类", value: purposeLabel(model.purpose) },
-    { label: "检测状态", value: model.ok ? "正常" : "异常" },
+    { label: "检测状态", value: modelStatusLabel(model) },
     { label: "连接延迟", value: `${model.latencyMs || 0}ms` },
     { label: "检测来源", value: sourceLabel(model.source) },
     { label: "检测时间", value: formatDateTime(model.checkedAt) },
@@ -140,6 +140,18 @@ function sourceLabel(source: ModelHealthHistoryEntry["source"]): string {
   } as Record<ModelHealthHistoryEntry["source"], string>)[source] || source;
 }
 
+function modelStatusLabel(model: ModelHealthHistoryEntry): string {
+  if (model.skipped) return "跳过";
+  return model.ok ? "正常" : "异常";
+}
+
+function modelStatusTagClass(model: ModelHealthHistoryEntry): Record<string, boolean> {
+  return {
+    danger: !model.ok && !model.skipped,
+    skipped: model.skipped === true,
+  };
+}
+
 function openModelDetail(model: ModelHealthHistoryEntry): void {
   activeModel.value = model;
 }
@@ -244,7 +256,7 @@ useRefreshEvents({ refresh: onRefresh });
         <article v-for="model in modelHistory" :key="model.id" class="history-row" :class="{ active: activeModel?.id === model.id }">
           <strong>{{ model.shortName || model.name }}</strong>
           <span>{{ purposeLabel(model.purpose) }}</span>
-          <span class="tag" :class="{ danger: !model.ok }">{{ model.ok ? "OK" : "Fail" }}</span>
+          <span class="tag" :class="modelStatusTagClass(model)">{{ model.skipped ? "跳过" : model.ok ? "OK" : "Fail" }}</span>
           <span>{{ model.latencyMs || 0 }}ms</span>
           <span>{{ sourceLabel(model.source) }}</span>
           <span class="muted">{{ formatDateTime(model.checkedAt) }}</span>
@@ -256,7 +268,7 @@ useRefreshEvents({ refresh: onRefresh });
         <div class="detail-head">
           <div>
             <h3>{{ activeModel.shortName || activeModel.name }}</h3>
-            <p>{{ purposeLabel(activeModel.purpose) }} / {{ activeModel.ok ? "连接正常" : "连接异常" }}</p>
+            <p>{{ purposeLabel(activeModel.purpose) }} / {{ modelStatusLabel(activeModel) }}</p>
           </div>
           <button class="ghost-btn" type="button" @click="closeModelDetail">收起</button>
         </div>

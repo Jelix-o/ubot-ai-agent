@@ -137,6 +137,7 @@ export interface HealthStatus {
   checkedAt?: string;
   latencyMs?: number;
   cached?: boolean;
+  skipped?: boolean;
   probeType?: "chat" | "tts";
   upstreamStatusCode?: number;
 }

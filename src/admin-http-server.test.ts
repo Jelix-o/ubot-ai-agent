@@ -536,6 +536,19 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
             createdAt: "2026-06-01T00:00:00.000Z",
             updatedAt: "2026-06-01T00:00:00.000Z",
           },
+          {
+            id: "tts-disabled",
+            name: "Disabled TTS",
+            shortName: "tts-off",
+            baseUrl: "https://tts-disabled.example/v1",
+            model: "mimo-v2.5-tts",
+            purpose: "tts",
+            apiKey: "disabled-tts-key",
+            enabled: false,
+            hasApiKey: false,
+            createdAt: "2026-06-01T00:00:00.000Z",
+            updatedAt: "2026-06-01T00:00:00.000Z",
+          },
         ],
       }),
     });
@@ -610,9 +623,11 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     }
     assert.ok(allModelCheck);
     assert.equal(allModelCheck.status, 200);
-    const allModelCheckBody = await allModelCheck.json() as { statuses: Array<{ id: string; ok: boolean; purpose: string }>; summary: { total: number; abnormal: number } };
+    const allModelCheckBody = await allModelCheck.json() as { statuses: Array<{ id: string; ok: boolean; purpose: string; skipped?: boolean }>; summary: { total: number; abnormal: number } };
     assert.equal(allModelCheckBody.statuses.some((item) => item.id === "reply-pro" && item.ok === false), true);
     assert.equal(allModelCheckBody.statuses.some((item) => item.id === "gpt" && item.purpose === "reply"), true);
+    assert.equal(allModelCheckBody.statuses.some((item) => item.id === "tts-disabled" && item.ok === true && item.skipped === true), true);
+    assert.equal(allModelCheckBody.statuses.some((item) => item.id === "tts-disabled" && item.ok === false), false);
     assert.ok(allModelCheckBody.summary.total >= allModelCheckBody.statuses.length);
     assert.ok(allModelCheckBody.summary.abnormal > 0);
     const allCheckHistory = await modelHealthHistoryStore.list();

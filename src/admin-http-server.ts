@@ -319,7 +319,7 @@ export class AdminHttpServer {
         ? sanitizeHealthStatus(await this.getProfileAiHealthStatus())
         : restrictedHealthStatus();
       const modelStatuses = canViewDiagnostics ? await this.getModelHealthStatuses() : [];
-      const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
+      const abnormalModelStatuses = modelStatuses.filter(isAbnormalModelStatus);
       this.sendJson(res, {
         groups,
         groupId,
@@ -543,7 +543,7 @@ export class AdminHttpServer {
         ? sanitizeHealthStatus(await this.getProfileAiHealthStatus({ refresh }))
         : restrictedHealthStatus();
       const modelStatuses = canViewDiagnostics ? await this.getModelHealthStatuses({ refresh }) : [];
-      const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
+      const abnormalModelStatuses = modelStatuses.filter(isAbnormalModelStatus);
       const memory = process.memoryUsage();
       const environmentStatus = {
         transportHealth,
@@ -1537,7 +1537,7 @@ export class AdminHttpServer {
         statuses,
         summary: {
           total: statuses.length,
-          abnormal: statuses.filter((status) => !status.ok).length,
+          abnormal: statuses.filter(isAbnormalModelStatus).length,
           checkedAt: new Date().toISOString(),
         },
       };
@@ -2264,7 +2264,7 @@ export class AdminHttpServer {
 
   private async buildModelHealthStatus(model: SystemSettings["models"][number], settings: SystemSettings): Promise<ModelHealthStatus> {
     if (!model.enabled) {
-      return this.buildModelHealthFailureStatus(model, settings, "模型已停用。");
+      return this.buildModelHealthSkippedStatus(model, settings);
     }
     if (!model.hasApiKey || !model.apiKey?.trim()) {
       return this.buildModelHealthFailureStatus(model, settings, "模型未配置 API Key。");
@@ -2304,6 +2304,23 @@ export class AdminHttpServer {
       checkedAt: new Date().toISOString(),
       latencyMs,
       cached: false,
+    };
+  }
+
+  private buildModelHealthSkippedStatus(
+    model: SystemSettings["models"][number],
+    settings: SystemSettings,
+  ): ModelHealthStatus {
+    return {
+      ...this.buildModelHealthBase(model, settings),
+      ok: true,
+      detail: "模型已停用，已跳过检测。",
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: 0,
+      cached: false,
+      skipped: true,
     };
   }
 
@@ -3464,6 +3481,10 @@ function restrictedHealthStatus(): HealthStatusResponse {
     latencyMs: 0,
     cached: true,
   };
+}
+
+function isAbnormalModelStatus(status: ModelHealthStatus): boolean {
+  return !status.ok && status.skipped !== true;
 }
 
 function redactSensitiveText(value: string): string {

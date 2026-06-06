@@ -52,3 +52,26 @@ test("probeSystemModel keeps upstream TTS status code in failures", async () => 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("probeSystemModel accepts a full MiMo chat completions URL", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: string | URL | Request) => {
+    assert.equal(String(input), "https://api.xiaomimimo.com/v1/chat/completions");
+    return new Response(JSON.stringify({
+      choices: [{ message: { audio: { data: Buffer.from("ok").toString("base64") } } }],
+    }), { status: 200 });
+  };
+
+  try {
+    const status = await probeSystemModel({
+      purpose: "tts",
+      baseUrl: "https://api.xiaomimimo.com/v1/chat/completions",
+      apiKey: "tts-key",
+      model: "mimo-v2.5-tts",
+    });
+    assert.equal(status.ok, true);
+    assert.equal(status.probeType, "tts");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
