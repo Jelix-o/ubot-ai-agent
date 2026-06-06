@@ -199,6 +199,10 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
 test("admin task center exposes task detail records", async () => {
   const tasksView = await readAdminFile(path.join("views", "TasksView.vue"));
 
+  assert.match(tasksView, /q:\s*filters\.q\.trim\(\)/);
+  assert.match(tasksView, /v-model="filters\.q"/);
+  assert.match(tasksView, /placeholder="任务 ID、标题、操作者、目标或结果"/);
+  assert.match(tasksView, /function resetFilters\(\)/);
   assert.match(tasksView, /activeTask = shallowRef<AdminTaskRecord \| null>\(null\)/);
   assert.match(tasksView, /activeTaskResult = computed/);
   assert.match(tasksView, /activeTaskTimeline = computed/);

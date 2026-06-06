@@ -9,6 +9,7 @@ import test from "node:test";
 
 import { AdminHttpServer } from "./admin-http-server.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
+import { AdminTaskStore } from "./services/admin-task-store.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
@@ -169,6 +170,25 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     },
   ]);
   const profileRecordStore = new ProfileRecordStore(path.join(dir, "profile-records.json"));
+  const adminTaskStore = new AdminTaskStore(path.join(dir, "admin-tasks.json"));
+  await adminTaskStore.run({
+    type: "profile-generate",
+    title: "Profile task for Tester",
+    groupId: "67890",
+    subjectUserId: "20001",
+    operatorUserId: "99999",
+    detail: "overall",
+  }, async () => ({ recordId: "profile-http-search", sourceMemoryCount: 2 }));
+  await assert.rejects(
+    () => adminTaskStore.run({
+      type: "model-check",
+      title: "Broken model check",
+      operatorUserId: "99999",
+    }, async () => {
+      throw new Error("probe timeout");
+    }),
+    /probe timeout/,
+  );
   const skillService = new SkillService(skillsDir);
   const scheduledReminderService = new ScheduledReminderService(
     new ScheduledReminderStore(path.join(dir, "reminders.json")),
@@ -200,6 +220,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     knowledgeBaseStore,
     scheduledReminderService,
     skillService,
+    adminTaskStore,
     systemSettingsStore,
     profileRecordStore,
     adminOperationLogService: new AdminOperationLogService(path.join(dir, "ops.jsonl")),
@@ -337,6 +358,24 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const notificationsBody = await notifications.json() as { pendingCandidateCount: number; latestCandidates: Array<{ id: string }> };
     assert.equal(notificationsBody.pendingCandidateCount, 2);
     assert.equal(notificationsBody.latestCandidates.some((item) => item.id === batchFactCandidate.id), true);
+
+    const searchedTasksByResult = await fetch(`${baseUrl}/api/tasks?q=profile-http-search&page=1&pageSize=1`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(searchedTasksByResult.status, 200);
+    const searchedTasksByResultBody = await searchedTasksByResult.json() as { tasks: Array<{ type: string; subjectUserId?: string }>; pagination: { total: number } };
+    assert.equal(searchedTasksByResultBody.pagination.total, 1);
+    assert.equal(searchedTasksByResultBody.tasks[0]?.type, "profile-generate");
+    assert.equal(searchedTasksByResultBody.tasks[0]?.subjectUserId, "20001");
+
+    const searchedTasksByError = await fetch(`${baseUrl}/api/tasks?q=probe%20timeout&page=1&pageSize=1`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(searchedTasksByError.status, 200);
+    const searchedTasksByErrorBody = await searchedTasksByError.json() as { tasks: Array<{ type: string; status: string }>; pagination: { total: number } };
+    assert.equal(searchedTasksByErrorBody.pagination.total, 1);
+    assert.equal(searchedTasksByErrorBody.tasks[0]?.type, "model-check");
+    assert.equal(searchedTasksByErrorBody.tasks[0]?.status, "failed");
 
     const settingsRead = await fetch(`${baseUrl}/api/system-settings`, {
       headers: { Cookie: cookie ?? "" },

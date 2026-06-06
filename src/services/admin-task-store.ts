@@ -9,6 +9,7 @@ export interface AdminTaskListArgs {
   type?: AdminTaskType;
   status?: AdminTaskStatus;
   groupId?: string;
+  q?: string;
   page: number;
   pageSize: number;
 }
@@ -39,6 +40,7 @@ export class AdminTaskStore {
       .filter((task) => !args.type || task.type === args.type)
       .filter((task) => !args.status || task.status === args.status)
       .filter((task) => !args.groupId || task.groupId === args.groupId)
+      .filter((task) => !args.q || taskMatchesQuery(task, args.q))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     const total = matched.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -210,4 +212,30 @@ function optionalString(value: unknown): string | undefined {
 
 function cloneTask(task: AdminTaskRecord): AdminTaskRecord {
   return { ...task, ...(task.result !== undefined ? { result: structuredClone(task.result) } : {}) };
+}
+
+function taskMatchesQuery(task: AdminTaskRecord, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+  const resultText = task.result === undefined ? "" : safeStringify(task.result);
+  return [
+    task.id,
+    task.type,
+    task.status,
+    task.title,
+    task.groupId,
+    task.subjectUserId,
+    task.operatorUserId,
+    task.detail,
+    task.error,
+    resultText,
+  ].some((value) => String(value ?? "").toLowerCase().includes(normalizedQuery));
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }

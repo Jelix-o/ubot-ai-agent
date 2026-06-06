@@ -13,6 +13,7 @@ const loading = shallowRef(false);
 const detailLoading = shallowRef(false);
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const filters = reactive({
+  q: "",
   type: "" as "" | AdminTaskType,
   status: "" as "" | AdminTaskStatus,
 });
@@ -55,6 +56,7 @@ async function load(): Promise<void> {
   try {
     const data = await api<{ tasks: AdminTaskRecord[]; pagination: Pagination }>(`/api/tasks${queryString({
       groupId: app.role === "super_admin" ? undefined : app.groupId,
+      q: filters.q.trim(),
       type: filters.type,
       status: filters.status,
       page: pagination.page,
@@ -72,6 +74,14 @@ async function load(): Promise<void> {
 }
 
 function applyFilters(): void {
+  pagination.page = 1;
+  void load().catch((error) => app.showToast(error.message, "error"));
+}
+
+function resetFilters(): void {
+  filters.q = "";
+  filters.type = "";
+  filters.status = "";
   pagination.page = 1;
   void load().catch((error) => app.showToast(error.message, "error"));
 }
@@ -183,6 +193,9 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       </div>
 
       <div class="filter-card">
+        <label>关键词
+          <input v-model="filters.q" class="input" placeholder="任务 ID、标题、操作者、目标或结果" @keyup.enter="applyFilters" />
+        </label>
         <label>任务类型
           <select v-model="filters.type" class="select" @change="applyFilters">
             <option value="">全部类型</option>
@@ -209,6 +222,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
             <option :value="50">50</option>
           </select>
         </label>
+        <div class="filter-actions">
+          <button class="ghost-btn" type="button" @click="resetFilters">重置</button>
+          <button class="btn" type="button" :disabled="loading" @click="applyFilters">查询</button>
+        </div>
       </div>
 
       <div v-if="loading" class="empty compact">正在加载任务...</div>
@@ -324,7 +341,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 .filter-card {
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) 120px;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(160px, 0.8fr) minmax(160px, 0.8fr) 120px auto;
+  align-items: end;
   margin-bottom: 14px;
 }
 
@@ -333,6 +351,12 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   gap: 8px;
   color: var(--muted);
   font-weight: 800;
+}
+
+.filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .task-table {
@@ -515,6 +539,15 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   .task-summary,
   .filter-card {
     grid-template-columns: 1fr;
+  }
+
+  .filter-actions {
+    justify-content: stretch;
+  }
+
+  .filter-actions .btn,
+  .filter-actions .ghost-btn {
+    flex: 1;
   }
 
   .detail-head,

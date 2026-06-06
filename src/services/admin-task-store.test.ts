@@ -57,3 +57,39 @@ test("AdminTaskStore records failed task runs", async () => {
     assert.match(page.tasks[0]?.error ?? "", /connection failed/);
   });
 });
+
+test("AdminTaskStore searches task title, result, and errors before pagination", async () => {
+  await withStore(async (store) => {
+    await store.run({
+      type: "profile-generate",
+      title: "Generate profile for Alice",
+      groupId: "67890",
+      subjectUserId: "20001",
+      operatorUserId: "admin",
+      detail: "overall",
+    }, async () => ({ recordId: "profile-alice", sourceMemoryCount: 3 }));
+
+    await assert.rejects(
+      () => store.run({
+        type: "model-check",
+        title: "Check reply model",
+        operatorUserId: "admin",
+      }, async () => {
+        throw new Error("latency timeout");
+      }),
+      /latency timeout/,
+    );
+
+    const byResult = await store.listPage({ q: "profile-alice", page: 1, pageSize: 1 });
+    assert.equal(byResult.pagination.total, 1);
+    assert.equal(byResult.tasks[0]?.type, "profile-generate");
+
+    const byError = await store.listPage({ q: "timeout", page: 1, pageSize: 1 });
+    assert.equal(byError.pagination.total, 1);
+    assert.equal(byError.tasks[0]?.type, "model-check");
+
+    const byTitle = await store.listPage({ q: "alice", page: 1, pageSize: 1 });
+    assert.equal(byTitle.pagination.total, 1);
+    assert.equal(byTitle.tasks[0]?.subjectUserId, "20001");
+  });
+});

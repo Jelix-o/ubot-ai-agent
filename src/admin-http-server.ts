@@ -730,6 +730,7 @@ export class AdminHttpServer {
       groupId: effectiveGroupId,
       type: normalizeTaskType(url.searchParams.get("type") ?? undefined),
       status: normalizeTaskStatus(url.searchParams.get("status") ?? undefined),
+      q: normalizeSearchQuery(url.searchParams.get("q") ?? undefined),
       ...paginationParams(url, 20, 100),
     });
     const visibleGroupIds = new Set((await this.visibleGroups(session)).map((group) => group.groupId));
