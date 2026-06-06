@@ -35,6 +35,7 @@ const form = reactive<GroupConfig>(defaultGroupConfig());
 
 const identityCount = computed(() => form.manualIdentities?.length || 0);
 const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === form.replyModelMode)?.label || form.replyModelMode || "-");
+const hasReplyModels = computed(() => replyModels.value.length > 0);
 const skillSelectOptions = computed(() => skillOptions.value.map((skill) => ({
   value: skill.id,
   label: `${skill.name} / ${skill.id}`,
@@ -97,6 +98,7 @@ function resetForm(data: GroupConfig): void {
     holidayCountdownDateRule: data.holidayCountdownDateRule || "all",
     holidayCountdownWeekdays: [...(data.holidayCountdownWeekdays || [])],
   });
+  reconcileReplyModelSelection();
 }
 
 async function load(): Promise<void> {
@@ -130,6 +132,14 @@ async function loadSchedulePreview(groupId = app.groupId, serial = loadSerial): 
 async function loadModelOptions(): Promise<void> {
   const data = await api<{ replyModels: ModelOption[] }>("/api/model-options");
   replyModels.value = data.replyModels;
+  reconcileReplyModelSelection();
+}
+
+function reconcileReplyModelSelection(): void {
+  if (!replyModels.value.length) return;
+  if (!replyModels.value.some((model) => model.id === form.replyModelMode)) {
+    form.replyModelMode = replyModels.value[0]?.id || "";
+  }
 }
 
 async function loadSkillOptions(): Promise<void> {
@@ -416,12 +426,13 @@ watch(() => app.groupId, () => {
             </select>
           </label>
           <label>回复模型
-            <select v-model="form.replyModelMode" class="select">
+            <select v-model="form.replyModelMode" class="select" :disabled="!hasReplyModels">
+              <option v-if="!hasReplyModels" value="">请先在系统设置启用对话模型</option>
               <option v-for="model in replyModels" :key="model.id" :value="model.id">
                 {{ model.label }}
               </option>
             </select>
-            <small class="muted">启用后的回复模型会同步进入群内 #模型 切换列表</small>
+            <small class="muted">系统设置中启用的对话模型会同步进入群内 #模型 切换列表</small>
           </label>
           <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" /></label>
           <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" /></label>

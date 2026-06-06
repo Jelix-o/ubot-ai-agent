@@ -1473,7 +1473,6 @@ export class AdminHttpServer {
       this.sendJson(res, {
         replyModels: [
           { id: "gpt", label: "GPT", purpose: "reply", enabled: true, hasApiKey: true },
-          { id: "mimo", label: "Mimo", purpose: "profile", enabled: true, hasApiKey: true },
         ],
       });
       return;
@@ -1491,21 +1490,12 @@ export class AdminHttpServer {
       baseUrl: model.baseUrl,
       model: model.model,
     }));
-    const byId = new Map(models.map((model) => [model.id, model]));
-    if (!byId.has("gpt")) {
-      byId.set("gpt", { id: "gpt", label: "GPT", name: "GPT", shortName: "GPT", purpose: "reply", enabled: true, hasApiKey: true, baseUrl: "", model: "" });
-    }
-    if (!byId.has("mimo")) {
-      byId.set("mimo", { id: "mimo", label: "Mimo", name: "Mimo", shortName: "Mimo", purpose: "profile", enabled: true, hasApiKey: true, baseUrl: "", model: "" });
-    }
-
-    const allModels = [...byId.values()];
     this.sendJson(res, {
-      ...(session.role === "super_admin" ? { models: allModels } : {}),
-      replyModels: [...byId.values()].filter((model) => (
+      ...(session.role === "super_admin" ? { models } : {}),
+      replyModels: models.filter((model) => (
         model.enabled &&
         model.hasApiKey &&
-        (model.purpose === "reply" || model.id === "mimo")
+        model.purpose === "reply"
       )),
     });
   }

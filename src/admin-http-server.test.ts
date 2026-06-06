@@ -500,6 +500,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(modelOptionsBody.models.some((item) => item.id === "mimo" && item.hasApiKey), true);
     assert.equal(modelOptionsBody.models.every((item) => item.apiKey === undefined), true);
     assert.equal(modelOptionsBody.replyModels.some((item) => item.id === "reply-pro" && item.label.includes("reply-pro")), true);
+    assert.equal(modelOptionsBody.replyModels.some((item) => item.id === "mimo" || item.id === "profile-main"), false);
     assert.equal(modelOptionsBody.replyModels.every((item) => item.apiKey === undefined), true);
 
     const skillsList = await fetch(`${baseUrl}/api/skills`, {

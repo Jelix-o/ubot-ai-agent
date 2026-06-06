@@ -37,3 +37,9 @@ release/admin-ui-smoke
 - `/api/tasks` now applies visible-group constraints before pagination, so `pagination.total` matches the actual tasks a group admin can see.
 - Super admins can still inspect all group and system tasks, while group admins only receive tasks for their accessible enabled groups.
 - Added store-level and HTTP-level regression tests for current-group, all-scope, system-task, other-group, and stale group-admin session cases.
+
+## Reply Model Selection Fix
+
+- Group reply-model options now come only from enabled `reply` models with an API key in System Settings.
+- Profile/Mimo models no longer appear in group chat model switching unless they are explicitly configured as `purpose: "reply"`.
+- Legacy group configs such as `replyModelMode: "mimo"` safely fall back to the environment GPT route until an enabled reply model is selected.

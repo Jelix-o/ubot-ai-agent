@@ -106,6 +106,11 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(groupsView, /\/api\/model-options/);
   assert.match(groupsView, /v-for="model in replyModels"/);
   assert.match(groupsView, /form\.replyModelMode/);
+  assert.match(groupsView, /hasReplyModels = computed/);
+  assert.match(groupsView, /reconcileReplyModelSelection/);
+  assert.match(groupsView, /:disabled="!hasReplyModels"/);
+  assert.match(groupsView, /请先在系统设置启用对话模型/);
+  assert.match(groupsView, /系统设置中启用的对话模型会同步进入群内 #模型 切换列表/);
   assert.match(groupsView, /MultiTagSelect/);
   assert.match(groupsView, /v-model="form\.allowedSkillIds"/);
   assert.match(groupsView, /v-model="form\.memoryDisabledUserIds"/);

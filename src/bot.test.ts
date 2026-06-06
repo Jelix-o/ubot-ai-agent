@@ -623,6 +623,22 @@ const teacherSkill: SkillDefinition = {
   name: "teacher",
 };
 
+function enabledReplyModel(id = "reply-pro"): SystemSettings["models"][number] {
+  return {
+    id,
+    name: "Reply Pro",
+    shortName: id,
+    baseUrl: "https://reply.example/v1",
+    model: `${id}-model`,
+    purpose: "reply",
+    apiKey: `${id}-key`,
+    hasApiKey: true,
+    enabled: true,
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z",
+  };
+}
+
 function cloneGroup(group: GroupBotConfig): GroupBotConfig {
   return {
     ...group,
@@ -1730,7 +1746,7 @@ test("denies unauthorized reply model switch", async () => {
   assert.match(transport.sent[0]?.text ?? "", /权限/);
 });
 
-test("switches reply model for authorized user", async () => {
+test("switches enabled configured reply model for authorized user", async () => {
   const groupConfigService = new FakeGroupConfigService([
     {
       groupId: "67890",
@@ -1744,15 +1760,17 @@ test("switches reply model for authorized user", async () => {
       dailyReportTopUserCount: 3,
     },
   ]);
-  const { app, transport } = createApp({ groupConfigService });
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [enabledReplyModel()]),
+  });
 
   await app.handleGroupMessage(
-    createEvent([{ type: "text", data: { text: "#模型 切换 mimo" } }], 99999),
+    createEvent([{ type: "text", data: { text: "#模型 切换 reply-pro" } }], 99999),
   );
 
-  assert.equal(groupConfigService.groups[0]?.replyModelMode, "mimo");
-  assert.match(transport.sent[0]?.text ?? "", /Mimo/);
-  assert.match(transport.sent[0]?.text ?? "", /mimo-v2\.5-pro/);
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "reply-pro");
+  assert.match(transport.sent[0]?.text ?? "", /reply-pro/);
 });
 
 test("supports compact reply model commands", async () => {
@@ -1769,19 +1787,22 @@ test("supports compact reply model commands", async () => {
       dailyReportTopUserCount: 3,
     },
   ]);
-  const { app, transport } = createApp({ groupConfigService });
+  const { app, transport } = createApp({
+    groupConfigService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [enabledReplyModel()]),
+  });
 
   await app.handleGroupMessage(
-    createEvent([{ type: "text", data: { text: "#模型切换 mimo" } }], 99999),
+    createEvent([{ type: "text", data: { text: "#模型切换 reply-pro" } }], 99999),
   );
   await app.handleGroupMessage(
     createEvent([{ type: "text", data: { text: "#模型状态" } }], 99999),
   );
 
-  assert.equal(groupConfigService.groups[0]?.replyModelMode, "mimo");
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "reply-pro");
   assert.match(transport.sent[0]?.text ?? "", /已切换群聊回复模型/);
   assert.match(transport.sent[1]?.text ?? "", /当前群聊回复模型/);
-  assert.match(transport.sent[1]?.text ?? "", /Mimo/);
+  assert.match(transport.sent[1]?.text ?? "", /reply-pro/);
 });
 
 test("uses configured command primary and aliases at runtime", async () => {
@@ -1811,13 +1832,13 @@ test("uses configured command primary and aliases at runtime", async () => {
         help: "查看或切换当前群回复模型",
         updatedAt: new Date().toISOString(),
       },
-    ]),
+    ], [{ keyword: "乘风", enabled: true }], [enabledReplyModel()]),
   });
 
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模式切换 mimo" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模式切换 reply-pro" } }], 99999));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型选择状态" } }], 99999));
 
-  assert.equal(groupConfigService.groups[0]?.replyModelMode, "mimo");
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "reply-pro");
   assert.match(transport.sent[0]?.text ?? "", /已切换群聊回复模型/);
   assert.match(transport.sent[1]?.text ?? "", /当前群聊回复模型/);
 });
@@ -1980,7 +2001,7 @@ test("uses system default trigger keywords when group has no trigger keyword ove
   assert.equal(transport.sent.length, 1);
 });
 
-test("uses mimo service for replies when group reply model mode is mimo", async () => {
+test("falls back to environment reply model when legacy group reply model is not configured", async () => {
   const gptAiService = new FakeAiService(async () => ({
     text: "GPT reply",
     model: "gpt-5.5",
@@ -2017,9 +2038,9 @@ test("uses mimo service for replies when group reply model mode is mimo", async 
     ]),
   );
 
-  assert.equal(gptAiService.calls.length, 0);
-  assert.equal(mimoAiService.calls.length, 1);
-  assert.equal(transport.sent[0]?.text, "Mimo reply");
+  assert.equal(gptAiService.calls.length, 1);
+  assert.equal(mimoAiService.calls.length, 0);
+  assert.equal(transport.sent[0]?.text, "GPT reply");
 });
 
 test("shows configured reply model in model status list", async () => {
@@ -2087,7 +2108,7 @@ test("allows enabled configured reply model in switch list", async () => {
   assert.match(transport.sent[1]?.text ?? "", /reply-pro/);
 });
 
-test("falls back to mimo when gpt reply model fails", async () => {
+test("does not use profile model as reply fallback when environment reply model fails", async () => {
   const gptAiService = new FakeAiService(async () => {
     throw new Error("gpt unavailable");
   });
@@ -2109,11 +2130,11 @@ test("falls back to mimo when gpt reply model fails", async () => {
   );
 
   assert.equal(gptAiService.calls.length, 1);
-  assert.equal(mimoAiService.calls.length, 1);
-  assert.equal(transport.sent[0]?.text, "Mimo fallback reply");
+  assert.equal(mimoAiService.calls.length, 0);
+  assert.match(transport.sent[0]?.text ?? "", /思考超时/);
 });
 
-test("falls back to gpt when mimo reply model fails", async () => {
+test("falls back to environment reply model when legacy mimo mode fails to match enabled reply models", async () => {
   const gptAiService = new FakeAiService(async () => ({
     text: "GPT fallback reply",
     model: "gpt-5.5",
@@ -2148,7 +2169,7 @@ test("falls back to gpt when mimo reply model fails", async () => {
     ]),
   );
 
-  assert.equal(mimoAiService.calls.length, 1);
+  assert.equal(mimoAiService.calls.length, 0);
   assert.equal(gptAiService.calls.length, 1);
   assert.equal(transport.sent[0]?.text, "GPT fallback reply");
 });

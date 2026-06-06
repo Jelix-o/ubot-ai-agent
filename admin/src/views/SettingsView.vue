@@ -240,7 +240,7 @@ onMounted(() => {
       <div class="section-head">
         <div>
           <h2>模型配置</h2>
-          <p>按模型分类维护配置。每个分类只能选择一个正在使用的模型，API Key 留空表示保留旧值。</p>
+          <p>按模型分类维护配置。对话回复可启用多个模型供群配置选择，其它分类仍按默认模型使用；API Key 留空表示保留旧值。</p>
         </div>
         <button class="ghost-btn" type="button" @click="addModel">新增 {{ activePurposeMeta.label }} 模型</button>
       </div>

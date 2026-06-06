@@ -2324,7 +2324,7 @@ export class BotApplication {
 
   private async getReplyAiRoute(groupConfig: GroupBotConfig): Promise<ReplyAiRoute> {
     const mode = normalizeReplyModelMode(groupConfig.replyModelMode);
-    const options = await this.getReplyModelOptions();
+    const options = await this.getReplyModelOptions({ allowEnvironmentFallback: true });
     const primary = options.find((option) => option.mode === mode) ?? options.find((option) => option.mode === "gpt") ?? options[0]!;
     const fallback = options.find((option) => option.mode !== primary.mode);
     return {
@@ -2333,48 +2333,52 @@ export class BotApplication {
     };
   }
 
-  private async getReplyModelOptions(): Promise<ReplyModelOption[]> {
-    const options: ReplyModelOption[] = [{
-      mode: "gpt",
-      label: await this.formatReplyModelName("gpt"),
-      service: this.aiService,
-    }];
-    options.push({
-      mode: "mimo",
-      label: await this.formatReplyModelName("mimo"),
-      service: this.profileReplyAiService ?? this.aiService,
-    });
+  private async getReplyModelOptions(options: { allowEnvironmentFallback?: boolean } = {}): Promise<ReplyModelOption[]> {
     if (!this.systemSettingsStore) {
-      return options;
+      return [await this.getEnvironmentReplyModelOption()];
     }
 
     try {
       const settings = await this.systemSettingsStore.get();
-      const existingModes = new Set(options.map((option) => option.mode));
+      const replyOptions: ReplyModelOption[] = [];
+      const existingModes = new Set<string>();
       for (const model of settings.models) {
         if (
           model.purpose !== "reply" ||
           model.enabled !== true ||
-          model.id === "gpt" ||
-          model.id === "mimo" ||
           !model.hasApiKey ||
           existingModes.has(model.id)
         ) {
           continue;
         }
-        options.push({
+        replyOptions.push({
           mode: model.id,
           label: this.formatConfiguredReplyModelLabel(model.id, model.shortName || model.name),
           service: new ConfiguredAiService(this.aiService, this.systemSettingsStore, "reply", undefined, model.id),
         });
         existingModes.add(model.id);
       }
+      if (replyOptions.length === 0 && options.allowEnvironmentFallback) {
+        return [await this.getEnvironmentReplyModelOption()];
+      }
+      return replyOptions;
     } catch (error) {
       logWarn("Failed to load configured reply model options.", {
         error: (error as Error).message,
       });
+      if (options.allowEnvironmentFallback) {
+        return [await this.getEnvironmentReplyModelOption()];
+      }
     }
-    return options;
+    return [];
+  }
+
+  private async getEnvironmentReplyModelOption(): Promise<ReplyModelOption> {
+    return {
+      mode: "gpt",
+      label: await this.formatReplyModelName("gpt"),
+      service: this.aiService,
+    };
   }
 
   private async formatReplyModelName(mode: ReplyModelMode): Promise<string> {
@@ -2397,9 +2401,12 @@ export class BotApplication {
     }
     try {
       const settings = await this.systemSettingsStore.get();
-      const model = mode === "gpt" || mode === "mimo"
-        ? settings.models.find((item) => item.enabled && item.id === mode && item.shortName.trim())
-        : settings.models.find((item) => item.enabled && item.id === mode && item.shortName.trim());
+      const model = settings.models.find((item) =>
+        item.purpose === "reply" &&
+        item.enabled &&
+        item.id === mode &&
+        item.shortName.trim()
+      );
       return model?.shortName.trim();
     } catch (error) {
       logWarn("Failed to load runtime reply model label.", {
