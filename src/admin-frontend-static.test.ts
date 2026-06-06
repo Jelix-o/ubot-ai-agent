@@ -183,11 +183,28 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
     assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
   }
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
+  assert.match(smokeScript, /\["tasks-detail",\s*"\/tasks"/);
+  assert.match(smokeScript, /click:\s*"\.task-row \.row-action"/);
+  assert.match(smokeScript, /afterClickScrollTo:\s*"\.task-detail"/);
   assert.match(smokeScript, /\["groups-mobile",\s*"\/groups"/);
   assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
   assert.match(smokeScript, /\["memories-mobile",\s*"\/memories"/);
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
+});
+
+test("admin task center exposes task detail records", async () => {
+  const tasksView = await readAdminFile(path.join("views", "TasksView.vue"));
+
+  assert.match(tasksView, /activeTask = shallowRef<AdminTaskRecord \| null>\(null\)/);
+  assert.match(tasksView, /activeTaskResult = computed/);
+  assert.match(tasksView, /activeTaskTimeline = computed/);
+  assert.match(tasksView, /api<AdminTaskRecord>\(`\/api\/tasks\/\$\{encodeURIComponent\(task\.id\)\}`\)/);
+  assert.match(tasksView, /class="task-detail"/);
+  assert.match(tasksView, /基础信息/);
+  assert.match(tasksView, /执行时间线/);
+  assert.match(tasksView, /执行结果/);
+  assert.match(tasksView, /查看详情/);
 });
 
 test("admin audit view exposes operation log filters and table", async () => {

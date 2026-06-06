@@ -8,7 +8,9 @@ import { formatDateTime } from "../utils/format";
 
 const app = useAppStore();
 const tasks = shallowRef<AdminTaskRecord[]>([]);
+const activeTask = shallowRef<AdminTaskRecord | null>(null);
 const loading = shallowRef(false);
+const detailLoading = shallowRef(false);
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const filters = reactive({
   type: "" as "" | AdminTaskType,
@@ -16,6 +18,37 @@ const filters = reactive({
 });
 
 const runningCount = computed(() => tasks.value.filter((task) => task.status === "queued" || task.status === "running").length);
+const activeTaskResult = computed(() => {
+  const task = activeTask.value;
+  if (!task || task.result === undefined) return "";
+  try {
+    return JSON.stringify(task.result, null, 2);
+  } catch {
+    return String(task.result);
+  }
+});
+const activeTaskTimeline = computed(() => {
+  const task = activeTask.value;
+  if (!task) return [];
+  return [
+    { label: "创建时间", value: formatDateTime(task.createdAt) },
+    { label: "开始时间", value: task.startedAt ? formatDateTime(task.startedAt) : "-" },
+    { label: "完成时间", value: task.finishedAt ? formatDateTime(task.finishedAt) : "-" },
+    { label: "更新时间", value: formatDateTime(task.updatedAt) },
+  ];
+});
+const activeTaskMeta = computed(() => {
+  const task = activeTask.value;
+  if (!task) return [];
+  return [
+    { label: "任务 ID", value: task.id },
+    { label: "任务类型", value: typeLabel(task.type) },
+    { label: "任务状态", value: statusLabel(task.status) },
+    { label: "执行范围", value: scopeLabel(task) },
+    { label: "操作人", value: task.operatorUserId || "-" },
+    { label: "耗时", value: durationLabel(task) },
+  ];
+});
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -29,6 +62,10 @@ async function load(): Promise<void> {
     })}`);
     tasks.value = data.tasks;
     Object.assign(pagination, data.pagination);
+    if (activeTask.value) {
+      const visibleTask = data.tasks.find((task) => task.id === activeTask.value?.id);
+      if (visibleTask) activeTask.value = { ...activeTask.value, ...visibleTask };
+    }
   } finally {
     loading.value = false;
   }
@@ -58,6 +95,18 @@ function typeLabel(type: AdminTaskType): string {
   } as Record<AdminTaskType, string>)[type];
 }
 
+function statusClass(status: AdminTaskStatus): Record<string, boolean> {
+  return {
+    danger: status === "failed",
+    warn: status === "running" || status === "queued",
+  };
+}
+
+function scopeLabel(task: AdminTaskRecord): string {
+  const group = task.groupId || "system";
+  return task.subjectUserId ? `${group} / ${task.subjectUserId}` : group;
+}
+
 function resultSummary(task: AdminTaskRecord): string {
   if (task.error) return task.error;
   if (task.result === undefined) return task.detail || "-";
@@ -72,6 +121,22 @@ function durationLabel(task: AdminTaskRecord): string {
   if (task.durationMs === undefined) return "-";
   if (task.durationMs < 1000) return `${task.durationMs}ms`;
   return `${Math.round(task.durationMs / 100) / 10}s`;
+}
+
+async function openTaskDetail(task: AdminTaskRecord): Promise<void> {
+  activeTask.value = task;
+  detailLoading.value = true;
+  try {
+    activeTask.value = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(task.id)}`);
+  } catch (error) {
+    app.showToast(error instanceof Error ? error.message : "任务详情加载失败", "error");
+  } finally {
+    detailLoading.value = false;
+  }
+}
+
+function closeTaskDetail(): void {
+  activeTask.value = null;
 }
 
 function onRefresh(): void {
@@ -156,24 +221,64 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <span>范围</span>
           <span>耗时</span>
           <span>更新时间</span>
+          <span>操作</span>
         </div>
-        <article v-for="task in tasks" :key="task.id" class="task-row">
+        <article v-for="task in tasks" :key="task.id" class="task-row" :class="{ active: activeTask?.id === task.id }">
           <div class="task-title">
             <strong>{{ task.title }}</strong>
             <small>{{ typeLabel(task.type) }} · {{ resultSummary(task) }}</small>
           </div>
-          <span class="tag" :class="{ danger: task.status === 'failed', warn: task.status === 'running' || task.status === 'queued' }">
+          <span class="tag" :class="statusClass(task.status)">
             {{ statusLabel(task.status) }}
           </span>
           <div class="progress-cell">
             <span>{{ task.progress }}%</span>
             <i><b :style="{ width: `${task.progress}%` }"></b></i>
           </div>
-          <span class="muted">{{ task.groupId || "system" }}<template v-if="task.subjectUserId"> / {{ task.subjectUserId }}</template></span>
+          <span class="muted">{{ scopeLabel(task) }}</span>
           <span>{{ durationLabel(task) }}</span>
           <span class="muted">{{ formatDateTime(task.updatedAt) }}</span>
+          <button class="link-btn row-action" type="button" :disabled="detailLoading && activeTask?.id === task.id" @click="openTaskDetail(task)">
+            {{ detailLoading && activeTask?.id === task.id ? "加载中" : "查看详情" }}
+          </button>
         </article>
       </div>
+
+      <section v-if="activeTask" class="task-detail" aria-live="polite">
+        <div class="detail-head">
+          <div>
+            <h3>{{ activeTask.title }}</h3>
+            <p>{{ activeTask.detail || "任务详情已从执行记录读取。" }}</p>
+          </div>
+          <button class="ghost-btn" type="button" @click="closeTaskDetail">收起</button>
+        </div>
+        <div class="detail-body">
+          <div class="detail-block">
+            <h4>基础信息</h4>
+            <dl class="detail-list">
+              <template v-for="item in activeTaskMeta" :key="item.label">
+                <dt>{{ item.label }}</dt>
+                <dd>{{ item.value }}</dd>
+              </template>
+            </dl>
+          </div>
+          <div class="detail-block">
+            <h4>执行时间线</h4>
+            <dl class="detail-list">
+              <template v-for="item in activeTaskTimeline" :key="item.label">
+                <dt>{{ item.label }}</dt>
+                <dd>{{ item.value }}</dd>
+              </template>
+            </dl>
+          </div>
+          <div class="detail-block detail-result">
+            <h4>执行结果</h4>
+            <p v-if="activeTask.error" class="error-text">{{ activeTask.error }}</p>
+            <pre v-else-if="activeTaskResult">{{ activeTaskResult }}</pre>
+            <p v-else class="muted">暂无结构化结果。</p>
+          </div>
+        </div>
+      </section>
 
       <div class="pager">
         <button class="ghost-btn" type="button" :disabled="pagination.page <= 1" @click="pagination.page -= 1">上一页</button>
@@ -239,10 +344,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 .task-table-head,
 .task-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.2fr) 120px 150px 180px 100px 170px;
+  grid-template-columns: minmax(280px, 1.2fr) 120px 150px 180px 100px 170px 96px;
   gap: 14px;
   align-items: center;
-  min-width: 1020px;
+  min-width: 1130px;
   border-bottom: 1px solid var(--line);
   padding: 12px 16px;
 }
@@ -258,6 +363,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 
 .task-row:last-child {
   border-bottom: 0;
+}
+
+.task-row.active {
+  background: var(--surface-soft);
 }
 
 .task-title {
@@ -293,6 +402,103 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   background: var(--accent-strong);
 }
 
+.row-action {
+  justify-self: start;
+}
+
+.task-detail {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.detail-head h3,
+.detail-head p,
+.detail-block h4,
+.detail-list {
+  margin: 0;
+}
+
+.detail-head h3 {
+  font-size: 16px;
+}
+
+.detail-head p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.detail-body {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(240px, 0.8fr) minmax(320px, 1.2fr);
+  gap: 0;
+}
+
+.detail-block {
+  min-width: 0;
+  padding: 16px;
+  border-right: 1px solid var(--line);
+}
+
+.detail-block:last-child {
+  border-right: 0;
+}
+
+.detail-block h4 {
+  margin-bottom: 12px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 10px 12px;
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.detail-list dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-result pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 12px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.error-text {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .pager {
   display: flex;
   align-items: center;
@@ -309,6 +515,21 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   .task-summary,
   .filter-card {
     grid-template-columns: 1fr;
+  }
+
+  .detail-head,
+  .detail-body {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .detail-block {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .detail-block:last-child {
+    border-bottom: 0;
   }
 }
 </style>
