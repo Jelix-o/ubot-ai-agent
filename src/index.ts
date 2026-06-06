@@ -7,6 +7,7 @@ import { AiService } from "./services/ai-service.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { AdminTaskStore } from "./services/admin-task-store.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
+import { ConfiguredTtsService } from "./services/configured-tts-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
 import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { DailyReportService } from "./services/daily-report-service.js";
@@ -52,6 +53,21 @@ async function main(): Promise<void> {
   const systemSettingsStore = new SystemSettingsStore(config.systemSettingsPath, buildDefaultSystemModels(config));
   const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
   const runtimeProfileAiService = new ConfiguredAiService(profileAiService, systemSettingsStore, "profile");
+  const defaultTtsService = new TtsService(
+    config.ttsBaseUrl,
+    config.ttsApiKey,
+    config.ttsModel,
+    config.ttsVoice,
+    config.ttsAudioFormat,
+    config.ttsCacheDir,
+    config.ttsStyleHint,
+  );
+  const runtimeTtsService = new ConfiguredTtsService(defaultTtsService, systemSettingsStore, {
+    voice: config.ttsVoice,
+    audioFormat: config.ttsAudioFormat,
+    cacheDir: config.ttsCacheDir,
+    globalStyleHint: config.ttsStyleHint,
+  });
   const dailyProfileReviewService = new DailyProfileReviewService(
     config.dailyProfileReviewPath,
     groupMemoryStore,
@@ -90,15 +106,7 @@ async function main(): Promise<void> {
     skillService,
     new ConversationStore(config.conversationsPath),
     runtimeReplyAiService,
-    new TtsService(
-      config.ttsBaseUrl,
-      config.ttsApiKey,
-      config.ttsModel,
-      config.ttsVoice,
-      config.ttsAudioFormat,
-      config.ttsCacheDir,
-      config.ttsStyleHint,
-    ),
+    runtimeTtsService,
     new DailyReportService(
       new DailyReportStore(config.dailyReportStorePath),
       runtimeReplyAiService,

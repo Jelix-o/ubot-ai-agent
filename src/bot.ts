@@ -22,7 +22,7 @@ import type { ScheduledReminderService } from "./services/scheduled-reminder-ser
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
 import type { SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
-import type { TtsService } from "./services/tts-service.js";
+import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import type {
   AiInteractionTarget,
   AiIdentityContext,
@@ -239,7 +239,7 @@ export class BotApplication {
     private readonly skillService: SkillService,
     private readonly conversationStore: ConversationStore,
     private readonly aiService: RuntimeAiService,
-    private readonly ttsService: TtsService,
+    private readonly ttsService: RuntimeTtsService,
     private readonly dailyReportService: DailyReportService,
     private readonly holidayCountdownService: HolidayCountdownService,
     private readonly scheduledReminderService: ScheduledReminderService,
