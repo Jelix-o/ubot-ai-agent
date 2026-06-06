@@ -2,6 +2,14 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 
 import type { SystemCommandConfig, SystemModelConfig, SystemSettings } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import {
+  ENV_TTS_MODEL_ID,
+  LEGACY_MIMO_TTS_BASE_URL,
+  LEGACY_MIMO_TTS_MODEL,
+  MIMO_TTS_BASE_URL,
+  MIMO_TTS_MODEL,
+  MIMO_TTS_MODEL_ID,
+} from "./mimo-tts-config.js";
 
 type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
   models?: Array<Partial<SystemModelConfig> & { apiKey?: unknown }>;
@@ -252,8 +260,10 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
   }
   const name = String(value.name ?? "").trim().slice(0, 80);
   const shortName = String(value.shortName ?? "").trim().slice(0, 32);
-  const baseUrl = String(value.baseUrl ?? "").trim().slice(0, 240);
-  const model = String(value.model ?? "").trim().slice(0, 120);
+  const rawBaseUrl = String(value.baseUrl ?? "").trim();
+  const rawModel = String(value.model ?? "").trim();
+  const baseUrl = normalizeBuiltInTtsBaseUrl(id, rawBaseUrl).slice(0, 240);
+  const model = normalizeBuiltInTtsModel(id, rawModel).slice(0, 120);
   if (!name || !shortName || !baseUrl || !model) {
     return undefined;
   }
@@ -271,6 +281,22 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
   };
+}
+
+function normalizeBuiltInTtsBaseUrl(id: string, baseUrl: string): string {
+  return id === MIMO_TTS_MODEL_ID && sameUrl(baseUrl, LEGACY_MIMO_TTS_BASE_URL)
+    ? MIMO_TTS_BASE_URL
+    : baseUrl;
+}
+
+function normalizeBuiltInTtsModel(id: string, model: string): string {
+  return (id === ENV_TTS_MODEL_ID || id === MIMO_TTS_MODEL_ID) && model === LEGACY_MIMO_TTS_MODEL
+    ? MIMO_TTS_MODEL
+    : model;
+}
+
+function sameUrl(left: string, right: string): boolean {
+  return left.replace(/\/+$/, "").toLowerCase() === right.replace(/\/+$/, "").toLowerCase();
 }
 
 function normalizeModelPurpose(value: unknown): SystemModelConfig["purpose"] {
@@ -392,6 +418,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "ops_alert", title: "告警", primary: "#告警", permission: "group_admin", help: "管理运维告警开关" },
     { id: "memory", title: "记忆", primary: "#记忆", permission: "group_admin", help: "查看记忆状态" },
     { id: "knowledge", title: "知识库", primary: "#知识库", permission: "group_admin", help: "查看知识库状态" },
+    { id: "iteration", title: "自我迭代", primary: "#迭代", permission: "group_admin", help: "提交反馈、查看自我迭代计划和生成开发计划" },
     { id: "profile_yesterday", title: "昨日画像", primary: "#昨日画像", permission: "member", help: "生成成员昨日画像摘要" },
     { id: "profile_overall", title: "群聊画像", primary: "#群聊画像", permission: "member", help: "生成成员群聊画像摘要" },
     { id: "admin", title: "管理员", primary: "#管理员", permission: "super_admin", help: "管理群管理员" },

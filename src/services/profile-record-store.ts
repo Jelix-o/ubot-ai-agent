@@ -165,6 +165,7 @@ export class ProfileRecordStore {
     const current = data.records[index]!;
     const record = normalizeRecord({
       ...current,
+      shareToken: current.shareToken || (input.publicEnabled !== false ? createShareToken() : undefined),
       publicEnabled: input.publicEnabled ?? current.publicEnabled ?? true,
       expiresAt: input.expiresAt === null ? undefined : input.expiresAt ?? current.expiresAt,
       revokedAt: input.revokedAt === null ? undefined : input.revokedAt ?? current.revokedAt,

@@ -30,9 +30,12 @@ import {
   type MemoryDedupDecision,
 } from "./services/group-memory-deduplicate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
+import type { IterationFeedbackStore } from "./services/iteration-feedback-store.js";
+import type { IterationPlanStore } from "./services/iteration-plan-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import type { MemorySemanticJudgeInput, MemorySemanticJudgeResult } from "./services/ai-service.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
+import type { SelfIterationService } from "./services/self-iteration-service.js";
 import type { SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { ProfileRecordStore } from "./services/profile-record-store.js";
@@ -41,7 +44,7 @@ import { getServerStatusSnapshot, probeSystemModel } from "./services/model-prob
 import { getYesterdayDateKey, type DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
 import { isScheduleDateRuleMatched } from "./utils/schedule-date-rule.js";
-import type { AdminSession, AdminTaskStatus, AdminTaskType, AiHealthStatus, GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, NapcatGroupInfo, NapcatGroupMember, ProfileRecord, ProfileRecordType, ScheduleDateRule, SkillDefinition, SystemCommandConfig, SystemModelPurpose, SystemSettings } from "./types.js";
+import type { AdminSession, AdminTaskStatus, AdminTaskType, AiHealthStatus, GroupBotConfig, GroupMemberProfile, GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, GroupMemoryEvidence, GroupMemoryEvidencePreview, GroupMemoryType, IterationFeedbackCategory, IterationFeedbackStatus, IterationPlanScope, IterationPlanStatus, NapcatGroupInfo, NapcatGroupMember, ProfileRecord, ProfileRecordType, ScheduleDateRule, SkillDefinition, SystemCommandConfig, SystemModelPurpose, SystemSettings } from "./types.js";
 
 interface AdminHttpServerOptions {
   host: string;
@@ -62,6 +65,9 @@ interface AdminHttpServerOptions {
   profileRecordStore?: ProfileRecordStore;
   adminTaskStore?: AdminTaskStore;
   modelHealthHistoryStore?: ModelHealthHistoryStore;
+  iterationFeedbackStore?: IterationFeedbackStore;
+  iterationPlanStore?: IterationPlanStore;
+  selfIterationService?: SelfIterationService;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
   getProfileAiHealthStatus?: (options?: { refresh?: boolean }) => Promise<AiHealthStatus>;
@@ -601,6 +607,45 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/iteration/feedback") {
+      await this.handleIterationFeedback(req, res, url, session);
+      return;
+    }
+
+    const iterationFeedbackRoute = matchRoute(pathname, /^\/api\/iteration\/feedback\/([^/]+)$/);
+    if (iterationFeedbackRoute) {
+      await this.handleIterationFeedbackItem(req, res, iterationFeedbackRoute.id, session);
+      return;
+    }
+
+    if (pathname === "/api/iteration/plans") {
+      await this.handleIterationPlans(req, res, url, session);
+      return;
+    }
+
+    if (pathname === "/api/iteration/analyze") {
+      await this.handleIterationAnalyze(req, res, session);
+      return;
+    }
+
+    const iterationPlanStatusRoute = matchRoute(pathname, /^\/api\/iteration\/plans\/([^/]+)\/status$/);
+    if (iterationPlanStatusRoute) {
+      await this.handleIterationPlanStatus(req, res, iterationPlanStatusRoute.id, session);
+      return;
+    }
+
+    const iterationPlanApplyRoute = matchRoute(pathname, /^\/api\/iteration\/plans\/([^/]+)\/apply$/);
+    if (iterationPlanApplyRoute) {
+      await this.handleIterationPlanApply(req, res, iterationPlanApplyRoute.id, session);
+      return;
+    }
+
+    const iterationPlanRoute = matchRoute(pathname, /^\/api\/iteration\/plans\/([^/]+)$/);
+    if (iterationPlanRoute) {
+      await this.handleIterationPlanItem(req, res, iterationPlanRoute.id, session);
+      return;
+    }
+
     if (pathname === "/api/memories") {
       await this.handleMemories(req, res, url, session);
       return;
@@ -852,6 +897,249 @@ export class AdminHttpServer {
       return;
     }
     this.sendJson(res, task);
+  }
+
+  private async handleIterationFeedback(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
+    if (!this.options.iterationFeedbackStore) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    if (req.method === "GET") {
+      const requestedGroupId = url.searchParams.get("groupId") ?? undefined;
+      const groupId = await this.normalizeAccessibleGroupId(session, requestedGroupId);
+      if (groupId === false) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      const visibleGroupIds = (await this.visibleGroups(session)).map((group) => group.groupId);
+      const page = await this.options.iterationFeedbackStore.listPage({
+        groupId: session.role === "super_admin" ? groupId : groupId ?? session.allowedGroupIds[0],
+        visibleGroupIds,
+        includeAllGroups: session.role === "super_admin",
+        category: normalizeIterationFeedbackCategory(url.searchParams.get("category") ?? undefined),
+        status: normalizeIterationFeedbackStatus(url.searchParams.get("status") ?? undefined),
+        q: normalizeSearchQuery(url.searchParams.get("q") ?? undefined),
+        ...paginationParams(url, 20, 100),
+      });
+      this.sendJson(res, page);
+      return;
+    }
+    if (req.method === "POST") {
+      const body = await readJsonBody(req);
+      const groupId = requiredString(body.groupId);
+      if (!(await this.canAccessGroup(session, groupId))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      const feedback = await this.options.iterationFeedbackStore.create({
+        groupId,
+        operatorUserId: session.userId ?? session.username,
+        source: "admin",
+        category: normalizeIterationFeedbackCategory(optionalString(body.category)) ?? undefined,
+        title: optionalString(body.title),
+        content: requiredString(body.content),
+      });
+      await this.recordOperation({
+        session,
+        groupId,
+        action: "自我迭代反馈",
+        target: feedback.id,
+        detail: feedback.title,
+      });
+      this.sendJson(res, feedback, 201);
+      return;
+    }
+    this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async handleIterationFeedbackItem(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    if (!this.options.iterationFeedbackStore) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    const current = await this.options.iterationFeedbackStore.get(id);
+    if (!current) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (!(await this.canAccessGroup(session, current.groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    if (req.method === "PUT") {
+      const body = await readJsonBody(req);
+      const status = normalizeIterationFeedbackStatus(requiredString(body.status));
+      if (!status) {
+        this.sendJson(res, { error: "invalid_status" }, 400);
+        return;
+      }
+      const feedback = await this.options.iterationFeedbackStore.updateStatus(id, status);
+      await this.recordOperation({
+        session,
+        groupId: current.groupId,
+        action: "自我迭代反馈状态",
+        target: id,
+        detail: status,
+      });
+      this.sendJson(res, feedback ?? { error: "not_found" }, feedback ? 200 : 404);
+      return;
+    }
+    this.sendJson(res, { error: "method_not_allowed" }, 405);
+  }
+
+  private async handleIterationPlans(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
+    if (!this.options.iterationPlanStore) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "GET") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    if (session.role !== "super_admin") {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    this.sendJson(res, await this.options.iterationPlanStore.listPage({
+      status: normalizeIterationPlanStatus(url.searchParams.get("status") ?? undefined),
+      scope: normalizeIterationPlanScope(url.searchParams.get("scope") ?? undefined),
+      q: normalizeSearchQuery(url.searchParams.get("q") ?? undefined),
+      ...paginationParams(url, 20, 100),
+    }));
+  }
+
+  private async handleIterationPlanItem(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    if (!this.options.iterationPlanStore) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "GET") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    if (session.role !== "super_admin") {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const plan = await this.options.iterationPlanStore.get(id);
+    this.sendJson(res, plan ?? { error: "not_found" }, plan ? 200 : 404);
+  }
+
+  private async handleIterationAnalyze(req: IncomingMessage, res: ServerResponse, session: AdminSession): Promise<void> {
+    if (!this.options.selfIterationService) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "POST") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    if (!this.requireSuperAdmin(session, res)) return;
+    const body = await readJsonBody(req);
+    const groupId = optionalString(body.groupId);
+    if (groupId && !(await this.canAccessGroup(session, groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const worker = async () => this.options.selfIterationService!.analyze({
+      operatorUserId: session.userId ?? session.username,
+      groupId,
+      title: optionalString(body.title),
+    });
+    const wrapped = this.options.adminTaskStore
+      ? await this.options.adminTaskStore.run({
+          type: "self-iteration-analyze",
+          title: "生成自我迭代开发计划",
+          ...(groupId ? { groupId } : {}),
+          operatorUserId: session.userId ?? session.username,
+        }, worker)
+      : { task: undefined, result: await worker() };
+    await this.recordOperation({
+      session,
+      groupId: groupId ?? "system",
+      action: "自我迭代计划生成",
+      target: wrapped.result.id,
+      detail: wrapped.result.title,
+    });
+    this.sendJson(res, { plan: wrapped.result, ...(wrapped.task ? { task: wrapped.task } : {}) }, 201);
+  }
+
+  private async handleIterationPlanStatus(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    if (!this.options.iterationPlanStore) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "PUT") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    if (!this.requireSuperAdmin(session, res)) return;
+    const body = await readJsonBody(req);
+    const status = normalizeIterationPlanStatus(requiredString(body.status));
+    if (!status || status === "applied") {
+      this.sendJson(res, { error: "invalid_status" }, 400);
+      return;
+    }
+    const plan = await this.options.iterationPlanStore.updateStatus(id, status, {
+      reason: optionalString(body.reason),
+      operatorUserId: session.userId ?? session.username,
+    });
+    if (!plan) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    await this.recordOperation({
+      session,
+      groupId: "system",
+      action: "自我迭代计划状态",
+      target: id,
+      detail: status,
+    });
+    this.sendJson(res, plan);
+  }
+
+  private async handleIterationPlanApply(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    if (!this.options.iterationPlanStore || !this.options.iterationFeedbackStore) {
+      this.sendJson(res, { error: "iteration_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "POST") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+    if (!this.requireSuperAdmin(session, res)) return;
+    const current = await this.options.iterationPlanStore.get(id);
+    if (!current) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (current.status !== "approved") {
+      this.sendJson(res, { error: "plan_not_approved" }, 409);
+      return;
+    }
+    const worker = async () => {
+      const feedbackIds = current.evidence
+        .filter((item) => item.type === "feedback" && item.entityId)
+        .map((item) => item.entityId!);
+      const feedback = await Promise.all(feedbackIds.map((feedbackId) => this.options.iterationFeedbackStore!.updateStatus(feedbackId, "applied")));
+      const plan = await this.options.iterationPlanStore!.recordApplied(id, session.userId ?? session.username);
+      return { plan: plan!, appliedFeedbackCount: feedback.filter(Boolean).length };
+    };
+    const wrapped = this.options.adminTaskStore
+      ? await this.options.adminTaskStore.run({
+          type: "self-iteration-apply",
+          title: "应用自我迭代低风险调优",
+          operatorUserId: session.userId ?? session.username,
+        }, worker)
+      : { task: undefined, result: await worker() };
+    await this.recordOperation({
+      session,
+      groupId: "system",
+      action: "自我迭代计划应用",
+      target: id,
+      detail: `appliedFeedback=${wrapped.result.appliedFeedbackCount}`,
+    });
+    this.sendJson(res, { ...wrapped.result, ...(wrapped.task ? { task: wrapped.task } : {}) });
   }
 
   private async handleMemories(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -3079,7 +3367,43 @@ function normalizeReminderWeekdays(value: unknown): number[] {
 }
 
 function normalizeTaskType(value: string | undefined): AdminTaskType | undefined {
-  return value === "memory-dedup" || value === "profile-generate" || value === "model-check" || value === "bulk-review"
+  return value === "memory-dedup" ||
+    value === "profile-generate" ||
+    value === "model-check" ||
+    value === "bulk-review" ||
+    value === "self-iteration-analyze" ||
+    value === "self-iteration-apply" ||
+    value === "dev-plan-generate"
+    ? value
+    : undefined;
+}
+
+function normalizeIterationFeedbackCategory(value: string | undefined): IterationFeedbackCategory | undefined {
+  return value === "bug" ||
+    value === "behavior" ||
+    value === "data_quality" ||
+    value === "skill" ||
+    value === "model" ||
+    value === "feature" ||
+    value === "ops"
+    ? value
+    : undefined;
+}
+
+function normalizeIterationFeedbackStatus(value: string | undefined): IterationFeedbackStatus | undefined {
+  return value === "open" || value === "planned" || value === "applied" || value === "rejected"
+    ? value
+    : undefined;
+}
+
+function normalizeIterationPlanStatus(value: string | undefined): IterationPlanStatus | undefined {
+  return value === "draft" || value === "approved" || value === "applied" || value === "rejected"
+    ? value
+    : undefined;
+}
+
+function normalizeIterationPlanScope(value: string | undefined): IterationPlanScope | undefined {
+  return value === "code" || value === "config" || value === "data" || value === "mixed"
     ? value
     : undefined;
 }

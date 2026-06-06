@@ -111,6 +111,9 @@ function typeLabel(type: AdminTaskType): string {
     "profile-generate": "画像生成",
     "model-check": "模型检测",
     "bulk-review": "批量审核",
+    "self-iteration-analyze": "自我迭代分析",
+    "self-iteration-apply": "自我迭代应用",
+    "dev-plan-generate": "开发计划生成",
   } as Record<AdminTaskType, string>)[type];
 }
 
@@ -226,6 +229,9 @@ watch(() => [pagination.page, pagination.pageSize], () => {
             <option value="profile-generate">画像生成</option>
             <option value="model-check">模型检测</option>
             <option value="bulk-review">批量审核</option>
+            <option value="self-iteration-analyze">自我迭代分析</option>
+            <option value="self-iteration-apply">自我迭代应用</option>
+            <option value="dev-plan-generate">开发计划生成</option>
           </select>
         </label>
         <label>任务状态

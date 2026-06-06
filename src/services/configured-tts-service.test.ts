@@ -6,7 +6,7 @@ import test from "node:test";
 
 import type { SkillDefinition, SystemModelConfig } from "../types.js";
 import { ConfiguredTtsService, type RuntimeTtsService } from "./configured-tts-service.js";
-import type { TtsSynthesisResult } from "./tts-service.js";
+import { TtsServiceError, type TtsSynthesisResult } from "./tts-service.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
 
 class FakeRuntimeTtsService implements RuntimeTtsService {
@@ -119,6 +119,37 @@ test("ConfiguredTtsService switches on the next synthesis after tts settings cha
 
   assert.equal((await service.synthesize("second", testSkill)).recordFile, "base64://tts-v2");
   assert.deepEqual(created, ["tts-v1:key-v1", "tts-v2:key-v2"]);
+});
+
+test("ConfiguredTtsService adds selected system model id to TTS errors", async () => {
+  const store = await createSettingsStore();
+  const fallback = new FakeRuntimeTtsService("fallback");
+
+  await store.update({
+    models: [makeTtsModel({ id: "tts-main", model: "mimo-v2.5-tts", apiKey: "tts-key" })],
+    selectedModelIds: { tts: "tts-main" },
+  });
+
+  const service = new ConfiguredTtsService(fallback, store, defaultOptions(), (model) => ({
+    async synthesize(): Promise<TtsSynthesisResult> {
+      throw new TtsServiceError("MiMo TTS request failed with status 401", {
+        baseUrl: model.baseUrl,
+        model: model.model,
+        statusCode: 401,
+      });
+    },
+  }));
+
+  await assert.rejects(
+    service.synthesize("hello", testSkill),
+    (error) => {
+      assert.ok(error instanceof TtsServiceError);
+      assert.equal(error.details.systemModelId, "tts-main");
+      assert.equal(error.details.statusCode, 401);
+      assert.equal(error.details.model, "mimo-v2.5-tts");
+      return true;
+    },
+  );
 });
 
 async function createSettingsStore(): Promise<SystemSettingsStore> {

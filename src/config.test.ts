@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadConfig } from "./config.js";
+import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL } from "./services/mimo-tts-config.js";
 
 test("profile ai config falls back to openai config and supports overrides", () => {
   const originalEnv = { ...process.env };
@@ -41,6 +42,39 @@ test("profile ai config falls back to openai config and supports overrides", () 
     assert.equal(configured.profileAiBaseUrl, "https://profile.example/v1");
     assert.equal(configured.profileAiApiKey, "profile-key");
     assert.equal(configured.profileAiModel, "profile-model");
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("tts config defaults to current MiMo V2.5 TTS endpoint and supports overrides", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env = {
+      ...originalEnv,
+      NAPCAT_MODE: "reverse",
+      OPENAI_BASE_URL: "https://reply.example/v1",
+      OPENAI_API_KEY: "reply-key",
+      OPENAI_MODEL: "reply-model",
+      BOT_QQ: "12345",
+    };
+    delete process.env.TTS_BASE_URL;
+    delete process.env.TTS_API_KEY;
+    delete process.env.TTS_MODEL;
+
+    const fallback = loadConfig();
+    assert.equal(fallback.ttsBaseUrl, MIMO_TTS_BASE_URL);
+    assert.equal(fallback.ttsApiKey, "reply-key");
+    assert.equal(fallback.ttsModel, MIMO_TTS_MODEL);
+
+    process.env.TTS_BASE_URL = "https://custom-tts.example/v1";
+    process.env.TTS_API_KEY = "tts-key";
+    process.env.TTS_MODEL = "custom-tts-model";
+
+    const configured = loadConfig();
+    assert.equal(configured.ttsBaseUrl, "https://custom-tts.example/v1");
+    assert.equal(configured.ttsApiKey, "tts-key");
+    assert.equal(configured.ttsModel, "custom-tts-model");
   } finally {
     process.env = originalEnv;
   }

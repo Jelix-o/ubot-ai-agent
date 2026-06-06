@@ -5,6 +5,12 @@ import path from "node:path";
 import test from "node:test";
 
 import { SystemSettingsStore } from "./system-settings-store.js";
+import {
+  LEGACY_MIMO_TTS_BASE_URL,
+  LEGACY_MIMO_TTS_MODEL,
+  MIMO_TTS_BASE_URL,
+  MIMO_TTS_MODEL,
+} from "./mimo-tts-config.js";
 
 test("SystemSettingsStore seeds existing environment models and never returns api keys from public get", async () => {
   const store = await createStore([
@@ -264,6 +270,58 @@ test("SystemSettingsStore drops unsafe model ids before they reach reply switchi
   const internal = await store.getInternal();
   assert.equal(internal.models.find((model) => model.id === "reply-pro")?.apiKey, "reply-pro-key");
   assert.equal(internal.models.some((model) => model.id === "../bad"), false);
+});
+
+test("SystemSettingsStore migrates only built-in MiMo TTS models to current endpoint and model", async () => {
+  const store = await createStore();
+  await store.update({
+    models: [
+      {
+        id: "tts-mimo-v25",
+        name: "MiMo V2.5 TTS",
+        shortName: "mimo-v2.5-tts",
+        baseUrl: `${LEGACY_MIMO_TTS_BASE_URL}/`,
+        model: MIMO_TTS_MODEL,
+        purpose: "tts",
+        apiKey: "tts-key",
+        enabled: true,
+      },
+      {
+        id: "tts",
+        name: "Env TTS",
+        shortName: LEGACY_MIMO_TTS_MODEL,
+        baseUrl: "https://env-tts.example/v1",
+        model: LEGACY_MIMO_TTS_MODEL,
+        purpose: "tts",
+        apiKey: "env-tts-key",
+        enabled: true,
+      },
+      {
+        id: "custom-tts",
+        name: "Custom TTS",
+        shortName: "custom",
+        baseUrl: LEGACY_MIMO_TTS_BASE_URL,
+        model: LEGACY_MIMO_TTS_MODEL,
+        purpose: "tts",
+        apiKey: "custom-key",
+        enabled: true,
+      },
+    ],
+    selectedModelIds: { tts: "tts-mimo-v25" },
+  });
+
+  const internal = await store.getInternal();
+  const builtInMimo = internal.models.find((model) => model.id === "tts-mimo-v25");
+  const envTts = internal.models.find((model) => model.id === "tts");
+  const customTts = internal.models.find((model) => model.id === "custom-tts");
+
+  assert.equal(builtInMimo?.baseUrl, MIMO_TTS_BASE_URL);
+  assert.equal(builtInMimo?.model, MIMO_TTS_MODEL);
+  assert.equal(envTts?.baseUrl, "https://env-tts.example/v1");
+  assert.equal(envTts?.model, MIMO_TTS_MODEL);
+  assert.equal(customTts?.baseUrl, LEGACY_MIMO_TTS_BASE_URL);
+  assert.equal(customTts?.model, LEGACY_MIMO_TTS_MODEL);
+  assert.equal(internal.selectedModelIds.tts, "tts-mimo-v25");
 });
 
 test("SystemSettingsStore keeps command permissions immutable and ignores unknown commands", async () => {

@@ -224,7 +224,7 @@ export class DailyProfileReviewService {
 
   private async listUsableMemberProfileMemories(groupId: string, userId: string): Promise<GroupMemory[]> {
     return (await this.memoryStore.list(groupId))
-      .filter((memory) => isUsableMemberProfile(memory, userId))
+      .filter((memory) => isSourceMemberProfileMemory(memory, userId))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
@@ -273,16 +273,24 @@ export function getYesterdayDateKey(now = new Date()): string {
 }
 
 function isNewDailyMemberProfile(memory: GroupMemory, dateKey: string): boolean {
-  return isUsableMemberProfile(memory, memory.subjectUserId) &&
-    !memory.source.startsWith(REVIEW_SOURCE_PREFIX) &&
+  return isSourceMemberProfileMemory(memory, memory.subjectUserId) &&
     toLocalDateKey(memory.createdAt) === dateKey;
 }
 
-function isUsableMemberProfile(memory: GroupMemory, userId: string | undefined): boolean {
+function isSourceMemberProfileMemory(memory: GroupMemory, userId: string | undefined): boolean {
   return memory.type === "member_profile" &&
     Boolean(memory.subjectUserId) &&
     memory.subjectUserId === userId &&
-    memory.enabled;
+    memory.enabled &&
+    !isGeneratedProfileSummaryMemory(memory);
+}
+
+function isGeneratedProfileSummaryMemory(memory: GroupMemory): boolean {
+  return memory.source.startsWith(REVIEW_SOURCE_PREFIX) ||
+    memory.source.startsWith("profile_record:") ||
+    memory.title.includes("画像总结") ||
+    memory.title.includes("昨日画像") ||
+    memory.title.includes("群聊画像");
 }
 
 function toProfileMemoryInput(memory: GroupMemory): { title: string; content: string; createdAt: string; confidence: number } {

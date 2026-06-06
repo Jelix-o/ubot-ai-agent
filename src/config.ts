@@ -1,6 +1,7 @@
 import path from "node:path";
 import dotenv from "dotenv";
 
+import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL } from "./services/mimo-tts-config.js";
 import type { AppConfig } from "./types.js";
 
 dotenv.config();
@@ -63,9 +64,9 @@ export function loadConfig(): AppConfig {
     profileAiBaseUrl: optionalEnv("PROFILE_AI_BASE_URL") ?? openAiBaseUrl,
     profileAiApiKey: optionalEnv("PROFILE_AI_API_KEY") ?? openAiApiKey,
     profileAiModel: optionalEnv("PROFILE_AI_MODEL") ?? openAiModel,
-    ttsBaseUrl: optionalEnv("TTS_BASE_URL") ?? openAiBaseUrl,
+    ttsBaseUrl: optionalEnv("TTS_BASE_URL") ?? MIMO_TTS_BASE_URL,
     ttsApiKey: optionalEnv("TTS_API_KEY") ?? openAiApiKey,
-    ttsModel: optionalEnv("TTS_MODEL") ?? "mimo-v2-tts",
+    ttsModel: optionalEnv("TTS_MODEL") ?? MIMO_TTS_MODEL,
     ttsVoice: optionalEnv("TTS_VOICE") ?? "mimo_default",
     ttsAudioFormat: ttsAudioFormat as AppConfig["ttsAudioFormat"],
     ttsStyleHint: process.env.TTS_STYLE_HINT?.trim() || undefined,
@@ -87,6 +88,8 @@ export function loadConfig(): AppConfig {
     profileRecordsPath: path.join(cwd, "data", "profile-records.json"),
     adminTasksPath: path.join(cwd, "data", "admin-tasks.json"),
     modelHealthHistoryPath: path.join(cwd, "data", "model-health-history.json"),
+    iterationFeedbackPath: path.join(cwd, "data", "iteration-feedback.json"),
+    iterationPlansPath: path.join(cwd, "data", "iteration-plans.json"),
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,

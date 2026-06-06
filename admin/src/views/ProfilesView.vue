@@ -108,6 +108,37 @@ function shareStatusLabel(record?: ProfileRecord): string {
   return "公开中";
 }
 
+function shareUrl(record: ProfileRecord): string {
+  return record.shareUrl || "";
+}
+
+function canUseShareUrl(record: ProfileRecord): boolean {
+  const expiresAt = record.expiresAt ? new Date(record.expiresAt).getTime() : undefined;
+  return Boolean(shareUrl(record)) &&
+    record.publicEnabled !== false &&
+    !record.revokedAt &&
+    (expiresAt === undefined || expiresAt > Date.now());
+}
+
+function openShareUrl(record: ProfileRecord): void {
+  const url = shareUrl(record);
+  if (!url) {
+    app.showToast("这条画像还没有公开链接", "error");
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function copyShareUrl(record: ProfileRecord): Promise<void> {
+  const url = shareUrl(record);
+  if (!url) {
+    app.showToast("这条画像还没有公开链接", "error");
+    return;
+  }
+  await navigator.clipboard.writeText(url);
+  app.showToast("公开链接已复制");
+}
+
 async function updateShareState(record: ProfileRecord, publicEnabled: boolean): Promise<void> {
   const updated = await api<ProfileRecord>(`/api/profile-records/${encodeURIComponent(record.id)}/share`, {
     method: "PUT",
@@ -198,11 +229,15 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <button class="profile-main" type="button" @click="openRecord(record)">
             <span class="tag">{{ profileTypeLabel(record.type) }}</span>
             <strong>{{ memberLabel(record.userId) }}</strong>
-            <span>{{ formatDateTime(record.generatedAt) }}</span>
-            <small>来源记忆 {{ record.sourceMemoryCount }} 条 · {{ record.createdBy }}</small>
+            <small>创建人 {{ record.createdBy }}</small>
           </button>
           <div class="row-actions">
             <span class="tag" :class="{ danger: record.publicEnabled === false || Boolean(record.revokedAt) }">{{ shareStatusLabel(record) }}</span>
+            <button v-if="record.shareUrl" class="ghost-btn" type="button" :disabled="!canUseShareUrl(record)" @click="openShareUrl(record)">查看链接</button>
+            <button v-if="record.shareUrl" class="ghost-btn" type="button" :disabled="!canUseShareUrl(record)" @click="copyShareUrl(record)">复制链接</button>
+            <button v-if="!record.shareToken" class="ghost-btn" type="button" @click="updateShareState(record, true)">生成链接</button>
+            <button v-else-if="record.publicEnabled !== false && !record.revokedAt" class="ghost-btn danger" type="button" @click="updateShareState(record, false)">撤销公开</button>
+            <button v-else class="ghost-btn" type="button" @click="updateShareState(record, true)">恢复公开</button>
             <button class="ghost-btn" type="button" :disabled="generating" @click="regenerate(record)">重新生成</button>
             <button class="ghost-btn danger" type="button" @click="removeRecord(record)">删除</button>
           </div>
@@ -221,10 +256,6 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <div>
           <h2>画像详情</h2>
           <p>{{ memberLabel(activeRecord?.userId) }}</p>
-        </div>
-        <div v-if="activeRecord" class="detail-actions">
-          <button v-if="activeRecord.publicEnabled !== false && !activeRecord.revokedAt" class="ghost-btn danger" type="button" @click="updateShareState(activeRecord, false)">撤销公开</button>
-          <button v-else class="ghost-btn" type="button" @click="updateShareState(activeRecord, true)">恢复公开</button>
         </div>
       </div>
       <div v-if="detailLoading" class="empty compact">正在读取画像详情...</div>
@@ -277,7 +308,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 
 .profile-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, auto);
   gap: 12px;
   align-items: center;
   border: 1px solid var(--line);
@@ -292,7 +323,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 
 .profile-main {
   display: grid;
-  grid-template-columns: auto minmax(150px, 0.9fr) 154px minmax(140px, 0.8fr);
+  grid-template-columns: auto minmax(150px, 1fr) minmax(100px, 0.45fr);
   gap: 12px;
   align-items: center;
   min-width: 0;
@@ -320,6 +351,11 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .detail-actions {

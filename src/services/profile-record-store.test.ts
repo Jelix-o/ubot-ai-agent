@@ -62,6 +62,13 @@ test("ProfileRecordStore preserves share token on update and old records without
     assert.equal((await store.get("legacy-record"))?.shareToken, undefined);
     assert.equal(await store.getByShareToken("legacy-record"), undefined);
 
+    const legacyShared = await store.updateShareState("legacy-record", {
+      publicEnabled: true,
+      revokedAt: null,
+    });
+    assert.match(legacyShared?.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
+    assert.equal((await store.getByShareToken(legacyShared?.shareToken ?? ""))?.id, "legacy-record");
+
     const created = await store.create({
       groupId: "67890",
       userId: "20001",

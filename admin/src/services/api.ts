@@ -346,7 +346,14 @@ export interface ProfileRecord {
   createdBy: string;
 }
 
-export type AdminTaskType = "memory-dedup" | "profile-generate" | "model-check" | "bulk-review";
+export type AdminTaskType =
+  | "memory-dedup"
+  | "profile-generate"
+  | "model-check"
+  | "bulk-review"
+  | "self-iteration-analyze"
+  | "self-iteration-apply"
+  | "dev-plan-generate";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface AdminTaskRecord {
@@ -375,6 +382,76 @@ export interface AdminOperationLogEntry {
   action: string;
   target?: string;
   detail?: string;
+}
+
+export type IterationFeedbackSource = "qq_command" | "admin";
+export type IterationFeedbackCategory = "bug" | "behavior" | "data_quality" | "skill" | "model" | "feature" | "ops";
+export type IterationFeedbackStatus = "open" | "planned" | "applied" | "rejected";
+export type IterationRelatedEntityType = "skill" | "memory" | "candidate" | "knowledge" | "profile" | "model" | "command" | "ops";
+
+export interface IterationFeedbackRecord {
+  id: string;
+  groupId: string;
+  operatorUserId: string;
+  source: IterationFeedbackSource;
+  category: IterationFeedbackCategory;
+  title: string;
+  content: string;
+  status: IterationFeedbackStatus;
+  relatedEntityType?: IterationRelatedEntityType;
+  relatedEntityId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type IterationPlanStatus = "draft" | "approved" | "applied" | "rejected";
+export type IterationPlanScope = "code" | "config" | "data" | "mixed";
+export type IterationPlanRiskLevel = "low" | "medium" | "high";
+
+export interface IterationPlanEvidenceItem {
+  type: string;
+  title: string;
+  detail: string;
+  groupId?: string;
+  entityId?: string;
+}
+
+export interface IterationPlanRecommendation {
+  type: "skill" | "config" | "data" | "code";
+  title: string;
+  detail: string;
+  action?: "approve_candidates" | "reject_candidates" | "disable_knowledge" | "enable_knowledge" | "skill_patch" | "group_config_patch";
+  targetId?: string;
+  patch?: unknown;
+}
+
+export interface IterationPlanRecord {
+  id: string;
+  title: string;
+  summary: string;
+  status: IterationPlanStatus;
+  generatedBy: "ai" | "manual";
+  scope: IterationPlanScope;
+  goalPrompt: string;
+  evidence: IterationPlanEvidenceItem[];
+  recommendations: IterationPlanRecommendation[];
+  riskLevel: IterationPlanRiskLevel;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt?: string;
+  appliedBy?: string;
+  rejectionReason?: string;
+}
+
+export interface IterationAnalyzeResponse {
+  plan: IterationPlanRecord;
+  task?: AdminTaskRecord;
+}
+
+export interface IterationApplyResponse {
+  plan: IterationPlanRecord;
+  appliedFeedbackCount: number;
+  task?: AdminTaskRecord;
 }
 
 export interface SchedulePreviewDay {

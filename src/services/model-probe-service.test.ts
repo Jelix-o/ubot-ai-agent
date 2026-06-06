@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { MIMO_TTS_BASE_URL } from "./mimo-tts-config.js";
 import { probeSystemModel } from "./model-probe-service.js";
 
 test("probeSystemModel uses MiMo api-key header for TTS probes", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
-    assert.equal(String(input), "https://token-plan-cn.xiaomimimo.com/v1/chat/completions");
+    assert.equal(String(input), `${MIMO_TTS_BASE_URL}/chat/completions`);
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("api-key"), "tts-key");
     assert.equal(headers.has("authorization"), false);
@@ -21,7 +22,7 @@ test("probeSystemModel uses MiMo api-key header for TTS probes", async () => {
   try {
     const status = await probeSystemModel({
       purpose: "tts",
-      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      baseUrl: MIMO_TTS_BASE_URL,
       apiKey: "tts-key",
       model: "mimo-v2.5-tts",
     });
@@ -40,7 +41,7 @@ test("probeSystemModel keeps upstream TTS status code in failures", async () => 
   try {
     const status = await probeSystemModel({
       purpose: "tts",
-      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      baseUrl: MIMO_TTS_BASE_URL,
       apiKey: "tts-key",
       model: "mimo-v2.5-tts",
     });

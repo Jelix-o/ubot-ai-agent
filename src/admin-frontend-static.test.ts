@@ -163,13 +163,20 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /class="top-popover theme-popover"/);
   assert.match(appShell, /class="top-popover user-popover"/);
   assert.match(appShell, /<AppIcon name="theme"/);
+  assert.match(appShell, /iteration:\s*"iteration"/);
+  assert.match(appShell, /tasks:\s*"tasks"/);
+  assert.match(appShell, /audit:\s*"audit"/);
+  assert.doesNotMatch(appShell, /tasks:\s*"list"[\s\S]*audit:\s*"list"/);
   assert.match(appShell, /async function logout\(\): Promise<void>/);
   assert.match(appShell, /await app\.logout\(\)/);
   assert.match(appShell, /@click\.stop="logout"/);
   assert.match(appShell, /class="content-scroll"/);
   assert.match(appShell, /\.content-scroll\s*\{[\s\S]*overflow:\s*visible;/);
   const topbarBlock = appShell.slice(appShell.indexOf(".topbar {"), appShell.indexOf(".top-title"));
-  assert.match(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--bg\)\s*88%,\s*var\(--surface\)\)/);
+  assert.match(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--surface\)\s*94%,\s*transparent\)/);
+  assert.match(topbarBlock, /border-radius:\s*0 0 18px 18px/);
+  assert.match(topbarBlock, /border:\s*1px solid color-mix\(in oklch,\s*var\(--line\)\s*72%,\s*transparent\)/);
+  assert.doesNotMatch(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--bg\)/);
   assert.doesNotMatch(topbarBlock, /box-shadow:\s*0 1px 0 var\(--line\)/);
   assert.match(appShell, /\.notify-list\s*\{[\s\S]*max-height:\s*min\(318px,\s*calc\(6 \* 54px\)\);[\s\S]*overflow:\s*auto;/);
   assert.match(appShell, /go\('\/candidates'\)/);
@@ -186,10 +193,14 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(routerFile, /title:\s*"系统状态"/);
   assert.match(routerFile, /path:\s*"\/tasks"/);
   assert.match(routerFile, /TasksView\.vue/);
+  assert.match(routerFile, /path:\s*"\/iteration"/);
+  assert.match(routerFile, /IterationView\.vue/);
+  assert.match(routerFile, /name:\s*"iteration"[\s\S]*superOnly:\s*true/);
   assert.match(routerFile, /path:\s*"\/audit"/);
   assert.match(routerFile, /AuditView\.vue/);
 
-  assert.match(routerFile, /path:\s*"\/tasks"[\s\S]*path:\s*"\/audit"[\s\S]*path:\s*"\/skills"/);
+  assert.match(routerFile, /path:\s*"\/knowledge"[\s\S]*path:\s*"\/iteration"[\s\S]*path:\s*"\/skills"/);
+  assert.match(routerFile, /path:\s*"\/commands"[\s\S]*path:\s*"\/tasks"[\s\S]*path:\s*"\/audit"[\s\S]*path:\s*"\/health"/);
   assert.match(routerFile, /path:\s*"\/health"[\s\S]*path:\s*"\/settings"/);
   assert.match(routerFile, /name:\s*"settings"[\s\S]*superOnly:\s*true/);
   assert.match(routerFile, /component:\s*\(\)\s*=>\s*import\("\.\/views\/OverviewView\.vue"\)/);
@@ -230,7 +241,7 @@ test("admin system status separates environment and server health", async () => 
   assert.match(healthView, /model\.upstreamStatusCode/);
 });
 
-test("admin profile page hides public link shortcut actions", async () => {
+test("admin profile page keeps public link actions in the list", async () => {
   const profilesView = await readAdminFile(path.join("views", "ProfilesView.vue"));
   const listSection = profilesView.slice(
     profilesView.indexOf('<div v-else class="profile-list">'),
@@ -238,14 +249,22 @@ test("admin profile page hides public link shortcut actions", async () => {
   );
   const detailSection = profilesView.slice(profilesView.indexOf('<aside class="panel detail-panel sticky-detail-panel">'));
 
-  assert.doesNotMatch(listSection, /openShareUrl/);
-  assert.doesNotMatch(listSection, /copyShareUrl/);
-  assert.doesNotMatch(detailSection, /openShareUrl/);
-  assert.doesNotMatch(detailSection, /copyShareUrl/);
-  assert.doesNotMatch(profilesView, /查看链接/);
-  assert.doesNotMatch(profilesView, /复制链接/);
-  assert.match(detailSection, /updateShareState\(activeRecord,\s*false\)/);
-  assert.match(detailSection, /updateShareState\(activeRecord,\s*true\)/);
+  assert.match(listSection, /查看链接/);
+  assert.match(listSection, /复制链接/);
+  assert.match(listSection, /生成链接/);
+  assert.match(listSection, /撤销公开/);
+  assert.match(listSection, /v-if="!record\.shareToken"/);
+  assert.match(listSection, /openShareUrl\(record\)/);
+  assert.match(listSection, /copyShareUrl\(record\)/);
+  assert.match(listSection, /updateShareState\(record,\s*true\)/);
+  assert.match(listSection, /updateShareState\(record,\s*false\)/);
+  assert.doesNotMatch(listSection, /formatDateTime\(record\.generatedAt\)/);
+  assert.doesNotMatch(listSection, /来源记忆/);
+  assert.doesNotMatch(detailSection, /查看链接/);
+  assert.doesNotMatch(detailSection, /复制链接/);
+  assert.doesNotMatch(detailSection, /生成链接/);
+  assert.doesNotMatch(detailSection, /撤销公开/);
+  assert.doesNotMatch(detailSection, /updateShareState\(activeRecord/);
 });
 
 test("model probes and tts use provider-specific health requests", async () => {
@@ -267,7 +286,7 @@ test("model probes and tts use provider-specific health requests", async () => {
 test("admin visual smoke covers all routes and key mobile viewports", async () => {
   const smokeScript = await readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8");
 
-  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "tasks", "audit", "health", "skills", "commands", "settings"]) {
+  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "iteration", "tasks", "audit", "health", "skills", "commands", "settings"]) {
     assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
   }
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
@@ -284,9 +303,43 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
   assert.match(smokeScript, /\["memories-mobile",\s*"\/memories"/);
+  assert.match(smokeScript, /\["iteration-mobile",\s*"\/iteration"/);
   assert.match(smokeScript, /\["tasks-mobile",\s*"\/tasks"/);
   assert.match(smokeScript, /\["tasks-mobile-filters",\s*"\/tasks"/);
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
+});
+
+test("admin self-iteration page wires feedback, plan, and /goal workflows", async () => {
+  const [iterationView, apiTypes, appIcon, adminServer, smokeScript] = await Promise.all([
+    readAdminFile(path.join("views", "IterationView.vue")),
+    readAdminFile(path.join("services", "api.ts")),
+    readAdminFile(path.join("components", "AppIcon.vue")),
+    readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
+    readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8"),
+  ]);
+
+  assert.match(apiTypes, /type IterationFeedbackCategory/);
+  assert.match(apiTypes, /interface IterationFeedbackRecord/);
+  assert.match(apiTypes, /interface IterationPlanRecord/);
+  assert.match(apiTypes, /interface IterationAnalyzeResponse/);
+  assert.match(iterationView, /\/api\/iteration\/feedback/);
+  assert.match(iterationView, /\/api\/iteration\/plans/);
+  assert.match(iterationView, /\/api\/iteration\/analyze/);
+  assert.match(iterationView, /\/api\/iteration\/plans\/\$\{encodeURIComponent\(plan\.id\)\}\/status/);
+  assert.match(iterationView, /\/api\/iteration\/plans\/\$\{encodeURIComponent\(plan\.id\)\}\/apply/);
+  assert.match(iterationView, /navigator\.clipboard\.writeText\(plan\.goalPrompt\)/);
+  assert.match(iterationView, /class="goal-prompt"/);
+  assert.match(iterationView, /生成开发计划/);
+  assert.match(iterationView, /复制 \/goal/);
+  assert.match(appIcon, /name === 'iteration'/);
+  assert.match(adminServer, /handleIterationFeedback/);
+  assert.match(adminServer, /handleIterationAnalyze/);
+  assert.match(adminServer, /self-iteration-analyze/);
+  assert.match(adminServer, /self-iteration-apply/);
+  assert.match(smokeScript, /IterationFeedbackStore/);
+  assert.match(smokeScript, /IterationPlanStore/);
+  assert.match(smokeScript, /iterationFeedbackStore/);
+  assert.match(smokeScript, /iterationPlanStore/);
 });
 
 test("admin task center exposes task detail records", async () => {

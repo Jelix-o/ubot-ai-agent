@@ -1,6 +1,6 @@
 import { logWarn } from "../logger.js";
 import type { SkillDefinition, SystemModelConfig } from "../types.js";
-import { TtsService, type TtsSynthesisResult } from "./tts-service.js";
+import { TtsService, TtsServiceError, type TtsSynthesisResult } from "./tts-service.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 
 export type RuntimeTtsService = {
@@ -37,13 +37,24 @@ export class ConfiguredTtsService implements RuntimeTtsService {
   ) {}
 
   async synthesize(text: string, skill: SkillDefinition): Promise<TtsSynthesisResult> {
-    return (await this.resolveService()).synthesize(text, skill);
+    const resolved = await this.resolveService();
+    try {
+      return await resolved.service.synthesize(text, skill);
+    } catch (error) {
+      if (resolved.modelId && error instanceof TtsServiceError) {
+        throw new TtsServiceError(error.message, {
+          ...error.details,
+          systemModelId: resolved.modelId,
+        });
+      }
+      throw error;
+    }
   }
 
-  private async resolveService(): Promise<RuntimeTtsService> {
+  private async resolveService(): Promise<{ service: RuntimeTtsService; modelId?: string }> {
     const model = await this.getActiveTtsModel();
     if (!model) {
-      return this.fallback;
+      return { service: this.fallback };
     }
 
     const key = [
@@ -57,20 +68,20 @@ export class ConfiguredTtsService implements RuntimeTtsService {
       this.options.globalStyleHint ?? "",
     ].join("|");
     if (this.cachedService?.key === key) {
-      return this.cachedService.service;
+      return { service: this.cachedService.service, modelId: model.id };
     }
 
     try {
       const service = this.factory(model);
       this.cachedService = { key, service };
-      return service;
+      return { service, modelId: model.id };
     } catch (error) {
       logWarn("Configured TTS model is invalid; falling back to environment model.", {
         model: model.model,
         baseUrl: model.baseUrl,
         error: error instanceof Error ? error.message : String(error),
       });
-      return this.fallback;
+      return { service: this.fallback };
     }
   }
 

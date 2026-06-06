@@ -27,6 +27,21 @@ export interface TtsSynthesisResult {
   cleanup(): Promise<void>;
 }
 
+export class TtsServiceError extends Error {
+  constructor(
+    message: string,
+    readonly details: {
+      baseUrl: string;
+      model: string;
+      systemModelId?: string;
+      statusCode?: number;
+    },
+  ) {
+    super(message);
+    this.name = "TtsServiceError";
+  }
+}
+
 export class TtsService {
   constructor(
     private readonly baseUrl: string,
@@ -61,20 +76,31 @@ export class TtsService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(
+      throw new TtsServiceError(
         `MiMo TTS request failed with status ${response.status}: ${errorText.slice(0, 200)}`,
+        {
+          baseUrl: this.baseUrl,
+          model: this.model,
+          statusCode: response.status,
+        },
       );
     }
 
     const completion = (await response.json()) as TtsCompletionResponse;
     const audioData = completion.choices?.[0]?.message?.audio?.data;
     if (!audioData) {
-      throw new Error("MiMo TTS response did not contain audio data.");
+      throw new TtsServiceError("MiMo TTS response did not contain audio data.", {
+        baseUrl: this.baseUrl,
+        model: this.model,
+      });
     }
 
     const buffer = Buffer.from(audioData, "base64");
     if (buffer.length === 0) {
-      throw new Error("MiMo TTS returned empty audio data.");
+      throw new TtsServiceError("MiMo TTS returned empty audio data.", {
+        baseUrl: this.baseUrl,
+        model: this.model,
+      });
     }
 
     await mkdir(this.cacheDir, { recursive: true });

@@ -46,8 +46,9 @@ function iconFor(name: unknown): string {
     memories: "memory",
     profiles: "users",
     knowledge: "knowledge",
-    tasks: "list",
-    audit: "list",
+    iteration: "iteration",
+    tasks: "tasks",
+    audit: "audit",
     health: "health",
     settings: "settings",
     skills: "candidate",
@@ -505,7 +506,10 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   gap: 24px;
   margin: -22px -28px 20px;
   padding: 22px 28px 12px;
-  background: color-mix(in oklch, var(--bg) 88%, var(--surface));
+  border: 1px solid color-mix(in oklch, var(--line) 72%, transparent);
+  border-top: 0;
+  border-radius: 0 0 18px 18px;
+  background: color-mix(in oklch, var(--surface) 94%, transparent);
 }
 
 .top-title {

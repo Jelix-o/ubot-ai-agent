@@ -4,7 +4,8 @@ import path from "node:path";
 import test from "node:test";
 
 import type { SkillDefinition } from "../types.js";
-import { TtsService } from "./tts-service.js";
+import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL } from "./mimo-tts-config.js";
+import { TtsService, TtsServiceError } from "./tts-service.js";
 
 const skill: SkillDefinition = {
   id: "jackma",
@@ -21,13 +22,15 @@ test("TtsService decodes audio data, writes wav file, and exposes base64 record 
   const originalFetch = globalThis.fetch;
   const cacheDir = path.join(process.cwd(), "data", "test-tts-cache");
 
-  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), `${MIMO_TTS_BASE_URL}/chat/completions`);
     const payload = JSON.parse(String(init?.body));
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("api-key"), "test-key");
     assert.equal(headers.has("authorization"), false);
-    assert.equal(payload.model, "mimo-v2-tts");
+    assert.equal(payload.model, MIMO_TTS_MODEL);
     assert.equal(payload.audio.voice, "mimo_default");
+    assert.equal(payload.audio.format, "wav");
     assert.equal(payload.messages[0].role, "user");
     assert.equal(payload.messages[0].content, "热情 讲故事");
     assert.equal(payload.messages[1].role, "assistant");
@@ -51,9 +54,9 @@ test("TtsService decodes audio data, writes wav file, and exposes base64 record 
 
   try {
     const service = new TtsService(
-      "https://api.xiaomimimo.com/v1",
+      MIMO_TTS_BASE_URL,
       "test-key",
-      "mimo-v2-tts",
+      MIMO_TTS_MODEL,
       "mimo_default",
       "wav",
       cacheDir,
@@ -98,6 +101,42 @@ test("TtsService accepts a full MiMo chat completions URL without appending the 
     const result = await service.synthesize("测试语音", skill);
     assert.equal((await readFile(result.filePath)).toString(), "ok");
     await result.cleanup();
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("TtsService errors include safe request metadata without api keys", async () => {
+  const originalFetch = globalThis.fetch;
+  const cacheDir = path.join(process.cwd(), "data", "test-tts-error-cache");
+
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({ error: { message: "Invalid API Key", type: "invalid_key" } }),
+    { status: 401 },
+  );
+
+  try {
+    const service = new TtsService(
+      MIMO_TTS_BASE_URL,
+      "secret-key-must-not-leak",
+      MIMO_TTS_MODEL,
+      "mimo_default",
+      "wav",
+      cacheDir,
+    );
+
+    await assert.rejects(
+      service.synthesize("测试语音", skill),
+      (error) => {
+        assert.ok(error instanceof TtsServiceError);
+        assert.equal(error.details.baseUrl, MIMO_TTS_BASE_URL);
+        assert.equal(error.details.model, MIMO_TTS_MODEL);
+        assert.equal(error.details.statusCode, 401);
+        assert.equal(error.message.includes("secret-key-must-not-leak"), false);
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = originalFetch;
     await rm(cacheDir, { recursive: true, force: true });
