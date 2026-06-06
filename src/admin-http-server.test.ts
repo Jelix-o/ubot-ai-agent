@@ -15,6 +15,7 @@ import { GroupMemoryCandidateService } from "./services/group-memory-candidate-s
 import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
 import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SkillService } from "./services/skill-service.js";
@@ -186,6 +187,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
   ]);
   const profileRecordStore = new ProfileRecordStore(path.join(dir, "profile-records.json"));
   const adminTaskStore = new AdminTaskStore(path.join(dir, "admin-tasks.json"));
+  const modelHealthHistoryStore = new ModelHealthHistoryStore(path.join(dir, "model-health.json"));
   await adminTaskStore.run({
     type: "profile-generate",
     title: "Profile task for Tester",
@@ -248,6 +250,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     scheduledReminderService,
     skillService,
     adminTaskStore,
+    modelHealthHistoryStore,
     systemSettingsStore,
     profileRecordStore,
     adminOperationLogService: new AdminOperationLogService(path.join(dir, "ops.jsonl")),
@@ -383,6 +386,16 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const cookie = login.headers.get("set-cookie");
     assert.ok(cookie?.includes("HttpOnly"));
 
+    const unauthenticatedLogout = await globalThis.fetch(`${baseUrl}/api/logout`, { method: "POST" });
+    assert.equal(unauthenticatedLogout.status, 401);
+
+    const logoutWithoutCsrf = await globalThis.fetch(`${baseUrl}/api/logout`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(logoutWithoutCsrf.status, 403);
+    assert.deepEqual(await logoutWithoutCsrf.json(), { error: "csrf_required" });
+
     const csrfBlocked = await globalThis.fetch(`${baseUrl}/api/system-settings`, {
       method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -503,6 +516,19 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
             model: "reply-pro-model",
             purpose: "reply",
             apiKey: "reply-pro-key",
+            enabled: true,
+            hasApiKey: false,
+            createdAt: "2026-06-01T00:00:00.000Z",
+            updatedAt: "2026-06-01T00:00:00.000Z",
+          },
+          {
+            id: "tts-main",
+            name: "TTS Main",
+            shortName: "tts",
+            baseUrl: "https://tts.example/v1",
+            model: "tts-model",
+            purpose: "tts",
+            apiKey: "tts-secret-key",
             enabled: true,
             hasApiKey: false,
             createdAt: "2026-06-01T00:00:00.000Z",
@@ -953,12 +979,42 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       [["holiday_countdown", "08:15", true], ["daily_report", "18:30", true]],
     );
 
-    const health = await fetch(`${baseUrl}/api/health?refresh=1`, {
-      headers: { Cookie: cookie ?? "" },
-    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+      if (url.startsWith(baseUrl)) {
+        return originalFetch(input, init);
+      }
+      return new Response("api_key=secret-key Authorization: Bearer sk-testsecret", { status: 401 });
+    };
+    let health: Response | undefined;
+    try {
+      health = await fetch(`${baseUrl}/api/health?refresh=1`, {
+        headers: { Cookie: cookie ?? "" },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.ok(health);
     assert.equal(health.status, 200);
-    const healthBody = await health.json() as { profileAiHealth?: { detail: string } };
+    const healthBody = await health.json() as {
+      profileAiHealth?: { detail: string };
+      modelStatuses: Array<{ id: string; detail: string; baseUrl?: string; model?: string }>;
+      serverStatus?: unknown;
+      pid?: number;
+    };
     assert.equal(healthBody.profileAiHealth?.detail, "profile refreshed");
+    assert.ok(healthBody.serverStatus);
+    assert.equal(typeof healthBody.pid, "number");
+    const ttsHealth = healthBody.modelStatuses.find((item) => item.id === "tts-main");
+    assert.ok(ttsHealth);
+    assert.equal(ttsHealth.detail.includes("secret-key"), false);
+    assert.equal(ttsHealth.detail.includes("sk-testsecret"), false);
+    assert.equal(ttsHealth.detail.includes("[REDACTED]"), true);
+    const ttsHistory = (await modelHealthHistoryStore.list()).find((item) => item.id === "tts-main");
+    assert.ok(ttsHistory);
+    assert.equal(ttsHistory.detail.includes("secret-key"), false);
+    assert.equal(ttsHistory.detail.includes("sk-testsecret"), false);
     assert.equal(lastProfileHealthRefresh, true);
     assert.ok(profileHealthCalls >= 2);
 
@@ -1724,6 +1780,48 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(groupAdminModelOptionsBody.models, undefined);
     assert.equal(groupAdminModelOptionsBody.replyModels.some((item) => item.id === "reply-pro"), true);
     assert.equal(groupAdminModelOptionsBody.replyModels.every((item) => item.apiKey === undefined), true);
+
+    lastProfileHealthRefresh = false;
+    const groupAdminOverview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {
+      headers: { Cookie: groupAdminCookie ?? "" },
+    });
+    assert.equal(groupAdminOverview.status, 200);
+    const groupAdminOverviewBody = await groupAdminOverview.json() as {
+      profileAiHealth?: { detail: string; baseUrl?: string; model?: string };
+      modelStatuses?: unknown[];
+      abnormalModelStatuses?: unknown[];
+      modelStatusSummary?: { total: number; abnormal: number; checkedAt: string };
+    };
+    assert.equal(groupAdminOverviewBody.profileAiHealth?.detail, "restricted");
+    assert.equal(groupAdminOverviewBody.profileAiHealth?.baseUrl, undefined);
+    assert.equal(groupAdminOverviewBody.profileAiHealth?.model, undefined);
+    assert.deepEqual(groupAdminOverviewBody.modelStatuses, []);
+    assert.deepEqual(groupAdminOverviewBody.abnormalModelStatuses, []);
+    assert.equal(groupAdminOverviewBody.modelStatusSummary?.total, 0);
+    assert.equal(groupAdminOverviewBody.modelStatusSummary?.abnormal, 0);
+    assert.match(groupAdminOverviewBody.modelStatusSummary?.checkedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+
+    const profileHealthCallsBeforeGroupAdminHealth = profileHealthCalls;
+    const groupAdminHealth = await fetch(`${baseUrl}/api/health?refresh=1`, {
+      headers: { Cookie: groupAdminCookie ?? "" },
+    });
+    assert.equal(groupAdminHealth.status, 200);
+    const groupAdminHealthBody = await groupAdminHealth.json() as {
+      profileAiHealth?: { detail: string; baseUrl?: string; model?: string };
+      modelStatuses?: unknown[];
+      abnormalModelStatuses?: unknown[];
+      serverStatus?: unknown;
+      pid?: number;
+    };
+    assert.equal(groupAdminHealthBody.profileAiHealth?.detail, "restricted");
+    assert.equal(groupAdminHealthBody.profileAiHealth?.baseUrl, undefined);
+    assert.equal(groupAdminHealthBody.profileAiHealth?.model, undefined);
+    assert.deepEqual(groupAdminHealthBody.modelStatuses, []);
+    assert.deepEqual(groupAdminHealthBody.abnormalModelStatuses, []);
+    assert.equal(groupAdminHealthBody.serverStatus, undefined);
+    assert.equal(groupAdminHealthBody.pid, undefined);
+    assert.equal(profileHealthCalls, profileHealthCallsBeforeGroupAdminHealth);
+    assert.equal(lastProfileHealthRefresh, false);
 
     const groupAdminGroupSync = await fetch(`${baseUrl}/api/groups/sync`, {
       method: "POST",

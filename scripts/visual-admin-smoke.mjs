@@ -731,6 +731,11 @@ async function captureCdpScreenshots(baseUrl, cookie, targets) {
         path: "/",
         httpOnly: true,
       });
+      await cdp.send("Runtime.evaluate", {
+        expression: "localStorage.setItem('ubot-admin-theme', 'light')",
+      });
+      await navigateAndWait(cdp, `${baseUrl}/`);
+      await waitForUiStable(cdp);
 
       for (const [name, route, viewport] of targets) {
         await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -835,8 +840,9 @@ async function runTopbarInteractionSmoke(cdp, baseUrl) {
   await realClick(cdp, ".user-chip");
   await delay(200);
   await assertElementVisible(cdp, '[data-smoke="logout"]', "logout action");
+  await assertFrontendCanPost(cdp, "logout action");
   await realClick(cdp, '[data-smoke="logout"]');
-  await waitForLocationPath(cdp, "/login");
+  await waitForLogout(cdp, baseUrl);
 }
 
 async function assertTopbarGroupOptions(cdp, expectedGroupIds, label) {
@@ -861,11 +867,23 @@ async function realClick(cdp, selector) {
       const target = document.querySelector(${JSON.stringify(selector)});
       if (!(target instanceof HTMLElement)) return null;
       const rect = target.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
       return {
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
+        x,
+        y,
         width: rect.width,
         height: rect.height,
+        hitMatchesTarget: hit === target || target.contains(hit),
+        hitSummary: hit instanceof HTMLElement
+          ? {
+              tag: hit.tagName,
+              className: hit.className,
+              text: hit.textContent?.trim().slice(0, 80),
+              smoke: hit.dataset.smoke || "",
+            }
+          : null,
       };
     })()`,
     returnByValue: true,
@@ -873,6 +891,9 @@ async function realClick(cdp, selector) {
   const box = result.result?.value;
   if (!box || box.width <= 0 || box.height <= 0) {
     throw new Error(`Cannot click hidden or missing selector: ${selector}`);
+  }
+  if (!box.hitMatchesTarget) {
+    throw new Error(`Cannot click selector because another element is on top: ${selector}; hit=${JSON.stringify(box.hitSummary)}`);
   }
   await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y, button: "none" });
   await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
@@ -901,6 +922,48 @@ async function waitForLocationPath(cdp, expectedPath) {
     `location.pathname === ${JSON.stringify(expectedPath)}`,
     `location path ${expectedPath}`,
   );
+}
+
+async function assertFrontendCanPost(cdp, label) {
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(async () => {
+      const scripts = performance.getEntriesByType("resource").filter((item) => String(item.name).includes("/assets/"));
+      const sessionStatus = await fetch("/api/session", { credentials: "include" }).then((res) => res.status).catch((error) => String(error));
+      return {
+        path: location.pathname,
+        sessionStatus,
+        assetCount: scripts.length,
+      };
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  const state = result.result?.value;
+  if (state?.sessionStatus !== 200) {
+    throw new Error(`Cannot run ${label}: browser session is not active (${JSON.stringify(state)}).`);
+  }
+}
+
+async function waitForLogout(cdp, baseUrl) {
+  const deadline = Date.now() + 6000;
+  let lastState = "";
+  while (Date.now() < deadline) {
+    const result = await cdp.send("Runtime.evaluate", {
+      expression: `location.pathname`,
+      returnByValue: true,
+    });
+    const path = result.result?.value;
+    const sessionResult = await cdp.send("Runtime.evaluate", {
+      expression: `fetch(${JSON.stringify(`${baseUrl}/api/session`)}, { credentials: "include" }).then((res) => res.status).catch((error) => String(error))`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    const sessionStatus = sessionResult.result?.value;
+    lastState = JSON.stringify({ path, sessionStatus });
+    if (path === "/login" && sessionStatus === 401) return;
+    await delay(150);
+  }
+  throw new Error(`Timed out waiting for logout. Last state: ${lastState}`);
 }
 
 async function waitForExpression(cdp, expression, label) {

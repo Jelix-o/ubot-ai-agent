@@ -150,6 +150,15 @@ function openUser(): void {
   userOpen.value = next;
 }
 
+async function logout(): Promise<void> {
+  closeFloating();
+  try {
+    await app.logout();
+  } catch (error) {
+    app.showToast(error instanceof Error ? error.message : "退出登录失败", "error");
+  }
+}
+
 function onSearchKeydown(event: KeyboardEvent): void {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
@@ -308,7 +317,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
               <strong>{{ app.username }}</strong>
               <p>{{ roleLabel }}</p>
               <p v-if="app.role !== 'super_admin'">可管理 {{ app.allowedGroupIds.length }} 个群</p>
-              <button class="ghost-btn logout" type="button" data-smoke="logout" @click="app.logout()">退出登录</button>
+              <button class="ghost-btn logout" type="button" data-smoke="logout" @click.stop="logout">退出登录</button>
             </div>
           </div>
         </div>
@@ -496,8 +505,8 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   gap: 24px;
   margin: -22px -28px 20px;
   padding: 22px 28px 12px;
-  background: color-mix(in oklch, var(--bg) 88%, transparent);
-  backdrop-filter: blur(14px);
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--line);
 }
 
 .top-title {

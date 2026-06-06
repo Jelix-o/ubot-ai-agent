@@ -156,7 +156,9 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /class="top-popover theme-popover"/);
   assert.match(appShell, /class="top-popover user-popover"/);
   assert.match(appShell, /<AppIcon name="theme"/);
-  assert.match(appShell, /@click="app\.logout\(\)"/);
+  assert.match(appShell, /async function logout\(\): Promise<void>/);
+  assert.match(appShell, /await app\.logout\(\)/);
+  assert.match(appShell, /@click\.stop="logout"/);
   assert.match(appShell, /class="content-scroll"/);
   assert.match(appShell, /\.content-scroll\s*\{[\s\S]*overflow:\s*visible;/);
   assert.match(appShell, /\.notify-list\s*\{[\s\S]*max-height:\s*min\(318px,\s*calc\(6 \* 54px\)\);[\s\S]*overflow:\s*auto;/);

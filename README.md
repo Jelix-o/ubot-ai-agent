@@ -1,6 +1,6 @@
 # UBot
 
-UBot 是一个基于 `NapCat + OneBot + Node.js + TypeScript` 的 QQ 群聊机器人与群运营后台。当前版本为 `v4.4.0`，重点面向群聊回复、群记忆、成员画像、FAQ 知识库和公网后台运维。
+UBot 是一个基于 `NapCat + OneBot + Node.js + TypeScript` 的 QQ 群聊机器人与群运营后台。当前版本为 `v4.7.0`，重点面向群聊回复、群记忆、成员画像、FAQ 知识库、模型健康巡检和公网后台运维。
 
 它已经支持：
 
@@ -406,12 +406,12 @@ pnpm test
 - `#操作日志` 查看当前群最近 10 条管理员操作，包括闭嘴、黑名单、实时对话、技能切换、定时任务和管理员变更。
 - 这些命令在闭嘴模式下仍可使用；被拉黑用户仍保持静默。
 
-## UBot v4.4.0 后台、群记忆和知识库
+## UBot v4.7.0 后台、群记忆和知识库
 
 - 设置 `ADMIN_HTTP_ENABLED=true` 后会启动独立后台服务，默认监听 `127.0.0.1:6200`。
 - 生产建议通过 Nginx 将 `https://bot.9958.uk` 反代到 `http://127.0.0.1:6200`，不要暴露 NapCat 反向 WebSocket。
 - 后台登录使用 `.env` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，会话由 `ADMIN_SESSION_SECRET` 签名。
-- v4.4.0 后台默认使用分页、筛选摘要、URL 状态恢复、来源证据按需加载、路由懒加载和精简列表；候选记忆、长期记忆默认只显示核心信息，详情和危险操作按需展开，降低大列表卡顿。
+- v4.7.0 后台默认使用分页、筛选摘要、URL 状态恢复、来源证据按需加载、路由懒加载、精简列表、模型健康历史、任务中心、操作审计和分组选择隔离；候选记忆、长期记忆默认只显示核心信息，详情和危险操作按需展开，降低大列表卡顿。
 - 群记忆长期数据保存在 `data/group-memory.json`；自动提炼候选保存在 `data/group-memory-candidates.json`，候选必须在后台批准后才会进入 AI 上下文。
 - 文本 FAQ 知识库保存在 `data/knowledge-base.json`，机器人对话前会按关键词检索当前群启用 FAQ，最多注入 Top 3 条。
 - `manualIdentities` 仍然是身份识别最高优先级；群记忆只补充偏好、稳定事实、群规则和固定梗，不覆盖 QQ 身份表。
@@ -432,7 +432,7 @@ pnpm test
 ## 发布与升级
 
 - 项目名：`UBot`
-- 当前版本：`v4.4.0`
+- 当前版本：`v4.7.0`
 - npm 包名：`ubot`
 - Node.js：建议 Node 22
 - `npm run dev` / `npm run build` / `npm test` use `UBOT_NODE` when set, otherwise Windows falls back to `D:\environment\nvm\v22.17.0\node.exe` if it exists.
@@ -455,7 +455,8 @@ NapCat must send this token with `Authorization: Bearer <token>`. Query-string t
 
 推荐发脱敏分享包或 GitHub Release 包：
 
-- `release/ubot-v4.4.0.tar.gz`
-- `RELEASE-v4.4.0.md`
+- `release/ubot-4.7.0-win/`
+- `release/ubot-4.7.0-win.zip`
+- `RELEASE-v4.7.0.md`
 
 这样不会带上你的真实 `.env`、API Key、对话历史和生产群配置。

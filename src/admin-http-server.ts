@@ -99,6 +99,18 @@ interface GeneratedProfileRecordResponse {
   record?: unknown;
 }
 
+type HealthStatusResponse = {
+  ok: boolean;
+  detail: string;
+  model?: string;
+  baseUrl?: string;
+  checkedAt?: string;
+  latencyMs?: number;
+  cached?: boolean;
+  probeType?: "chat" | "tts";
+  upstreamStatusCode?: number;
+};
+
 class ProfileRecordGenerationError extends Error {
   constructor(
     public readonly code: string,
@@ -207,12 +219,6 @@ export class AdminHttpServer {
         return;
       }
 
-      if (req.method === "POST" && pathname === "/api/logout") {
-        this.setSessionCookie(res, "", new Date(0));
-        this.sendJson(res, { ok: true });
-        return;
-      }
-
       const session = this.getSession(req);
       if (pathname.startsWith("/api/") && !session) {
         this.sendJson(res, { error: "unauthorized" }, 401);
@@ -256,6 +262,12 @@ export class AdminHttpServer {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/api/logout") {
+      this.setSessionCookie(res, "", new Date(0));
+      this.sendJson(res, { ok: true });
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/session") {
       this.sendJson(res, this.publicSession(session));
       return;
@@ -288,11 +300,17 @@ export class AdminHttpServer {
       const visibleKnowledgeCount = groupId
         ? knowledgePage.pagination.total
         : allKnowledge.filter((item) => visibleGroupIds.has(item.groupId)).length;
-      const transportHealth = this.options.getTransportHealthStatus
+      const canViewDiagnostics = session.role === "super_admin";
+      const rawTransportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
         : { ok: true, detail: "未配置传输层自检" };
-      const profileAiHealth = await this.getProfileAiHealthStatus();
-      const modelStatuses = await this.getModelHealthStatuses();
+      const transportHealth = canViewDiagnostics
+        ? sanitizeHealthStatus(rawTransportHealth)
+        : publicHealthStatus(rawTransportHealth);
+      const profileAiHealth = canViewDiagnostics
+        ? sanitizeHealthStatus(await this.getProfileAiHealthStatus())
+        : restrictedHealthStatus();
+      const modelStatuses = canViewDiagnostics ? await this.getModelHealthStatuses() : [];
       const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
       this.sendJson(res, {
         groups,
@@ -499,18 +517,25 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/api/health") {
-      const transportHealth = this.options.getTransportHealthStatus
+      const canViewDiagnostics = session.role === "super_admin";
+      const refresh = canViewDiagnostics && url.searchParams.get("refresh") === "1";
+      const rawTransportHealth = this.options.getTransportHealthStatus
         ? await this.options.getTransportHealthStatus()
         : { ok: true, detail: "未配置传输层自检" };
-      const profileAiHealth = await this.getProfileAiHealthStatus({ refresh: url.searchParams.get("refresh") === "1" });
-      const modelStatuses = await this.getModelHealthStatuses({ refresh: url.searchParams.get("refresh") === "1" });
+      const transportHealth = canViewDiagnostics
+        ? sanitizeHealthStatus(rawTransportHealth)
+        : publicHealthStatus(rawTransportHealth);
+      const profileAiHealth = canViewDiagnostics
+        ? sanitizeHealthStatus(await this.getProfileAiHealthStatus({ refresh }))
+        : restrictedHealthStatus();
+      const modelStatuses = canViewDiagnostics ? await this.getModelHealthStatuses({ refresh }) : [];
       const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
       const memory = process.memoryUsage();
       const environmentStatus = {
         transportHealth,
         node: {
           ok: true,
-          detail: `${process.version} / PID ${process.pid}`,
+          detail: canViewDiagnostics ? `${process.version} / PID ${process.pid}` : process.version,
           checkedAt: `uptime ${Math.floor(process.uptime())}s`,
           latencyMs: 0,
         },
@@ -525,7 +550,6 @@ export class AdminHttpServer {
         transportHealth,
         profileAiHealth,
         environmentStatus,
-        serverStatus: getServerStatusSnapshot(),
         modelStatuses,
         abnormalModelStatuses,
         modelStatusSummary: {
@@ -535,8 +559,9 @@ export class AdminHttpServer {
         },
         uptimeSeconds: Math.floor(process.uptime()),
         nodeVersion: process.version,
-        pid: process.pid,
-        memory,
+        ...(canViewDiagnostics
+          ? { serverStatus: getServerStatusSnapshot(), pid: process.pid, memory }
+          : { memory: { rss: memory.rss, heapUsed: memory.heapUsed } }),
       });
       return;
     }
@@ -1471,7 +1496,7 @@ export class AdminHttpServer {
         selected: settings.selectedModelIds?.[model.purpose] === model.id,
         ok: health.ok,
         latencyMs: health.latencyMs || Date.now() - startedAt,
-        detail: health.detail,
+        detail: redactSensitiveText(health.detail),
         model: health.model || model.model,
         baseUrl: health.baseUrl || model.baseUrl || "",
         checkedAt: health.checkedAt || new Date().toISOString(),
@@ -1511,7 +1536,7 @@ export class AdminHttpServer {
         selected: settings.selectedModelIds?.[model.purpose] === model.id,
         ok: false,
         error: "connection_failed",
-        detail: (error as Error).message,
+        detail: redactSensitiveText((error as Error).message),
         latencyMs: 0,
         model: model.model,
         baseUrl: model.baseUrl || "",
@@ -2244,7 +2269,7 @@ export class AdminHttpServer {
         const status = {
           ...base,
           ok: health.ok,
-          detail: health.detail,
+          detail: redactSensitiveText(health.detail),
           model: health.model || model.model,
           baseUrl: health.baseUrl || model.baseUrl,
           checkedAt: health.checkedAt || new Date().toISOString(),
@@ -2260,7 +2285,7 @@ export class AdminHttpServer {
         const status = {
           ...base,
           ok: false,
-          detail: (error as Error).message,
+          detail: redactSensitiveText((error as Error).message),
           model: model.model,
           baseUrl: model.baseUrl,
           checkedAt: new Date().toISOString(),
@@ -2280,9 +2305,10 @@ export class AdminHttpServer {
     source: ModelHealthHistoryEntry["source"],
   ): Promise<void> {
     if (!this.options.modelHealthHistoryStore) return;
+    const sanitizedStatus = sanitizeHealthStatus(status);
     await this.options.modelHealthHistoryStore.record({
-      ...status,
-      purpose: normalizeModelPurpose(status.purpose),
+      ...sanitizedStatus,
+      purpose: normalizeModelPurpose(sanitizedStatus.purpose),
       source,
     });
   }
@@ -3394,6 +3420,41 @@ function formatModelOptionLabel(id: string, name: string): string {
   if (id === "gpt") return `GPT (${name})`;
   if (id === "mimo") return `Mimo (${name})`;
   return `${name} (${id})`;
+}
+
+function sanitizeHealthStatus<T extends HealthStatusResponse>(status: T): T {
+  return {
+    ...status,
+    detail: redactSensitiveText(status.detail),
+  };
+}
+
+function publicHealthStatus(status: HealthStatusResponse): HealthStatusResponse {
+  return {
+    ok: status.ok,
+    detail: redactSensitiveText(status.detail),
+    checkedAt: status.checkedAt,
+    latencyMs: status.latencyMs,
+    cached: status.cached,
+  };
+}
+
+function restrictedHealthStatus(): HealthStatusResponse {
+  return {
+    ok: true,
+    detail: "restricted",
+    checkedAt: new Date().toISOString(),
+    latencyMs: 0,
+    cached: true,
+  };
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/((?:api[-_ ]?key|access[-_ ]?token|secret|password|token)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/(sk-[A-Za-z0-9_-]{8,})/g, "[REDACTED]")
+    .slice(0, 500);
 }
 
 function buildProfileShareUrl(publicBaseUrl: string, shareToken: string): string {
