@@ -169,7 +169,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /class="content-scroll"/);
   assert.match(appShell, /\.content-scroll\s*\{[\s\S]*overflow:\s*visible;/);
   const topbarBlock = appShell.slice(appShell.indexOf(".topbar {"), appShell.indexOf(".top-title"));
-  assert.doesNotMatch(topbarBlock, /background:\s*var\(--bg\)/);
+  assert.match(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--bg\)\s*88%,\s*var\(--surface\)\)/);
   assert.doesNotMatch(topbarBlock, /box-shadow:\s*0 1px 0 var\(--line\)/);
   assert.match(appShell, /\.notify-list\s*\{[\s\S]*max-height:\s*min\(318px,\s*calc\(6 \* 54px\)\);[\s\S]*overflow:\s*auto;/);
   assert.match(appShell, /go\('\/candidates'\)/);

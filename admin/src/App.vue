@@ -505,6 +505,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   gap: 24px;
   margin: -22px -28px 20px;
   padding: 22px 28px 12px;
+  background: color-mix(in oklch, var(--bg) 88%, var(--surface));
 }
 
 .top-title {
