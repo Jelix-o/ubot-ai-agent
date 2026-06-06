@@ -298,6 +298,7 @@ export interface SystemSettings {
   groupAdminSecretConfigured?: boolean;
   defaultTriggerKeywords: Array<{ keyword: string; enabled: boolean }>;
   models: SystemModelConfig[];
+  removedDefaultModelIds?: string[];
   selectedModelIds: Partial<Record<SystemModelPurpose, string>>;
   commands: SystemCommandConfig[];
   updatedAt: string;

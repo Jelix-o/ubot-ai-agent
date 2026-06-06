@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, shallowRef } from "vue";
 
-import { api, type GroupConfig, type SystemModelConfig, type SystemModelPurpose, type SystemSettings } from "../services/api";
+import { api, type GroupConfig, type ModelHealthStatus, type SystemModelConfig, type SystemModelPurpose, type SystemSettings } from "../services/api";
 import { useAppStore } from "../stores/app";
 
 const app = useAppStore();
 const loading = shallowRef(false);
 const saving = shallowRef(false);
 const testingModelId = shallowRef("");
+const testingAllModels = shallowRef(false);
 const groupQuery = shallowRef("");
 const allGroups = shallowRef<GroupConfig[]>([]);
 const activePurpose = shallowRef<SystemModelPurpose>("reply");
 const modelSettingsDirty = shallowRef(false);
+const modelHealthById = shallowRef<Record<string, ModelHealthStatus>>({});
 const secretForm = reactive({ adminSecret: "", groupAdminSecret: "" });
 const modelRowKeys = new WeakMap<SystemModelConfig, string>();
 let modelRowKeySeed = 0;
@@ -44,6 +46,18 @@ const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; det
 
 const activePurposeMeta = computed(() => modelPurposeOptions.find((item) => item.value === activePurpose.value)!);
 const activePurposeModels = computed(() => settings.models.filter((model) => model.purpose === activePurpose.value));
+const modelPurposeHealth = computed(() => {
+  const result: Partial<Record<SystemModelPurpose, { failed: number; total: number }>> = {};
+  for (const model of settings.models) {
+    const health = modelHealthById.value[model.id];
+    if (!health) continue;
+    const current = result[model.purpose] ?? { failed: 0, total: 0 };
+    current.total += 1;
+    if (!health.ok) current.failed += 1;
+    result[model.purpose] = current;
+  }
+  return result;
+});
 
 function modelTemplate(purpose = activePurpose.value): SystemModelConfig {
   const now = new Date().toISOString();
@@ -79,6 +93,13 @@ function markModelsDirty(): void {
   modelSettingsDirty.value = true;
 }
 
+function applyModelStatuses(statuses: ModelHealthStatus[]): void {
+  modelHealthById.value = statuses.reduce<Record<string, ModelHealthStatus>>((result, status) => {
+    result[status.id] = status;
+    return result;
+  }, { ...modelHealthById.value });
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   try {
@@ -88,6 +109,8 @@ async function load(): Promise<void> {
     ]);
     Object.assign(settings, next);
     allGroups.value = groupData.groups;
+    const history = await api<{ models: ModelHealthStatus[] }>("/api/model-health-history");
+    applyModelStatuses(history.models);
   } finally {
     loading.value = false;
   }
@@ -170,6 +193,8 @@ function removeModel(index: number, model: SystemModelConfig): void {
   if (settings.selectedModelIds[model.purpose] === model.id) {
     delete settings.selectedModelIds[model.purpose];
   }
+  const { [model.id]: _removed, ...remainingHealth } = modelHealthById.value;
+  modelHealthById.value = remainingHealth;
   markModelsDirty();
 }
 
@@ -190,16 +215,47 @@ function isReplyModel(model: SystemModelConfig): boolean {
 async function testModel(model: SystemModelConfig): Promise<void> {
   testingModelId.value = model.id;
   try {
-    const result = await api<{ ok: boolean; detail: string; latencyMs?: number }>(`/api/models/${encodeURIComponent(model.id)}/test`, {
+    const result = await api<ModelHealthStatus>(`/api/models/${encodeURIComponent(model.id)}/test`, {
       method: "POST",
       body: "{}",
     });
+    applyModelStatuses([result]);
     app.showToast(result.ok ? `检测通过，延迟 ${result.latencyMs ?? 0}ms` : `检测不通过：${result.detail}`, result.ok ? "ok" : "error");
   } catch (error) {
     app.showToast(`检测不通过：${(error as Error).message}`, "error");
   } finally {
     testingModelId.value = "";
   }
+}
+
+async function testAllModels(): Promise<void> {
+  testingAllModels.value = true;
+  try {
+    const result = await api<{ statuses: ModelHealthStatus[]; summary: { total: number; abnormal: number } }>("/api/models/test-all", {
+      method: "POST",
+      body: "{}",
+    });
+    applyModelStatuses(result.statuses);
+    const passed = Math.max(0, result.summary.total - result.summary.abnormal);
+    app.showToast(result.summary.abnormal > 0
+      ? `模型检测完成：${passed}/${result.summary.total} 通过，${result.summary.abnormal} 个异常`
+      : `模型检测全部通过：${result.summary.total} 个模型`,
+    result.summary.abnormal > 0 ? "error" : "ok");
+  } catch (error) {
+    app.showToast(`全部模型检测失败：${(error as Error).message}`, "error");
+  } finally {
+    testingAllModels.value = false;
+  }
+}
+
+function purposeHasFailure(purpose: SystemModelPurpose): boolean {
+  return (modelPurposeHealth.value[purpose]?.failed ?? 0) > 0;
+}
+
+function modelHealthLabel(model: SystemModelConfig): string {
+  const health = modelHealthById.value[model.id];
+  if (!health) return "";
+  return health.ok ? `通过 ${health.latencyMs ?? 0}ms` : health.detail;
 }
 
 function modelIndex(model: SystemModelConfig): number {
@@ -290,12 +346,13 @@ onMounted(() => {
         </div>
         <div class="model-actions">
           <button class="ghost-btn" type="button" @click="addModel">新增 {{ activePurposeMeta.label }} 模型</button>
+          <button class="ghost-btn" type="button" :disabled="testingAllModels" @click="testAllModels">{{ testingAllModels ? "检测中..." : "检测全部模型" }}</button>
           <button class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存模型配置" }}</button>
         </div>
       </div>
       <p v-if="modelSettingsDirty" class="dirty-hint">模型配置尚未保存，保存后才会进入群配置和 #模型 切换列表。</p>
       <div class="purpose-tabs">
-        <button v-for="item in modelPurposeOptions" :key="item.value" type="button" :class="{ active: activePurpose === item.value }" @click="activePurpose = item.value">
+        <button v-for="item in modelPurposeOptions" :key="item.value" type="button" :class="{ active: activePurpose === item.value, failed: purposeHasFailure(item.value) }" @click="activePurpose = item.value">
           <strong>{{ item.label }}</strong>
           <small>{{ item.detail }}</small>
         </button>
@@ -312,7 +369,7 @@ onMounted(() => {
           <span>API Key</span>
           <span>操作</span>
         </div>
-        <article v-for="model in activePurposeModels" :key="modelRowKey(model)" class="table-row">
+        <article v-for="model in activePurposeModels" :key="modelRowKey(model)" class="table-row" :class="{ failed: modelHealthById[model.id]?.ok === false, passed: modelHealthById[model.id]?.ok === true }">
           <div class="radio-cell">
             <span v-if="isReplyModel(model)" class="tag" :class="{ danger: !model.enabled || !model.hasApiKey }">
               {{ model.enabled && model.hasApiKey ? "可选择" : "不可用" }}
@@ -332,6 +389,7 @@ onMounted(() => {
           <div class="row-actions">
             <button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? "检测中" : "检测连接" }}</button>
             <button class="link-btn danger" type="button" @click="removeModel(modelIndex(model), model)">删除</button>
+            <small v-if="modelHealthById[model.id]" class="model-health-text" :class="{ failed: modelHealthById[model.id]?.ok === false }">{{ modelHealthLabel(model) }}</small>
           </div>
         </article>
       </div>
@@ -461,9 +519,23 @@ onMounted(() => {
   color: var(--accent-strong);
 }
 
+.purpose-tabs button.failed {
+  border-color: color-mix(in oklch, var(--danger) 58%, var(--line));
+  background: color-mix(in oklch, var(--danger-soft) 74%, var(--surface));
+  color: var(--danger);
+}
+
+.purpose-tabs button.active.failed {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--danger) 18%, transparent);
+}
+
 .purpose-tabs small {
   color: var(--muted);
   line-height: 1.45;
+}
+
+.purpose-tabs button.failed small {
+  color: color-mix(in oklch, var(--danger) 72%, var(--muted));
 }
 
 .model-actions {
@@ -513,6 +585,15 @@ onMounted(() => {
   background: var(--surface-raised);
 }
 
+.table-row.failed {
+  border-color: color-mix(in oklch, var(--danger) 42%, var(--line));
+  background: color-mix(in oklch, var(--danger-soft) 46%, var(--surface-raised));
+}
+
+.table-row.passed {
+  background: color-mix(in oklch, var(--accent-soft) 28%, var(--surface-raised));
+}
+
 .table-row:last-child {
   border-bottom: 0;
 }
@@ -538,6 +619,8 @@ onMounted(() => {
 }
 
 .row-actions {
+  display: grid;
+  grid-template-columns: auto auto;
   justify-content: flex-start;
   white-space: nowrap;
 }
@@ -550,6 +633,20 @@ onMounted(() => {
 }
 
 .danger {
+  color: var(--danger);
+}
+
+.model-health-text {
+  grid-column: 1 / -1;
+  max-width: 140px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+}
+
+.model-health-text.failed {
   color: var(--danger);
 }
 

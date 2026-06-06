@@ -376,6 +376,7 @@ export interface SystemSettings {
     enabled: boolean;
   }>;
   models: SystemModelConfig[];
+  removedDefaultModelIds?: string[];
   selectedModelIds: Partial<Record<SystemModelPurpose, string>>;
   commands: SystemCommandConfig[];
   updatedAt: string;

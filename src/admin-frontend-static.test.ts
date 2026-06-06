@@ -107,6 +107,13 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(settingsView, /model\.hasApiKey/);
   assert.match(settingsView, /selectedModelIds/);
   assert.match(settingsView, /检测连接/);
+  assert.match(settingsView, /检测全部模型/);
+  assert.match(settingsView, /\/api\/models\/test-all/);
+  assert.match(settingsView, /\/api\/model-health-history/);
+  assert.match(settingsView, /purposeHasFailure/);
+  assert.match(settingsView, /modelHealthById/);
+  assert.match(settingsView, /button\.failed/);
+  assert.match(settingsView, /table-row.*failed/);
   assert.match(settingsView, /\/api\/models\/\$\{encodeURIComponent\(model\.id\)\}\/test/);
   assert.match(settingsView, /\/api\/system-settings\/admin-secret/);
   assert.match(settingsView, /\/api\/system-settings\/group-admin-secret/);
@@ -150,7 +157,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v4\.7\.0/);
+  assert.match(appShell, /UBot v4\.7\.1/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="top-popover theme-popover"/);

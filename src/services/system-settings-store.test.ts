@@ -47,7 +47,7 @@ test("SystemSettingsStore seeds existing environment models and never returns ap
   assert.equal(internal.models.find((model) => model.id === "mimo")?.apiKey, "env-profile-key");
 });
 
-test("SystemSettingsStore keeps default models while adding enabled reply models for switching", async () => {
+test("SystemSettingsStore keeps default models when they remain in incoming settings", async () => {
   const store = await createStore([
     {
       id: "gpt",
@@ -64,6 +64,17 @@ test("SystemSettingsStore keeps default models while adding enabled reply models
 
   const next = await store.update({
     models: [
+      {
+        id: "gpt",
+        name: "Env Reply Model",
+        shortName: "gpt-env",
+        baseUrl: "https://reply-env.example/v1",
+        model: "gpt-env-model",
+        purpose: "reply",
+        apiKey: "",
+        hasApiKey: true,
+        enabled: true,
+      },
       {
         id: "reply-pro",
         name: "Reply Pro",
@@ -85,6 +96,53 @@ test("SystemSettingsStore keeps default models while adding enabled reply models
   const internal = await store.getInternal();
   assert.equal(internal.models.find((model) => model.id === "gpt")?.apiKey, "env-reply-key");
   assert.equal(internal.models.find((model) => model.id === "reply-pro")?.apiKey, "reply-pro-key");
+});
+
+test("SystemSettingsStore remembers deleted default models", async () => {
+  const store = await createStore([
+    {
+      id: "gpt",
+      name: "Env Reply Model",
+      shortName: "gpt-env",
+      baseUrl: "https://reply-env.example/v1",
+      model: "gpt-env-model",
+      purpose: "reply",
+      apiKey: "env-reply-key",
+      hasApiKey: true,
+      enabled: true,
+    },
+    {
+      id: "mimo",
+      name: "Env Profile Model",
+      shortName: "mimo-env",
+      baseUrl: "https://profile-env.example/v1",
+      model: "mimo-env-model",
+      purpose: "profile",
+      apiKey: "env-profile-key",
+      hasApiKey: true,
+      enabled: true,
+    },
+  ]);
+
+  const first = await store.get();
+  assert.equal(first.models.some((model) => model.id === "gpt"), true);
+  assert.equal(first.models.some((model) => model.id === "mimo"), true);
+
+  const next = await store.update({
+    models: first.models.filter((model) => model.id !== "gpt"),
+  });
+  assert.equal(next.models.some((model) => model.id === "gpt"), false);
+  assert.equal(next.models.some((model) => model.id === "mimo"), true);
+
+  const internal = await store.getInternal();
+  assert.deepEqual(internal.removedDefaultModelIds, ["gpt"]);
+  assert.equal(internal.models.some((model) => model.id === "gpt"), false);
+
+  const afterAnotherUpdate = await store.update({
+    profileSummaryMaxChars: 1200,
+  });
+  assert.equal(afterAnotherUpdate.models.some((model) => model.id === "gpt"), false);
+  assert.equal(afterAnotherUpdate.models.some((model) => model.id === "mimo"), true);
 });
 
 test("SystemSettingsStore preserves an existing model api key when editing with blank key", async () => {

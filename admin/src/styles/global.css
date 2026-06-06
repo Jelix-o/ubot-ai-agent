@@ -29,6 +29,39 @@ textarea {
   font: inherit;
 }
 
+input[type="radio"] {
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  vertical-align: middle;
+}
+
+input[type="radio"]::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent-strong);
+  content: "";
+  transform: scale(0);
+  transition: transform 0.14s ease;
+}
+
+input[type="radio"]:checked::before {
+  transform: scale(1);
+}
+
+input[type="radio"]:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
 button {
   border: 0;
   cursor: pointer;

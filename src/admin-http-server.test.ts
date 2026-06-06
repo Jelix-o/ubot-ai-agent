@@ -484,6 +484,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(settingsRead.status, 200);
+    const settingsReadBody = await settingsRead.json() as { models: Array<{ id: string; name: string; shortName: string; baseUrl: string; model: string; purpose: string; enabled: boolean; hasApiKey: boolean }> };
     const settingsUpdate = await fetch(`${baseUrl}/api/system-settings`, {
       method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -495,6 +496,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
         memoryDedupEnabled: true,
         memoryDedupTime: "22:15",
         models: [
+          ...settingsReadBody.models,
           {
             id: "profile-main",
             name: "Profile Main",
@@ -560,7 +562,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(settingsUpdateBody.models.some((item) => item.id === "gpt"), true);
     assert.equal(settingsUpdateBody.models.some((item) => item.id === "mimo"), true);
     const internalSettings = await systemSettingsStore.getInternal();
-    assert.equal(internalSettings.models[0]?.apiKey, "secret-key");
+    assert.equal(internalSettings.models.find((item) => item.id === "profile-main")?.apiKey, "secret-key");
     assert.equal(internalSettings.models.find((item) => item.id === "reply-pro")?.apiKey, "reply-pro-key");
     const settingsReadAfterWrite = await fetch(`${baseUrl}/api/system-settings`, {
       headers: { Cookie: cookie ?? "" },
@@ -587,6 +589,34 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(modelOptionsBody.replyModels.some((item) => item.id === "reply-pro" && item.label.includes("reply-pro")), true);
     assert.equal(modelOptionsBody.replyModels.some((item) => item.id === "mimo" || item.id === "profile-main"), false);
     assert.equal(modelOptionsBody.replyModels.every((item) => item.apiKey === undefined), true);
+
+    const originalFetchForAllModels = globalThis.fetch;
+    globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+      if (url.startsWith(baseUrl)) {
+        return originalFetchForAllModels(input, init);
+      }
+      return new Response(JSON.stringify({ error: "probe failed" }), { status: 503, headers: { "Content-Type": "application/json" } });
+    };
+    let allModelCheck: Response | undefined;
+    try {
+      allModelCheck = await fetch(`${baseUrl}/api/models/test-all`, {
+        method: "POST",
+        headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+        body: "{}",
+      });
+    } finally {
+      globalThis.fetch = originalFetchForAllModels;
+    }
+    assert.ok(allModelCheck);
+    assert.equal(allModelCheck.status, 200);
+    const allModelCheckBody = await allModelCheck.json() as { statuses: Array<{ id: string; ok: boolean; purpose: string }>; summary: { total: number; abnormal: number } };
+    assert.equal(allModelCheckBody.statuses.some((item) => item.id === "reply-pro" && item.ok === false), true);
+    assert.equal(allModelCheckBody.statuses.some((item) => item.id === "gpt" && item.purpose === "reply"), true);
+    assert.ok(allModelCheckBody.summary.total >= allModelCheckBody.statuses.length);
+    assert.ok(allModelCheckBody.summary.abnormal > 0);
+    const allCheckHistory = await modelHealthHistoryStore.list();
+    assert.equal(allCheckHistory.some((item) => item.id === "reply-pro" && item.source === "manual"), true);
 
     const skillsList = await fetch(`${baseUrl}/api/skills`, {
       headers: { Cookie: cookie ?? "" },

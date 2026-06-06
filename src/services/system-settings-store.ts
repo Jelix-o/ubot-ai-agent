@@ -21,21 +21,25 @@ export class SystemSettingsStore {
 
   async update(input: SystemSettingsUpdateInput): Promise<SystemSettings> {
     const current = await this.readData();
+    const removedDefaultModelIds = input.models === undefined
+      ? current.removedDefaultModelIds ?? []
+      : reconcileRemovedDefaultModelIds(current.removedDefaultModelIds, input.models, this.defaultModels);
     const nextModels = input.models === undefined
       ? current.models
-      : normalizeModels(mergeModelApiKeyState(current.models, input.models), this.defaultModels);
+      : normalizeModels(mergeModelApiKeyState(current.models, input.models), this.defaultModels, removedDefaultModelIds);
     const next = normalizeSettings({
       ...current,
       ...input,
       adminSecretHash: current.adminSecretHash,
       groupAdminSecretHash: current.groupAdminSecretHash,
+      removedDefaultModelIds,
       models: nextModels,
       selectedModelIds: input.selectedModelIds === undefined
         ? current.selectedModelIds
         : normalizeSelectedModelIds(input.selectedModelIds, nextModels),
       commands: input.commands === undefined ? current.commands : input.commands,
       updatedAt: new Date().toISOString(),
-    });
+    }, this.defaultModels);
     await this.writeData(next);
     return sanitizeSettings(next);
   }
@@ -110,6 +114,7 @@ function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { api
     memoryDedupTime: "23:00",
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
     models: normalizeModels(defaultModels, []),
+    removedDefaultModelIds: [],
     selectedModelIds: normalizeSelectedModelIds({}, normalizeModels(defaultModels, [])),
     commands: defaultCommands(now),
     updatedAt: now,
@@ -121,6 +126,8 @@ function normalizeSettings(
   defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
 ): SystemSettings {
   const fallback = defaultSettings(defaultModels);
+  const removedDefaultModelIds = normalizeRemovedDefaultModelIds(value.removedDefaultModelIds, defaultModels);
+  const models = normalizeModels(value.models, defaultModels, removedDefaultModelIds);
   return {
     profileSummaryMaxChars: normalizePositiveInt(value.profileSummaryMaxChars, fallback.profileSummaryMaxChars, 100, 6000),
     profileShortSummaryMaxChars: normalizePositiveInt(value.profileShortSummaryMaxChars, fallback.profileShortSummaryMaxChars, 40, 600),
@@ -131,8 +138,9 @@ function normalizeSettings(
     ...(normalizeSecretHash(value.adminSecretHash) ? { adminSecretHash: normalizeSecretHash(value.adminSecretHash) } : {}),
     ...(normalizeSecretHash(value.groupAdminSecretHash) ? { groupAdminSecretHash: normalizeSecretHash(value.groupAdminSecretHash) } : {}),
     defaultTriggerKeywords: normalizeTriggerKeywords(value.defaultTriggerKeywords),
-    models: normalizeModels(value.models, defaultModels),
-    selectedModelIds: normalizeSelectedModelIds(value.selectedModelIds, normalizeModels(value.models, defaultModels)),
+    models,
+    removedDefaultModelIds,
+    selectedModelIds: normalizeSelectedModelIds(value.selectedModelIds, models),
     commands: normalizeCommands(value.commands),
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : fallback.updatedAt,
   };
@@ -172,10 +180,12 @@ function normalizeTriggerKeywords(value: unknown): SystemSettings["defaultTrigge
 function normalizeModels(
   value: unknown,
   defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
+  removedDefaultModelIds: string[] = [],
 ): SystemModelConfig[] {
+  const removedDefaultIds = new Set(removedDefaultModelIds);
   const raw = [
     ...(Array.isArray(value) ? value : []),
-    ...defaultModels,
+    ...defaultModels.filter((model) => !removedDefaultIds.has(typeof model.id === "string" ? normalizeModelId(model.id.trim()) : "")),
   ];
   const byId = new Map<string, SystemModelConfig>();
   for (const model of raw
@@ -186,6 +196,51 @@ function normalizeModels(
     }
   }
   return [...byId.values()];
+}
+
+function reconcileRemovedDefaultModelIds(
+  currentValue: unknown,
+  incoming: unknown,
+  defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
+): string[] {
+  const defaultIds = new Set(defaultModels
+    .map((model) => typeof model.id === "string" ? normalizeModelId(model.id.trim()) : "")
+    .filter(Boolean));
+  if (!defaultIds.size) {
+    return [];
+  }
+  const incomingIds = new Set(Array.isArray(incoming)
+    ? incoming
+        .map((item) => {
+          const id = (item as Partial<SystemModelConfig> | undefined)?.id;
+          return typeof id === "string" ? normalizeModelId(id.trim()) : "";
+        })
+        .filter(Boolean)
+    : []);
+  const removed = new Set(normalizeRemovedDefaultModelIds(currentValue, defaultModels));
+  for (const id of defaultIds) {
+    if (incomingIds.has(id)) {
+      removed.delete(id);
+    } else {
+      removed.add(id);
+    }
+  }
+  return [...removed];
+}
+
+function normalizeRemovedDefaultModelIds(
+  value: unknown,
+  defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
+): string[] {
+  const defaultIds = new Set(defaultModels
+    .map((model) => typeof model.id === "string" ? normalizeModelId(model.id.trim()) : "")
+    .filter(Boolean));
+  if (!Array.isArray(value) || !defaultIds.size) {
+    return [];
+  }
+  return Array.from(new Set(value
+    .map((item) => typeof item === "string" ? normalizeModelId(item.trim()) : "")
+    .filter((id) => id && defaultIds.has(id))));
 }
 
 function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | undefined {

@@ -111,6 +111,14 @@ type HealthStatusResponse = {
   upstreamStatusCode?: number;
 };
 
+type ModelHealthStatus = AiHealthStatus & {
+  id: string;
+  purpose: SystemModelPurpose;
+  name: string;
+  shortName: string;
+  selected: boolean;
+};
+
 class ProfileRecordGenerationError extends Error {
   constructor(
     public readonly code: string,
@@ -160,7 +168,7 @@ export class AdminHttpServer {
 
   private readonly modelHealthCache = new Map<string, {
     expiresAt: number;
-    status: AiHealthStatus & { id: string; purpose: string; name: string; shortName: string; selected: boolean };
+    status: ModelHealthStatus;
   }>();
   private readonly loginAttempts = new Map<string, {
     failures: number;
@@ -415,6 +423,12 @@ export class AdminHttpServer {
     if (pathname === "/api/system-settings/admin-secret" || pathname === "/api/system-settings/group-admin-secret") {
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleAdminSecretReset(req, res, pathname);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/models/test-all") {
+      if (!this.requireSuperAdmin(session, res)) return;
+      await this.handleAllModelConnectionTest(res, session);
       return;
     }
 
@@ -1480,30 +1494,8 @@ export class AdminHttpServer {
       this.sendJson(res, { error: "not_found" }, 404);
       return;
     }
-    if (!model.apiKey?.trim()) {
-      this.sendJson(res, { ok: false, error: "api_key_missing", detail: "模型未配置 API Key。" }, 400);
-      return;
-    }
-    const apiKey = model.apiKey;
     const runCheck = async () => {
-      const startedAt = Date.now();
-      const health = await probeSystemModel({ ...model, apiKey });
-      const status = {
-        id: model.id,
-        purpose: model.purpose,
-        name: model.name,
-        shortName: model.shortName,
-        selected: settings.selectedModelIds?.[model.purpose] === model.id,
-        ok: health.ok,
-        latencyMs: health.latencyMs || Date.now() - startedAt,
-        detail: redactSensitiveText(health.detail),
-        model: health.model || model.model,
-        baseUrl: health.baseUrl || model.baseUrl || "",
-        checkedAt: health.checkedAt || new Date().toISOString(),
-        cached: false,
-        probeType: health.probeType,
-        ...(health.upstreamStatusCode ? { upstreamStatusCode: health.upstreamStatusCode } : {}),
-      };
+      const status = await this.buildModelHealthStatus(model, settings);
       await this.recordModelHealth(status, "manual");
       return status;
     };
@@ -1526,26 +1518,49 @@ export class AdminHttpServer {
       this.sendJson(res, {
         ...wrapped.result,
         ...(wrapped.task ? { task: wrapped.task } : {}),
-      }, wrapped.result.ok ? 200 : 502);
+      });
     } catch (error) {
-      const status = {
-        id: model.id,
-        purpose: model.purpose,
-        name: model.name,
-        shortName: model.shortName,
-        selected: settings.selectedModelIds?.[model.purpose] === model.id,
-        ok: false,
-        error: "connection_failed",
-        detail: redactSensitiveText((error as Error).message),
-        latencyMs: 0,
-        model: model.model,
-        baseUrl: model.baseUrl || "",
-        checkedAt: new Date().toISOString(),
-        cached: false,
-      };
+      const status = this.buildModelHealthFailureStatus(model, settings, redactSensitiveText((error as Error).message));
       await this.recordModelHealth(status, "manual");
-      this.sendJson(res, status, 502);
+      this.sendJson(res, status);
     }
+  }
+
+  private async handleAllModelConnectionTest(res: ServerResponse, session: AdminSession): Promise<void> {
+    if (!this.options.systemSettingsStore) {
+      this.sendJson(res, { error: "system_settings_unavailable" }, 503);
+      return;
+    }
+    const runCheck = async () => {
+      const statuses = await this.getModelHealthStatuses({ refresh: true, source: "manual" });
+      return {
+        statuses,
+        summary: {
+          total: statuses.length,
+          abnormal: statuses.filter((status) => !status.ok).length,
+          checkedAt: new Date().toISOString(),
+        },
+      };
+    };
+    const wrapped = this.options.adminTaskStore
+      ? await this.options.adminTaskStore.run({
+          type: "model-check",
+          title: "全部模型检测",
+          operatorUserId: session.userId ?? session.username,
+          detail: "all",
+        }, runCheck)
+      : { result: await runCheck(), task: undefined };
+    await this.recordOperation({
+      session,
+      groupId: "system",
+      action: "model_check_all",
+      target: "all",
+      detail: `${wrapped.result.summary.total - wrapped.result.summary.abnormal}/${wrapped.result.summary.total} ok`,
+    });
+    this.sendJson(res, {
+      ...wrapped.result,
+      ...(wrapped.task ? { task: wrapped.task } : {}),
+    });
   }
 
   private async handleModelOptions(res: ServerResponse, session: AdminSession): Promise<void> {
@@ -2228,80 +2243,82 @@ export class AdminHttpServer {
     return this.options.getProfileAiHealthStatus(options);
   }
 
-  private async getModelHealthStatuses(options: { refresh?: boolean } = {}): Promise<Array<AiHealthStatus & { id: string; purpose: string; name: string; shortName: string; selected: boolean }>> {
+  private async getModelHealthStatuses(options: { refresh?: boolean; source?: ModelHealthHistoryEntry["source"] } = {}): Promise<ModelHealthStatus[]> {
     if (!this.options.systemSettingsStore) {
       return [];
     }
     const settings = await this.options.systemSettingsStore.getInternal();
-    const enabledModels = settings.models.filter((model) => model.enabled);
-    const source = options.refresh ? "health" : "overview";
-    const statuses = await Promise.all(enabledModels.map(async (model) => {
-      const selected = settings.selectedModelIds?.[model.purpose] === model.id;
+    const source = options.source ?? (options.refresh ? "health" : "overview");
+    const statuses = await Promise.all(settings.models.map(async (model) => {
       const cached = this.modelHealthCache.get(model.id);
       if (!options.refresh && cached && cached.expiresAt > Date.now()) {
         return cached.status;
       }
-      const base = {
-        id: model.id,
-        purpose: model.purpose,
-        name: model.name,
-        shortName: model.shortName,
-        selected,
-      };
-      if (!model.hasApiKey || !model.apiKey?.trim()) {
-        const status = {
-          ...base,
-          ok: false,
-          detail: "模型未配置 API Key。",
-          model: model.model,
-          baseUrl: model.baseUrl,
-          checkedAt: new Date().toISOString(),
-          latencyMs: 0,
-          cached: false,
-        };
-        this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
-        await this.recordModelHealth(status, source);
-        return status;
-      }
-      const startedAt = Date.now();
-      try {
-        const health = await probeSystemModel(model);
-        const status = {
-          ...base,
-          ok: health.ok,
-          detail: redactSensitiveText(health.detail),
-          model: health.model || model.model,
-          baseUrl: health.baseUrl || model.baseUrl,
-          checkedAt: health.checkedAt || new Date().toISOString(),
-          latencyMs: health.latencyMs || Date.now() - startedAt,
-          cached: false,
-          probeType: health.probeType,
-          ...(health.upstreamStatusCode ? { upstreamStatusCode: health.upstreamStatusCode } : {}),
-        };
-        this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
-        await this.recordModelHealth(status, source);
-        return status;
-      } catch (error) {
-        const status = {
-          ...base,
-          ok: false,
-          detail: redactSensitiveText((error as Error).message),
-          model: model.model,
-          baseUrl: model.baseUrl,
-          checkedAt: new Date().toISOString(),
-          latencyMs: Date.now() - startedAt,
-          cached: false,
-        };
-        this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
-        await this.recordModelHealth(status, source);
-        return status;
-      }
+      const status = await this.buildModelHealthStatus(model, settings);
+      this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
+      await this.recordModelHealth(status, source);
+      return status;
     }));
     return statuses;
   }
 
+  private async buildModelHealthStatus(model: SystemSettings["models"][number], settings: SystemSettings): Promise<ModelHealthStatus> {
+    if (!model.enabled) {
+      return this.buildModelHealthFailureStatus(model, settings, "模型已停用。");
+    }
+    if (!model.hasApiKey || !model.apiKey?.trim()) {
+      return this.buildModelHealthFailureStatus(model, settings, "模型未配置 API Key。");
+    }
+    const startedAt = Date.now();
+    try {
+      const health = await probeSystemModel(model);
+      return {
+        ...this.buildModelHealthBase(model, settings),
+        ok: health.ok,
+        detail: redactSensitiveText(health.detail),
+        model: health.model || model.model,
+        baseUrl: health.baseUrl || model.baseUrl,
+        checkedAt: health.checkedAt || new Date().toISOString(),
+        latencyMs: health.latencyMs || Date.now() - startedAt,
+        cached: false,
+        probeType: health.probeType,
+        ...(health.upstreamStatusCode ? { upstreamStatusCode: health.upstreamStatusCode } : {}),
+      };
+    } catch (error) {
+      return this.buildModelHealthFailureStatus(model, settings, redactSensitiveText((error as Error).message), Date.now() - startedAt);
+    }
+  }
+
+  private buildModelHealthFailureStatus(
+    model: SystemSettings["models"][number],
+    settings: SystemSettings,
+    detail: string,
+    latencyMs = 0,
+  ): ModelHealthStatus {
+    return {
+      ...this.buildModelHealthBase(model, settings),
+      ok: false,
+      detail,
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs,
+      cached: false,
+    };
+  }
+
+  private buildModelHealthBase(model: SystemSettings["models"][number], settings: SystemSettings): Pick<ModelHealthStatus, "id" | "purpose" | "name" | "shortName" | "selected"> {
+    return {
+      id: model.id,
+      purpose: model.purpose,
+      name: model.name,
+      shortName: model.shortName,
+      selected: settings.selectedModelIds?.[model.purpose] === model.id,
+    };
+  }
+
   private async recordModelHealth(
-    status: AiHealthStatus & { id: string; purpose: string; name: string; shortName: string; selected: boolean },
+    status: ModelHealthStatus,
     source: ModelHealthHistoryEntry["source"],
   ): Promise<void> {
     if (!this.options.modelHealthHistoryStore) return;

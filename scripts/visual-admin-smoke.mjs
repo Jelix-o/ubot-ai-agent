@@ -634,6 +634,9 @@ async function runStaticAdminSmoke() {
   assertIncludes(settings, "modelTemplate(purpose = activePurpose.value)", "new model active purpose template");
   assertIncludes(settings, "selectedModelIds", "selected model per purpose");
   assertIncludes(settings, "检测连接", "model connection test action");
+  assertIncludes(settings, "检测全部模型", "all model connection test action");
+  assertIncludes(settings, "/api/models/test-all", "all model test API");
+  assertIncludes(settings, "/api/model-health-history", "model health history settings sync");
   assertIncludes(groups, "/api/model-options", "group model options");
   assertIncludes(groups, "v-for=\"model in replyModels\"", "reply model select list");
   assertIncludes(members, "viewMemberMemories", "member memory action");
