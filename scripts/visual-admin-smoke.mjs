@@ -62,6 +62,29 @@ try {
       triggerKeywords: [{ keyword: "bot", enabled: true }],
       voiceReplyEnabled: true,
       memoryDisabledUserIds: [],
+    }, {
+      groupId: "100200300",
+      groupName: "Hidden Test Group",
+      enabled: false,
+      currentSkillId: "assistant",
+      replyModelMode: "gpt",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      manualIdentities: [],
+      liveChatDelaySeconds: 3,
+      dailyReportEnabled: false,
+      dailyReportTime: "10:00",
+      dailyReportTopUserCount: 3,
+      holidayCountdownEnabled: false,
+      holidayCountdownTime: "09:30",
+      botMuted: true,
+      scheduledRemindersEnabled: false,
+      blacklistedUserIds: [],
+      opsAlertsEnabled: false,
+      triggerKeywords: [],
+      voiceReplyEnabled: false,
+      memoryDisabledUserIds: [],
     }],
   }, null, 2), "utf8");
 
@@ -789,6 +812,7 @@ async function runTopbarInteractionSmoke(cdp, baseUrl) {
   });
   await navigateAndWait(cdp, `${baseUrl}/`);
   await waitForUiStable(cdp);
+  await assertTopbarGroupOptions(cdp, ["866209871"], "initial topbar group select");
 
   await realClick(cdp, ".notify-btn");
   await delay(200);
@@ -804,11 +828,31 @@ async function runTopbarInteractionSmoke(cdp, baseUrl) {
   await realClick(cdp, '[data-smoke="theme-dark"]');
   await waitForExpression(cdp, "document.documentElement.dataset.themeMode === 'dark'", "theme mode to become dark");
 
+  await navigateAndWait(cdp, `${baseUrl}/settings`);
+  await waitForUiStable(cdp);
+  await assertTopbarGroupOptions(cdp, ["866209871"], "topbar group select after settings loads all groups");
+
   await realClick(cdp, ".user-chip");
   await delay(200);
   await assertElementVisible(cdp, '[data-smoke="logout"]', "logout action");
   await realClick(cdp, '[data-smoke="logout"]');
   await waitForLocationPath(cdp, "/login");
+}
+
+async function assertTopbarGroupOptions(cdp, expectedGroupIds, label) {
+  const result = await cdp.send("Runtime.evaluate", {
+    expression: `(() => Array.from(document.querySelectorAll(".group-select option")).map((item) => item.value))()`,
+    returnByValue: true,
+  });
+  const actual = result.result?.value;
+  if (!Array.isArray(actual)) {
+    throw new Error(`Could not read ${label}.`);
+  }
+  const expected = [...expectedGroupIds].sort();
+  const normalizedActual = [...actual].sort();
+  if (JSON.stringify(normalizedActual) !== JSON.stringify(expected)) {
+    throw new Error(`Expected ${label} to show ${JSON.stringify(expected)}, got ${JSON.stringify(normalizedActual)}.`);
+  }
 }
 
 async function realClick(cdp, selector) {

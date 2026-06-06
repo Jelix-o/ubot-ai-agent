@@ -9,6 +9,7 @@ const loading = shallowRef(false);
 const saving = shallowRef(false);
 const testingModelId = shallowRef("");
 const groupQuery = shallowRef("");
+const allGroups = shallowRef<GroupConfig[]>([]);
 const activePurpose = shallowRef<SystemModelPurpose>("reply");
 const modelSettingsDirty = shallowRef(false);
 const secretForm = reactive({ adminSecret: "", groupAdminSecret: "" });
@@ -81,11 +82,12 @@ function markModelsDirty(): void {
 async function load(): Promise<void> {
   loading.value = true;
   try {
-    const [next] = await Promise.all([
+    const [next, groupData] = await Promise.all([
       api<SystemSettings>("/api/system-settings"),
-      app.loadGroups({ includeDisabled: true }),
+      api<{ groups: GroupConfig[] }>("/api/groups?includeDisabled=1"),
     ]);
     Object.assign(settings, next);
+    allGroups.value = groupData.groups;
   } finally {
     loading.value = false;
   }
@@ -100,6 +102,8 @@ async function save(): Promise<void> {
     });
     Object.assign(settings, next);
     await app.loadGroups();
+    const groupData = await api<{ groups: GroupConfig[] }>("/api/groups?includeDisabled=1");
+    allGroups.value = groupData.groups;
     modelSettingsDirty.value = false;
     app.showToast("系统设置已保存");
   } catch (error) {
@@ -132,7 +136,8 @@ async function resetSecret(kind: "admin" | "group"): Promise<void> {
 async function syncGroups(): Promise<void> {
   try {
     const data = await api<{ syncedCount: number; groups: GroupConfig[] }>("/api/groups/sync", { method: "POST", body: "{}" });
-    app.groups = data.groups;
+    allGroups.value = data.groups;
+    await app.loadGroups();
     app.showToast(`已同步 ${data.syncedCount} 个机器人群聊`);
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -146,6 +151,8 @@ async function toggleGroup(group: GroupConfig): Promise<void> {
       body: JSON.stringify({ enabled: group.enabled !== false }),
     });
     Object.assign(group, next);
+    allGroups.value = allGroups.value.map((item) => item.groupId === next.groupId ? next : item);
+    await app.loadGroups();
     app.showToast(next.enabled === false ? "群已隐藏并禁用机器人" : "群已显示并启用机器人");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -201,7 +208,7 @@ function modelIndex(model: SystemModelConfig): number {
 
 function visibleGroups(): GroupConfig[] {
   const q = groupQuery.value.trim().toLowerCase();
-  return app.groups.filter((group) => {
+  return allGroups.value.filter((group) => {
     if (!q) return true;
     return `${group.groupName || ""} ${group.groupId}`.toLowerCase().includes(q);
   });
