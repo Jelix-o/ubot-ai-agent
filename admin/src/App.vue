@@ -384,7 +384,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   height: 100dvh;
   overflow: hidden;
   border-right: 1px solid var(--line);
-  background: color-mix(in oklch, var(--surface) 94%, var(--bg));
+  background: color-mix(in oklch, var(--surface) 90%, transparent);
   padding: 24px 18px 18px;
 }
 
@@ -505,8 +505,8 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   gap: 24px;
   margin: -22px -28px 20px;
   padding: 22px 28px 12px;
-  background: color-mix(in oklch, var(--bg) 86%, var(--surface));
-  box-shadow: 0 1px 0 color-mix(in oklch, var(--line) 72%, transparent);
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--line);
 }
 
 .top-title {
