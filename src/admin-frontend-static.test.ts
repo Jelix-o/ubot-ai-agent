@@ -196,6 +196,8 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
   assert.match(smokeScript, /\["memories-mobile",\s*"\/memories"/);
+  assert.match(smokeScript, /\["tasks-mobile",\s*"\/tasks"/);
+  assert.match(smokeScript, /\["tasks-mobile-filters",\s*"\/tasks"/);
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
 });
 
@@ -204,6 +206,16 @@ test("admin task center exposes task detail records", async () => {
 
   assert.match(tasksView, /q:\s*filters\.q\.trim\(\)/);
   assert.match(tasksView, /v-model="filters\.q"/);
+  assert.match(tasksView, /scope:\s*"all"\s+as\s+"current"\s+\|\s+"all"/);
+  assert.match(tasksView, /canUseAllGroups = computed/);
+  assert.match(tasksView, /currentGroupLabel = computed/);
+  assert.match(tasksView, /queryScopeLabel = computed/);
+  assert.match(tasksView, /const groupId = filters\.scope === "all" && canUseAllGroups\.value \? undefined : app\.groupId/);
+  assert.match(tasksView, /v-model="filters\.scope"/);
+  assert.match(tasksView, /<option value="current">当前群<\/option>/);
+  assert.match(tasksView, /<option value="all">全部群<\/option>/);
+  assert.match(tasksView, /查询范围/);
+  assert.match(tasksView, /immediate:\s*true/);
   assert.match(tasksView, /placeholder="任务 ID、标题、操作者、目标或结果"/);
   assert.match(tasksView, /function resetFilters\(\)/);
   assert.match(tasksView, /activeTask = shallowRef<AdminTaskRecord \| null>\(null\)/);

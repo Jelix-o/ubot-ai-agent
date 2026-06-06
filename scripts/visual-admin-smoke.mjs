@@ -211,6 +211,35 @@ try {
     durationMs: 2000,
     result: { recordId: "profile-smoke", sourceMemoryCount: 4 },
   });
+  const modelTask = await adminTaskStore.create({
+    type: "model-check",
+    title: "模型检测 全部分类",
+    operatorUserId: "99999",
+    detail: "manual",
+  });
+  await adminTaskStore.update(modelTask.id, {
+    status: "failed",
+    progress: 100,
+    startedAt: "2026-06-04T10:01:00.000Z",
+    finishedAt: "2026-06-04T10:01:04.000Z",
+    durationMs: 4000,
+    error: "Profile model timeout.",
+  });
+  const otherGroupTask = await adminTaskStore.create({
+    type: "bulk-review",
+    title: "批量审核 Hidden Test Group",
+    groupId: "100200300",
+    operatorUserId: "99999",
+    detail: "approve 2 candidates",
+  });
+  await adminTaskStore.update(otherGroupTask.id, {
+    status: "succeeded",
+    progress: 100,
+    startedAt: "2026-06-04T10:03:00.000Z",
+    finishedAt: "2026-06-04T10:03:01.000Z",
+    durationMs: 1000,
+    result: { approvedCount: 2 },
+  });
   const adminOperationLogService = new AdminOperationLogService(path.join(tmp, "ops.jsonl"));
   await adminOperationLogService.record({
     timestamp: "2026-06-04T10:00:03.000Z",
@@ -392,6 +421,8 @@ try {
       ["members-mobile", "/members", { width: 390, height: 844 }],
       ["candidates-mobile", "/candidates", { width: 390, height: 844 }],
       ["memories-mobile", "/memories", { width: 390, height: 844 }],
+      ["tasks-mobile", "/tasks", { width: 390, height: 844 }],
+      ["tasks-mobile-filters", "/tasks", { width: 390, height: 844, scrollTo: ".filter-card" }],
       ["settings-mobile", "/settings", { width: 390, height: 844 }],
     ]);
   }
@@ -461,6 +492,21 @@ async function runHttpSmoke(baseUrl, cookie, pages) {
   const group = groups.groups?.[0];
   if (!group?.groupId) {
     throw new Error(`Groups payload is incomplete: ${JSON.stringify(groups)}`);
+  }
+
+  const allTasks = await fetchJson(`${baseUrl}/api/tasks?page=1&pageSize=20`, cookie);
+  if (!Array.isArray(allTasks.tasks) || allTasks.tasks.length < 3) {
+    throw new Error(`Task center all-scope payload is incomplete: ${JSON.stringify(allTasks)}`);
+  }
+  if (!allTasks.tasks.some((task) => task.groupId === "100200300") || !allTasks.tasks.some((task) => !task.groupId)) {
+    throw new Error(`Task center all-scope payload did not include cross-group and system tasks: ${JSON.stringify(allTasks.tasks)}`);
+  }
+  const currentGroupTasks = await fetchJson(`${baseUrl}/api/tasks?groupId=${encodeURIComponent(group.groupId)}&page=1&pageSize=20`, cookie);
+  if (!Array.isArray(currentGroupTasks.tasks) || !currentGroupTasks.tasks.some((task) => task.groupId === group.groupId)) {
+    throw new Error(`Task center current-group payload did not include the selected group task: ${JSON.stringify(currentGroupTasks)}`);
+  }
+  if (currentGroupTasks.tasks.some((task) => task.groupId && task.groupId !== group.groupId)) {
+    throw new Error(`Task center current-group payload leaked another group task: ${JSON.stringify(currentGroupTasks.tasks)}`);
   }
 
   const modelOptions = await fetchJson(`${baseUrl}/api/model-options`, cookie);

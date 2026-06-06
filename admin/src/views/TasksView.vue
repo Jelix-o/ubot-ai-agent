@@ -14,11 +14,18 @@ const detailLoading = shallowRef(false);
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const filters = reactive({
   q: "",
+  scope: "all" as "current" | "all",
   type: "" as "" | AdminTaskType,
   status: "" as "" | AdminTaskStatus,
 });
 
 const runningCount = computed(() => tasks.value.filter((task) => task.status === "queued" || task.status === "running").length);
+const canUseAllGroups = computed(() => app.role === "super_admin");
+const currentGroupLabel = computed(() => {
+  const group = app.groups.find((item) => item.groupId === app.groupId);
+  return group?.groupName ? `${group.groupName} / ${group.groupId}` : app.groupId || "未选择群";
+});
+const queryScopeLabel = computed(() => filters.scope === "all" && canUseAllGroups.value ? "全部群" : currentGroupLabel.value);
 const activeTaskResult = computed(() => {
   const task = activeTask.value;
   if (!task || task.result === undefined) return "";
@@ -54,8 +61,9 @@ const activeTaskMeta = computed(() => {
 async function load(): Promise<void> {
   loading.value = true;
   try {
+    const groupId = filters.scope === "all" && canUseAllGroups.value ? undefined : app.groupId;
     const data = await api<{ tasks: AdminTaskRecord[]; pagination: Pagination }>(`/api/tasks${queryString({
-      groupId: app.role === "super_admin" ? undefined : app.groupId,
+      groupId,
       q: filters.q.trim(),
       type: filters.type,
       status: filters.status,
@@ -80,6 +88,7 @@ function applyFilters(): void {
 
 function resetFilters(): void {
   filters.q = "";
+  filters.scope = canUseAllGroups.value ? "all" : "current";
   filters.type = "";
   filters.status = "";
   pagination.page = 1;
@@ -159,6 +168,10 @@ onMounted(() => {
 
 useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 
+watch(() => app.role, () => {
+  if (!canUseAllGroups.value) filters.scope = "current";
+}, { immediate: true });
+
 watch(() => [pagination.page, pagination.pageSize], () => {
   void load();
 });
@@ -187,6 +200,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <strong>{{ pagination.total }}</strong>
         </article>
         <article>
+          <span>查询范围</span>
+          <strong>{{ queryScopeLabel }}</strong>
+        </article>
+        <article>
           <span>当前页</span>
           <strong>{{ pagination.page }} / {{ pagination.totalPages }}</strong>
         </article>
@@ -195,6 +212,12 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       <div class="filter-card">
         <label>关键词
           <input v-model="filters.q" class="input" placeholder="任务 ID、标题、操作者、目标或结果" @keyup.enter="applyFilters" />
+        </label>
+        <label>范围
+          <select v-model="filters.scope" class="select" :disabled="!canUseAllGroups" @change="applyFilters">
+            <option value="current">当前群</option>
+            <option value="all">全部群</option>
+          </select>
         </label>
         <label>任务类型
           <select v-model="filters.type" class="select" @change="applyFilters">
@@ -311,10 +334,18 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 .filter-card {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page,
+.panel {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .task-summary {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 14px;
 }
 
@@ -329,6 +360,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 .task-summary article {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .task-summary span,
@@ -338,10 +370,13 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 
 .task-summary strong {
   font-size: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .filter-card {
-  grid-template-columns: minmax(220px, 1.2fr) minmax(160px, 0.8fr) minmax(160px, 0.8fr) 120px auto;
+  grid-template-columns: minmax(220px, 1.2fr) 130px minmax(160px, 0.8fr) minmax(160px, 0.8fr) 120px auto;
   align-items: end;
   margin-bottom: 14px;
 }
@@ -357,9 +392,13 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
 }
 
 .task-table {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -542,12 +581,14 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   }
 
   .filter-actions {
+    display: grid;
+    grid-template-columns: 1fr;
     justify-content: stretch;
   }
 
   .filter-actions .btn,
   .filter-actions .ghost-btn {
-    flex: 1;
+    width: 100%;
   }
 
   .detail-head,
