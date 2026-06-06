@@ -90,3 +90,87 @@ test("memory semantic deduplicate judge times out per pair without blocking prev
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("scheduled member memory dedup skips semantic judge by default", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-dedup-scheduled-fast-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "movie taste",
+      content: "Collects quiet science fiction films and prefers short recommendations.",
+      source: "test",
+    });
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "running habit",
+      content: "Usually records evening running routes and weekly distance goals.",
+      source: "test",
+    });
+
+    let called = 0;
+    const service = new GroupMemoryDeduplicateService(store, async () => {
+      called += 1;
+      return { action: "merge", reason: "same member preference" };
+    });
+
+    const result = await service.deduplicateMemberMemoriesForGroup("67890");
+
+    assert.equal(called, 0);
+    assert.equal(result.semanticStats.called, 0);
+    assert.equal(result.semanticStats.timedOut, 0);
+    assert.equal(result.decisionCount, 0);
+    assert.ok(result.semanticStats.skippedDisabled >= 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("scheduled member memory dedup can explicitly opt into semantic judge timeout guard", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-dedup-scheduled-semantic-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "movie taste",
+      content: "Collects quiet science fiction films and prefers short recommendations.",
+      source: "test",
+    });
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "running habit",
+      content: "Usually records evening running routes and weekly distance goals.",
+      source: "test",
+    });
+
+    let called = 0;
+    const service = new GroupMemoryDeduplicateService(store, async () => {
+      called += 1;
+      return new Promise<MemorySemanticJudgeResult>((resolve) => {
+        setTimeout(() => resolve({ action: "merge", reason: "slow scheduled judge" }), 50);
+      });
+    });
+
+    const startedAt = Date.now();
+    const result = await service.deduplicateMemberMemoriesForGroup("67890", {
+      useSemanticJudge: true,
+      semanticTimeoutMs: 5,
+    });
+
+    assert.equal(called, 1);
+    assert.equal(result.semanticStats.called, 1);
+    assert.equal(result.semanticStats.timedOut, 1);
+    assert.equal(result.decisionCount, 0);
+    assert.ok(Date.now() - startedAt < 45);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

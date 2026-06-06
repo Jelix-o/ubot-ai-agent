@@ -1020,6 +1020,7 @@ export class AdminHttpServer {
       : (await service.previewGroup(groupId, {
           subjectUserId: subjectUserId!,
           semanticMode: "member",
+          useSemanticJudge: false,
         })).decisions;
     const wrapped = this.options.adminTaskStore
       ? await this.options.adminTaskStore.run({

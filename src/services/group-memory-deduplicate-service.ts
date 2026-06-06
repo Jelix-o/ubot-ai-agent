@@ -130,7 +130,10 @@ export class GroupMemoryDeduplicateService {
     });
   }
 
-  async deduplicateMemberMemoriesForGroup(groupId: string): Promise<{
+  async deduplicateMemberMemoriesForGroup(
+    groupId: string,
+    options: { useSemanticJudge?: boolean; semanticTimeoutMs?: number } = {},
+  ): Promise<{
     groupId: string;
     subjectCount: number;
     decisionCount: number;
@@ -159,7 +162,11 @@ export class GroupMemoryDeduplicateService {
     const semanticStats = createSemanticStats();
     for (const [subjectUserId, subjectMemories] of bySubject.entries()) {
       if (subjectMemories.length < 2) continue;
-      const preview = await this.preview(subjectMemories, { semanticMode: "member" });
+      const preview = await this.preview(subjectMemories, {
+        semanticMode: "member",
+        useSemanticJudge: options.useSemanticJudge === true,
+        semanticTimeoutMs: options.semanticTimeoutMs,
+      });
       mergeSemanticStats(semanticStats, preview.semanticStats);
       decisionCount += preview.decisions.length;
       if (preview.decisions.length === 0) continue;
@@ -221,8 +228,12 @@ async function buildMemoryDeduplicateDecisions(
       const similarity = sameContent ? 1 : textSimilarity(`${left.title} ${left.content}`, `${right.title} ${right.content}`);
       if (!sameContent && similarity < DEDUP_LOCAL_THRESHOLD) {
         const shouldAskSemanticJudge = options.semanticMode === "member" || similarity >= DEDUP_SEMANTIC_CANDIDATE_THRESHOLD;
-        if (judgeMemorySemanticRelation && options.useSemanticJudge !== false && shouldAskSemanticJudge) {
-          semanticPairs.push({ left, right, similarity });
+        if (judgeMemorySemanticRelation && shouldAskSemanticJudge) {
+          if (options.useSemanticJudge === false) {
+            semanticStats.skippedDisabled += 1;
+          } else {
+            semanticPairs.push({ left, right, similarity });
+          }
         }
         continue;
       }
@@ -235,10 +246,6 @@ async function buildMemoryDeduplicateDecisions(
         reason: similarity >= 0.9 ? "local_high_similarity" : "local_related_memory",
       });
     }
-  }
-
-  if (judgeMemorySemanticRelation && options.useSemanticJudge === false) {
-    semanticStats.skippedDisabled = semanticPairs.length;
   }
 
   if (judgeMemorySemanticRelation && options.useSemanticJudge !== false && semanticPairs.length > 0) {
