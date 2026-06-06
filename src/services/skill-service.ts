@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { SkillDefinition } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 
 export class SkillService {
   private cachedSkills?: SkillDefinition[];
@@ -158,7 +158,7 @@ export class SkillService {
 
   private async writeSkillFile(skillId: string, skill: SkillDefinition): Promise<void> {
     await mkdir(this.skillsDir, { recursive: true });
-    await writeFile(this.skillFilePath(skillId), `${JSON.stringify(skill, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.skillFilePath(skillId), skill);
   }
 
   private skillFilePath(skillId: string): string {

@@ -21,7 +21,9 @@ test("reverse server accepts token and emits group events", async () => {
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
-  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws?access_token=token-1`);
+  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws`, {
+    headers: { Authorization: "Bearer token-1" },
+  });
 
   await new Promise<void>((resolve, reject) => {
     ws.once("open", () => resolve());
@@ -74,7 +76,7 @@ test("reverse server rejects wrong token", async () => {
   server.close();
 });
 
-test("reverse server rejects pending actions when socket closes", async () => {
+test("reverse server rejects query string token", async () => {
   const server = new NapCatReverseServer({
     host: "127.0.0.1",
     port: 0,
@@ -87,6 +89,31 @@ test("reverse server rejects pending actions when socket closes", async () => {
 
   const address = (server as any).httpServer.address() as AddressInfo;
   const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws?access_token=token-1`);
+
+  const error = await new Promise<Error>((resolve) => {
+    ws.once("error", (err) => resolve(err));
+  });
+
+  assert.match(error.message, /401|Unexpected server response/i);
+
+  server.close();
+});
+
+test("reverse server rejects pending actions when socket closes", async () => {
+  const server = new NapCatReverseServer({
+    host: "127.0.0.1",
+    port: 0,
+    path: "/onebot/ws",
+    accessToken: "token-1",
+  });
+
+  server.start();
+  await wait(60);
+
+  const address = (server as any).httpServer.address() as AddressInfo;
+  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws`, {
+    headers: { Authorization: "Bearer token-1" },
+  });
 
   await new Promise<void>((resolve, reject) => {
     ws.once("open", () => resolve());

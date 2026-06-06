@@ -246,10 +246,7 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
       }
     }
 
-    const reqUrl = req.url ?? "/";
-    const searchParams = new URL(reqUrl, "http://localhost").searchParams;
-    const tokenFromQuery = searchParams.get("access_token") ?? searchParams.get("token");
-    return tokenFromQuery === expected;
+    return false;
   }
 
   private async getAiCharacter(groupId: string): Promise<string> {

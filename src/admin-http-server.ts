@@ -37,6 +37,7 @@ import type { SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { ProfileRecordStore } from "./services/profile-record-store.js";
 import type { ModelHealthHistoryStore, ModelHealthHistoryEntry } from "./services/model-health-history-store.js";
+import { getServerStatusSnapshot, probeSystemModel } from "./services/model-probe-service.js";
 import { getYesterdayDateKey, type DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { buildGroupMemberProfiles, buildSubjectLabel } from "./services/member-profile-service.js";
 import { isScheduleDateRuleMatched } from "./utils/schedule-date-rule.js";
@@ -107,8 +108,20 @@ class ProfileRecordGenerationError extends Error {
   }
 }
 
+class AdminRequestBodyError extends Error {
+  constructor(
+    public readonly code: string,
+    public readonly statusCode: number,
+  ) {
+    super(code);
+  }
+}
+
 const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
 const ADMIN_GZIP_MIN_BYTES = 1024;
+const ADMIN_LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const ADMIN_LOGIN_MAX_FAILURES = 5;
+const ADMIN_LOGIN_LOCK_MS = 15 * 60 * 1000;
 const ADMIN_STATIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "admin");
 const ADMIN_STATIC_INDEX = path.join(ADMIN_STATIC_DIR, "index.html");
 const STATIC_CONTENT_TYPES: Record<string, string> = {
@@ -136,6 +149,11 @@ export class AdminHttpServer {
   private readonly modelHealthCache = new Map<string, {
     expiresAt: number;
     status: AiHealthStatus & { id: string; purpose: string; name: string; shortName: string; selected: boolean };
+  }>();
+  private readonly loginAttempts = new Map<string, {
+    failures: number;
+    firstFailureAt: number;
+    lockedUntil?: number;
   }>();
 
   private readonly server = createServer((req, res) => {
@@ -201,6 +219,11 @@ export class AdminHttpServer {
         return;
       }
 
+      if (pathname.startsWith("/api/") && session && isStateChangingMethod(req.method) && !this.isValidCsrf(req, session)) {
+        this.sendJson(res, { error: "csrf_required" }, 403);
+        return;
+      }
+
       if (!pathname.startsWith("/api/") && req.method === "GET") {
         await this.handleStaticApp(res, pathname);
         return;
@@ -213,6 +236,10 @@ export class AdminHttpServer {
         url: req.url,
         error: (error as Error).message,
       });
+      if (error instanceof AdminRequestBodyError) {
+        this.sendJson(res, { error: error.code }, error.statusCode);
+        return;
+      }
       this.sendJson(res, { error: "internal_error" }, 500);
     }
   }
@@ -478,9 +505,27 @@ export class AdminHttpServer {
       const profileAiHealth = await this.getProfileAiHealthStatus({ refresh: url.searchParams.get("refresh") === "1" });
       const modelStatuses = await this.getModelHealthStatuses({ refresh: url.searchParams.get("refresh") === "1" });
       const abnormalModelStatuses = modelStatuses.filter((status) => !status.ok);
+      const memory = process.memoryUsage();
+      const environmentStatus = {
+        transportHealth,
+        node: {
+          ok: true,
+          detail: `${process.version} / PID ${process.pid}`,
+          checkedAt: `uptime ${Math.floor(process.uptime())}s`,
+          latencyMs: 0,
+        },
+        memory: {
+          ok: true,
+          detail: `RSS ${Math.round(memory.rss / 1024 / 1024)}MB，堆内存 ${Math.round(memory.heapUsed / 1024 / 1024)}MB`,
+          checkedAt: new Date().toISOString(),
+          latencyMs: 0,
+        },
+      };
       this.sendJson(res, {
         transportHealth,
         profileAiHealth,
+        environmentStatus,
+        serverStatus: getServerStatusSnapshot(),
         modelStatuses,
         abnormalModelStatuses,
         modelStatusSummary: {
@@ -491,7 +536,7 @@ export class AdminHttpServer {
         uptimeSeconds: Math.floor(process.uptime()),
         nodeVersion: process.version,
         pid: process.pid,
-        memory: process.memoryUsage(),
+        memory,
       });
       return;
     }
@@ -698,14 +743,21 @@ export class AdminHttpServer {
     const body = await readJsonBody(req);
     const username = typeof body.username === "string" ? body.username : "";
     const password = typeof body.password === "string" ? body.password : "";
+    const loginKey = this.loginAttemptKey(req, username);
+    if (this.isLoginLocked(loginKey)) {
+      this.sendJson(res, { error: "too_many_login_attempts" }, 429);
+      return;
+    }
     const session = await this.buildLoginSession(username, password);
     if (!session) {
+      this.recordFailedLogin(loginKey);
       this.sendJson(res, { error: "invalid_credentials" }, 401);
       return;
     }
 
+    this.clearLoginAttempts(loginKey);
     const expires = new Date(Date.now() + 12 * 60 * 60 * 1000);
-    const nextSession: AdminSession = { ...session, expiresAt: expires.toISOString() };
+    const nextSession: AdminSession = { ...session, csrfToken: randomBytes(32).toString("base64url"), expiresAt: expires.toISOString() };
     this.setSessionCookie(res, this.signSession(nextSession), expires);
     this.sendJson(res, { ok: true, session: this.publicSession(nextSession) });
   }
@@ -938,6 +990,7 @@ export class AdminHttpServer {
       subjectUserId,
       ...(body.type === "member_profile" || body.type === "group_fact" ? { type: body.type } : {}),
       semanticMode: "member",
+      useSemanticJudge: false,
     });
     this.sendJson(res, {
       groupId,
@@ -1408,8 +1461,7 @@ export class AdminHttpServer {
     const apiKey = model.apiKey;
     const runCheck = async () => {
       const startedAt = Date.now();
-      const { AiService } = await import("./services/ai-service.js");
-      const health = await new AiService(model.baseUrl, apiKey, model.model).checkHealth({ refresh: true, cacheTtlMs: 0 });
+      const health = await probeSystemModel({ ...model, apiKey });
       const status = {
         id: model.id,
         purpose: model.purpose,
@@ -1423,6 +1475,8 @@ export class AdminHttpServer {
         baseUrl: health.baseUrl || model.baseUrl || "",
         checkedAt: health.checkedAt || new Date().toISOString(),
         cached: false,
+        probeType: health.probeType,
+        ...(health.upstreamStatusCode ? { upstreamStatusCode: health.upstreamStatusCode } : {}),
       };
       await this.recordModelHealth(status, "manual");
       return status;
@@ -2185,8 +2239,7 @@ export class AdminHttpServer {
       }
       const startedAt = Date.now();
       try {
-        const { AiService } = await import("./services/ai-service.js");
-        const health = await new AiService(model.baseUrl, model.apiKey, model.model).checkHealth({ refresh: true, cacheTtlMs: 0 });
+        const health = await probeSystemModel(model);
         const status = {
           ...base,
           ok: health.ok,
@@ -2196,6 +2249,8 @@ export class AdminHttpServer {
           checkedAt: health.checkedAt || new Date().toISOString(),
           latencyMs: health.latencyMs || Date.now() - startedAt,
           cached: false,
+          probeType: health.probeType,
+          ...(health.upstreamStatusCode ? { upstreamStatusCode: health.upstreamStatusCode } : {}),
         };
         this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
         await this.recordModelHealth(status, source);
@@ -2373,7 +2428,7 @@ export class AdminHttpServer {
     return session && new Date(session.expiresAt).getTime() > Date.now() ? session : undefined;
   }
 
-  private async buildLoginSession(username: string, password: string): Promise<Omit<AdminSession, "expiresAt"> | undefined> {
+  private async buildLoginSession(username: string, password: string): Promise<Omit<AdminSession, "csrfToken" | "expiresAt"> | undefined> {
     const superAdminSecretValid = this.options.systemSettingsStore
       ? await this.options.systemSettingsStore.verifyAdminSecret(password, this.options.password)
       : password === this.options.password;
@@ -2412,6 +2467,7 @@ export class AdminHttpServer {
       username: session.username,
       ...(session.userId ? { userId: session.userId } : {}),
       allowedGroupIds: session.allowedGroupIds,
+      csrfToken: session.csrfToken,
       publicBaseUrl: this.options.publicBaseUrl,
     };
   }
@@ -2540,6 +2596,50 @@ export class AdminHttpServer {
     });
   }
 
+  private isValidCsrf(req: IncomingMessage, session: AdminSession): boolean {
+    const token = req.headers["x-csrf-token"];
+    const value = Array.isArray(token) ? token[0] : token;
+    return typeof value === "string" && safeEqual(value, session.csrfToken);
+  }
+
+  private loginAttemptKey(req: IncomingMessage, username: string): string {
+    const forwarded = req.headers["x-forwarded-for"];
+    const forwardedText = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const ip = (forwardedText?.split(",")[0] || req.socket.remoteAddress || "unknown").trim();
+    return `${ip}:${username.trim().toLowerCase() || "unknown"}`;
+  }
+
+  private isLoginLocked(key: string): boolean {
+    const attempt = this.loginAttempts.get(key);
+    if (!attempt?.lockedUntil) {
+      return false;
+    }
+    if (attempt.lockedUntil > Date.now()) {
+      return true;
+    }
+    this.loginAttempts.delete(key);
+    return false;
+  }
+
+  private recordFailedLogin(key: string): void {
+    const now = Date.now();
+    const current = this.loginAttempts.get(key);
+    const inWindow = current && now - current.firstFailureAt <= ADMIN_LOGIN_WINDOW_MS;
+    const next = {
+      failures: inWindow ? current.failures + 1 : 1,
+      firstFailureAt: inWindow ? current.firstFailureAt : now,
+      ...(current?.lockedUntil && current.lockedUntil > now ? { lockedUntil: current.lockedUntil } : {}),
+    };
+    if (next.failures >= ADMIN_LOGIN_MAX_FAILURES) {
+      next.lockedUntil = now + ADMIN_LOGIN_LOCK_MS;
+    }
+    this.loginAttempts.set(key, next);
+  }
+
+  private clearLoginAttempts(key: string): void {
+    this.loginAttempts.delete(key);
+  }
+
   private async normalizeAccessibleGroupId(session: AdminSession, groupId: string | undefined): Promise<string | undefined | false> {
     if (groupId) {
       return await this.canAccessGroup(session, groupId) ? groupId : false;
@@ -2582,15 +2682,17 @@ export class AdminHttpServer {
         role?: string;
         userId?: string;
         allowedGroupIds?: unknown;
+        csrfToken?: string;
         expiresAt?: string;
       };
       const role = parsed.role === "group_admin" ? "group_admin" : "super_admin";
-      return typeof parsed.username === "string" && typeof parsed.expiresAt === "string"
+      return typeof parsed.username === "string" && typeof parsed.csrfToken === "string" && typeof parsed.expiresAt === "string"
         ? {
             role,
             username: parsed.username,
             ...(typeof parsed.userId === "string" ? { userId: parsed.userId } : {}),
             allowedGroupIds: Array.isArray(parsed.allowedGroupIds) ? parsed.allowedGroupIds.map(String) : [],
+            csrfToken: parsed.csrfToken,
             expiresAt: parsed.expiresAt,
           }
         : undefined;
@@ -2836,7 +2938,7 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
     size += buffer.length;
     if (size > 1024 * 1024) {
-      throw new Error("Request body too large.");
+      throw new AdminRequestBodyError("request_body_too_large", 413);
     }
     chunks.push(buffer);
   }
@@ -2845,7 +2947,16 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
     return {};
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new AdminRequestBodyError("invalid_json_body", 400);
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof AdminRequestBodyError) throw error;
+    throw new AdminRequestBodyError("invalid_json", 400);
+  }
 }
 
 function normalizeMemoryType(value: unknown): GroupMemoryType {
@@ -2934,6 +3045,11 @@ function normalizeModelPurpose(value: string): SystemModelPurpose {
 function normalizeLogLimit(value: string | undefined): number {
   const parsed = value ? Number(value) : 50;
   return Number.isInteger(parsed) ? Math.max(1, Math.min(200, parsed)) : 50;
+}
+
+function isStateChangingMethod(method: string | undefined): boolean {
+  const normalized = (method ?? "GET").toUpperCase();
+  return normalized !== "GET" && normalized !== "HEAD" && normalized !== "OPTIONS";
 }
 
 function normalizeOptionalIso(value: unknown): string | null | undefined {

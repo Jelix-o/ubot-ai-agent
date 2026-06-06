@@ -68,6 +68,30 @@ function actionLabel(action: string): string {
   } as Record<string, string>)[action] || action;
 }
 
+function detailLabel(entry: AdminOperationLogEntry): string {
+  const detail = entry.detail || "";
+  if (!detail) return "暂无详情。";
+  if (entry.action === "model_check") {
+    const ok = detail.match(/^ok\s+(\d+)ms$/i);
+    if (ok) return `模型连接正常，延迟 ${ok[1]}ms。`;
+    return `模型检测不通过：${detail}`;
+  }
+  if (entry.action === "memory_dedup_apply") {
+    return detail
+      .replace(/^applied=(\d+);\s*skipped=(\d+)$/i, "已处理 $1 条，跳过 $2 条。")
+      .replace(/^(\d+) decisions$/i, "$1 条去重建议");
+  }
+  if (entry.action === "profile_share_revoke") return "已撤销画像公开链接。";
+  if (entry.action === "profile_share_update") return "已更新画像公开链接。";
+  if (entry.action === "profile_generate") return `生成画像：${profileTypeText(detail)}`;
+  if (entry.action === "profile_refresh") return `刷新画像：${profileTypeText(detail)}`;
+  return detail;
+}
+
+function profileTypeText(value: string): string {
+  return value === "yesterday" ? "昨日画像" : value === "overall" ? "群聊画像" : value || "未指定类型";
+}
+
 function resetFilters(): void {
   filters.q = "";
   filters.action = "";
@@ -177,7 +201,7 @@ watch(() => app.role, () => {
           <strong>{{ entry.operatorUserId }}</strong>
           <span>{{ entry.groupId }}</span>
           <span class="muted">{{ entry.target || "-" }}</span>
-          <span class="detail">{{ entry.detail || "-" }}</span>
+          <span class="detail">{{ detailLabel(entry) }}</span>
           <button class="link-btn row-action" type="button" @click="openEntryDetail(entry)">查看详情</button>
         </article>
       </div>
@@ -199,7 +223,7 @@ watch(() => app.role, () => {
           </dl>
           <div class="detail-text">
             <h4>完整详情</h4>
-            <p>{{ activeEntry.detail || "暂无详情。" }}</p>
+            <p>{{ detailLabel(activeEntry) }}</p>
           </div>
         </div>
       </section>

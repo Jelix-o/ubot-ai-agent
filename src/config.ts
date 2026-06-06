@@ -44,12 +44,17 @@ export function loadConfig(): AppConfig {
   if (!["wav", "mp3", "pcm", "pcm16"].includes(ttsAudioFormat)) {
     throw new Error("TTS_AUDIO_FORMAT must be one of 'wav', 'mp3', 'pcm', or 'pcm16'.");
   }
+  const napcatAccessToken = optionalEnv("NAPCAT_ACCESS_TOKEN");
+  const reverseHost = optionalEnv("NAPCAT_REVERSE_WS_HOST") ?? "127.0.0.1";
+  if (napcatMode === "reverse" && reverseHost !== "127.0.0.1" && reverseHost !== "localhost" && !napcatAccessToken) {
+    throw new Error("NAPCAT_ACCESS_TOKEN is required when reverse WebSocket listens on a non-localhost host.");
+  }
 
   return {
     napcatMode,
     napcatWsUrl,
-    napcatAccessToken: optionalEnv("NAPCAT_ACCESS_TOKEN"),
-    napcatReverseWsHost: optionalEnv("NAPCAT_REVERSE_WS_HOST") ?? "127.0.0.1",
+    napcatAccessToken,
+    napcatReverseWsHost: reverseHost,
     napcatReverseWsPort: reversePort,
     napcatReverseWsPath: optionalEnv("NAPCAT_REVERSE_WS_PATH") ?? "/onebot/ws",
     openAiBaseUrl,

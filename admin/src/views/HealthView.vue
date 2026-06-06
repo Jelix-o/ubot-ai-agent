@@ -3,28 +3,12 @@ import { computed, onMounted, shallowRef } from "vue";
 
 import StatusCard from "../components/StatusCard.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
-import { api, type HealthStatus, type ModelHealthHistoryEntry, type ModelHealthStatus } from "../services/api";
+import { api, type HealthStatus, type ModelHealthHistoryEntry, type SystemHealthData } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
-interface HealthData {
-  transportHealth: HealthStatus;
-  profileAiHealth: HealthStatus;
-  modelStatuses: ModelHealthStatus[];
-  abnormalModelStatuses: ModelHealthStatus[];
-  modelStatusSummary: {
-    total: number;
-    abnormal: number;
-    checkedAt: string;
-  };
-  uptimeSeconds: number;
-  nodeVersion: string;
-  pid: number;
-  memory: { rss: number; heapUsed: number };
-}
-
 const app = useAppStore();
-const data = shallowRef<HealthData>();
+const data = shallowRef<SystemHealthData>();
 const modelHistory = shallowRef<ModelHealthHistoryEntry[]>([]);
 const activeModel = shallowRef<ModelHealthHistoryEntry | null>(null);
 const loading = shallowRef(false);
@@ -40,6 +24,8 @@ const activeModelMeta = computed(() => {
     { label: "检测来源", value: sourceLabel(model.source) },
     { label: "检测时间", value: formatDateTime(model.checkedAt) },
     { label: "缓存状态", value: model.cached ? "缓存结果" : "实时检测" },
+    { label: "探测类型", value: model.probeType === "tts" ? "语音合成" : "文本对话" },
+    { label: "上游状态", value: model.upstreamStatusCode ? `HTTP ${model.upstreamStatusCode}` : "-" },
     { label: "模型名称", value: model.model || "-" },
     { label: "服务地址", value: model.baseUrl || "-" },
   ];
@@ -48,7 +34,7 @@ const activeModelMeta = computed(() => {
 async function load(refresh = false): Promise<void> {
   loading.value = true;
   try {
-    data.value = await api<HealthData>(`/api/health${refresh ? "?refresh=1" : ""}`);
+    data.value = await api<SystemHealthData>(`/api/health${refresh ? "?refresh=1" : ""}`);
     if (app.role === "super_admin") {
       const history = await api<{ models: ModelHealthHistoryEntry[] }>("/api/model-health-history");
       modelHistory.value = history.models;
@@ -60,6 +46,7 @@ async function load(refresh = false): Promise<void> {
 }
 
 function memoryStatus(): HealthStatus {
+  if (data.value?.environmentStatus?.memory) return data.value.environmentStatus.memory;
   if (!data.value) return { ok: true, detail: "暂无数据" };
   return {
     ok: true,
@@ -70,8 +57,65 @@ function memoryStatus(): HealthStatus {
 }
 
 function nodeStatus(): HealthStatus {
+  if (data.value?.environmentStatus?.node) return data.value.environmentStatus.node;
   if (!data.value) return { ok: true, detail: "暂无数据" };
   return { ok: true, detail: `${data.value.nodeVersion} / PID ${data.value.pid}`, checkedAt: `uptime ${data.value.uptimeSeconds}s`, latencyMs: 0 };
+}
+
+function transportStatus(): HealthStatus | undefined {
+  return data.value?.environmentStatus?.transportHealth ?? data.value?.transportHealth;
+}
+
+function formatBytes(value?: number): string {
+  const size = Number(value || 0);
+  if (size >= 1024 * 1024 * 1024) return `${(size / 1024 / 1024 / 1024).toFixed(1)}GB`;
+  return `${Math.round(size / 1024 / 1024)}MB`;
+}
+
+function formatUptime(seconds?: number): string {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return days > 0 ? `${days}天 ${hours}小时` : `${hours}小时 ${minutes}分钟`;
+}
+
+function serverMetricStatus(title: "load" | "memory" | "host" | "process"): HealthStatus {
+  const server = data.value?.serverStatus;
+  if (!server) return { ok: true, detail: "暂无数据" };
+  if (title === "load") {
+    const load = server.loadAverage?.[0] ?? 0;
+    const ratio = server.cpuCount ? load / server.cpuCount : 0;
+    return {
+      ok: ratio < 0.85,
+      detail: `1分钟负载 ${load.toFixed(2)} / ${server.cpuCount} 核`,
+      checkedAt: server.checkedAt,
+      latencyMs: 0,
+    };
+  }
+  if (title === "memory") {
+    const ratio = server.totalMemory ? server.usedMemory / server.totalMemory : 0;
+    return {
+      ok: ratio < 0.9,
+      detail: `${formatBytes(server.usedMemory)} / ${formatBytes(server.totalMemory)}`,
+      checkedAt: server.checkedAt,
+      latencyMs: 0,
+    };
+  }
+  if (title === "process") {
+    return {
+      ok: true,
+      detail: `PID ${server.process.pid}，RSS ${formatBytes(server.process.rss)}`,
+      checkedAt: `运行 ${formatUptime(server.process.uptimeSeconds)}`,
+      latencyMs: 0,
+    };
+  }
+  return {
+    ok: true,
+    detail: `${server.hostname} / ${server.platform}`,
+    checkedAt: `运行 ${formatUptime(server.uptimeSeconds)}`,
+    latencyMs: 0,
+  };
 }
 
 function purposeLabel(purpose: ModelHealthHistoryEntry["purpose"]): string {
@@ -153,14 +197,29 @@ useRefreshEvents({ refresh: onRefresh });
     <section class="status-section">
       <div class="sub-head">
         <div>
-          <h3>服务器状态</h3>
-          <p>展示消息连接、Node 进程和内存占用。</p>
+          <h3>环境状态</h3>
+          <p>展示消息连接、Node 进程和应用内存占用。</p>
         </div>
       </div>
       <div class="health-grid">
-        <StatusCard title="NapCat 连接" :status="data?.transportHealth" />
+        <StatusCard title="NapCat 连接" :status="transportStatus()" />
         <StatusCard title="Node 运行时" :status="nodeStatus()" />
         <StatusCard title="内存占用" :status="memoryStatus()" />
+      </div>
+    </section>
+
+    <section class="status-section">
+      <div class="sub-head">
+        <div>
+          <h3>服务器状态</h3>
+          <p>展示云服务器整体负载、内存、主机和进程资源。</p>
+        </div>
+      </div>
+      <div class="health-grid">
+        <StatusCard title="CPU 负载" :status="serverMetricStatus('load')" />
+        <StatusCard title="服务器内存" :status="serverMetricStatus('memory')" />
+        <StatusCard title="主机运行" :status="serverMetricStatus('host')" />
+        <StatusCard title="服务进程" :status="serverMetricStatus('process')" />
       </div>
     </section>
 

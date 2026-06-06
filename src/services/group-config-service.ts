@@ -1,7 +1,5 @@
-import { writeFile } from "node:fs/promises";
-
 import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ReplyModelMode, ScheduleDateRule } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 
 export class GroupConfigValidationError extends Error {
   constructor(public readonly code: string, message = code) {
@@ -461,7 +459,7 @@ export class GroupConfigService {
 
   private async writeConfig(data: GroupsConfigFile): Promise<void> {
     this.cachedConfig = data;
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

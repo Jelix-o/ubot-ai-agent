@@ -47,6 +47,8 @@ export interface AiHealthStatus {
   checkedAt: string;
   latencyMs: number;
   cached: boolean;
+  probeType?: "chat" | "tts";
+  upstreamStatusCode?: number;
 }
 
 export type AdminTaskType = "memory-dedup" | "profile-generate" | "model-check" | "bulk-review";
@@ -327,6 +329,7 @@ export interface AdminSession {
   username: string;
   userId?: string;
   allowedGroupIds: string[];
+  csrfToken: string;
   expiresAt: string;
 }
 

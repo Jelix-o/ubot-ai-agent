@@ -232,7 +232,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span /> 系统运行中</strong>
-          <small>UBot v4.6.0</small>
+          <small>UBot v4.7.0</small>
         </div>
       </div>
     </aside>
@@ -568,7 +568,7 @@ kbd {
 
 .popover-wrap {
   position: relative;
-  z-index: 30;
+  z-index: 45;
   display: inline-flex;
 }
 
@@ -594,7 +594,7 @@ kbd {
 
 .top-popover {
   position: absolute;
-  z-index: 30;
+  z-index: 46;
   top: 52px;
   right: 0;
   display: grid;

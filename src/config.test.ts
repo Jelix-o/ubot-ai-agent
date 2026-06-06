@@ -45,3 +45,31 @@ test("profile ai config falls back to openai config and supports overrides", () 
     process.env = originalEnv;
   }
 });
+
+test("reverse websocket requires access token when listening publicly", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env = {
+      ...originalEnv,
+      NAPCAT_MODE: "reverse",
+      NAPCAT_REVERSE_WS_HOST: "0.0.0.0",
+      OPENAI_BASE_URL: "https://reply.example/v1",
+      OPENAI_API_KEY: "reply-key",
+      OPENAI_MODEL: "reply-model",
+      BOT_QQ: "12345",
+    };
+    delete process.env.NAPCAT_ACCESS_TOKEN;
+
+    assert.throws(
+      () => loadConfig(),
+      /NAPCAT_ACCESS_TOKEN is required/,
+    );
+
+    process.env.NAPCAT_ACCESS_TOKEN = "reverse-token";
+    const config = loadConfig();
+    assert.equal(config.napcatAccessToken, "reverse-token");
+    assert.equal(config.napcatReverseWsHost, "0.0.0.0");
+  } finally {
+    process.env = originalEnv;
+  }
+});

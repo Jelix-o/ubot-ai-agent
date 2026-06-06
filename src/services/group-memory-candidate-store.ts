@@ -1,5 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -9,7 +7,7 @@ import type {
   GroupMemoryEvidence,
   GroupMemoryType,
 } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import { type GroupMemoryInput, GroupMemoryStore } from "./group-memory-store.js";
 
 const EVIDENCE_SUMMARY_LIMIT = 2400;
@@ -261,8 +259,7 @@ export class GroupMemoryCandidateStore {
 
   private async writeData(data: GroupMemoryCandidateFile): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

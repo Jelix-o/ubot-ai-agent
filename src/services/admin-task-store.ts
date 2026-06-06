@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import type { AdminTaskRecord, AdminTasksFile, AdminTaskStatus, AdminTaskType } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 
 export interface AdminTaskListArgs {
   type?: AdminTaskType;
@@ -157,8 +154,7 @@ export class AdminTaskStore {
 
   private async writeData(data: AdminTasksFile): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

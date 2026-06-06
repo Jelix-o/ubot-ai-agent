@@ -1,9 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 import type { SystemCommandConfig, SystemModelConfig, SystemSettings } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 
 type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
   models?: Array<Partial<SystemModelConfig> & { apiKey?: unknown }>;
@@ -97,8 +95,7 @@ export class SystemSettingsStore {
 
   private async writeData(data: SystemSettings): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

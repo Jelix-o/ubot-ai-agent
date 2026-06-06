@@ -18,6 +18,7 @@ const renderCache = new Map();
 const renderCacheTtlMs = 8000;
 let ownerMemberSearchTimer = null;
 let isApplyingHistoryState = false;
+let csrfToken = '';
 const titleByView = { overview: '总览', groups: '群配置', members: '成员管理', candidates: '候选记忆', memories: '长期记忆', knowledge: '知识库', health: '系统状态' };
 const subtitleByView = {
   overview: '掌握当前群聊助手的关键数据与运行状态',
@@ -93,15 +94,23 @@ const fullEvidenceHtml = (item) => {
   if (!item?.evidence || item.evidence.hasFullEvidence) return evidenceHtml(item || {});
   return evidenceHtml(item);
 };
+const needsCsrf = (method) => !['GET', 'HEAD', 'OPTIONS'].includes(String(method || 'GET').toUpperCase());
+const rememberSessionSecurity = (data) => {
+  csrfToken = data?.session?.csrfToken || data?.csrfToken || csrfToken;
+};
 const api = async (url, options = {}) => {
-  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (csrfToken && needsCsrf(options.method)) headers['X-CSRF-Token'] = csrfToken;
+  const res = await fetch(url, { ...options, headers });
   if (res.status === 401) location.href = '/login';
   if (!res.ok) {
     let message = await res.text();
     try { message = JSON.parse(message).error || message; } catch {}
     throw new Error(message || '请求失败');
   }
-  return res.json();
+  const data = await res.json();
+  if (url === '/api/session' || url === '/api/login') rememberSessionSecurity(data);
+  return data;
 };
 const apiForRender = async (url) => {
   try {
@@ -1382,7 +1391,7 @@ window.addEventListener('popstate', async () => {
 });
 applyTheme();
 readStateFromUrl();
-loadGroups().then(() => {
+api('/api/session').then(() => loadGroups()).then(() => {
   syncUrlState({ replace: true });
   return render();
 });

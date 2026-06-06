@@ -112,6 +112,8 @@ copy .env.server-2022.example .env
   - 正向 WebSocket 地址
 - `NAPCAT_ACCESS_TOKEN`
   - NapCat 访问令牌
+  - Reverse WS auth must use `Authorization: Bearer <token>`; URL query tokens are rejected.
+  - Required when `NAPCAT_REVERSE_WS_HOST` is `0.0.0.0` or another non-localhost address.
 - `NAPCAT_REVERSE_WS_HOST`
   - 反向 WebSocket 监听地址
 - `NAPCAT_REVERSE_WS_PORT`
@@ -247,6 +249,7 @@ NapCat 里对应填写：
 
 - URL：`ws://127.0.0.1:6199/onebot/ws`
 - Token：和 `NAPCAT_ACCESS_TOKEN` 保持一致
+- Auth header: `Authorization: Bearer <NAPCAT_ACCESS_TOKEN>`; do not put token in the URL query string.
 
 注意：
 
@@ -432,6 +435,7 @@ pnpm test
 - 当前版本：`v4.4.0`
 - npm 包名：`ubot`
 - Node.js：建议 Node 22
+- `npm run dev` / `npm run build` / `npm test` use `UBOT_NODE` when set, otherwise Windows falls back to `D:\environment\nvm\v22.17.0\node.exe` if it exists.
 - 发布包会排除 `.env`、`data/`、`config/groups.json`、`node_modules/`、`dist/`、`release/` 和 `NUL`，避免覆盖生产配置和数据。
 
 升级生产环境时保留原有 `.env`、`data/` 和 `config/groups.json`。尤其不要把生产的 NapCat 反向 WebSocket 配置覆盖掉，生产应保持：
@@ -440,7 +444,10 @@ pnpm test
 NAPCAT_REVERSE_WS_HOST=0.0.0.0
 NAPCAT_REVERSE_WS_PORT=6199
 NAPCAT_REVERSE_WS_PATH=/onebot/ws
+NAPCAT_ACCESS_TOKEN=<strong-token>
 ```
+
+NapCat must send this token with `Authorization: Bearer <token>`. Query-string tokens are rejected.
 
 ## 分享项目给别人
 

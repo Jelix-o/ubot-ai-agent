@@ -22,6 +22,20 @@ import { ScheduledReminderService } from "./services/scheduled-reminder-service.
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import type { GroupBotConfig, GroupMemberProfile, NapcatGroupMember } from "./types.js";
 
+let activeCsrfToken = "";
+
+async function fetch(input: Parameters<typeof globalThis.fetch>[0], init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (activeCsrfToken && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const headers = new Headers(init.headers);
+    if (!headers.has("X-CSRF-Token")) {
+      headers.set("X-CSRF-Token", activeCsrfToken);
+    }
+    return globalThis.fetch(input, { ...init, headers });
+  }
+  return globalThis.fetch(input, init);
+}
+
 async function rawGet(url: string, headers: Record<string, string> = {}): Promise<{
   statusCode: number;
   headers: Record<string, string | string[] | undefined>;
@@ -43,6 +57,7 @@ async function rawGet(url: string, headers: Record<string, string> = {}): Promis
 }
 
 test("admin http server protects APIs and serves authenticated dashboard data", async () => {
+  activeCsrfToken = "";
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-http-"));
   const groupsPath = path.join(dir, "groups.json");
   await import("node:fs/promises").then(({ writeFile }) =>
@@ -339,14 +354,58 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(badLogin.status, 401);
 
+    for (let index = 0; index < 5; index += 1) {
+      const failed = await fetch(`${baseUrl}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "locked-user", password: "wrong" }),
+      });
+      assert.equal(failed.status, index === 4 ? 401 : 401);
+    }
+    const lockedLogin = await fetch(`${baseUrl}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "locked-user", password: "wrong" }),
+    });
+    assert.equal(lockedLogin.status, 429);
+    assert.deepEqual(await lockedLogin.json(), { error: "too_many_login_attempts" });
+
     const login = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: "admin", password: "secret" }),
     });
     assert.equal(login.status, 200);
+    const loginBody = await login.json() as { session: { csrfToken: string } };
+    activeCsrfToken = loginBody.session.csrfToken;
+    const superAdminCsrfToken = activeCsrfToken;
+    assert.match(activeCsrfToken, /^[A-Za-z0-9_-]{32,}$/);
     const cookie = login.headers.get("set-cookie");
     assert.ok(cookie?.includes("HttpOnly"));
+
+    const csrfBlocked = await globalThis.fetch(`${baseUrl}/api/system-settings`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ profileSummaryMaxChars: 1200 }),
+    });
+    assert.equal(csrfBlocked.status, 403);
+    assert.deepEqual(await csrfBlocked.json(), { error: "csrf_required" });
+
+    const invalidJsonBody = await fetch(`${baseUrl}/api/system-settings`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: "{",
+    });
+    assert.equal(invalidJsonBody.status, 400);
+    assert.deepEqual(await invalidJsonBody.json(), { error: "invalid_json" });
+
+    const oversizedJsonBody = await fetch(`${baseUrl}/api/system-settings`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ value: "x".repeat(1024 * 1024) }),
+    });
+    assert.equal(oversizedJsonBody.status, 413);
+    assert.deepEqual(await oversizedJsonBody.json(), { error: "request_body_too_large" });
 
     const groups = await fetch(`${baseUrl}/api/groups`, {
       headers: { Cookie: cookie ?? "" },
@@ -1539,16 +1598,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(semanticDedupPreview.status, 200);
     const semanticDedupPreviewBody = await semanticDedupPreview.json() as {
       decisions: Array<{ targetId?: string; duplicateId: string; reason?: string }>;
-      semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number };
+      semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number; skippedDisabled?: number };
     };
-    assert.equal(semanticDedupPreviewBody.decisions.some((item) =>
-      item.targetId === semanticDuplicateMemory.id &&
-      item.duplicateId === semanticBaseMemory.id &&
-      item.reason?.startsWith("semantic:")), true);
-    assert.equal(semanticDedupPreviewBody.semanticStats.called, 1);
-    assert.equal(semanticDedupPreviewBody.semanticStats.duplicate, 1);
+    assert.equal(semanticDedupPreviewBody.decisions.some((item) => item.reason?.startsWith("semantic:")), false);
+    assert.equal(semanticDedupPreviewBody.semanticStats.called, 0);
+    assert.equal(semanticDedupPreviewBody.semanticStats.duplicate, 0);
     assert.equal(semanticDedupPreviewBody.semanticStats.failed, 0);
-    assert.ok(semanticJudgeCalls > 0);
+    assert.equal(semanticJudgeCalls, 0);
     const semanticJudgeCallsBeforeChineseLocalDedup = semanticJudgeCalls;
     const chineseLocalDedupPreview = await fetch(`${baseUrl}/api/memories/deduplicate/preview`, {
       method: "POST",
@@ -1626,6 +1682,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       body: JSON.stringify({ username: "99999", password: "group-secret" }),
     });
     assert.equal(groupAdminLogin.status, 200);
+    const groupAdminLoginBody = await groupAdminLogin.json() as { session: { csrfToken: string } };
+    activeCsrfToken = groupAdminLoginBody.session.csrfToken;
+    assert.match(activeCsrfToken, /^[A-Za-z0-9_-]{32,}$/);
     const groupAdminCookie = groupAdminLogin.headers.get("set-cookie");
     assert.ok(groupAdminCookie?.includes("HttpOnly"));
 
@@ -1633,7 +1692,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: groupAdminCookie ?? "" },
     });
     assert.equal(groupAdminSession.status, 200);
-    const groupAdminSessionBody = await groupAdminSession.json() as { role: string; allowedGroupIds: string[] };
+    const groupAdminSessionBody = await groupAdminSession.json() as { role: string; allowedGroupIds: string[]; csrfToken: string };
+    activeCsrfToken = groupAdminSessionBody.csrfToken;
+    const groupAdminCsrfToken = activeCsrfToken;
     assert.equal(groupAdminSessionBody.role, "group_admin");
     assert.deepEqual(groupAdminSessionBody.allowedGroupIds, ["67890"]);
 
@@ -1710,6 +1771,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(groupAdminForbiddenTasks.status, 403);
 
+    activeCsrfToken = superAdminCsrfToken;
     const groupReminder = await fetch(`${baseUrl}/api/groups/67890/reminders`, {
       method: "POST",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -1732,6 +1794,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       body: JSON.stringify({ enabled: false }),
     });
     assert.equal(hideGroup.status, 200);
+    activeCsrfToken = groupAdminCsrfToken;
 
     const groupAdminGroupsAfterHide = await fetch(`${baseUrl}/api/groups`, {
       headers: { Cookie: groupAdminCookie ?? "" },
@@ -1845,6 +1908,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
 });
 
 test("overview global stats count all visible items beyond the recent page", async () => {
+  activeCsrfToken = "";
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-overview-"));
   const groupsPath = path.join(dir, "groups.json");
   await import("node:fs/promises").then(({ writeFile }) =>
@@ -1939,6 +2003,8 @@ test("overview global stats count all visible items beyond the recent page", asy
       body: JSON.stringify({ username: "admin", password: "secret" }),
     });
     assert.equal(login.status, 200);
+    const loginBody = await login.json() as { session: { csrfToken: string } };
+    activeCsrfToken = loginBody.session.csrfToken;
     const cookie = login.headers.get("set-cookie");
 
     const overview = await fetch(`${baseUrl}/api/overview`, {

@@ -1,8 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import type { AiHealthStatus, SystemModelPurpose } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 
 export interface ModelHealthHistoryEntry extends AiHealthStatus {
   id: string;
@@ -58,8 +55,7 @@ export class ModelHealthHistoryStore {
 
   private async writeData(data: ModelHealthHistoryFile): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

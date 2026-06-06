@@ -218,6 +218,33 @@ function createAdminHttpServer(
 
 function buildDefaultSystemModels(config: ReturnType<typeof loadConfig>): Array<Partial<SystemModelConfig> & { apiKey?: string }> {
   const now = new Date().toISOString();
+  const mimoBaseUrl = "https://token-plan-cn.xiaomimimo.com/v1";
+  const mimoTextModels: Array<{ id: string; model: string; label: string }> = [
+    { id: "mimo-v25-pro", model: "mimo-v2.5-pro", label: "MiMo V2.5 Pro" },
+    { id: "mimo-v25", model: "mimo-v2.5", label: "MiMo V2.5 多模态" },
+  ];
+  const purposeLabels: Record<Exclude<SystemModelConfig["purpose"], "reply" | "tts" | "custom">, string> = {
+    profile: "画像总结",
+    memory: "记忆提取",
+    dedup: "去重处理",
+    summary: "群聊总结",
+    knowledge: "知识库处理",
+  };
+  const builtinMimoModels = (Object.keys(purposeLabels) as Array<keyof typeof purposeLabels>).flatMap((purpose) =>
+    mimoTextModels.map((item) => ({
+      id: `${purpose}-${item.id}`,
+      name: `${purposeLabels[purpose]} ${item.label}`,
+      shortName: item.model,
+      baseUrl: mimoBaseUrl,
+      model: item.model,
+      purpose,
+      apiKey: config.profileAiApiKey,
+      hasApiKey: Boolean(config.profileAiApiKey),
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    }))
+  );
   return [
     {
       id: "gpt",
@@ -310,6 +337,20 @@ function buildDefaultSystemModels(config: ReturnType<typeof loadConfig>): Array<
       createdAt: now,
       updatedAt: now,
     },
+    {
+      id: "tts-mimo-v25",
+      name: "MiMo V2.5 语音合成",
+      shortName: "mimo-v2.5-tts",
+      baseUrl: mimoBaseUrl,
+      model: "mimo-v2.5-tts",
+      purpose: "tts",
+      apiKey: config.ttsApiKey,
+      hasApiKey: Boolean(config.ttsApiKey),
+      enabled: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+    ...builtinMimoModels,
   ];
 }
 

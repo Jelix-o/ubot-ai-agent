@@ -403,12 +403,12 @@ try {
     ["settings", "/settings"],
   ];
 
-  const cookie = await loginAndGetCookie(baseUrl);
-  await runHttpSmoke(baseUrl, cookie, pages);
+  const auth = await loginAndGetAuth(baseUrl);
+  await runHttpSmoke(baseUrl, auth, pages);
   await runStaticAdminSmoke();
 
   if (process.env.ADMIN_SMOKE_SCREENSHOTS === "1") {
-    await captureCdpScreenshots(baseUrl, cookie, [
+    await captureCdpScreenshots(baseUrl, auth.cookie, [
       ["login", "/login", { width: 1600, height: 1000 }],
       ...pages.map(([name, route]) => [name, route, { width: 1600, height: 1000 }]),
       ["tasks-detail", "/tasks", { width: 1600, height: 1000, click: ".task-row .row-action", afterClickScrollTo: ".task-detail" }],
@@ -437,7 +437,7 @@ try {
   await rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
 }
 
-async function loginAndGetCookie(baseUrl) {
+async function loginAndGetAuth(baseUrl) {
   const response = await fetch(`${baseUrl}/api/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -451,10 +451,16 @@ async function loginAndGetCookie(baseUrl) {
   if (!cookie.startsWith("admin_session=")) {
     throw new Error(`Admin smoke login did not return an admin session cookie: ${setCookie}`);
   }
-  return cookie;
+  const body = await response.json();
+  const csrfToken = body?.session?.csrfToken || body?.csrfToken;
+  if (!csrfToken) {
+    throw new Error("Admin smoke login did not return a CSRF token.");
+  }
+  return { cookie, csrfToken };
 }
 
-async function runHttpSmoke(baseUrl, cookie, pages) {
+async function runHttpSmoke(baseUrl, auth, pages) {
+  const { cookie, csrfToken } = auth;
   const loginHtml = await fetchText(`${baseUrl}/login`);
   assertIncludes(loginHtml, "id=\"app\"", "login html");
   await writeFile(path.join(snapshotsDir, "login.html"), loginHtml, "utf8");
@@ -530,7 +536,7 @@ async function runHttpSmoke(baseUrl, cookie, pages) {
 
   const updateSettings = await fetch(`${baseUrl}/api/system-settings`, {
     method: "PUT",
-    headers: { Cookie: cookie, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     body: JSON.stringify({
       ...settings,
       models: [
@@ -698,7 +704,7 @@ async function captureCdpScreenshots(baseUrl, cookie, targets) {
         });
         await navigateAndWait(cdp, `${baseUrl}${route}`);
         await cdp.send("Runtime.evaluate", { expression: "window.scrollTo(0, 0)" });
-        await delay(1200);
+        await waitForUiStable(cdp);
         await cdp.send("Runtime.evaluate", { expression: "window.scrollTo(0, 0)" });
         await delay(120);
         if (viewport.scrollTo) {
@@ -830,4 +836,22 @@ async function navigateAndWait(cdp, url) {
     await delay(250);
   }
   throw new Error(`Page did not finish loading: ${url}`);
+}
+
+async function waitForUiStable(cdp) {
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    const result = await cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        const text = document.body?.innerText || "";
+        const hasLoadingElement = Boolean(document.querySelector(".page-loading,.empty"));
+        const hasLoadingText = /正在加载|检测中|读取中|保存中|Loading/.test(text);
+        return { stable: !hasLoadingElement || !hasLoadingText, textLength: text.length };
+      })()`,
+      returnByValue: true,
+    });
+    if (result.result?.value?.stable) return;
+    await delay(250);
+  }
+  screenshotWarnings.push("UI still showed a loading marker before one or more screenshots.");
 }

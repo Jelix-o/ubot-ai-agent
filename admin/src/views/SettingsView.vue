@@ -167,8 +167,17 @@ function removeModel(index: number, model: SystemModelConfig): void {
 }
 
 function selectModel(model: SystemModelConfig): void {
+  if (model.purpose === "reply") return;
   settings.selectedModelIds[model.purpose] = model.id;
   markModelsDirty();
+}
+
+function usageColumnLabel(): string {
+  return activePurpose.value === "reply" ? "群可选" : "默认使用";
+}
+
+function isReplyModel(model: SystemModelConfig): boolean {
+  return model.purpose === "reply";
 }
 
 async function testModel(model: SystemModelConfig): Promise<void> {
@@ -238,10 +247,14 @@ onMounted(() => {
           <div class="policy-grid">
             <label>完整画像字数上限<input v-model.number="settings.profileSummaryMaxChars" class="input" type="number" min="100" max="6000" /></label>
             <label>群内短摘要字数上限<input v-model.number="settings.profileShortSummaryMaxChars" class="input" type="number" min="40" max="600" /></label>
-            <label class="policy-row"><span>自动生成昨日画像</span><input v-model="settings.dailyProfileReviewEnabled" type="checkbox" /></label>
-            <label class="policy-row"><span>昨日画像触发时间</span><input v-model="settings.dailyProfileReviewTime" class="input" type="time" /></label>
-            <label class="policy-row"><span>自动成员记忆去重</span><input v-model="settings.memoryDedupEnabled" type="checkbox" /></label>
-            <label class="policy-row"><span>记忆去重触发时间</span><input v-model="settings.memoryDedupTime" class="input" type="time" /></label>
+            <div class="policy-row policy-wide">
+              <label class="policy-toggle"><span>自动生成昨日画像</span><input v-model="settings.dailyProfileReviewEnabled" type="checkbox" /></label>
+              <label>昨日画像触发时间<input v-model="settings.dailyProfileReviewTime" class="input" type="time" /></label>
+            </div>
+            <div class="policy-row policy-wide">
+              <label class="policy-toggle"><span>自动成员记忆去重</span><input v-model="settings.memoryDedupEnabled" type="checkbox" /></label>
+              <label>记忆去重触发时间<input v-model="settings.memoryDedupTime" class="input" type="time" /></label>
+            </div>
           </div>
         </div>
 
@@ -283,7 +296,7 @@ onMounted(() => {
       <div v-if="!activePurposeModels.length" class="empty compact">当前分类暂无模型。</div>
       <div v-else class="model-table">
         <div class="table-head">
-          <span>使用</span>
+          <span>{{ usageColumnLabel() }}</span>
           <span>模型类型</span>
           <span>模型信息</span>
           <span>Base URL</span>
@@ -293,7 +306,12 @@ onMounted(() => {
           <span>操作</span>
         </div>
         <article v-for="model in activePurposeModels" :key="modelRowKey(model)" class="table-row">
-          <label class="radio-cell"><input type="radio" :checked="settings.selectedModelIds[model.purpose] === model.id" :disabled="!model.enabled" @change="selectModel(model)" /></label>
+          <div class="radio-cell">
+            <span v-if="isReplyModel(model)" class="tag" :class="{ danger: !model.enabled || !model.hasApiKey }">
+              {{ model.enabled && model.hasApiKey ? "可选择" : "不可用" }}
+            </span>
+            <input v-else type="radio" :checked="settings.selectedModelIds[model.purpose] === model.id" :disabled="!model.enabled" @change="selectModel(model)" />
+          </div>
           <span class="purpose-cell">{{ modelPurposeLabel(model.purpose) }}</span>
           <div class="model-name">
             <input v-model="model.id" class="input" placeholder="reply-pro" @input="markModelsDirty" />
@@ -350,7 +368,7 @@ onMounted(() => {
 }
 
 .switch-row,
-.policy-row {
+.policy-toggle {
   justify-content: space-between;
 }
 
@@ -376,13 +394,24 @@ onMounted(() => {
 }
 
 .policy-row {
-  display: grid !important;
-  grid-template-columns: minmax(150px, 1fr) minmax(130px, 0.72fr);
+  display: grid;
+  align-items: end;
+}
+
+.policy-wide {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.7fr);
   align-items: center;
   gap: 12px;
 }
 
-.policy-row input[type="checkbox"] {
+.policy-toggle {
+  display: flex !important;
+  align-items: center;
+  min-height: 40px;
+}
+
+.policy-toggle input[type="checkbox"] {
   justify-self: end;
 }
 

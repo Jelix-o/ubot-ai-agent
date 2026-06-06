@@ -6,6 +6,7 @@ import type { GroupMemoryStore } from "./group-memory-store.js";
 const DEDUP_LOCAL_THRESHOLD = 0.72;
 const DEDUP_SEMANTIC_CANDIDATE_THRESHOLD = 0.2;
 const DEDUP_SEMANTIC_PAIR_LIMIT = 12;
+const DEDUP_SEMANTIC_PAIR_TIMEOUT_MS = 2500;
 
 export type MemoryDedupAction = "duplicate" | "merge";
 
@@ -24,6 +25,8 @@ export interface MemoryDedupSemanticStats {
   merge: number;
   new: number;
   failed: number;
+  timedOut: number;
+  skippedDisabled: number;
   skippedProtected: number;
 }
 
@@ -47,7 +50,7 @@ export class GroupMemoryDeduplicateService {
 
   async preview(
     memories: GroupMemory[],
-    options: { semanticMode?: "member" | "global" } = {},
+    options: { semanticMode?: "member" | "global"; useSemanticJudge?: boolean; semanticTimeoutMs?: number } = {},
   ): Promise<MemoryDedupPreviewBuildResult> {
     return buildMemoryDeduplicateDecisions(memories, this.judgeMemorySemanticRelation, options);
   }
@@ -108,13 +111,23 @@ export class GroupMemoryDeduplicateService {
 
   async previewGroup(
     groupId: string,
-    options: { subjectUserId?: string; type?: GroupMemory["type"]; semanticMode?: "member" | "global" } = {},
+    options: {
+      subjectUserId?: string;
+      type?: GroupMemory["type"];
+      semanticMode?: "member" | "global";
+      useSemanticJudge?: boolean;
+      semanticTimeoutMs?: number;
+    } = {},
   ): Promise<MemoryDedupPreviewBuildResult> {
     const memories = (await this.memoryStore.list(groupId))
       .filter((memory) => memory.enabled)
       .filter((memory) => !options.subjectUserId || memory.subjectUserId === options.subjectUserId)
       .filter((memory) => !options.type || memory.type === options.type);
-    return this.preview(memories, { semanticMode: options.semanticMode });
+    return this.preview(memories, {
+      semanticMode: options.semanticMode,
+      useSemanticJudge: options.useSemanticJudge,
+      semanticTimeoutMs: options.semanticTimeoutMs,
+    });
   }
 
   async deduplicateMemberMemoriesForGroup(groupId: string): Promise<{
@@ -191,7 +204,7 @@ export function normalizeMemoryDedupDecision(value: unknown): MemoryDedupDecisio
 async function buildMemoryDeduplicateDecisions(
   memories: GroupMemory[],
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>,
-  options: { semanticMode?: "member" | "global" } = {},
+  options: { semanticMode?: "member" | "global"; useSemanticJudge?: boolean; semanticTimeoutMs?: number } = {},
 ): Promise<MemoryDedupPreviewBuildResult> {
   const decisions: MemoryDedupDecision[] = [];
   const semanticPairs: Array<{ left: GroupMemory; right: GroupMemory; similarity: number }> = [];
@@ -208,7 +221,7 @@ async function buildMemoryDeduplicateDecisions(
       const similarity = sameContent ? 1 : textSimilarity(`${left.title} ${left.content}`, `${right.title} ${right.content}`);
       if (!sameContent && similarity < DEDUP_LOCAL_THRESHOLD) {
         const shouldAskSemanticJudge = options.semanticMode === "member" || similarity >= DEDUP_SEMANTIC_CANDIDATE_THRESHOLD;
-        if (judgeMemorySemanticRelation && shouldAskSemanticJudge) {
+        if (judgeMemorySemanticRelation && options.useSemanticJudge !== false && shouldAskSemanticJudge) {
           semanticPairs.push({ left, right, similarity });
         }
         continue;
@@ -224,7 +237,11 @@ async function buildMemoryDeduplicateDecisions(
     }
   }
 
-  if (judgeMemorySemanticRelation && semanticPairs.length > 0) {
+  if (judgeMemorySemanticRelation && options.useSemanticJudge === false) {
+    semanticStats.skippedDisabled = semanticPairs.length;
+  }
+
+  if (judgeMemorySemanticRelation && options.useSemanticJudge !== false && semanticPairs.length > 0) {
     semanticStats.candidatePairCount = semanticPairs.length;
     const alreadyDuplicateIds = new Set(decisions.map((decision) => decision.duplicateId));
     const protectedTargetIds = new Set(decisions.flatMap((decision) => decision.targetId ? [decision.targetId] : []));
@@ -236,7 +253,14 @@ async function buildMemoryDeduplicateDecisions(
         semanticStats.skippedProtected += 1;
         continue;
       }
-      const semanticDecision = await buildSemanticMemoryDedupDecision(target, duplicate, pair.similarity, judgeMemorySemanticRelation, semanticStats);
+      const semanticDecision = await buildSemanticMemoryDedupDecision(
+        target,
+        duplicate,
+        pair.similarity,
+        judgeMemorySemanticRelation,
+        semanticStats,
+        options.semanticTimeoutMs ?? DEDUP_SEMANTIC_PAIR_TIMEOUT_MS,
+      );
       if (!semanticDecision.decision) {
         continue;
       }
@@ -267,10 +291,11 @@ async function buildSemanticMemoryDedupDecision(
   similarity: number,
   judgeMemorySemanticRelation: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>,
   semanticStats: MemoryDedupSemanticStats,
+  timeoutMs: number,
 ): Promise<{ decision?: MemoryDedupDecision }> {
   try {
     semanticStats.called += 1;
-    const result = await judgeMemorySemanticRelation({
+    const result = await withTimeout(judgeMemorySemanticRelation({
       candidate: {
         type: duplicate.type,
         subjectUserId: duplicate.subjectUserId,
@@ -285,7 +310,7 @@ async function buildSemanticMemoryDedupDecision(
         content: target.content,
         confidence: target.confidence,
       },
-    });
+    }), timeoutMs);
     if (!result || result.action === "new") {
       semanticStats.new += 1;
       return {};
@@ -300,6 +325,9 @@ async function buildSemanticMemoryDedupDecision(
     } };
   } catch (error) {
     semanticStats.failed += 1;
+    if (error instanceof Error && error.message === "semantic_judge_timeout") {
+      semanticStats.timedOut += 1;
+    }
     logWarn("Memory semantic deduplicate judge failed; keeping local dedup preview.", {
       targetId: target.id,
       duplicateId: duplicate.id,
@@ -307,6 +335,25 @@ async function buildSemanticMemoryDedupDecision(
     });
     return {};
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("semantic_judge_timeout"));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function chooseLongerText(left: string, right: string, limit: number): string {
@@ -405,6 +452,8 @@ function createSemanticStats(): MemoryDedupSemanticStats {
     merge: 0,
     new: 0,
     failed: 0,
+    timedOut: 0,
+    skippedDisabled: 0,
     skippedProtected: 0,
   };
 }
@@ -416,6 +465,8 @@ function mergeSemanticStats(target: MemoryDedupSemanticStats, source: MemoryDedu
   target.merge += source.merge;
   target.new += source.new;
   target.failed += source.failed;
+  target.timedOut += source.timedOut;
+  target.skippedDisabled += source.skippedDisabled;
   target.skippedProtected += source.skippedProtected;
 }
 

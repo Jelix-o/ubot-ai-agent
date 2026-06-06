@@ -137,6 +137,8 @@ export interface HealthStatus {
   checkedAt?: string;
   latencyMs?: number;
   cached?: boolean;
+  probeType?: "chat" | "tts";
+  upstreamStatusCode?: number;
 }
 
 export interface ModelHealthStatus extends HealthStatus {
@@ -176,11 +178,56 @@ export interface OverviewData {
   };
 }
 
+export interface EnvironmentStatus {
+  transportHealth: HealthStatus;
+  node: HealthStatus;
+  memory: HealthStatus;
+}
+
+export interface ServerStatus {
+  hostname: string;
+  platform: string;
+  uptimeSeconds: number;
+  loadAverage: number[];
+  cpuCount: number;
+  totalMemory: number;
+  freeMemory: number;
+  usedMemory: number;
+  process: {
+    pid: number;
+    uptimeSeconds: number;
+    nodeVersion: string;
+    rss: number;
+    heapUsed: number;
+    heapTotal: number;
+  };
+  checkedAt: string;
+}
+
+export interface SystemHealthData {
+  transportHealth: HealthStatus;
+  profileAiHealth: HealthStatus;
+  modelStatuses: ModelHealthStatus[];
+  abnormalModelStatuses: ModelHealthStatus[];
+  modelStatusSummary: {
+    total: number;
+    abnormal: number;
+    checkedAt: string;
+  };
+  environmentStatus?: EnvironmentStatus;
+  serverStatus?: ServerStatus;
+  uptimeSeconds: number;
+  nodeVersion: string;
+  pid: number;
+  memory: { rss: number; heapUsed: number };
+}
+
 export interface AdminSession {
   role: "super_admin" | "group_admin";
   username: string;
   userId?: string;
   allowedGroupIds: string[];
+  csrfToken: string;
   publicBaseUrl: string;
 }
 
@@ -382,9 +429,27 @@ export interface BulkApproveResult {
   errorCount: number;
 }
 
+let csrfToken = "";
+
+export function setCsrfToken(token: string | undefined): void {
+  csrfToken = token || "";
+}
+
+function shouldSendCsrf(method: string | undefined): boolean {
+  const normalized = (method || "GET").toUpperCase();
+  return normalized !== "GET" && normalized !== "HEAD" && normalized !== "OPTIONS";
+}
+
 export async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> | undefined || {}),
+  };
+  if (csrfToken && shouldSendCsrf(options.method)) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers,
     ...options,
   });
   if (res.status === 401) {
@@ -410,7 +475,12 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
     }
     throw new Error(message || "请求失败");
   }
-  return res.json() as Promise<T>;
+  const data = await res.json() as T;
+  if (url === "/api/session" || url === "/api/login") {
+    const session = (data as { session?: AdminSession; csrfToken?: string });
+    setCsrfToken(session.session?.csrfToken ?? session.csrfToken);
+  }
+  return data;
 }
 export function queryString(params: Record<string, string | number | boolean | undefined>): string {
   const search = new URLSearchParams();

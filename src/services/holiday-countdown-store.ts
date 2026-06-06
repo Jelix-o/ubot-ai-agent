@@ -1,7 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 
 interface HolidayCountdownStoreFile {
   lastSentDateByGroup: Record<string, string>;
@@ -48,7 +45,6 @@ export class HolidayCountdownStore {
 
   private async writeData(data: HolidayCountdownStoreFile): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }

@@ -23,6 +23,9 @@ test("TtsService decodes audio data, writes wav file, and exposes base64 record 
 
   globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
     const payload = JSON.parse(String(init?.body));
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("api-key"), "test-key");
+    assert.equal(headers.has("authorization"), false);
     assert.equal(payload.model, "mimo-v2-tts");
     assert.equal(payload.audio.voice, "mimo_default");
     assert.match(payload.messages[0].content, /<style>热情 讲故事<\/style>/);

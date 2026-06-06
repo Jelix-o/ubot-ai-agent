@@ -1,9 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import { logWarn } from "../logger.js";
 import type { GroupBotConfig, GroupMemberProfile, GroupMemory } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { AiService } from "./ai-service.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
 import type { GroupMemoryStore } from "./group-memory-store.js";
@@ -261,8 +258,7 @@ export class DailyProfileReviewService {
 
   private async writeData(data: DailyProfileReviewFile): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

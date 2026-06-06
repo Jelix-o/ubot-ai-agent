@@ -1,9 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 
 import type { ProfileRecord, ProfileRecordsFile, ProfileRecordType } from "../types.js";
-import { readJsonFile } from "../utils/json-file.js";
+import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+
+const DEFAULT_SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface ProfileRecordListArgs {
   groupId?: string;
@@ -108,7 +108,7 @@ export class ProfileRecordStore {
       summary: input.summary,
       shareToken: createShareToken(),
       publicEnabled: input.publicEnabled ?? true,
-      expiresAt: input.expiresAt,
+      expiresAt: input.expiresAt ?? new Date(Date.now() + DEFAULT_SHARE_TTL_MS).toISOString(),
       accessCount: 0,
       sourceMemoryCount: input.sourceMemoryCount ?? 0,
       generatedAt: input.generatedAt ?? now,
@@ -193,8 +193,7 @@ export class ProfileRecordStore {
 
   private async writeData(data: ProfileRecordsFile): Promise<void> {
     this.cachedData = data;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await writeJsonFileAtomic(this.filePath, data);
   }
 }
 

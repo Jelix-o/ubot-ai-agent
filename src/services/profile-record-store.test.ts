@@ -33,6 +33,9 @@ test("ProfileRecordStore creates share tokens and finds records by token", async
     assert.match(first.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
     assert.match(second.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
     assert.notEqual(first.shareToken, second.shareToken);
+    assert.ok(first.expiresAt);
+    assert.ok(new Date(first.expiresAt).getTime() > Date.now() + 6 * 24 * 60 * 60 * 1000);
+    assert.ok(new Date(first.expiresAt).getTime() <= Date.now() + 8 * 24 * 60 * 60 * 1000);
     assert.equal((await store.getByShareToken(first.shareToken ?? ""))?.summary, "第一条画像");
     assert.equal(await store.getByShareToken("invalid-token"), undefined);
   });
@@ -84,6 +87,7 @@ test("ProfileRecordStore manages public share state and access count", async () 
     });
 
     assert.equal(created.publicEnabled, true);
+    assert.ok(created.expiresAt);
     assert.equal(created.accessCount, 0);
 
     const accessed = await store.recordShareAccess(created.id);

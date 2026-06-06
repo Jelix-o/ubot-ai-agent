@@ -150,7 +150,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v4\.6\.0/);
+  assert.match(appShell, /UBot v4\.7\.0/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="top-popover theme-popover"/);
@@ -183,10 +183,69 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(routerFile, /component:\s*\(\)\s*=>\s*import\("\.\/views\/OverviewView\.vue"\)/);
 
   const adminServer = await readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8");
+  assert.match(adminServer, /getServerStatusSnapshot/);
+  assert.match(adminServer, /probeSystemModel/);
+  assert.match(adminServer, /environmentStatus/);
+  assert.match(adminServer, /serverStatus/);
+  assert.match(adminServer, /probeType/);
+  assert.match(adminServer, /upstreamStatusCode/);
   assert.match(adminServer, /title:\s*`记忆去重/);
   assert.match(adminServer, /title:\s*`批量审核/);
   assert.match(adminServer, /title:\s*`画像生成/);
   assert.match(adminServer, /title:\s*`模型检测/);
+});
+
+test("admin system status separates environment and server health", async () => {
+  const [healthView, apiTypes] = await Promise.all([
+    readAdminFile(path.join("views", "HealthView.vue")),
+    readAdminFile(path.join("services", "api.ts")),
+  ]);
+
+  assert.match(apiTypes, /interface EnvironmentStatus/);
+  assert.match(apiTypes, /interface ServerStatus/);
+  assert.match(apiTypes, /interface SystemHealthData/);
+  assert.match(apiTypes, /environmentStatus\?:\s*EnvironmentStatus/);
+  assert.match(apiTypes, /serverStatus\?:\s*ServerStatus/);
+  assert.match(apiTypes, /probeType\?:\s*"chat"\s*\|\s*"tts"/);
+  assert.match(apiTypes, /upstreamStatusCode\?:\s*number/);
+  assert.match(healthView, /environmentStatus/);
+  assert.match(healthView, /serverStatus/);
+  assert.match(healthView, /data\.value\?\.serverStatus/);
+  assert.match(healthView, /server\.hostname/);
+  assert.match(healthView, /server\.usedMemory/);
+  assert.match(healthView, /server\.loadAverage/);
+  assert.match(healthView, /model\.probeType/);
+  assert.match(healthView, /model\.upstreamStatusCode/);
+});
+
+test("admin profile list keeps public link actions in details only", async () => {
+  const profilesView = await readAdminFile(path.join("views", "ProfilesView.vue"));
+  const listSection = profilesView.slice(
+    profilesView.indexOf('<div v-else class="profile-list">'),
+    profilesView.indexOf('<aside class="panel detail-panel sticky-detail-panel">'),
+  );
+  const detailSection = profilesView.slice(profilesView.indexOf('<aside class="panel detail-panel sticky-detail-panel">'));
+
+  assert.doesNotMatch(listSection, /openShareUrl/);
+  assert.doesNotMatch(listSection, /copyShareUrl/);
+  assert.match(detailSection, /openShareUrl/);
+  assert.match(detailSection, /copyShareUrl/);
+});
+
+test("model probes and tts use provider-specific health requests", async () => {
+  const [probeService, ttsService, ttsTest] = await Promise.all([
+    readFile(path.join(repoRoot, "src", "services", "model-probe-service.ts"), "utf8"),
+    readFile(path.join(repoRoot, "src", "services", "tts-service.ts"), "utf8"),
+    readFile(path.join(repoRoot, "src", "services", "tts-service.test.ts"), "utf8"),
+  ]);
+
+  assert.match(probeService, /probeType:\s*"tts"/);
+  assert.match(probeService, /upstreamStatusCode/);
+  assert.match(probeService, /"api-key":\s*model\.apiKey/);
+  assert.match(ttsService, /"api-key":\s*this\.apiKey/);
+  assert.doesNotMatch(ttsService, /Authorization:\s*`Bearer/);
+  assert.match(ttsTest, /headers\.get\("api-key"\)/);
+  assert.match(ttsTest, /headers\.has\("authorization"\)/);
 });
 
 test("admin visual smoke covers all routes and key mobile viewports", async () => {

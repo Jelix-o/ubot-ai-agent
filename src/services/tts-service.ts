@@ -42,7 +42,7 @@ export class TtsService {
     const response = await fetch(buildTtsUrl(this.baseUrl), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        "api-key": this.apiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

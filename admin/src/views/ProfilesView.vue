@@ -130,10 +130,10 @@ function openShareUrl(record?: ProfileRecord): void {
 }
 
 function shareStatusLabel(record?: ProfileRecord): string {
-  if (!record?.shareToken) return "No link";
-  if (record.revokedAt || record.publicEnabled === false) return "Revoked";
-  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) return "Expired";
-  return "Public";
+  if (!record?.shareToken) return "暂无链接";
+  if (record.revokedAt || record.publicEnabled === false) return "已撤销";
+  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) return "已过期";
+  return "公开中";
 }
 
 async function updateShareState(record: ProfileRecord, publicEnabled: boolean): Promise<void> {
@@ -146,7 +146,7 @@ async function updateShareState(record: ProfileRecord, publicEnabled: boolean): 
   });
   if (activeRecord.value?.id === record.id) activeRecord.value = updated;
   records.value = records.value.map((item) => item.id === record.id ? updated : item);
-  app.showToast(publicEnabled ? "Profile link restored" : "Profile link revoked");
+  app.showToast(publicEnabled ? "画像公开链接已恢复" : "画像公开链接已撤销");
 }
 
 function memberLabel(userId?: string): string {
@@ -230,8 +230,6 @@ watch(() => [pagination.page, pagination.pageSize], () => {
             <small>来源记忆 {{ record.sourceMemoryCount }} 条 · {{ record.createdBy }}</small>
           </button>
           <div class="row-actions">
-            <button class="ghost-btn" type="button" :disabled="!record.shareUrl" @click="openShareUrl(record)">查看链接</button>
-            <button class="ghost-btn" type="button" :disabled="!record.shareUrl" @click="copyShareUrl(record)">复制链接</button>
             <span class="tag" :class="{ danger: record.publicEnabled === false || Boolean(record.revokedAt) }">{{ shareStatusLabel(record) }}</span>
             <button class="ghost-btn" type="button" :disabled="generating" @click="regenerate(record)">重新生成</button>
             <button class="ghost-btn danger" type="button" @click="removeRecord(record)">删除</button>
