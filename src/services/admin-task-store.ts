@@ -9,6 +9,8 @@ export interface AdminTaskListArgs {
   type?: AdminTaskType;
   status?: AdminTaskStatus;
   groupId?: string;
+  visibleGroupIds?: string[];
+  includeSystemTasks?: boolean;
   q?: string;
   page: number;
   pageSize: number;
@@ -36,10 +38,16 @@ export class AdminTaskStore {
   }> {
     const data = await this.readData();
     const pageSize = Math.max(1, Math.min(100, Math.floor(args.pageSize)));
+    const visibleGroupIds = args.visibleGroupIds ? new Set(args.visibleGroupIds) : undefined;
     const matched = data.tasks
       .filter((task) => !args.type || task.type === args.type)
       .filter((task) => !args.status || task.status === args.status)
       .filter((task) => !args.groupId || task.groupId === args.groupId)
+      .filter((task) => {
+        if (!visibleGroupIds) return true;
+        if (!task.groupId) return args.includeSystemTasks === true;
+        return visibleGroupIds.has(task.groupId);
+      })
       .filter((task) => !args.q || taskMatchesQuery(task, args.q))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     const total = matched.length;

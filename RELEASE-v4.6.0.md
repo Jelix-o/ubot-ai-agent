@@ -31,3 +31,9 @@ $env:ADMIN_SMOKE_SCREENSHOTS='1'; & 'D:\environment\nvm\v22.17.0\node.exe' scrip
 ```text
 release/admin-ui-smoke
 ```
+
+## Task Center Permission Hardening
+
+- `/api/tasks` now applies visible-group constraints before pagination, so `pagination.total` matches the actual tasks a group admin can see.
+- Super admins can still inspect all group and system tasks, while group admins only receive tasks for their accessible enabled groups.
+- Added store-level and HTTP-level regression tests for current-group, all-scope, system-task, other-group, and stale group-admin session cases.

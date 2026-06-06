@@ -726,16 +726,18 @@ export class AdminHttpServer {
       return;
     }
     const effectiveGroupId = session.role === "super_admin" ? groupId : groupId ?? session.allowedGroupIds[0];
+    const visibleGroupIds = (await this.visibleGroups(session)).map((group) => group.groupId);
     const page = await this.options.adminTaskStore.listPage({
       groupId: effectiveGroupId,
+      visibleGroupIds: session.role === "super_admin" ? undefined : visibleGroupIds,
+      includeSystemTasks: session.role === "super_admin",
       type: normalizeTaskType(url.searchParams.get("type") ?? undefined),
       status: normalizeTaskStatus(url.searchParams.get("status") ?? undefined),
       q: normalizeSearchQuery(url.searchParams.get("q") ?? undefined),
       ...paginationParams(url, 20, 100),
     });
-    const visibleGroupIds = new Set((await this.visibleGroups(session)).map((group) => group.groupId));
     this.sendJson(res, {
-      tasks: page.tasks.filter((task) => !task.groupId || visibleGroupIds.has(task.groupId) || session.role === "super_admin"),
+      tasks: page.tasks,
       pagination: page.pagination,
     });
   }

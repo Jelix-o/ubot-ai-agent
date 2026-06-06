@@ -189,6 +189,18 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     }),
     /probe timeout/,
   );
+  const otherGroupTask = await adminTaskStore.create({
+    type: "bulk-review",
+    title: "Other group bulk review",
+    groupId: "100200300",
+    operatorUserId: "99999",
+    detail: "Cross-group task should only appear in super admin all-scope task queries.",
+  });
+  await adminTaskStore.update(otherGroupTask.id, {
+    status: "succeeded",
+    progress: 100,
+    result: { approvedCount: 8 },
+  });
   const skillService = new SkillService(skillsDir);
   const scheduledReminderService = new ScheduledReminderService(
     new ScheduledReminderStore(path.join(dir, "reminders.json")),
@@ -376,6 +388,25 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(searchedTasksByErrorBody.pagination.total, 1);
     assert.equal(searchedTasksByErrorBody.tasks[0]?.type, "model-check");
     assert.equal(searchedTasksByErrorBody.tasks[0]?.status, "failed");
+
+    const allScopeTasks = await fetch(`${baseUrl}/api/tasks?page=1&pageSize=20`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(allScopeTasks.status, 200);
+    const allScopeTasksBody = await allScopeTasks.json() as { tasks: Array<{ type: string; groupId?: string }>; pagination: { total: number } };
+    assert.equal(allScopeTasksBody.pagination.total, 3);
+    assert.equal(allScopeTasksBody.tasks.some((task) => task.groupId === "67890" && task.type === "profile-generate"), true);
+    assert.equal(allScopeTasksBody.tasks.some((task) => task.groupId === "100200300" && task.type === "bulk-review"), true);
+    assert.equal(allScopeTasksBody.tasks.some((task) => !task.groupId && task.type === "model-check"), true);
+
+    const currentGroupTasks = await fetch(`${baseUrl}/api/tasks?groupId=67890&page=1&pageSize=20`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(currentGroupTasks.status, 200);
+    const currentGroupTasksBody = await currentGroupTasks.json() as { tasks: Array<{ type: string; groupId?: string }>; pagination: { total: number } };
+    assert.equal(currentGroupTasksBody.pagination.total, 1);
+    assert.equal(currentGroupTasksBody.tasks[0]?.groupId, "67890");
+    assert.equal(currentGroupTasksBody.tasks[0]?.type, "profile-generate");
 
     const settingsRead = await fetch(`${baseUrl}/api/system-settings`, {
       headers: { Cookie: cookie ?? "" },
@@ -1655,6 +1686,29 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(groupAdminForbiddenLogs.status, 403);
 
+    const groupAdminTasks = await fetch(`${baseUrl}/api/tasks?page=1&pageSize=20`, {
+      headers: { Cookie: groupAdminCookie ?? "" },
+    });
+    assert.equal(groupAdminTasks.status, 200);
+    const groupAdminTasksBody = await groupAdminTasks.json() as { tasks: Array<{ type: string; groupId?: string }>; pagination: { total: number } };
+    assert.equal(groupAdminTasksBody.pagination.total, groupAdminTasksBody.tasks.length);
+    assert.equal(groupAdminTasksBody.tasks.some((task) => task.groupId === "67890" && task.type === "profile-generate"), true);
+    assert.equal(groupAdminTasksBody.tasks.every((task) => task.groupId === "67890"), true);
+    assert.equal(groupAdminTasksBody.tasks.some((task) => !task.groupId || task.groupId === "100200300"), false);
+
+    const groupAdminSystemTaskSearch = await fetch(`${baseUrl}/api/tasks?q=probe%20timeout&page=1&pageSize=20`, {
+      headers: { Cookie: groupAdminCookie ?? "" },
+    });
+    assert.equal(groupAdminSystemTaskSearch.status, 200);
+    const groupAdminSystemTaskSearchBody = await groupAdminSystemTaskSearch.json() as { tasks: unknown[]; pagination: { total: number } };
+    assert.equal(groupAdminSystemTaskSearchBody.pagination.total, 0);
+    assert.deepEqual(groupAdminSystemTaskSearchBody.tasks, []);
+
+    const groupAdminForbiddenTasks = await fetch(`${baseUrl}/api/tasks?groupId=100200300&page=1&pageSize=20`, {
+      headers: { Cookie: groupAdminCookie ?? "" },
+    });
+    assert.equal(groupAdminForbiddenTasks.status, 403);
+
     const groupReminder = await fetch(`${baseUrl}/api/groups/67890/reminders`, {
       method: "POST",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -1698,6 +1752,11 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: groupAdminCookie ?? "" },
     });
     assert.equal(staleProfileRecords.status, 403);
+
+    const staleTasks = await fetch(`${baseUrl}/api/tasks?page=1&pageSize=20`, {
+      headers: { Cookie: groupAdminCookie ?? "" },
+    });
+    assert.equal(staleTasks.status, 403);
 
     const staleProfileRecordItem = await fetch(`${baseUrl}/api/profile-records/${profileRecordIdForPermission}`, {
       headers: { Cookie: groupAdminCookie ?? "" },

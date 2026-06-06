@@ -93,3 +93,50 @@ test("AdminTaskStore searches task title, result, and errors before pagination",
     assert.equal(byTitle.tasks[0]?.subjectUserId, "20001");
   });
 });
+
+test("AdminTaskStore filters visible group tasks before pagination", async () => {
+  await withStore(async (store) => {
+    await store.run({
+      type: "profile-generate",
+      title: "Visible group task",
+      groupId: "67890",
+      subjectUserId: "20001",
+      operatorUserId: "admin",
+    }, async () => ({ recordId: "visible-profile" }));
+    await store.run({
+      type: "bulk-review",
+      title: "Other group task",
+      groupId: "100200300",
+      operatorUserId: "admin",
+    }, async () => ({ approvedCount: 8 }));
+    await assert.rejects(
+      () => store.run({
+        type: "model-check",
+        title: "System model check",
+        operatorUserId: "admin",
+      }, async () => {
+        throw new Error("system probe failed");
+      }),
+      /system probe failed/,
+    );
+
+    const groupOnly = await store.listPage({
+      visibleGroupIds: ["67890"],
+      includeSystemTasks: false,
+      page: 1,
+      pageSize: 1,
+    });
+    assert.equal(groupOnly.pagination.total, 1);
+    assert.equal(groupOnly.tasks[0]?.groupId, "67890");
+
+    const withSystem = await store.listPage({
+      visibleGroupIds: ["67890"],
+      includeSystemTasks: true,
+      page: 1,
+      pageSize: 20,
+    });
+    assert.equal(withSystem.pagination.total, 2);
+    assert.equal(withSystem.tasks.some((task) => !task.groupId && task.type === "model-check"), true);
+    assert.equal(withSystem.tasks.some((task) => task.groupId === "100200300"), false);
+  });
+});
