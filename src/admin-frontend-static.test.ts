@@ -86,6 +86,14 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(settingsView, /管理员秘钥/);
   assert.match(settingsView, /v-model="model\.id"/);
   assert.match(settingsView, /placeholder="reply-pro"/);
+  assert.match(settingsView, /modelRowKey\(model\)/);
+  assert.doesNotMatch(settingsView, /:key="model\.id"/);
+  assert.match(settingsView, /模型类型/);
+  assert.match(settingsView, /modelPurposeLabel\(model\.purpose\)/);
+  assert.match(settingsView, /保存模型配置/);
+  assert.match(settingsView, /模型配置尚未保存/);
+  assert.match(settingsView, /保存后才会进入群配置和 #模型 切换列表/);
+  assert.match(settingsView, /markModelsDirty/);
   assert.match(settingsView, /activePurpose = shallowRef<SystemModelPurpose>\("reply"\)/);
   assert.match(settingsView, /modelTemplate\(purpose = activePurpose\.value\)/);
   assert.match(settingsView, /const modelPurposeOptions/);

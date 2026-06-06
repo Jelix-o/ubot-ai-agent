@@ -10,7 +10,10 @@ const saving = shallowRef(false);
 const testingModelId = shallowRef("");
 const groupQuery = shallowRef("");
 const activePurpose = shallowRef<SystemModelPurpose>("reply");
+const modelSettingsDirty = shallowRef(false);
 const secretForm = reactive({ adminSecret: "", groupAdminSecret: "" });
+const modelRowKeys = new WeakMap<SystemModelConfig, string>();
+let modelRowKeySeed = 0;
 const settings = reactive<SystemSettings>({
   profileSummaryMaxChars: 1800,
   profileShortSummaryMaxChars: 140,
@@ -57,6 +60,24 @@ function modelTemplate(purpose = activePurpose.value): SystemModelConfig {
   };
 }
 
+function modelRowKey(model: SystemModelConfig): string {
+  const existing = modelRowKeys.get(model);
+  if (existing) return existing;
+  modelRowKeySeed += 1;
+  const key = `model-row-${modelRowKeySeed}`;
+  modelRowKeys.set(model, key);
+  return key;
+}
+
+function modelPurposeLabel(purpose: SystemModelPurpose): string {
+  const meta = modelPurposeOptions.find((item) => item.value === purpose);
+  return meta ? `${meta.label} / ${meta.value}` : purpose;
+}
+
+function markModelsDirty(): void {
+  modelSettingsDirty.value = true;
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   try {
@@ -79,6 +100,7 @@ async function save(): Promise<void> {
     });
     Object.assign(settings, next);
     await app.loadGroups();
+    modelSettingsDirty.value = false;
     app.showToast("系统设置已保存");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -132,6 +154,8 @@ async function toggleGroup(group: GroupConfig): Promise<void> {
 
 function addModel(): void {
   settings.models.push(modelTemplate());
+  markModelsDirty();
+  app.showToast("模型已添加，保存模型配置后才会生效。");
 }
 
 function removeModel(index: number, model: SystemModelConfig): void {
@@ -139,10 +163,12 @@ function removeModel(index: number, model: SystemModelConfig): void {
   if (settings.selectedModelIds[model.purpose] === model.id) {
     delete settings.selectedModelIds[model.purpose];
   }
+  markModelsDirty();
 }
 
 function selectModel(model: SystemModelConfig): void {
   settings.selectedModelIds[model.purpose] = model.id;
+  markModelsDirty();
 }
 
 async function testModel(model: SystemModelConfig): Promise<void> {
@@ -242,8 +268,12 @@ onMounted(() => {
           <h2>模型配置</h2>
           <p>按模型分类维护配置。对话回复可启用多个模型供群配置选择，其它分类仍按默认模型使用；API Key 留空表示保留旧值。</p>
         </div>
-        <button class="ghost-btn" type="button" @click="addModel">新增 {{ activePurposeMeta.label }} 模型</button>
+        <div class="model-actions">
+          <button class="ghost-btn" type="button" @click="addModel">新增 {{ activePurposeMeta.label }} 模型</button>
+          <button class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存模型配置" }}</button>
+        </div>
       </div>
+      <p v-if="modelSettingsDirty" class="dirty-hint">模型配置尚未保存，保存后才会进入群配置和 #模型 切换列表。</p>
       <div class="purpose-tabs">
         <button v-for="item in modelPurposeOptions" :key="item.value" type="button" :class="{ active: activePurpose === item.value }" @click="activePurpose = item.value">
           <strong>{{ item.label }}</strong>
@@ -254,6 +284,7 @@ onMounted(() => {
       <div v-else class="model-table">
         <div class="table-head">
           <span>使用</span>
+          <span>模型类型</span>
           <span>模型信息</span>
           <span>Base URL</span>
           <span>模型名</span>
@@ -261,17 +292,18 @@ onMounted(() => {
           <span>API Key</span>
           <span>操作</span>
         </div>
-        <article v-for="model in activePurposeModels" :key="model.id" class="table-row">
+        <article v-for="model in activePurposeModels" :key="modelRowKey(model)" class="table-row">
           <label class="radio-cell"><input type="radio" :checked="settings.selectedModelIds[model.purpose] === model.id" :disabled="!model.enabled" @change="selectModel(model)" /></label>
+          <span class="purpose-cell">{{ modelPurposeLabel(model.purpose) }}</span>
           <div class="model-name">
-            <input v-model="model.id" class="input" placeholder="reply-pro" />
-            <input v-model="model.name" class="input" placeholder="名称" />
-            <input v-model="model.shortName" class="input" placeholder="简称" />
+            <input v-model="model.id" class="input" placeholder="reply-pro" @input="markModelsDirty" />
+            <input v-model="model.name" class="input" placeholder="名称" @input="markModelsDirty" />
+            <input v-model="model.shortName" class="input" placeholder="简称" @input="markModelsDirty" />
           </div>
-          <input v-model="model.baseUrl" class="input" placeholder="https://api.example.com/v1" />
-          <input v-model="model.model" class="input" placeholder="model-name" />
-          <label class="mini-check"><input v-model="model.enabled" type="checkbox" /> 启用</label>
-          <input v-model="model.apiKey" class="input" type="password" :placeholder="model.hasApiKey ? '已保存，留空保留' : '未设置'" />
+          <input v-model="model.baseUrl" class="input" placeholder="https://api.example.com/v1" @input="markModelsDirty" />
+          <input v-model="model.model" class="input" placeholder="model-name" @input="markModelsDirty" />
+          <label class="mini-check"><input v-model="model.enabled" type="checkbox" @change="markModelsDirty" /> 启用</label>
+          <input v-model="model.apiKey" class="input" type="password" :placeholder="model.hasApiKey ? '已保存，留空保留' : '未设置'" @input="markModelsDirty" />
           <div class="row-actions">
             <button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? "检测中" : "检测连接" }}</button>
             <button class="link-btn danger" type="button" @click="removeModel(modelIndex(model), model)">删除</button>
@@ -285,6 +317,7 @@ onMounted(() => {
 <style scoped>
 .toolbar,
 .switch-row,
+.model-actions,
 .row-actions {
   display: flex;
   align-items: center;
@@ -397,6 +430,21 @@ onMounted(() => {
   line-height: 1.45;
 }
 
+.model-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dirty-hint {
+  margin: 0 0 12px;
+  border: 1px solid rgba(217, 119, 6, 0.28);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400e;
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
 .model-table {
   overflow: auto;
   border: 1px solid var(--line);
@@ -406,10 +454,10 @@ onMounted(() => {
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 64px minmax(180px, 0.9fr) minmax(190px, 1fr) minmax(130px, 0.7fr) 78px minmax(150px, 0.75fr) 156px;
+  grid-template-columns: 64px minmax(130px, 0.55fr) minmax(180px, 0.9fr) minmax(190px, 1fr) minmax(130px, 0.7fr) 78px minmax(150px, 0.75fr) 156px;
   gap: 12px;
   align-items: center;
-  min-width: 1120px;
+  min-width: 1260px;
   border-bottom: 1px solid var(--line);
   padding: 12px;
 }
@@ -436,6 +484,13 @@ onMounted(() => {
 .model-name {
   display: grid;
   gap: 8px;
+}
+
+.purpose-cell {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 .radio-cell,
