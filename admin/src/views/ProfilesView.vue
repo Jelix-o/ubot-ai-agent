@@ -101,34 +101,6 @@ async function removeRecord(record: ProfileRecord): Promise<void> {
   app.showToast("画像记录已删除");
 }
 
-async function copyShareUrl(record?: ProfileRecord): Promise<void> {
-  const url = record?.shareUrl;
-  if (!url) {
-    app.showToast("这条画像暂无公开链接", "error");
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(url);
-    app.showToast("画像公开链接已复制");
-  } catch {
-    const input = document.createElement("input");
-    input.value = url;
-    document.body.appendChild(input);
-    input.select();
-    document.execCommand("copy");
-    input.remove();
-    app.showToast("画像公开链接已复制");
-  }
-}
-
-function openShareUrl(record?: ProfileRecord): void {
-  if (!record?.shareUrl) {
-    app.showToast("这条画像暂无公开链接", "error");
-    return;
-  }
-  window.open(record.shareUrl, "_blank", "noopener,noreferrer");
-}
-
 function shareStatusLabel(record?: ProfileRecord): string {
   if (!record?.shareToken) return "暂无链接";
   if (record.revokedAt || record.publicEnabled === false) return "已撤销";
@@ -251,8 +223,6 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <p>{{ memberLabel(activeRecord?.userId) }}</p>
         </div>
         <div v-if="activeRecord" class="detail-actions">
-          <button class="ghost-btn" type="button" :disabled="!activeRecord.shareUrl" @click="openShareUrl(activeRecord)">查看链接</button>
-          <button class="ghost-btn" type="button" :disabled="!activeRecord.shareUrl" @click="copyShareUrl(activeRecord)">复制链接</button>
           <button v-if="activeRecord.publicEnabled !== false && !activeRecord.revokedAt" class="ghost-btn danger" type="button" @click="updateShareState(activeRecord, false)">撤销公开</button>
           <button v-else class="ghost-btn" type="button" @click="updateShareState(activeRecord, true)">恢复公开</button>
         </div>

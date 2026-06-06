@@ -57,7 +57,7 @@ function applyFilters(): void {
 }
 
 function actionLabel(action: string): string {
-  return ({
+  const known = ({
     memory_dedup_apply: "记忆去重",
     candidate_bulk_approve: "批量审核",
     profile_generate: "画像生成",
@@ -65,7 +65,9 @@ function actionLabel(action: string): string {
     profile_share_revoke: "撤销公开",
     profile_share_update: "公开链接",
     model_check: "模型检测",
-  } as Record<string, string>)[action] || action;
+  } as Record<string, string>)[action];
+  if (known) return known;
+  return `未知操作（${humanizeActionCode(action)}）`;
 }
 
 function detailLabel(entry: AdminOperationLogEntry): string {
@@ -74,7 +76,7 @@ function detailLabel(entry: AdminOperationLogEntry): string {
   if (entry.action === "model_check") {
     const ok = detail.match(/^ok\s+(\d+)ms$/i);
     if (ok) return `模型连接正常，延迟 ${ok[1]}ms。`;
-    return `模型检测不通过：${detail}`;
+    return `模型检测不通过：${translateDetailText(detail)}`;
   }
   if (entry.action === "memory_dedup_apply") {
     return detail
@@ -85,11 +87,38 @@ function detailLabel(entry: AdminOperationLogEntry): string {
   if (entry.action === "profile_share_update") return "已更新画像公开链接。";
   if (entry.action === "profile_generate") return `生成画像：${profileTypeText(detail)}`;
   if (entry.action === "profile_refresh") return `刷新画像：${profileTypeText(detail)}`;
-  return detail;
+  return translateDetailText(detail);
 }
 
 function profileTypeText(value: string): string {
   return value === "yesterday" ? "昨日画像" : value === "overall" ? "群聊画像" : value || "未指定类型";
+}
+
+function humanizeActionCode(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .trim() || "未记录动作";
+}
+
+function translateDetailText(value: string): string {
+  return value
+    .replace(/\bconnection_failed\b/gi, "连接失败")
+    .replace(/\btimeout\b/gi, "超时")
+    .replace(/\bprobe timeout\b/gi, "检测超时")
+    .replace(/\brequest failed\b/gi, "请求失败")
+    .replace(/\bforbidden\b/gi, "无权限")
+    .replace(/\bunauthorized\b/gi, "未登录或会话失效")
+    .replace(/\binvalid_json\b/gi, "JSON 格式错误")
+    .replace(/\brequest_body_too_large\b/gi, "请求内容过大")
+    .replace(/\balready_disabled\b/gi, "已停用")
+    .replace(/\bnot_found\b/gi, "未找到")
+    .replace(/\btarget_not_found\b/gi, "目标未找到")
+    .replace(/\btarget_disabled\b/gi, "目标已停用")
+    .replace(/\bduplicate_decision\b/gi, "重复处理建议")
+    .replace(/\binvalid_target\b/gi, "目标无效")
+    .replace(/\byesterday\b/gi, "昨日画像")
+    .replace(/\boverall\b/gi, "群聊画像");
 }
 
 function resetFilters(): void {

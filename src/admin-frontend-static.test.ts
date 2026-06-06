@@ -220,7 +220,7 @@ test("admin system status separates environment and server health", async () => 
   assert.match(healthView, /model\.upstreamStatusCode/);
 });
 
-test("admin profile list keeps public link actions in details only", async () => {
+test("admin profile page hides public link shortcut actions", async () => {
   const profilesView = await readAdminFile(path.join("views", "ProfilesView.vue"));
   const listSection = profilesView.slice(
     profilesView.indexOf('<div v-else class="profile-list">'),
@@ -230,8 +230,12 @@ test("admin profile list keeps public link actions in details only", async () =>
 
   assert.doesNotMatch(listSection, /openShareUrl/);
   assert.doesNotMatch(listSection, /copyShareUrl/);
-  assert.match(detailSection, /openShareUrl/);
-  assert.match(detailSection, /copyShareUrl/);
+  assert.doesNotMatch(detailSection, /openShareUrl/);
+  assert.doesNotMatch(detailSection, /copyShareUrl/);
+  assert.doesNotMatch(profilesView, /查看链接/);
+  assert.doesNotMatch(profilesView, /复制链接/);
+  assert.match(detailSection, /updateShareState\(activeRecord,\s*false\)/);
+  assert.match(detailSection, /updateShareState\(activeRecord,\s*true\)/);
 });
 
 test("model probes and tts use provider-specific health requests", async () => {
@@ -323,6 +327,11 @@ test("admin audit view exposes operation log filters and table", async () => {
   assert.match(auditView, /查看详情/);
   assert.match(auditView, /formatDateTime\(entry\.timestamp\)/);
   assert.match(auditView, /actionLabel\(entry\.action\)/);
+  assert.match(auditView, /未知操作/);
+  assert.match(auditView, /humanizeActionCode/);
+  assert.match(auditView, /translateDetailText/);
+  assert.match(auditView, /连接失败/);
+  assert.match(auditView, /请求失败/);
 });
 
 test("admin health view exposes model health history details", async () => {
