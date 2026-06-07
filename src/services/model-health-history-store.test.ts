@@ -28,6 +28,29 @@ test("ModelHealthHistoryStore serializes concurrent records", async () => {
   }
 });
 
+test("ModelHealthHistoryStore prunes old unselected records", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "model-health-history-"));
+  try {
+    const store = new ModelHealthHistoryStore(path.join(dir, "model-health.json"));
+    const baseTime = Date.parse("2026-06-07T00:00:00.000Z");
+    for (let index = 0; index < 210; index += 1) {
+      await store.record({
+        ...makeEntry(`model-${String(index).padStart(3, "0")}`, "custom"),
+        selected: index === 0,
+        checkedAt: new Date(baseTime + index).toISOString(),
+      });
+    }
+
+    const entries = await store.list();
+    assert.equal(entries.length, 200);
+    assert.equal(entries.some((entry) => entry.id === "model-000" && entry.selected), true);
+    assert.equal(entries.some((entry) => entry.id === "model-001"), false);
+    assert.equal(entries.some((entry) => entry.id === "model-209"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 function makeEntry(id: string, purpose: ModelHealthHistoryEntry["purpose"]): ModelHealthHistoryEntry {
   return {
     id,

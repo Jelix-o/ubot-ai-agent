@@ -14,6 +14,8 @@ interface ModelHealthHistoryFile {
   models: Record<string, ModelHealthHistoryEntry>;
 }
 
+const MAX_MODEL_HEALTH_HISTORY = 200;
+
 export class ModelHealthHistoryStore {
   private cachedData?: ModelHealthHistoryFile;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -36,7 +38,7 @@ export class ModelHealthHistoryStore {
     return await this.enqueueWrite(async () => {
       const data = await this.readData();
       data.models[normalized.id] = normalized;
-      await this.writeData(data);
+      await this.writeData(normalizeFile(data));
       return cloneEntry(normalized);
     });
   }
@@ -79,7 +81,7 @@ function normalizeFile(value: Partial<ModelHealthHistoryFile>): ModelHealthHisto
       models[entry.id] = entry;
     }
   }
-  return { models };
+  return { models: pruneModels(models) };
 }
 
 function normalizeEntry(value: Partial<ModelHealthHistoryEntry>): ModelHealthHistoryEntry {
@@ -127,4 +129,21 @@ function normalizeLatency(value: unknown): number {
 
 function cloneEntry(entry: ModelHealthHistoryEntry): ModelHealthHistoryEntry {
   return { ...entry };
+}
+
+function pruneModels(models: Record<string, ModelHealthHistoryEntry>): Record<string, ModelHealthHistoryEntry> {
+  const entries = Object.values(models);
+  if (entries.length <= MAX_MODEL_HEALTH_HISTORY) {
+    return models;
+  }
+  const kept = entries
+    .sort((left, right) => {
+      if (left.selected !== right.selected) {
+        return left.selected ? -1 : 1;
+      }
+      return right.checkedAt.localeCompare(left.checkedAt) || left.id.localeCompare(right.id);
+    })
+    .slice(0, MAX_MODEL_HEALTH_HISTORY)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return Object.fromEntries(kept.map((entry) => [entry.id, entry]));
 }
