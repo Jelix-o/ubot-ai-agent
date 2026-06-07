@@ -26,6 +26,7 @@ const activeModelMeta = computed(() => {
     { label: "缓存状态", value: model.cached ? "缓存结果" : "实时检测" },
     { label: "探测类型", value: model.probeType === "tts" ? "语音合成" : "文本对话" },
     { label: "上游状态", value: model.upstreamStatusCode ? `HTTP ${model.upstreamStatusCode}` : "-" },
+    { label: "失败类型", value: model.failureKind ? failureKindLabel(model.failureKind) : "-" },
     { label: "模型名称", value: model.model || "-" },
     { label: "服务地址", value: model.baseUrl || "-" },
   ];
@@ -64,6 +65,19 @@ function nodeStatus(): HealthStatus {
 
 function transportStatus(): HealthStatus | undefined {
   return data.value?.environmentStatus?.transportHealth ?? data.value?.transportHealth;
+}
+
+function failureKindLabel(kind: NonNullable<HealthStatus["failureKind"]>): string {
+  const labels: Record<NonNullable<HealthStatus["failureKind"]>, string> = {
+    auth: "鉴权失败",
+    rate_limit: "限流",
+    unavailable: "上游不可用",
+    timeout: "超时",
+    network: "网络异常",
+    format_error: "响应格式异常",
+    unknown: "未知",
+  };
+  return labels[kind] ?? kind;
 }
 
 function formatBytes(value?: number): string {

@@ -15,6 +15,7 @@ import type {
   SkillDefinition,
 } from "../types.js";
 import type { BufferedMessage } from "./live-chat-service.js";
+import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type ChatCompletionsClient = Pick<OpenAI.Chat.Completions, "create">;
@@ -156,6 +157,7 @@ export class AiService {
       this.cachedHealth = status;
       return status;
     } catch (error) {
+      const failureKind = classifyUpstreamFailure({ error });
       const status: AiHealthStatus = {
         ok: false,
         detail: `画像/记忆模型不可用：${(error as Error).message}`,
@@ -164,6 +166,7 @@ export class AiService {
         checkedAt: new Date().toISOString(),
         latencyMs: Date.now() - startedAt,
         cached: false,
+        failureKind,
       };
       this.cachedHealth = status;
       return status;

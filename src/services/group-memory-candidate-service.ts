@@ -26,6 +26,7 @@ export interface GroupMemoryCandidateFlushStats {
   autoApprovedCount: number;
   pendingCount: number;
   skippedDuplicateCount: number;
+  skippedLowValueCount: number;
   mergedCandidateCount: number;
   refinedMemoryCount: number;
 }
@@ -232,6 +233,7 @@ export class GroupMemoryCandidateService {
       let autoApprovedCount = 0;
       let pendingCount = 0;
       let skippedDuplicateCount = 0;
+      let skippedLowValueCount = 0;
       let mergedCandidateCount = 0;
       let refinedMemoryCount = 0;
       for (const rawCandidate of candidates) {
@@ -239,6 +241,18 @@ export class GroupMemoryCandidateService {
         if (!candidate) {
           await this.addPendingLanguageReviewCandidate(groupId, rawCandidate, evidence);
           pendingCount += 1;
+          continue;
+        }
+        const lowValueReason = getLowValueMemoryReason(candidate);
+        if (lowValueReason) {
+          skippedLowValueCount += 1;
+          logInfo("Skipped low-value group memory candidate.", {
+            groupId,
+            type: candidate.type,
+            subjectUserId: candidate.subjectUserId,
+            title: candidate.title,
+            reason: lowValueReason,
+          });
           continue;
         }
         const subjectUserId =
@@ -348,6 +362,7 @@ export class GroupMemoryCandidateService {
         autoApprovedCount,
         pendingCount,
         skippedDuplicateCount,
+        skippedLowValueCount,
         mergedCandidateCount,
         refinedMemoryCount,
       };
@@ -470,6 +485,40 @@ function shouldAutoApprove(candidate: GroupMemoryCandidate): boolean {
     return false;
   }
   return candidate.type === "group_fact" || Boolean(candidate.subjectUserId);
+}
+
+function getLowValueMemoryReason(candidate: ExtractedGroupMemoryCandidate): string | undefined {
+  const title = normalizeMemoryText(candidate.title);
+  const content = normalizeMemoryText(candidate.content);
+  const combined = `${title} ${content}`.trim();
+  const meaningfulChars = combined.replace(/[\s\p{P}\p{S}]/gu, "");
+  if (meaningfulChars.length < 8) {
+    return "too_short";
+  }
+  const allowDurableSignals = /(喜欢|偏好|习惯|忌口|不能吃|过敏|身份|职业|负责|长期|固定|规则|约定|作息|常用|昵称|称呼|住在|来自|生日|设备|模型|项目|权限|管理员|群规)/u;
+  if (allowDurableSignals.test(combined)) {
+    return undefined;
+  }
+
+  const transientSignals = /(今天|昨天|明天|刚刚|现在|今晚|最近|临时|一会|待会|马上|正在|心情|开心|难过|生气|累了|困了|吃饭|睡觉|下班|上班|到家|路上)/u;
+  if (transientSignals.test(combined)) {
+    return "transient";
+  }
+
+  const vagueSignals = /(很活跃|经常发言|参与聊天|喜欢聊天|比较幽默|性格开朗|话很多|存在感|互动频繁|群里成员|普通成员)/u;
+  if (vagueSignals.test(combined)) {
+    return "vague_profile";
+  }
+
+  if (candidate.type === "member_profile" && !candidate.subjectUserId) {
+    return "missing_subject";
+  }
+
+  return undefined;
+}
+
+function normalizeMemoryText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 type CandidateLike = Pick<

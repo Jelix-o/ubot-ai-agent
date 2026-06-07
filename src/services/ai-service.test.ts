@@ -496,3 +496,16 @@ test("checkHealth treats successful empty completions as available", async () =>
   assert.equal(health.baseUrl, "https://example.invalid/v1");
   assert.equal(health.cached, false);
 });
+
+test("checkHealth classifies upstream failures", async () => {
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create() {
+      throw new Error("rate limit exceeded");
+    },
+  } as never);
+
+  const health = await service.checkHealth({ refresh: true });
+
+  assert.equal(health.ok, false);
+  assert.equal(health.failureKind, "rate_limit");
+});

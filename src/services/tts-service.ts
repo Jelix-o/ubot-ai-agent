@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import type { SkillDefinition } from "../types.js";
 import { buildTtsInputText } from "../utils/tts-text.js";
+import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
 
 interface TtsCompletionResponse {
   choices?: Array<{
@@ -35,6 +36,7 @@ export class TtsServiceError extends Error {
       model: string;
       systemModelId?: string;
       statusCode?: number;
+      failureKind?: UpstreamFailureKind;
     },
   ) {
     super(message);
@@ -82,6 +84,7 @@ export class TtsService {
           baseUrl: this.baseUrl,
           model: this.model,
           statusCode: response.status,
+          failureKind: classifyUpstreamFailure({ statusCode: response.status, message: errorText }),
         },
       );
     }
@@ -92,6 +95,7 @@ export class TtsService {
       throw new TtsServiceError("MiMo TTS response did not contain audio data.", {
         baseUrl: this.baseUrl,
         model: this.model,
+        failureKind: classifyUpstreamFailure({ message: "MiMo TTS response did not contain audio data." }),
       });
     }
 
@@ -100,6 +104,7 @@ export class TtsService {
       throw new TtsServiceError("MiMo TTS returned empty audio data.", {
         baseUrl: this.baseUrl,
         model: this.model,
+        failureKind: classifyUpstreamFailure({ message: "MiMo TTS returned empty audio data." }),
       });
     }
 

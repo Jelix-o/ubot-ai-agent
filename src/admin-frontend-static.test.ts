@@ -163,7 +163,6 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /class="top-popover theme-popover"/);
   assert.match(appShell, /class="top-popover user-popover"/);
   assert.match(appShell, /<AppIcon name="theme"/);
-  assert.match(appShell, /iteration:\s*"iteration"/);
   assert.match(appShell, /tasks:\s*"tasks"/);
   assert.match(appShell, /audit:\s*"audit"/);
   assert.doesNotMatch(appShell, /tasks:\s*"list"[\s\S]*audit:\s*"list"/);
@@ -193,13 +192,11 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(routerFile, /title:\s*"系统状态"/);
   assert.match(routerFile, /path:\s*"\/tasks"/);
   assert.match(routerFile, /TasksView\.vue/);
-  assert.match(routerFile, /path:\s*"\/iteration"/);
-  assert.match(routerFile, /IterationView\.vue/);
-  assert.match(routerFile, /name:\s*"iteration"[\s\S]*superOnly:\s*true/);
+  assert.doesNotMatch(routerFile, new RegExp("path:\\s*\"\\/" + "iter" + "ation" + "\""));
+  assert.doesNotMatch(routerFile, new RegExp("Iter" + "ationView\\.vue"));
   assert.match(routerFile, /path:\s*"\/audit"/);
   assert.match(routerFile, /AuditView\.vue/);
 
-  assert.match(routerFile, /path:\s*"\/knowledge"[\s\S]*path:\s*"\/iteration"[\s\S]*path:\s*"\/skills"/);
   assert.match(routerFile, /path:\s*"\/commands"[\s\S]*path:\s*"\/tasks"[\s\S]*path:\s*"\/audit"[\s\S]*path:\s*"\/health"/);
   assert.match(routerFile, /path:\s*"\/health"[\s\S]*path:\s*"\/settings"/);
   assert.match(routerFile, /name:\s*"settings"[\s\S]*superOnly:\s*true/);
@@ -231,6 +228,7 @@ test("admin system status separates environment and server health", async () => 
   assert.match(apiTypes, /serverStatus\?:\s*ServerStatus/);
   assert.match(apiTypes, /probeType\?:\s*"chat"\s*\|\s*"tts"/);
   assert.match(apiTypes, /upstreamStatusCode\?:\s*number/);
+  assert.match(apiTypes, /failureKind\?:/);
   assert.match(healthView, /environmentStatus/);
   assert.match(healthView, /serverStatus/);
   assert.match(healthView, /data\.value\?\.serverStatus/);
@@ -239,6 +237,8 @@ test("admin system status separates environment and server health", async () => 
   assert.match(healthView, /server\.loadAverage/);
   assert.match(healthView, /model\.probeType/);
   assert.match(healthView, /model\.upstreamStatusCode/);
+  assert.match(healthView, /model\.failureKind/);
+  assert.match(healthView, /failureKindLabel/);
 });
 
 test("admin profile page keeps public link actions in the list", async () => {
@@ -286,7 +286,7 @@ test("model probes and tts use provider-specific health requests", async () => {
 test("admin visual smoke covers all routes and key mobile viewports", async () => {
   const smokeScript = await readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8");
 
-  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "iteration", "tasks", "audit", "health", "skills", "commands", "settings"]) {
+  for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "tasks", "audit", "health", "skills", "commands", "settings"]) {
     assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
   }
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
@@ -303,43 +303,30 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
   assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
   assert.match(smokeScript, /\["memories-mobile",\s*"\/memories"/);
-  assert.match(smokeScript, /\["iteration-mobile",\s*"\/iteration"/);
+  assert.doesNotMatch(smokeScript, new RegExp("\\[\"" + "iter" + "ation" + "\","));
+  assert.doesNotMatch(smokeScript, new RegExp("\\[\"" + "iter" + "ation" + "-mobile\","));
   assert.match(smokeScript, /\["tasks-mobile",\s*"\/tasks"/);
   assert.match(smokeScript, /\["tasks-mobile-filters",\s*"\/tasks"/);
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
 });
 
-test("admin self-iteration page wires feedback, plan, and /goal workflows", async () => {
-  const [iterationView, apiTypes, appIcon, adminServer, smokeScript] = await Promise.all([
-    readAdminFile(path.join("views", "IterationView.vue")),
+
+test("admin planning-console module stays removed", async () => {
+  const [apiTypes, appIcon, adminServer, botSource, routerFile, commandsStore] = await Promise.all([
     readAdminFile(path.join("services", "api.ts")),
     readAdminFile(path.join("components", "AppIcon.vue")),
     readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
-    readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8"),
+    readFile(path.join(repoRoot, "src", "bot.ts"), "utf8"),
+    readAdminFile("router.ts"),
+    readFile(path.join(repoRoot, "src", "services", "system-settings-store.ts"), "utf8"),
   ]);
 
-  assert.match(apiTypes, /type IterationFeedbackCategory/);
-  assert.match(apiTypes, /interface IterationFeedbackRecord/);
-  assert.match(apiTypes, /interface IterationPlanRecord/);
-  assert.match(apiTypes, /interface IterationAnalyzeResponse/);
-  assert.match(iterationView, /\/api\/iteration\/feedback/);
-  assert.match(iterationView, /\/api\/iteration\/plans/);
-  assert.match(iterationView, /\/api\/iteration\/analyze/);
-  assert.match(iterationView, /\/api\/iteration\/plans\/\$\{encodeURIComponent\(plan\.id\)\}\/status/);
-  assert.match(iterationView, /\/api\/iteration\/plans\/\$\{encodeURIComponent\(plan\.id\)\}\/apply/);
-  assert.match(iterationView, /navigator\.clipboard\.writeText\(plan\.goalPrompt\)/);
-  assert.match(iterationView, /class="goal-prompt"/);
-  assert.match(iterationView, /生成开发计划/);
-  assert.match(iterationView, /复制 \/goal/);
-  assert.match(appIcon, /name === 'iteration'/);
-  assert.match(adminServer, /handleIterationFeedback/);
-  assert.match(adminServer, /handleIterationAnalyze/);
-  assert.match(adminServer, /self-iteration-analyze/);
-  assert.match(adminServer, /self-iteration-apply/);
-  assert.match(smokeScript, /IterationFeedbackStore/);
-  assert.match(smokeScript, /IterationPlanStore/);
-  assert.match(smokeScript, /iterationFeedbackStore/);
-  assert.match(smokeScript, /iterationPlanStore/);
+  for (const source of [apiTypes, appIcon, adminServer, botSource, routerFile, commandsStore]) {
+    assert.doesNotMatch(source, new RegExp("Iter" + "ationFeedback|Iter" + "ationPlan|Self" + "Iter" + "ation"));
+    assert.doesNotMatch(source, new RegExp("self-" + "iter" + "ation"));
+    assert.doesNotMatch(source, new RegExp("\\/api\\/" + "iter" + "ation"));
+    assert.doesNotMatch(source, new RegExp("#" + "\\u8fed\\u4ee3", "u"));
+  }
 });
 
 test("admin task center exposes task detail records", async () => {

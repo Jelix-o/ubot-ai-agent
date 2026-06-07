@@ -418,7 +418,6 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "ops_alert", title: "告警", primary: "#告警", permission: "group_admin", help: "管理运维告警开关" },
     { id: "memory", title: "记忆", primary: "#记忆", permission: "group_admin", help: "查看记忆状态" },
     { id: "knowledge", title: "知识库", primary: "#知识库", permission: "group_admin", help: "查看知识库状态" },
-    { id: "iteration", title: "自我迭代", primary: "#迭代", permission: "group_admin", help: "提交反馈、查看自我迭代计划和生成开发计划" },
     { id: "profile_yesterday", title: "昨日画像", primary: "#昨日画像", permission: "member", help: "生成成员昨日画像摘要" },
     { id: "profile_overall", title: "群聊画像", primary: "#群聊画像", permission: "member", help: "生成成员群聊画像摘要" },
     { id: "admin", title: "管理员", primary: "#管理员", permission: "super_admin", help: "管理群管理员" },

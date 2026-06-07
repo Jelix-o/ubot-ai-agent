@@ -50,16 +50,14 @@ export interface AiHealthStatus {
   skipped?: boolean;
   probeType?: "chat" | "tts";
   upstreamStatusCode?: number;
+  failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
 
 export type AdminTaskType =
   | "memory-dedup"
   | "profile-generate"
   | "model-check"
-  | "bulk-review"
-  | "self-iteration-analyze"
-  | "self-iteration-apply"
-  | "dev-plan-generate";
+  | "bulk-review";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface AdminTaskRecord {
@@ -83,73 +81,6 @@ export interface AdminTaskRecord {
 
 export interface AdminTasksFile {
   tasks: AdminTaskRecord[];
-}
-
-export type IterationFeedbackSource = "qq_command" | "admin";
-export type IterationFeedbackCategory = "bug" | "behavior" | "data_quality" | "skill" | "model" | "feature" | "ops";
-export type IterationFeedbackStatus = "open" | "planned" | "applied" | "rejected";
-export type IterationRelatedEntityType = "skill" | "memory" | "candidate" | "knowledge" | "profile" | "model" | "command" | "ops";
-
-export interface IterationFeedbackRecord {
-  id: string;
-  groupId: string;
-  operatorUserId: string;
-  source: IterationFeedbackSource;
-  category: IterationFeedbackCategory;
-  title: string;
-  content: string;
-  status: IterationFeedbackStatus;
-  relatedEntityType?: IterationRelatedEntityType;
-  relatedEntityId?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface IterationFeedbackFile {
-  feedback: IterationFeedbackRecord[];
-}
-
-export type IterationPlanStatus = "draft" | "approved" | "applied" | "rejected";
-export type IterationPlanScope = "code" | "config" | "data" | "mixed";
-export type IterationPlanRiskLevel = "low" | "medium" | "high";
-
-export interface IterationPlanEvidenceItem {
-  type: string;
-  title: string;
-  detail: string;
-  groupId?: string;
-  entityId?: string;
-}
-
-export interface IterationPlanRecommendation {
-  type: "skill" | "config" | "data" | "code";
-  title: string;
-  detail: string;
-  action?: "approve_candidates" | "reject_candidates" | "disable_knowledge" | "enable_knowledge" | "skill_patch" | "group_config_patch";
-  targetId?: string;
-  patch?: unknown;
-}
-
-export interface IterationPlanRecord {
-  id: string;
-  title: string;
-  summary: string;
-  status: IterationPlanStatus;
-  generatedBy: "ai" | "manual";
-  scope: IterationPlanScope;
-  goalPrompt: string;
-  evidence: IterationPlanEvidenceItem[];
-  recommendations: IterationPlanRecommendation[];
-  riskLevel: IterationPlanRiskLevel;
-  createdAt: string;
-  updatedAt: string;
-  appliedAt?: string;
-  appliedBy?: string;
-  rejectionReason?: string;
-}
-
-export interface IterationPlansFile {
-  plans: IterationPlanRecord[];
 }
 
 export interface SkillDefinition {
@@ -517,8 +448,6 @@ export interface AppConfig {
   profileRecordsPath: string;
   adminTasksPath: string;
   modelHealthHistoryPath: string;
-  iterationFeedbackPath: string;
-  iterationPlansPath: string;
   adminHttpEnabled: boolean;
   adminHttpHost: string;
   adminHttpPort: number;

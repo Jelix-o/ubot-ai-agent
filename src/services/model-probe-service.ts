@@ -2,6 +2,7 @@ import os from "node:os";
 
 import { AiService } from "./ai-service.js";
 import type { AiHealthStatus, SystemModelConfig } from "../types.js";
+import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
 
 export interface ModelProbeStatus extends AiHealthStatus {
   probeType: "chat" | "tts";
@@ -87,6 +88,7 @@ async function probeTtsModel(model: Pick<SystemModelConfig, "baseUrl" | "model" 
         cached: false,
         probeType: "tts",
         upstreamStatusCode: response.status,
+        failureKind: classifyUpstreamFailure({ statusCode: response.status, message: text }),
       };
     }
     const json = JSON.parse(text) as TtsProbeResponse;
@@ -101,6 +103,7 @@ async function probeTtsModel(model: Pick<SystemModelConfig, "baseUrl" | "model" 
       cached: false,
       probeType: "tts",
       upstreamStatusCode: response.status,
+      ...(audioData ? {} : { failureKind: classifyUpstreamFailure({ message: "TTS response did not contain audio data" }) }),
     };
   } catch (error) {
     return {
@@ -112,6 +115,7 @@ async function probeTtsModel(model: Pick<SystemModelConfig, "baseUrl" | "model" 
       latencyMs: Date.now() - startedAt,
       cached: false,
       probeType: "tts",
+      failureKind: classifyUpstreamFailure({ error }),
     };
   }
 }

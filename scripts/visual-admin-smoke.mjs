@@ -13,8 +13,6 @@ import { GroupConfigService } from "../dist/services/group-config-service.js";
 import { GroupMemoryCandidateService } from "../dist/services/group-memory-candidate-service.js";
 import { GroupMemoryCandidateStore } from "../dist/services/group-memory-candidate-store.js";
 import { GroupMemoryStore } from "../dist/services/group-memory-store.js";
-import { IterationFeedbackStore } from "../dist/services/iteration-feedback-store.js";
-import { IterationPlanStore } from "../dist/services/iteration-plan-store.js";
 import { KnowledgeBaseStore } from "../dist/services/knowledge-base-store.js";
 import { ProfileRecordStore } from "../dist/services/profile-record-store.js";
 import { ModelHealthHistoryStore } from "../dist/services/model-health-history-store.js";
@@ -282,36 +280,6 @@ try {
     target: "mimo",
     detail: "ok 126ms",
   });
-  const iterationFeedbackStore = new IterationFeedbackStore(path.join(tmp, "iteration-feedback.json"));
-  const iterationPlanStore = new IterationPlanStore(path.join(tmp, "iteration-plans.json"));
-  const iterationFeedback = await iterationFeedbackStore.create({
-    groupId: "866209871",
-    operatorUserId: "99999",
-    source: "admin",
-    category: "behavior",
-    title: "Smoke feedback",
-    content: "Need a compact self-iteration planning workflow for production feedback.",
-  });
-  await iterationPlanStore.create({
-    title: "Smoke self-iteration plan",
-    summary: "Verify that the self-iteration admin page can render stored plans and copy a /goal handoff.",
-    generatedBy: "manual",
-    scope: "mixed",
-    riskLevel: "low",
-    goalPrompt: "Run npm test, push chatops/main, deploy /opt/ai-project, and verify production.",
-    evidence: [{
-      type: "feedback",
-      title: iterationFeedback.title,
-      detail: iterationFeedback.content,
-      groupId: iterationFeedback.groupId,
-      entityId: iterationFeedback.id,
-    }],
-    recommendations: [{
-      type: "code",
-      title: "Add self-iteration workflow",
-      detail: "Expose feedback, plans, approval, and /goal copy controls in the admin console.",
-    }],
-  });
   const modelHealthHistoryStore = new ModelHealthHistoryStore(path.join(tmp, "model-health-history.json"));
   await modelHealthHistoryStore.record({
     id: "gpt",
@@ -362,8 +330,6 @@ try {
     profileRecordStore: new ProfileRecordStore(path.join(tmp, "profile-records.json")),
     adminTaskStore,
     modelHealthHistoryStore,
-    iterationFeedbackStore,
-    iterationPlanStore,
     systemSettingsStore: new SystemSettingsStore(path.join(tmp, "system-settings.json"), [
       {
         id: "gpt",
@@ -452,7 +418,6 @@ try {
     ["memories", "/memories"],
     ["profiles", "/profiles"],
     ["knowledge", "/knowledge"],
-    ["iteration", "/iteration"],
     ["tasks", "/tasks"],
     ["audit", "/audit"],
     ["health", "/health"],
@@ -479,7 +444,6 @@ try {
       ["members-mobile", "/members", { width: 390, height: 844 }],
       ["candidates-mobile", "/candidates", { width: 390, height: 844 }],
       ["memories-mobile", "/memories", { width: 390, height: 844 }],
-      ["iteration-mobile", "/iteration", { width: 390, height: 844 }],
       ["tasks-mobile", "/tasks", { width: 390, height: 844 }],
       ["tasks-mobile-filters", "/tasks", { width: 390, height: 844, scrollTo: ".filter-card" }],
       ["settings-mobile", "/settings", { width: 390, height: 844 }],

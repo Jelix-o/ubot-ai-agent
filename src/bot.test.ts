@@ -326,6 +326,7 @@ class FakeAiService {
   }> = [];
   healthOk = true;
   healthCalls = 0;
+  failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 
   constructor(
     private readonly responder: () => Promise<AiReply>,
@@ -353,6 +354,7 @@ class FakeAiService {
     checkedAt: string;
     latencyMs: number;
     cached: boolean;
+    failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
   }> {
     this.healthCalls += 1;
     return {
@@ -363,6 +365,7 @@ class FakeAiService {
       checkedAt: "2026-06-03T00:00:00.000Z",
       latencyMs: 10,
       cached: false,
+      ...(this.failureKind ? { failureKind: this.failureKind } : {}),
     };
   }
 
@@ -1031,13 +1034,31 @@ test("admin health command summarizes transport and local configuration", async 
       blacklistedUserIds: ["30001"],
     },
   ]);
-  const { app } = createApp({ transport, groupConfigService, skills: [assistantSkill] });
+  const profileAiService = new FakeAiService(async () => ({ text: "ok", model: "profile-model", skillId: "assistant" }));
+  profileAiService.healthOk = false;
+  profileAiService.failureKind = "rate_limit";
+  const { app } = createApp({
+    transport,
+    groupConfigService,
+    skills: [assistantSkill],
+    profileAiService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [
+      enabledReplyModel("reply-main"),
+      {
+        ...enabledReplyModel("tts-main"),
+        purpose: "tts",
+        model: "tts-main-model",
+      },
+    ]),
+  });
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#健康检查" } }], 99999));
 
   const health = transport.sent.at(-1)?.text ?? "";
   assert.match(health, /健康检查：群 67890/);
   assert.match(health, /NapCat：异常，反向 WebSocket 未连接/);
+  assert.match(health, /画像\/记忆模型：异常，类型 限流，10ms，profile-model/);
+  assert.match(health, /系统模型配置：启用 2 个/);
   assert.match(health, /当前技能：异常，找不到 missing/);
   assert.match(health, /允许技能：异常，缺失 missing/);
   assert.match(health, /定时任务：总开关已开启，0 个/);

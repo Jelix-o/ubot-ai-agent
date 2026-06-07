@@ -88,8 +88,6 @@ export function loadConfig(): AppConfig {
     profileRecordsPath: path.join(cwd, "data", "profile-records.json"),
     adminTasksPath: path.join(cwd, "data", "admin-tasks.json"),
     modelHealthHistoryPath: path.join(cwd, "data", "model-health-history.json"),
-    iterationFeedbackPath: path.join(cwd, "data", "iteration-feedback.json"),
-    iterationPlansPath: path.join(cwd, "data", "iteration-plans.json"),
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,

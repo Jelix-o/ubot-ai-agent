@@ -14,15 +14,12 @@ import type { GroupMemoryCandidateService } from "./services/group-memory-candid
 import { GroupMemoryDeduplicateService } from "./services/group-memory-deduplicate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
-import type { IterationFeedbackStore } from "./services/iteration-feedback-store.js";
-import type { IterationPlanStore } from "./services/iteration-plan-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
 import type { ProfileRecordStore } from "./services/profile-record-store.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
-import type { SelfIterationService } from "./services/self-iteration-service.js";
 import type { SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { RuntimeTtsService } from "./services/configured-tts-service.js";
@@ -76,7 +73,6 @@ const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
 const YESTERDAY_PROFILE_PREFIX = "#昨日画像";
 const GROUP_PROFILE_PREFIX = "#群聊画像";
-const ITERATION_PREFIX = "#迭代";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const LIVE_CHAT_TICK_MS = 15 * 1000;
 const DAILY_REPORT_TICK_MS = 30 * 1000;
@@ -122,7 +118,6 @@ const RUNTIME_COMMAND_SPECS = {
   health: { builtinPrefix: HEALTH_PREFIX, builtinAliases: [SHORT_HEALTH_PREFIX] },
   help: { builtinPrefix: HELP_PREFIXES[0]!, builtinAliases: HELP_PREFIXES.slice(1) },
   holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
-  iteration: { builtinPrefix: ITERATION_PREFIX, builtinAliases: [] },
   knowledge: { builtinPrefix: KNOWLEDGE_PREFIX, builtinAliases: [] },
   live_chat: { builtinPrefix: LIVE_CHAT_PREFIX, builtinAliases: [] },
   memory: { builtinPrefix: MEMORY_PREFIX, builtinAliases: [] },
@@ -263,9 +258,6 @@ export class BotApplication {
     private readonly replyModelLabels: Partial<Record<ReplyModelMode, string>> = {},
     private readonly systemSettingsStore?: SystemSettingsStore,
     private readonly profileRecordStore?: ProfileRecordStore,
-    private readonly iterationFeedbackStore?: IterationFeedbackStore,
-    private readonly iterationPlanStore?: IterationPlanStore,
-    private readonly selfIterationService?: SelfIterationService,
   ) {}
 
   start(): void {
@@ -452,12 +444,6 @@ export class BotApplication {
     const knowledgeCommand = matchRuntimeCommand(commandText, runtimeCommands, "knowledge");
     if (knowledgeCommand) {
       await this.handleKnowledgeStatusCommand(groupConfig, event);
-      return;
-    }
-
-    const iterationCommand = matchRuntimeCommand(commandText, runtimeCommands, "iteration");
-    if (iterationCommand) {
-      await this.handleIterationCommand(groupConfig, event, iterationCommand.rewrittenText);
       return;
     }
 
@@ -1420,6 +1406,10 @@ export class BotApplication {
       this.scheduledReminderService.listGroupTasks(groupId),
       this.getTransportHealthStatus(),
     ]);
+    const [profileHealth, modelSummary] = await Promise.all([
+      this.getProfileHealthSummary(),
+      this.getSystemModelSummary(),
+    ]);
     const missingAllowedSkillIds = groupConfig.allowedSkillIds.filter((_, index) => !allowedSkills[index]);
     const nextTask = scheduledTasks
       .filter((task) => task.enabled !== false)
@@ -1430,6 +1420,8 @@ export class BotApplication {
       [
         `健康检查：群 ${groupId}`,
         `NapCat：${transportHealth.ok ? "正常" : "异常"}，${transportHealth.detail}`,
+        profileHealth ? `画像/记忆模型：${profileHealth}` : "画像/记忆模型：未配置健康检查",
+        modelSummary ? `系统模型配置：${modelSummary}` : "系统模型配置：未启用后台模型配置",
         `当前技能：${currentSkill ? `正常（${currentSkill.id} / ${currentSkill.name}）` : `异常，找不到 ${groupConfig.currentSkillId}`}`,
         `允许技能：${missingAllowedSkillIds.length === 0 ? `正常（${groupConfig.allowedSkillIds.length} 个）` : `异常，缺失 ${missingAllowedSkillIds.join("、")}`}`,
         `定时任务：${groupConfig.scheduledRemindersEnabled === false ? "总开关已关闭" : "总开关已开启"}，${scheduledTasks.length} 个${nextTask ? `，下次 ${formatLocalDateTime(new Date(nextTask.nextRunAt))}` : ""}`,
@@ -1438,6 +1430,46 @@ export class BotApplication {
         `管理员配置：本群 ${groupConfig.switcherUserIds.length} 人，黑名单 ${(groupConfig.blacklistedUserIds ?? []).length} 人`,
       ].join("\n"),
     );
+  }
+
+  private async getProfileHealthSummary(): Promise<string | undefined> {
+    if (!this.profileReplyAiService) {
+      return undefined;
+    }
+    try {
+      const health = await this.profileReplyAiService.checkHealth({ cacheTtlMs: 60 * 1000 });
+      const status = health.ok ? "正常" : "异常";
+      const failure = health.failureKind ? `，类型 ${formatFailureKind(health.failureKind)}` : "";
+      const latency = Number.isFinite(health.latencyMs) ? `，${health.latencyMs}ms` : "";
+      return `${status}${failure}${latency}，${health.model}`;
+    } catch (error) {
+      return `异常，健康检查失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  private async getSystemModelSummary(): Promise<string | undefined> {
+    if (!this.systemSettingsStore) {
+      return undefined;
+    }
+    try {
+      const settings = await this.systemSettingsStore.getInternal();
+      const enabled = settings.models.filter((model) => model.enabled);
+      const missingKeys = enabled.filter((model) => !model.hasApiKey || !model.apiKey?.trim()).length;
+      const byPurpose = enabled.reduce<Partial<Record<string, number>>>((result, model) => {
+        result[model.purpose] = (result[model.purpose] ?? 0) + 1;
+        return result;
+      }, {});
+      const parts = Object.entries(byPurpose)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([purpose, count]) => `${formatModelPurpose(purpose)} ${count}`);
+      return [
+        `启用 ${enabled.length} 个`,
+        parts.length > 0 ? parts.join("，") : "无可用模型",
+        missingKeys > 0 ? `${missingKeys} 个缺少 Key` : "",
+      ].filter(Boolean).join("，");
+    } catch (error) {
+      return `读取失败：${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   private async handleOperationLogCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
@@ -2623,106 +2655,6 @@ export class BotApplication {
         `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
       ].join("\n"),
     );
-  }
-
-  private async handleIterationCommand(
-    groupConfig: GroupBotConfig,
-    event: NapcatGroupMessageEvent,
-    commandText: string,
-  ): Promise<void> {
-    const groupId = groupConfig.groupId;
-    const userId = String(event.user_id);
-    const normalized = commandText.replace(/\s+/g, " ").trim();
-    const suffix = normalized.slice(ITERATION_PREFIX.length).trim();
-
-    if (!this.iterationFeedbackStore || !this.iterationPlanStore) {
-      await this.sendText(groupId, "自我迭代功能未启用");
-      return;
-    }
-
-    if (!suffix || suffix === "帮助" || suffix === "help") {
-      await this.sendText(
-        groupId,
-        [
-          "自我迭代命令：",
-          `${ITERATION_PREFIX} 反馈 <内容>：提交行为、数据、技能、模型或功能反馈`,
-          `${ITERATION_PREFIX} 状态：查看当前群反馈和计划统计（管理员）`,
-          `${ITERATION_PREFIX} 计划：生成一份可交给 /goal 的开发计划（超级管理员）`,
-        ].join("\n"),
-      );
-      return;
-    }
-
-    if (suffix.startsWith("反馈")) {
-      const content = suffix.slice("反馈".length).trim();
-      if (!content) {
-        await this.sendText(groupId, `格式：${ITERATION_PREFIX} 反馈 <内容>`);
-        return;
-      }
-      const feedback = await this.iterationFeedbackStore.create({
-        groupId,
-        operatorUserId: userId,
-        source: "qq_command",
-        content,
-      });
-      await this.sendText(groupId, `已记录自我迭代反馈：${feedback.id}\n分类：${iterationCategoryLabel(feedback.category)}\n后台会在生成计划时纳入证据。`);
-      return;
-    }
-
-    if (suffix === "状态" || suffix === "列表") {
-      if (!(await this.isAdmin(groupConfig, userId))) {
-        await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
-        return;
-      }
-      const [openFeedback, plannedFeedback, appliedFeedback, recentPlans] = await Promise.all([
-        this.iterationFeedbackStore.list({ groupId, status: "open", limit: 100 }),
-        this.iterationFeedbackStore.list({ groupId, status: "planned", limit: 100 }),
-        this.iterationFeedbackStore.list({ groupId, status: "applied", limit: 100 }),
-        this.iterationPlanStore.list({ limit: 3 }),
-      ]);
-      await this.sendText(
-        groupId,
-        [
-          `自我迭代状态：群 ${groupId}`,
-          `反馈：待规划 ${openFeedback.length}，已规划 ${plannedFeedback.length}，已应用 ${appliedFeedback.length}`,
-          "最近计划：",
-          ...(recentPlans.length > 0
-            ? recentPlans.map((plan) => `- ${plan.title}（${iterationPlanStatusLabel(plan.status)}，${plan.riskLevel}）`)
-            : ["- 暂无计划"]),
-          `后台：${this.adminPublicBaseUrl ?? "未配置"}/iteration`,
-        ].join("\n"),
-      );
-      return;
-    }
-
-    if (suffix === "计划" || suffix === "生成计划") {
-      if (!this.selfIterationService) {
-        await this.sendText(groupId, "自我迭代计划服务未启用");
-        return;
-      }
-      if (!(await this.groupConfigService.isSuperAdmin(userId))) {
-        await this.sendText(groupId, "只有超级管理员可以生成自我迭代开发计划");
-        return;
-      }
-      const plan = await this.selfIterationService.analyze({
-        operatorUserId: userId,
-        groupId,
-      });
-      await this.logAdminOperation(groupId, userId, "自我迭代计划生成", plan.id, plan.title);
-      await this.sendText(
-        groupId,
-        [
-          `已生成自我迭代计划：${plan.title}`,
-          `计划 ID：${plan.id}`,
-          `状态：${iterationPlanStatusLabel(plan.status)}，风险：${plan.riskLevel}`,
-          `后台查看：${this.adminPublicBaseUrl ?? "未配置"}/iteration`,
-          "计划详情里包含可直接交给 /goal 的 Markdown。",
-        ].join("\n"),
-      );
-      return;
-    }
-
-    await this.sendText(groupId, `未知自我迭代命令。发送 ${ITERATION_PREFIX} 帮助 查看格式。`);
   }
 
   private async handleYesterdayProfileCommand(
@@ -4198,27 +4130,6 @@ function createCommandHelpFormatter(commands: SystemCommandConfig[]): CommandHel
   }) as CommandHelpFormatter;
 }
 
-function iterationCategoryLabel(category: string): string {
-  return ({
-    bug: "缺陷",
-    behavior: "行为",
-    data_quality: "数据质量",
-    skill: "技能",
-    model: "模型",
-    feature: "功能",
-    ops: "运维",
-  } as Record<string, string>)[category] ?? category;
-}
-
-function iterationPlanStatusLabel(status: string): string {
-  return ({
-    draft: "草稿",
-    approved: "已批准",
-    applied: "已应用",
-    rejected: "已拒绝",
-  } as Record<string, string>)[status] ?? status;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -4306,7 +4217,33 @@ function formatTtsErrorMeta(error: unknown): Record<string, unknown> {
     ttsBaseUrl: error.details.baseUrl,
     ttsModel: error.details.model,
     ...(error.details.statusCode ? { ttsStatusCode: error.details.statusCode } : {}),
+    ...(error.details.failureKind ? { ttsFailureKind: error.details.failureKind } : {}),
   };
+}
+
+function formatFailureKind(kind: string): string {
+  const labels: Record<string, string> = {
+    auth: "鉴权失败",
+    rate_limit: "限流",
+    unavailable: "上游不可用",
+    timeout: "超时",
+    network: "网络异常",
+    format_error: "响应格式异常",
+    unknown: "未知",
+  };
+  return labels[kind] ?? kind;
+}
+
+function formatModelPurpose(purpose: string): string {
+  const labels: Record<string, string> = {
+    reply: "回复",
+    profile: "画像",
+    memory: "记忆",
+    dedup: "去重",
+    summary: "总结",
+    tts: "语音",
+  };
+  return labels[purpose] ?? purpose;
 }
 
 function scheduleCleanup(cleanup: () => Promise<void>): void {

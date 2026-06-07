@@ -10,7 +10,6 @@ export const routes = [
   { path: "/memories", name: "memories", component: () => import("./views/MemoriesView.vue"), meta: { title: "长期记忆", subtitle: "维护长期记忆、状态、归属、溯源和去重" } },
   { path: "/profiles", name: "profiles", component: () => import("./views/ProfilesView.vue"), meta: { title: "画像总结", subtitle: "查看群聊画像和昨日画像的完整历史记录" } },
   { path: "/knowledge", name: "knowledge", component: () => import("./views/KnowledgeView.vue"), meta: { title: "知识库", subtitle: "管理群内 FAQ 和历史聊天提炼后的知识条目" } },
-  { path: "/iteration", name: "iteration", component: () => import("./views/IterationView.vue"), meta: { title: "自我迭代", subtitle: "汇总反馈、生成 /goal 开发计划并审批低风险调优", superOnly: true } },
   { path: "/skills", name: "skills", component: () => import("./views/SkillsView.vue"), meta: { title: "Skills 管理", subtitle: "创建、编辑、导入导出和备份机器人技能", superOnly: true } },
   { path: "/commands", name: "commands", component: () => import("./views/CommandsView.vue"), meta: { title: "指令管理", subtitle: "维护系统指令名称、别名、权限和帮助文案", superOnly: true } },
   { path: "/tasks", name: "tasks", component: () => import("./views/TasksView.vue"), meta: { title: "任务中心", subtitle: "追踪去重、画像生成、模型检测和批量审核任务" } },

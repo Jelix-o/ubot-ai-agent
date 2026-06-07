@@ -48,7 +48,26 @@ test("probeSystemModel keeps upstream TTS status code in failures", async () => 
     assert.equal(status.ok, false);
     assert.equal(status.probeType, "tts");
     assert.equal(status.upstreamStatusCode, 502);
+    assert.equal(status.failureKind, "unavailable");
     assert.match(status.detail, /HTTP 502/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("probeSystemModel classifies TTS format failures", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: {} }] }), { status: 200 });
+
+  try {
+    const status = await probeSystemModel({
+      purpose: "tts",
+      baseUrl: MIMO_TTS_BASE_URL,
+      apiKey: "tts-key",
+      model: "mimo-v2.5-tts",
+    });
+    assert.equal(status.ok, false);
+    assert.equal(status.failureKind, "format_error");
   } finally {
     globalThis.fetch = originalFetch;
   }

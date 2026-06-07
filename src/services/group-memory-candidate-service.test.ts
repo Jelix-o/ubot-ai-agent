@@ -233,6 +233,56 @@ test("semantic judge failure falls back to local rules without blocking new memo
   }
 });
 
+test("low-value memory candidates are skipped before pending or approval", async () => {
+  const fixture = await createFixture();
+  try {
+    fixture.ai.candidates = [
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "聊天活跃",
+        content: "Tester 今天很活跃，参与了聊天。",
+        confidence: 0.9,
+      },
+    ];
+
+    fixture.service.queueMessage(message("Tester 今天说了很多话。"));
+    const stats = await fixture.service.flushGroup("67890");
+
+    assert.equal(stats?.skippedLowValueCount, 1);
+    assert.equal(stats?.autoApprovedCount, 0);
+    assert.equal(stats?.pendingCount, 0);
+    assert.equal((await fixture.memoryStore.list("67890")).length, 0);
+    assert.equal((await fixture.candidateStore.list({ groupId: "67890" })).length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("durable preference candidates still auto approve", async () => {
+  const fixture = await createFixture();
+  try {
+    fixture.ai.candidates = [
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "饮食忌口",
+        content: "Tester 不能吃太油的食物。",
+        confidence: 0.9,
+      },
+    ];
+
+    fixture.service.queueMessage(message("Tester 说自己不能吃太油。"));
+    const stats = await fixture.service.flushGroup("67890");
+
+    assert.equal(stats?.skippedLowValueCount, 0);
+    assert.equal(stats?.autoApprovedCount, 1);
+    assert.equal((await fixture.memoryStore.list("67890")).length, 1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("concurrent manual approvals of the same candidate create only one memory", async () => {
   const fixture = await createFixture();
   try {

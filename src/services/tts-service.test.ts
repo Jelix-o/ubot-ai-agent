@@ -133,6 +133,7 @@ test("TtsService errors include safe request metadata without api keys", async (
         assert.equal(error.details.baseUrl, MIMO_TTS_BASE_URL);
         assert.equal(error.details.model, MIMO_TTS_MODEL);
         assert.equal(error.details.statusCode, 401);
+        assert.equal(error.details.failureKind, "auth");
         assert.equal(error.message.includes("secret-key-must-not-leak"), false);
         return true;
       },

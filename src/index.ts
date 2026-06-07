@@ -19,8 +19,6 @@ import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-sto
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import { HolidayCountdownStore } from "./services/holiday-countdown-store.js";
-import { IterationFeedbackStore } from "./services/iteration-feedback-store.js";
-import { IterationPlanStore } from "./services/iteration-plan-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
@@ -29,7 +27,6 @@ import { SkillService } from "./services/skill-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
-import { SelfIterationService } from "./services/self-iteration-service.js";
 import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL, MIMO_TTS_MODEL_ID } from "./services/mimo-tts-config.js";
 import { TtsService } from "./services/tts-service.js";
 import { logError, logInfo } from "./logger.js";
@@ -91,22 +88,7 @@ async function main(): Promise<void> {
   const profileRecordStore = new ProfileRecordStore(config.profileRecordsPath);
   const adminTaskStore = new AdminTaskStore(config.adminTasksPath);
   const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath);
-  const iterationFeedbackStore = new IterationFeedbackStore(config.iterationFeedbackPath);
-  const iterationPlanStore = new IterationPlanStore(config.iterationPlansPath);
   const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath);
-  const selfIterationService = new SelfIterationService({
-    feedbackStore: iterationFeedbackStore,
-    planStore: iterationPlanStore,
-    groupConfigService,
-    groupMemoryStore,
-    groupMemoryCandidateService,
-    knowledgeBaseStore,
-    skillService,
-    systemSettingsStore,
-    modelHealthHistoryStore,
-    summaryAiService: new ConfiguredAiService(replyAiService, systemSettingsStore, "summary"),
-    listOperationLogs: (args) => adminOperationLogService.list(args),
-  });
   const napcatRuntime: NapCatRuntime =
     config.napcatMode === "reverse"
       ? new NapCatReverseServer({
@@ -153,9 +135,6 @@ async function main(): Promise<void> {
     },
     systemSettingsStore,
     profileRecordStore,
-    iterationFeedbackStore,
-    iterationPlanStore,
-    selfIterationService,
   );
 
   const adminHttpServer = config.adminHttpEnabled
@@ -172,9 +151,6 @@ async function main(): Promise<void> {
         profileRecordStore,
         adminTaskStore,
         modelHealthHistoryStore,
-        iterationFeedbackStore,
-        iterationPlanStore,
-        selfIterationService,
         adminOperationLogService,
         app,
         napcatRuntime,
@@ -215,9 +191,6 @@ function createAdminHttpServer(
   profileRecordStore: ProfileRecordStore,
   adminTaskStore: AdminTaskStore,
   modelHealthHistoryStore: ModelHealthHistoryStore,
-  iterationFeedbackStore: IterationFeedbackStore,
-  iterationPlanStore: IterationPlanStore,
-  selfIterationService: SelfIterationService,
   adminOperationLogService: AdminOperationLogService,
   app: BotApplication,
   napcatRuntime: NapCatRuntime,
@@ -246,9 +219,6 @@ function createAdminHttpServer(
     profileRecordStore,
     adminTaskStore,
     modelHealthHistoryStore,
-    iterationFeedbackStore,
-    iterationPlanStore,
-    selfIterationService,
     adminOperationLogService,
     getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),
     getProfileAiHealthStatus: (options) => profileAiService.checkHealth(options),

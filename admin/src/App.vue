@@ -46,7 +46,6 @@ function iconFor(name: unknown): string {
     memories: "memory",
     profiles: "users",
     knowledge: "knowledge",
-    iteration: "iteration",
     tasks: "tasks",
     audit: "audit",
     health: "health",
