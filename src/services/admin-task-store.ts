@@ -30,7 +30,7 @@ const STALE_TASK_MS_BY_TYPE: Partial<Record<AdminTaskType, number>> = {
 
 export class AdminTaskStore {
   private cachedData?: AdminTasksFile;
-  private readonly activeTaskIds = new Set<string>();
+  private readonly activeTaskStartedAt = new Map<string, number>();
 
   constructor(private readonly filePath: string) {}
 
@@ -130,17 +130,25 @@ export class AdminTaskStore {
     return task;
   }
 
+  async sweepStaleTasks(now = new Date()): Promise<void> {
+    await this.failStaleTasks(now);
+  }
+
   private async execute<T>(
     task: AdminTaskRecord,
     worker: (task: AdminTaskRecord) => Promise<T>,
   ): Promise<{ task: AdminTaskRecord; result: T }> {
-    this.activeTaskIds.add(task.id);
     const startedAt = new Date().toISOString();
+    this.activeTaskStartedAt.set(task.id, new Date(startedAt).getTime());
     try {
       await this.update(task.id, { status: "running", progress: 10, startedAt });
       const result = await worker(task);
       const finishedAt = new Date().toISOString();
       const durationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+      const current = (await this.readData()).tasks.find((item) => item.id === task.id);
+      if (current && current.status !== "running") {
+        return { task: cloneTask(current), result };
+      }
       const finished = await this.update(task.id, {
         status: "succeeded",
         progress: 100,
@@ -161,7 +169,7 @@ export class AdminTaskStore {
       });
       throw error;
     } finally {
-      this.activeTaskIds.delete(task.id);
+      this.activeTaskStartedAt.delete(task.id);
     }
   }
 
@@ -170,16 +178,20 @@ export class AdminTaskStore {
     let changed = false;
     const nowTime = now.getTime();
     data.tasks = data.tasks.map((task) => {
-      if ((task.status !== "queued" && task.status !== "running") || this.activeTaskIds.has(task.id)) {
+      if (task.status !== "queued" && task.status !== "running") {
         return task;
       }
-      const baseTime = new Date(task.startedAt ?? task.updatedAt ?? task.createdAt).getTime();
+      const activeStartedAt = this.activeTaskStartedAt.get(task.id);
+      const baseTime = activeStartedAt ?? new Date(task.startedAt ?? task.updatedAt ?? task.createdAt).getTime();
       if (!Number.isFinite(baseTime)) {
         return task;
       }
       const staleMs = STALE_TASK_MS_BY_TYPE[task.type] ?? DEFAULT_STALE_TASK_MS;
       if (nowTime - baseTime < staleMs) {
         return task;
+      }
+      if (activeStartedAt !== undefined) {
+        this.activeTaskStartedAt.delete(task.id);
       }
       changed = true;
       const finishedAt = now.toISOString();

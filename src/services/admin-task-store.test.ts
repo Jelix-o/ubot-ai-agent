@@ -156,6 +156,32 @@ test("AdminTaskStore marks stale queued and running persisted tasks as failed", 
   }
 });
 
+test("AdminTaskStore marks stale active model checks as failed", async () => {
+  await withStore(async (store) => {
+    const neverFinishes = new Promise<never>(() => undefined);
+    const started = await store.start({
+      type: "model-check",
+      title: "Model check environment voice model",
+      operatorUserId: "admin",
+    }, async () => neverFinishes);
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if ((await store.get(started.id))?.status === "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const running = await store.get(started.id);
+    assert.equal(running?.status, "running");
+    assert.ok(running?.startedAt);
+
+    await store.sweepStaleTasks(new Date(new Date(running.startedAt).getTime() + (11 * 60 * 1000)));
+    const failed = await store.get(started.id);
+    assert.equal(failed?.status, "failed");
+    assert.equal(failed?.progress, 100);
+    assert.match(failed?.error ?? "", /自动标记失败|鑷姩鏍囪澶辫触/);
+    assert.equal(typeof failed?.durationMs, "number");
+  });
+});
+
 test("AdminTaskStore searches task title, result, and errors before pagination", async () => {
   await withStore(async (store) => {
     await store.run({
