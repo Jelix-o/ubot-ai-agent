@@ -33,6 +33,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "opsAlertsEnabled"
   | "triggerKeywords"
   | "voiceReplyEnabled"
+  | "defaultVoiceReplyEnabled"
   | "memoryDisabledUserIds"
 >>;
 
@@ -498,6 +499,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     opsAlertsEnabled: group.opsAlertsEnabled !== false,
     triggerKeywords: normalizeTriggerKeywords(group.triggerKeywords),
     voiceReplyEnabled: group.voiceReplyEnabled !== false,
+    defaultVoiceReplyEnabled: group.defaultVoiceReplyEnabled === true,
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
   };
 }
@@ -581,6 +583,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("voiceReplyEnabled" in input) {
     next.voiceReplyEnabled = normalizeBoolean(input.voiceReplyEnabled, "invalid_group_config");
+  }
+  if ("defaultVoiceReplyEnabled" in input) {
+    next.defaultVoiceReplyEnabled = normalizeBoolean(input.defaultVoiceReplyEnabled, "invalid_group_config");
   }
   if ("memoryDisabledUserIds" in input) {
     next.memoryDisabledUserIds = normalizeUserIdsStrict(input.memoryDisabledUserIds);

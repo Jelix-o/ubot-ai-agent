@@ -35,6 +35,7 @@ export interface GroupConfig {
   opsAlertsEnabled?: boolean;
   triggerKeywords?: Array<{ keyword: string; enabled: boolean }>;
   voiceReplyEnabled?: boolean;
+  defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
 }
 
@@ -321,6 +322,7 @@ export interface SkillDefinition {
   maxReplyMessages?: number;
   preferredMaxReplyMessages?: number;
   ttsStyleHint?: string;
+  ttsConfig?: SkillTtsConfig;
   exampleExchanges?: Array<{ user: string; assistant: string }>;
   stripAsterisks?: boolean;
   singleSentencePerMessage?: boolean;
@@ -328,6 +330,21 @@ export interface SkillDefinition {
   respectLineBreaks?: boolean;
   allowBurstOnHighEmotion?: boolean;
   highEmotionKeywords?: string[];
+}
+
+export interface SkillTtsConfig {
+  stylePrompt?: string;
+  voice?: string;
+  dialect?: string;
+  personaTone?: string;
+  baseEmotion?: string;
+  compoundEmotion?: string;
+  overallTone?: string;
+  voiceTexture?: string;
+  paceRhythm?: string;
+  emotionState?: string;
+  voiceFeature?: string;
+  laughCry?: string;
 }
 
 export interface ProfileRecord {

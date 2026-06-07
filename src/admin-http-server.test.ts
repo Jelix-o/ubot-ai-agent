@@ -21,7 +21,7 @@ import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SkillService } from "./services/skill-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
-import type { GroupBotConfig, GroupMemberProfile, NapcatGroupMember } from "./types.js";
+import type { AdminTaskRecord, GroupBotConfig, GroupMemberProfile, NapcatGroupMember } from "./types.js";
 
 let activeCsrfToken = "";
 
@@ -35,6 +35,24 @@ async function fetch(input: Parameters<typeof globalThis.fetch>[0], init: Reques
     return globalThis.fetch(input, { ...init, headers });
   }
   return globalThis.fetch(input, init);
+}
+
+async function waitForTaskResult<T>(baseUrl: string, cookie: string | null, taskId: string): Promise<T> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const taskResponse = await fetch(`${baseUrl}/api/tasks/${encodeURIComponent(taskId)}`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(taskResponse.status, 200);
+    const task = await taskResponse.json() as AdminTaskRecord;
+    if (task.status === "succeeded") {
+      return task.result as T;
+    }
+    if (task.status === "failed" || task.status === "cancelled") {
+      throw new Error(task.error || `task_${task.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`task_timeout:${taskId}`);
 }
 
 async function rawGet(url: string, headers: Record<string, string> = {}): Promise<{
@@ -846,16 +864,14 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const vueAssetText = await vueAsset.text();
     assert.equal(vueAssetText.includes("/api/session"), true);
     assert.equal(vueAssetText.includes("ubot-admin-theme"), true);
-    assert.equal(vueAssetText.includes("CandidatesView-"), true);
-    const candidateAssetPath = vueAssetText.match(/assets\/CandidatesView-[^"']+\.js/)?.[0];
-    assert.ok(candidateAssetPath);
-    const candidateAsset = await fetch(`${baseUrl}/${candidateAssetPath}`, {
+    assert.equal(vueAssetText.includes("/api/memory-candidates/bulk-approve"), true);
+    assert.equal(vueAssetText.includes("CandidatesView-"), false);
+
+    const missingAsset = await fetch(`${baseUrl}/assets/CandidatesView-oldhash.js`, {
       headers: { Cookie: cookie ?? "" },
     });
-    assert.equal(candidateAsset.status, 200);
-    assert.equal(candidateAsset.headers.get("content-type")?.includes("javascript"), true);
-    const candidateAssetText = await candidateAsset.text();
-    assert.equal(candidateAssetText.includes("/api/memory-candidates/bulk-approve"), true);
+    assert.equal(missingAsset.status, 404);
+    assert.equal(missingAsset.headers.get("cache-control"), "no-store");
 
     const adminAppJs = await fetch(`${baseUrl}/admin-app.js`);
     assert.equal(adminAppJs.status, 200);
@@ -1686,11 +1702,14 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
       body: JSON.stringify({ groupId: "67890", subjectUserId: "20001" }),
     });
-    assert.equal(dedupPreview.status, 200);
-    const dedupPreviewBody = await dedupPreview.json() as {
+    assert.equal(dedupPreview.status, 202);
+    const dedupPreviewQueued = await dedupPreview.json() as { queued: boolean; taskId: string; task: AdminTaskRecord };
+    assert.equal(dedupPreviewQueued.queued, true);
+    assert.equal(dedupPreviewQueued.task.status, "queued");
+    const dedupPreviewBody = await waitForTaskResult<{
       decisions: Array<{ targetId?: string; duplicateId: string; reason?: string }>;
       semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number };
-    };
+    }>(baseUrl, cookie, dedupPreviewQueued.taskId);
     assert.equal(dedupPreviewBody.decisions.some((item) => item.targetId === dedupBase.id && item.duplicateId === duplicateMemory.id), true);
     assert.equal(dedupPreviewBody.semanticStats.called, 0);
 
@@ -1699,11 +1718,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
       body: JSON.stringify({ groupId: "67890", subjectUserId: "30002" }),
     });
-    assert.equal(semanticDedupPreview.status, 200);
-    const semanticDedupPreviewBody = await semanticDedupPreview.json() as {
+    assert.equal(semanticDedupPreview.status, 202);
+    const semanticDedupPreviewQueued = await semanticDedupPreview.json() as { queued: boolean; taskId: string };
+    assert.equal(semanticDedupPreviewQueued.queued, true);
+    const semanticDedupPreviewBody = await waitForTaskResult<{
       decisions: Array<{ targetId?: string; duplicateId: string; reason?: string }>;
       semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number; skippedDisabled?: number };
-    };
+    }>(baseUrl, cookie, semanticDedupPreviewQueued.taskId);
     assert.equal(semanticDedupPreviewBody.decisions.some((item) => item.reason?.startsWith("semantic:")), true);
     assert.equal(semanticDedupPreviewBody.semanticStats.called, 1);
     assert.equal(semanticDedupPreviewBody.semanticStats.duplicate, 1);
@@ -1715,11 +1736,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
       body: JSON.stringify({ groupId: "67890", subjectUserId: "30003" }),
     });
-    assert.equal(chineseLocalDedupPreview.status, 200);
-    const chineseLocalDedupPreviewBody = await chineseLocalDedupPreview.json() as {
+    assert.equal(chineseLocalDedupPreview.status, 202);
+    const chineseLocalDedupPreviewQueued = await chineseLocalDedupPreview.json() as { queued: boolean; taskId: string };
+    assert.equal(chineseLocalDedupPreviewQueued.queued, true);
+    const chineseLocalDedupPreviewBody = await waitForTaskResult<{
       decisions: Array<{ targetId?: string; duplicateId: string; similarity: number }>;
       semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number };
-    };
+    }>(baseUrl, cookie, chineseLocalDedupPreviewQueued.taskId);
     assert.equal(chineseLocalDedupPreviewBody.decisions.some((item) =>
       item.targetId === chineseShortReplyBase.id &&
       item.duplicateId === chineseShortReplyDuplicate.id &&

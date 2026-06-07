@@ -3,7 +3,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { SkillDefinition } from "../types.js";
-import { buildTtsInputText } from "../utils/tts-text.js";
+import { supportsMimoSinging, isMimoVoiceDesignModel } from "./mimo-tts-config.js";
+import { buildMimoTtsInput } from "../utils/tts-text.js";
 import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
 
 interface TtsCompletionResponse {
@@ -26,6 +27,10 @@ export interface TtsSynthesisResult {
   recordFile: string;
   spokenText: string;
   cleanup(): Promise<void>;
+}
+
+export interface TtsSynthesisOptions {
+  mode?: "speech" | "singing";
 }
 
 export class TtsServiceError extends Error {
@@ -55,17 +60,26 @@ export class TtsService {
     private readonly globalStyleHint?: string,
   ) {}
 
-  async synthesize(text: string, skill: SkillDefinition): Promise<TtsSynthesisResult> {
-    const spokenText = buildTtsInputText(skill, text, this.globalStyleHint);
-    if (!spokenText) {
+  async synthesize(text: string, skill: SkillDefinition, options: TtsSynthesisOptions = {}): Promise<TtsSynthesisResult> {
+    if (options.mode === "singing" && !supportsMimoSinging(this.model)) {
+      throw new TtsServiceError("Current MiMo TTS model does not support singing mode.", {
+        baseUrl: this.baseUrl,
+        model: this.model,
+        failureKind: "format_error",
+      });
+    }
+
+    const input = buildMimoTtsInput(skill, text, this.globalStyleHint, options);
+    if (!input.assistantText) {
       throw new Error("TTS input text was empty after normalization.");
     }
 
     const request = buildTtsRequest({
       model: this.model,
-      spokenText,
+      styleInstruction: input.styleInstruction,
+      assistantText: input.assistantText,
       audioFormat: this.audioFormat,
-      voice: this.voice,
+      voice: skill.ttsConfig?.voice || this.voice,
     });
     const response = await fetch(buildTtsUrl(this.baseUrl), {
       method: "POST",
@@ -116,7 +130,7 @@ export class TtsService {
     return {
       filePath,
       recordFile: `base64://${buffer.toString("base64")}`,
-      spokenText: request.spokenText,
+      spokenText: request.assistantText,
       async cleanup(): Promise<void> {
         await unlink(filePath);
       },
@@ -134,22 +148,22 @@ function buildTtsUrl(baseUrl: string): string {
 
 function buildTtsRequest(input: {
   model: string;
-  spokenText: string;
+  styleInstruction?: string;
+  assistantText: string;
   audioFormat: "wav" | "mp3" | "pcm" | "pcm16";
   voice: string;
 }): {
   model: string;
   messages: TtsMessage[];
   audio: Record<string, string | boolean>;
-  spokenText: string;
+  assistantText: string;
 } {
-  const { styleInstruction, text } = extractStyleInstruction(input.spokenText);
   const messages: TtsMessage[] = [
-    ...(styleInstruction ? [{ role: "user" as const, content: styleInstruction }] : []),
-    { role: "assistant", content: text },
+    ...(input.styleInstruction ? [{ role: "user" as const, content: input.styleInstruction }] : []),
+    { role: "assistant", content: input.assistantText },
   ];
   const audio: Record<string, string | boolean> = { format: input.audioFormat };
-  if (input.model.includes("voicedesign")) {
+  if (isMimoVoiceDesignModel(input.model)) {
     audio.optimize_text_preview = true;
   } else {
     audio.voice = input.voice;
@@ -158,19 +172,6 @@ function buildTtsRequest(input: {
     model: input.model,
     messages,
     audio,
-    spokenText: text,
-  };
-}
-
-function extractStyleInstruction(value: string): { styleInstruction?: string; text: string } {
-  const match = value.match(/^<style>(.*?)<\/style>(.*)$/su);
-  if (!match) {
-    return { text: value };
-  }
-  const styleInstruction = match[1]?.trim();
-  const text = match[2]?.trim() || value;
-  return {
-    ...(styleInstruction ? { styleInstruction } : {}),
-    text,
+    assistantText: input.assistantText,
   };
 }

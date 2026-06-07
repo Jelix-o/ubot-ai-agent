@@ -1,8 +1,21 @@
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { SkillDefinition } from "../types.js";
+import type { SkillDefinition, SkillTtsConfig } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import {
+  MIMO_TTS_BASE_EMOTIONS,
+  MIMO_TTS_COMPOUND_EMOTIONS,
+  MIMO_TTS_DIALECTS,
+  MIMO_TTS_EMOTION_STATES,
+  MIMO_TTS_LAUGH_CRY_EXPRESSIONS,
+  MIMO_TTS_OVERALL_TONES,
+  MIMO_TTS_PACE_RHYTHMS,
+  MIMO_TTS_PERSONA_TONES,
+  MIMO_TTS_PRESET_VOICES,
+  MIMO_TTS_VOICE_FEATURES,
+  MIMO_TTS_VOICE_TEXTURES,
+} from "./mimo-tts-config.js";
 
 export class SkillService {
   private cachedSkills?: SkillDefinition[];
@@ -180,6 +193,8 @@ function normalizeSkillDefinition(value: SkillDefinition): SkillDefinition {
   if (!name || !systemPrompt) {
     throw new Error("invalid_skill");
   }
+  const legacyTtsStyleHint = typeof value.ttsStyleHint === "string" ? value.ttsStyleHint.trim().slice(0, 400) : "";
+  const ttsConfig = normalizeSkillTtsConfig(value.ttsConfig, legacyTtsStyleHint);
   return {
     id,
     name: name.slice(0, 80),
@@ -187,7 +202,8 @@ function normalizeSkillDefinition(value: SkillDefinition): SkillDefinition {
     styleRules: normalizeStringArray(value.styleRules),
     knowledge: normalizeStringArray(value.knowledge),
     ...(Array.isArray(value.sourceSkillLines) ? { sourceSkillLines: normalizeStringArray(value.sourceSkillLines, 2000, 1000) } : {}),
-    ...(typeof value.ttsStyleHint === "string" && value.ttsStyleHint.trim() ? { ttsStyleHint: value.ttsStyleHint.trim().slice(0, 400) } : {}),
+    ...(legacyTtsStyleHint ? { ttsStyleHint: legacyTtsStyleHint } : {}),
+    ...(Object.keys(ttsConfig).length > 0 ? { ttsConfig } : {}),
     ...(Array.isArray(value.exampleExchanges) ? { exampleExchanges: value.exampleExchanges.map((item) => ({
       user: String(item?.user ?? "").trim().slice(0, 1000),
       assistant: String(item?.assistant ?? "").trim().slice(0, 1000),
@@ -205,6 +221,46 @@ function normalizeSkillDefinition(value: SkillDefinition): SkillDefinition {
     ...(value.allowBurstOnHighEmotion !== undefined ? { allowBurstOnHighEmotion: value.allowBurstOnHighEmotion === true } : {}),
     ...(Array.isArray(value.highEmotionKeywords) ? { highEmotionKeywords: normalizeStringArray(value.highEmotionKeywords, 50, 40) } : {}),
   };
+}
+
+function normalizeSkillTtsConfig(value: unknown, legacyStylePrompt = ""): SkillTtsConfig {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Partial<Record<keyof SkillTtsConfig, unknown>>
+    : {};
+  const next: SkillTtsConfig = {};
+
+  const stylePrompt = normalizeOptionalString(record.stylePrompt, 800) || legacyStylePrompt;
+  if (stylePrompt) next.stylePrompt = stylePrompt;
+  addEnum(next, "voice", record.voice, MIMO_TTS_PRESET_VOICES);
+  addEnum(next, "dialect", record.dialect, MIMO_TTS_DIALECTS);
+  addEnum(next, "personaTone", record.personaTone, MIMO_TTS_PERSONA_TONES);
+  addEnum(next, "baseEmotion", record.baseEmotion, MIMO_TTS_BASE_EMOTIONS);
+  addEnum(next, "compoundEmotion", record.compoundEmotion, MIMO_TTS_COMPOUND_EMOTIONS);
+  addEnum(next, "overallTone", record.overallTone, MIMO_TTS_OVERALL_TONES);
+  addEnum(next, "voiceTexture", record.voiceTexture, MIMO_TTS_VOICE_TEXTURES);
+  addEnum(next, "paceRhythm", record.paceRhythm, MIMO_TTS_PACE_RHYTHMS);
+  addEnum(next, "emotionState", record.emotionState, MIMO_TTS_EMOTION_STATES);
+  addEnum(next, "voiceFeature", record.voiceFeature, MIMO_TTS_VOICE_FEATURES);
+  addEnum(next, "laughCry", record.laughCry, MIMO_TTS_LAUGH_CRY_EXPRESSIONS);
+  return next;
+}
+
+function addEnum<K extends keyof SkillTtsConfig>(
+  target: SkillTtsConfig,
+  key: K,
+  value: unknown,
+  allowed: readonly string[],
+): void {
+  const text = normalizeOptionalString(value, 80);
+  if (!text) return;
+  if (!allowed.includes(text)) {
+    throw new Error("invalid_skill_tts_config");
+  }
+  (target as Record<keyof SkillTtsConfig, string | undefined>)[key] = text;
+}
+
+function normalizeOptionalString(value: unknown, limit: number): string {
+  return typeof value === "string" ? value.trim().slice(0, limit) : "";
 }
 
 function normalizeSkillId(value: unknown): string {

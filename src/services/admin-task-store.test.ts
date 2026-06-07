@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import type { AdminTasksFile } from "../types.js";
 import { AdminTaskStore } from "./admin-task-store.js";
 
 async function withStore<T>(run: (store: AdminTaskStore) => Promise<T>): Promise<T> {
@@ -38,6 +39,39 @@ test("AdminTaskStore records successful task runs", async () => {
   });
 });
 
+test("AdminTaskStore starts background task runs without waiting for result", async () => {
+  await withStore(async (store) => {
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const task = await store.start({
+      type: "memory-dedup",
+      title: "Preview member memory dedup",
+      groupId: "67890",
+      subjectUserId: "20001",
+      operatorUserId: "admin",
+    }, async () => {
+      await waiting;
+      return { decisionCount: 3 };
+    });
+
+    assert.equal(task.status, "queued");
+    assert.equal((await store.get(task.id))?.status, "queued");
+
+    release();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await store.get(task.id);
+      if (current?.status === "succeeded") {
+        assert.deepEqual(current.result, { decisionCount: 3 });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail("background task did not finish");
+  });
+});
+
 test("AdminTaskStore records failed task runs", async () => {
   await withStore(async (store) => {
     await assert.rejects(
@@ -56,6 +90,55 @@ test("AdminTaskStore records failed task runs", async () => {
     assert.equal(page.tasks[0]?.status, "failed");
     assert.match(page.tasks[0]?.error ?? "", /connection failed/);
   });
+});
+
+test("AdminTaskStore marks stale queued and running persisted tasks as failed", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "admin-task-store-stale-"));
+  try {
+    const filePath = path.join(dir, "tasks.json");
+    const oldStartedAt = "2026-06-01T00:00:00.000Z";
+    const data: AdminTasksFile = {
+      tasks: [
+        {
+          id: "stale-model-check",
+          type: "model-check",
+          status: "running",
+          title: "模型检测 环境语音模型",
+          operatorUserId: "admin",
+          progress: 50,
+          createdAt: oldStartedAt,
+          updatedAt: oldStartedAt,
+          startedAt: oldStartedAt,
+        },
+        {
+          id: "stale-memory-dedup",
+          type: "memory-dedup",
+          status: "queued",
+          title: "记忆去重",
+          operatorUserId: "admin",
+          progress: 0,
+          createdAt: oldStartedAt,
+          updatedAt: oldStartedAt,
+        },
+      ],
+    };
+    await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    const store = new AdminTaskStore(filePath);
+
+    const page = await store.listPage({ status: "failed", page: 1, pageSize: 20 });
+
+    assert.equal(page.pagination.total, 2);
+    const modelCheck = page.tasks.find((task) => task.id === "stale-model-check");
+    const memoryDedup = page.tasks.find((task) => task.id === "stale-memory-dedup");
+    assert.equal(modelCheck?.status, "failed");
+    assert.equal(modelCheck?.progress, 100);
+    assert.match(modelCheck?.error ?? "", /自动标记失败/);
+    assert.equal(typeof modelCheck?.durationMs, "number");
+    assert.equal(memoryDedup?.status, "failed");
+    assert.match(memoryDedup?.error ?? "", /最后状态：queued/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("AdminTaskStore searches task title, result, and errors before pagination", async () => {

@@ -16,6 +16,7 @@ interface ModelHealthHistoryFile {
 
 export class ModelHealthHistoryStore {
   private cachedData?: ModelHealthHistoryFile;
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly filePath: string) {}
 
@@ -31,11 +32,13 @@ export class ModelHealthHistoryStore {
   }
 
   async record(entry: ModelHealthHistoryEntry): Promise<ModelHealthHistoryEntry> {
-    const data = await this.readData();
     const normalized = normalizeEntry(entry);
-    data.models[normalized.id] = normalized;
-    await this.writeData(data);
-    return cloneEntry(normalized);
+    return await this.enqueueWrite(async () => {
+      const data = await this.readData();
+      data.models[normalized.id] = normalized;
+      await this.writeData(data);
+      return cloneEntry(normalized);
+    });
   }
 
   private async readData(): Promise<ModelHealthHistoryFile> {
@@ -56,6 +59,15 @@ export class ModelHealthHistoryStore {
   private async writeData(data: ModelHealthHistoryFile): Promise<void> {
     this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+  }
+
+  private async enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.writeQueue.then(operation, operation);
+    this.writeQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await run;
   }
 }
 

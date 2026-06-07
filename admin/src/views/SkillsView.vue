@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, shallowRef } from "vue";
 
 import AppIcon from "../components/AppIcon.vue";
-import { api, type SkillDefinition } from "../services/api";
+import { api, type SkillDefinition, type SkillTtsConfig } from "../services/api";
 import { useAppStore } from "../stores/app";
 
 const app = useAppStore();
@@ -33,6 +33,17 @@ const filteredSkills = computed(() => {
   });
 });
 const jsonPreview = computed(() => JSON.stringify(buildSkillPayload(), null, 2));
+const ttsVoiceOptions = ["mimo_default", "冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"];
+const ttsDialectOptions = ["东北话", "四川话", "河南话", "粤语"];
+const ttsPersonaToneOptions = ["夹子音", "御姐音", "正太音", "大叔音", "台湾腔"];
+const ttsBaseEmotionOptions = ["开心", "悲伤", "愤怒", "恐惧", "惊讶", "兴奋", "委屈", "平静", "冷漠"];
+const ttsCompoundEmotionOptions = ["怅然", "欣慰", "无奈", "愧疚", "释然", "嫉妒", "厌倦", "忐忑", "动情"];
+const ttsOverallToneOptions = ["温柔", "高冷", "活泼", "严肃", "慵懒", "俏皮", "深沉", "干练", "凌厉"];
+const ttsVoiceTextureOptions = ["磁性", "醇厚", "清亮", "空灵", "稚嫩", "苍老", "甜美", "沙哑", "醇雅"];
+const ttsPaceRhythmOptions = ["吸气", "深呼吸", "叹气", "长叹一口气", "喘息", "屏息"];
+const ttsEmotionStateOptions = ["紧张", "害怕", "激动", "疲惫", "委屈", "撒娇", "心虚", "震惊", "不耐烦"];
+const ttsVoiceFeatureOptions = ["颤抖", "声音颤抖", "变调", "破音", "鼻音", "气声", "沙哑"];
+const ttsLaughCryOptions = ["笑", "轻笑", "大笑", "冷笑", "抽泣", "呜咽", "哽咽", "嚎啕大哭"];
 
 function blankSkill(): SkillDefinition {
   return {
@@ -48,6 +59,7 @@ function blankSkill(): SkillDefinition {
     maxReplyMessages: undefined,
     preferredMaxReplyMessages: undefined,
     ttsStyleHint: "",
+    ttsConfig: {},
     sourceSkillLines: [],
     exampleExchanges: [],
     stripAsterisks: false,
@@ -66,6 +78,7 @@ function cloneSkill(skill: SkillDefinition): SkillDefinition {
     styleRules: [...skill.styleRules],
     knowledge: [...skill.knowledge],
     sourceSkillLines: [...(skill.sourceSkillLines || [])],
+    ttsConfig: { ...(skill.ttsConfig || {}) },
     highEmotionKeywords: [...(skill.highEmotionKeywords || [])],
     exampleExchanges: (skill.exampleExchanges || []).map((item) => ({
       user: item.user,
@@ -84,9 +97,22 @@ function buildSkillPayload(): SkillDefinition {
     styleRules: [...form.styleRules],
     knowledge: [...form.knowledge],
     sourceSkillLines: [...(form.sourceSkillLines || [])],
+    ttsConfig: cleanTtsConfig(form.ttsConfig),
     highEmotionKeywords: [...(form.highEmotionKeywords || [])],
     exampleExchanges: (form.exampleExchanges || []).map((item) => ({ ...item })),
   };
+}
+
+function cleanTtsConfig(config: SkillTtsConfig | undefined): SkillTtsConfig {
+  const next = Object.fromEntries(
+    Object.entries(config || {}).filter(([, value]) => typeof value === "string" && value.trim()),
+  ) as SkillTtsConfig;
+  return next;
+}
+
+function ttsConfig(): SkillTtsConfig {
+  form.ttsConfig ||= {};
+  return form.ttsConfig;
 }
 
 async function load(): Promise<void> {
@@ -397,10 +423,77 @@ onMounted(() => {
       <div class="form-block">
         <div class="block-title">
           <h3>语音与情绪</h3>
-          <small>TTS 提示和高情绪关键词会影响多条回复与语音风格</small>
+          <small>按 MiMo TTS 标签维度配置每个 Skill 的整体语音风格</small>
         </div>
         <div class="form-grid">
-          <label>TTS 风格提示<input v-model="form.ttsStyleHint" class="input" placeholder="例如：自然、轻松、简短" /></label>
+          <label class="wide">整体 TTS 风格提示<textarea v-model="ttsConfig().stylePrompt" class="textarea compact" placeholder="例如：角色、场景、语速、停顿、共鸣位置和情绪起伏" /></label>
+          <label>TTS 音色
+            <select v-model="ttsConfig().voice" class="select">
+              <option value="">跟随系统默认</option>
+              <option v-for="item in ttsVoiceOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>方言
+            <select v-model="ttsConfig().dialect" class="select">
+              <option value="">不指定</option>
+              <option v-for="item in ttsDialectOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>人设腔调
+            <select v-model="ttsConfig().personaTone" class="select">
+              <option value="">不指定</option>
+              <option v-for="item in ttsPersonaToneOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>基础情绪
+            <select v-model="ttsConfig().baseEmotion" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsBaseEmotionOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>复合情绪
+            <select v-model="ttsConfig().compoundEmotion" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsCompoundEmotionOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>整体语调
+            <select v-model="ttsConfig().overallTone" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsOverallToneOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>音色定位
+            <select v-model="ttsConfig().voiceTexture" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsVoiceTextureOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>语速与节奏
+            <select v-model="ttsConfig().paceRhythm" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsPaceRhythmOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>情绪状态
+            <select v-model="ttsConfig().emotionState" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsEmotionStateOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>语音特征
+            <select v-model="ttsConfig().voiceFeature" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsVoiceFeatureOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>哭笑表达
+            <select v-model="ttsConfig().laughCry" class="select">
+              <option value="">自动判断</option>
+              <option v-for="item in ttsLaughCryOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label>旧版 TTS 提示<input v-model="form.ttsStyleHint" class="input" placeholder="兼容旧字段，保存后会迁移到 ttsConfig.stylePrompt" /></label>
           <label>高情绪关键词<textarea class="textarea compact" :value="(form.highEmotionKeywords || []).join('\n')" placeholder="一行一个关键词" @input="form.highEmotionKeywords = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
           <label class="wide switch-line"><input v-model="form.allowBurstOnHighEmotion" type="checkbox" /> 高情绪命中时允许多条回复</label>
         </div>

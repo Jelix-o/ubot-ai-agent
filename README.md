@@ -1,161 +1,81 @@
-# UBot
+# UBot V1.0.0
 
-UBot 是一个基于 `NapCat + OneBot + Node.js + TypeScript` 的 QQ 群聊机器人与群运营后台。当前版本为 `v4.7.1`，重点面向群聊回复、群记忆、成员画像、FAQ 知识库、模型健康巡检和公网后台运维。
+UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊机器人和群运营后台。V1.0.0 聚焦生产可用闭环：群聊回复、语音回复、唱歌、长期记忆、成员画像、FAQ 知识库、任务中心、模型健康、操作审计和公网后台运维。
 
-它已经支持：
+## 核心能力
 
-- 群内 `@机器人` 才触发对话
-- 支持把群聊回复/引用消息作为 AI 参考，不改变原有触发规则
-- 多 skill 切换
-- 图片理解
-- MiMo TTS 语音回复
-- 实时对话
-- 群定时任务提醒
-- 群聊日报
-- 中国节假日倒计时
-- 健康检查与管理员操作日志
-- 自动运维告警
-- 群管理员 / 超级管理员权限体系
-- 公网后台、成员管理、长期记忆、候选记忆和 FAQ 知识库
-- Mimo 画像分析、每日画像审查和回复模型切换
-
-## 功能概览
-
-- 普通成员可直接使用：
-  - `@机器人 <内容>`
-  - `#语音 <内容>`
-  - `@机器人 语音说 <内容>`
-  - `#功能`
-  - `#技能 列表`
-  - `#模型状态`
-  - `#对话 清空`
-  - `#日报 状态`
-  - `#节假日`
-  - `#定时任务 列表`
-- 群管理员可使用全部系统指令：
-  - `#状态`
-  - `#健康检查`
-  - `#服务器`
-  - `#告警`
-  - `#操作日志`
-  - `#模型切换 mimo/gpt`
-  - skill 切换
-  - 实时对话管理
-  - 日报配置
-  - 节假日倒计时配置
-  - 查看管理员列表
-- 超级管理员额外可使用：
-  - `#管理员 添加 <QQ号>`
-  - `#管理员 移除 <QQ号>`
+- 群聊对话：`@机器人 <内容>` 触发，按 `groupId:userId` 隔离上下文。
+- 语音回复：支持 `#语音 <内容>`、群默认语音回复开关，以及 `#唱歌 <内容>`。
+- MiMo TTS v2.5：目标文本放在 `assistant` 消息，自然语言风格指令放在 `user` 消息，音频标签放在 `assistant` 内容中。
+- Skill 管理：每个 skill 可配置整体 TTS 风格提示、TTS 音色、方言、人设腔调、基础情绪、复合情绪、整体语调、音色定位、语速与节奏、情绪状态、语音特征和哭笑表达。
+- 群配置：群开关、回复模型、管理员、实时对话、日报、节假日、定时任务、黑名单、记忆收集和默认语音回复。
+- 成员管理：合并 NapCat 群成员、人工身份和记忆归属，可编辑备注，编辑时自动带出现有备注。
+- 记忆系统：待处理候选记忆、长期记忆、成员画像、每日画像审查和记忆去重任务。
+- 知识库：当前群 FAQ 按关键词检索注入回复上下文。
+- 运维后台：公网管理台、模型健康历史、任务中心、操作日志、系统状态和静态资源缓存保护。
 
 ## 目录结构
 
-- `src/`：项目源码
-- `skills/`：技能人格配置
-- `config/groups.json`：群配置、管理员配置、超级管理员配置
-- `data/conversations.json`：按 `groupId:userId` 保存的个人对话上下文
-- `data/daily-report-store.json`：日报发送状态
-- `data/holiday-countdown-store.json`：节假日倒计时发送状态
-- `data/scheduled-reminders.json`：群定时任务
-- `data/admin-operations.jsonl`：管理员操作日志
-- `COMMANDS.md`：系统全部指令说明
-- `.env.example`：通用环境变量模板
-- `.env.server-2022.example`：Windows Server 2022 模板
-
-## 安装依赖
-
-```bash
-pnpm install
-```
-
-如果你用 `npm` 也可以：
-
-```bash
-npm install
-```
+- `src/`：机器人、服务端和测试源码。
+- `admin/src/`：Vue 3 管理后台。
+- `skills/`：skill JSON 配置。
+- `config/groups.json`：群配置和管理员配置。
+- `data/`：生产运行数据，部署升级时必须保留。
+- `dist/`：构建产物。
+- `COMMANDS.md`：群内指令清单。
+- `RELEASE-v1.0.0.md`：V1.0.0 发布说明。
 
 ## 本地开发
 
-```bash
-pnpm run dev
-```
-
-## 构建与运行
+推荐 Node.js 22。
 
 ```bash
-pnpm run build
-pnpm start
+npm install
+npm run dev
 ```
+
+后台开发：
+
+```bash
+npm run dev:admin
+```
+
+构建和测试：
+
+```bash
+npm run build
+npm test
+```
+
+Windows 本机可直接使用项目内的 Node 22 包装脚本；现代构建和测试不要使用旧 Node。
 
 ## 环境变量
 
-先复制模板：
+复制模板后填写：
 
-```bash
-copy .env.example .env
+```powershell
+Copy-Item .env.example .env
 ```
 
-或服务器环境：
+关键变量：
 
-```bash
-copy .env.server-2022.example .env
-```
+- `NAPCAT_MODE`：`forward` 或 `reverse`。
+- `NAPCAT_WS_URL`：正向 WebSocket 地址。
+- `NAPCAT_REVERSE_WS_HOST`、`NAPCAT_REVERSE_WS_PORT`、`NAPCAT_REVERSE_WS_PATH`：反向 WebSocket 监听配置。
+- `NAPCAT_ACCESS_TOKEN`：NapCat 访问令牌。反向连接必须使用 `Authorization: Bearer <token>`，不要把 token 放在 URL query。
+- `BOT_QQ`：机器人 QQ。
+- `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`：普通回复模型。
+- `PROFILE_AI_BASE_URL`、`PROFILE_AI_API_KEY`、`PROFILE_AI_MODEL`：画像、记忆、去重和总结模型。
+- `TTS_BASE_URL`、`TTS_API_KEY`、`TTS_MODEL`、`TTS_VOICE`、`TTS_AUDIO_FORMAT`：语音模型。
+- `TTS_STYLE_HINT`：全局 TTS 风格提示。
+- `TTS_ALLOW_NAPCAT_AI_FALLBACK`：普通语音失败时是否回退 NapCat AI 语音。
+- `ADMIN_HTTP_ENABLED`、`ADMIN_HTTP_HOST`、`ADMIN_HTTP_PORT`：后台 HTTP 服务。
+- `ADMIN_PUBLIC_BASE_URL`：公网后台地址。
+- `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_GROUP_PASSWORD`、`ADMIN_SESSION_SECRET`：后台登录和会话。
 
-然后按文件内注释填写。
+## 群配置
 
-重点变量：
-
-- `NAPCAT_MODE`
-  - `forward`：机器人主动连 NapCat
-  - `reverse`：NapCat 主动连机器人
-- `NAPCAT_WS_URL`
-  - 正向 WebSocket 地址
-- `NAPCAT_ACCESS_TOKEN`
-  - NapCat 访问令牌
-  - Reverse WS auth must use `Authorization: Bearer <token>`; URL query tokens are rejected.
-  - Required when `NAPCAT_REVERSE_WS_HOST` is `0.0.0.0` or another non-localhost address.
-- `NAPCAT_REVERSE_WS_HOST`
-  - 反向 WebSocket 监听地址
-- `NAPCAT_REVERSE_WS_PORT`
-  - 反向 WebSocket 监听端口
-- `NAPCAT_REVERSE_WS_PATH`
-  - 反向 WebSocket 路径
-- `OPENAI_BASE_URL`
-  - 文本模型兼容接口地址
-- `OPENAI_API_KEY`
-  - 文本模型密钥
-- `OPENAI_MODEL`
-  - 文本模型名
-- `PROFILE_AI_BASE_URL`
-  - 画像/记忆分析模型兼容接口地址；留空时回退复用 `OPENAI_BASE_URL`
-- `PROFILE_AI_API_KEY`
-  - 画像/记忆分析模型密钥；留空时回退复用 `OPENAI_API_KEY`
-- `PROFILE_AI_MODEL`
-  - 画像/记忆分析模型名；生产可使用 `mimo-v2.5-pro`
-- `TTS_BASE_URL`
-  - 语音合成接口地址
-- `TTS_API_KEY`
-  - 语音合成密钥
-- `TTS_MODEL`
-  - 默认语音模型
-- `TTS_VOICE`
-  - 默认音色
-- `TTS_AUDIO_FORMAT`
-  - 语音输出格式，默认 `wav`
-- `TTS_STYLE_HINT`
-  - 全局附加语音风格提示，可留空
-- `TTS_ALLOW_NAPCAT_AI_FALLBACK`
-  - TTS 失败时是否允许回退 NapCat AI 语音
-- `BOT_QQ`
-  - 机器人自己的 QQ 号
-
-## 群配置文件
-
-配置文件路径：
-
-- `config/groups.json`
-
-示例结构：
+配置文件默认是 `config/groups.json`。
 
 ```json
 {
@@ -163,24 +83,21 @@ copy .env.server-2022.example .env
   "groups": [
     {
       "groupId": "866209871",
-      "currentSkillId": "zxp",
-      "allowedSkillIds": ["leijun", "zxp", "jackma"],
+      "currentSkillId": "assistant",
+      "allowedSkillIds": ["assistant"],
       "switcherUserIds": ["1569671790"],
-      "liveChatUserIds": ["2684837849"],
-      "liveChatDelayMinutes": 1,
+      "liveChatUserIds": [],
+      "voiceReplyEnabled": true,
+      "defaultVoiceReplyEnabled": false,
       "dailyReportEnabled": true,
-      "dailyReportTime": "17:59",
-      "dailyReportTopUserCount": 5,
+      "dailyReportTime": "18:00",
       "holidayCountdownEnabled": true,
       "holidayCountdownTime": "09:00",
       "manualIdentities": [
         {
           "userIds": ["1967410653"],
-          "names": ["小菜鸡", "前端哥"]
-        },
-        {
-          "userIds": ["927345463", "1551925371"],
-          "names": ["渣渣辉"]
+          "names": ["前端哥"],
+          "note": "项目成员"
         }
       ]
     }
@@ -188,274 +105,178 @@ copy .env.server-2022.example .env
 }
 ```
 
-字段说明：
+说明：
 
-- `superAdminUserIds`
-  - 全局超级管理员 QQ 列表
-  - 超级管理员拥有所有系统权限
-  - 只有超级管理员可以增删群管理员
-- `groupId`
-  - 机器人允许工作的群号
-- `currentSkillId`
-  - 当前群默认 skill
-- `allowedSkillIds`
-  - 本群允许切换的 skill 列表
-- `switcherUserIds`
-  - 本群管理员 QQ 列表
-  - 这是历史字段名，现在语义上等同“群管理员”
-- `liveChatUserIds`
-  - 开启实时对话跟踪的 QQ 列表
-- `liveChatDelayMinutes`
-  - 机器人最后一次发言后，需要安静多久才允许实时对话触发
-- `dailyReportEnabled`
-  - 是否开启日报
-- `dailyReportTime`
-  - 工作日自动发送日报的时间
-- `dailyReportTopUserCount`
-  - 日报里统计的活跃用户数量
-- `holidayCountdownEnabled`
-  - 是否开启节假日倒计时
-- `holidayCountdownTime`
-  - 每天自动发送节假日倒计时的时间
-- `manualIdentities`
-  - 本群人工维护的身份记忆，用于 AI 对话时按 QQ 号识别成员
-  - `userIds` 支持一个身份绑定多个 QQ，`names` 支持多个常用称呼或外号
-  - AI 会以 QQ 号为准，昵称和群名片只作参考，减少冒充误判
+- `superAdminUserIds`：全局超级管理员。
+- `switcherUserIds`：当前群管理员。
+- `voiceReplyEnabled`：当前群是否允许语音功能。
+- `defaultVoiceReplyEnabled`：普通 AI 回复是否默认发送语音条；系统指令仍返回文字。
+- `manualIdentities`：人工身份和备注，优先于群名片和昵称用于成员识别。
+- `memoryDisabledUserIds`：禁用指定成员的记忆收集。
 
-## NapCat 接入
+## MiMo TTS v2.5 规则
 
-### 正向 WebSocket
+UBot 的 TTS 请求严格按 MiMo V2.5 文档组织：
 
-适合机器人主动去连 NapCat：
+- 目标合成文本只放在 `messages` 中 `role: "assistant"` 的内容里。
+- 自然语言风格、导演模式、整体提示只放在 `role: "user"` 的内容里，不会被读出。
+- 音频标签写在 assistant 文本里，例如 `(开心 活泼)今天状态不错`。
+- `mimo-v2.5-tts` 使用预置音色，支持 `(唱歌)` 标签。
+- `mimo-v2.5-tts-voicedesign` 使用文本音色设计，设置 `audio.optimize_text_preview = true`，不发送预置 `audio.voice`，不支持唱歌。
+- `mimo-v2.5-tts-voiceclone` 用音频样本复刻音色，不支持唱歌和预置音色。
 
-```env
-NAPCAT_MODE=forward
-NAPCAT_WS_URL=ws://127.0.0.1:3001
-```
+预置音色：
 
-### 反向 WebSocket
+- `mimo_default`
+- `冰糖`
+- `茉莉`
+- `苏打`
+- `白桦`
+- `Mia`
+- `Chloe`
+- `Milo`
+- `Dean`
 
-适合 NapCat 主动连接机器人，推荐你现在这种部署方式：
+Skill 可配置的风格维度：
 
-```env
-NAPCAT_MODE=reverse
-NAPCAT_REVERSE_WS_HOST=127.0.0.1
-NAPCAT_REVERSE_WS_PORT=6199
-NAPCAT_REVERSE_WS_PATH=/onebot/ws
-NAPCAT_ACCESS_TOKEN=你的token
-```
+- 方言：`东北话`、`四川话`、`河南话`、`粤语`
+- 人设腔调：`夹子音`、`御姐音`、`正太音`、`大叔音`、`台湾腔`
+- 基础情绪：`开心`、`悲伤`、`愤怒`、`恐惧`、`惊讶`、`兴奋`、`委屈`、`平静`、`冷漠`
+- 复合情绪：`怅然`、`欣慰`、`无奈`、`愧疚`、`释然`、`嫉妒`、`厌倦`、`忐忑`、`动情`
+- 整体语调：`温柔`、`高冷`、`活泼`、`严肃`、`慵懒`、`俏皮`、`深沉`、`干练`、`凌厉`
+- 音色定位：`磁性`、`醇厚`、`清亮`、`空灵`、`稚嫩`、`苍老`、`甜美`、`沙哑`、`醇雅`
+- 语速与节奏：`吸气`、`深呼吸`、`叹气`、`长叹一口气`、`喘息`、`屏息`
+- 情绪状态：`紧张`、`害怕`、`激动`、`疲惫`、`委屈`、`撒娇`、`心虚`、`震惊`、`不耐烦`
+- 语音特征：`颤抖`、`声音颤抖`、`变调`、`破音`、`鼻音`、`气声`、`沙哑`
+- 哭笑表达：`笑`、`轻笑`、`大笑`、`冷笑`、`抽泣`、`呜咽`、`哽咽`、`嚎啕大哭`
 
-NapCat 里对应填写：
+## 群内指令
 
-- URL：`ws://127.0.0.1:6199/onebot/ws`
-- Token：和 `NAPCAT_ACCESS_TOKEN` 保持一致
-- Auth header: `Authorization: Bearer <NAPCAT_ACCESS_TOKEN>`; do not put token in the URL query string.
+完整清单见 [COMMANDS.md](COMMANDS.md)。
 
-注意：
-
-- 不要把 NapCat WebUI 调试页的 `/api/Debug/ws` 当正式运行地址
-- WebUI 调试页只适合手工联调，不适合作为机器人长期接入地址
-
-## Skill 配置
-
-每个 skill 位于 `skills/*.json`
-
-至少需要这些字段：
-
-- `id`
-- `name`
-- `systemPrompt`
-- `styleRules`
-- `knowledge`
-- `temperature`
-- `maxContextTurns`
-
-可选增强字段：
-
-- `ttsStyleHint`
-- `exampleExchanges`
-- `maxReplyCharsPerMessage`
-- `maxTotalReplyChars`
-- `maxReplyMessages`
-- `preferredMaxReplyMessages`
-- `allowBurstOnHighEmotion`
-- `highEmotionKeywords`
-
-## 系统指令
-
-完整指令清单请看：
-
-- [COMMANDS.md](COMMANDS.md)
-
-常用指令速览：
+常用指令：
 
 - `#功能`
 - `#技能 列表`
 - `#技能 切换 <skillId>`
 - `#模型状态`
-- `#模型切换 mimo/gpt`
+- `#模型切换 <modelId|gpt|mimo>`
 - `#语音 <内容>`
+- `#语音回复 状态|开启|关闭`
+- `#唱歌 <内容>`
 - `#对话 清空`
-- `#clear`
-- `#实时对话 列表`
-- `#实时对话 添加 <QQ号>`
+- `#实时对话 列表|添加|移除|间隔`
 - `#状态`
 - `#健康检查`
 - `#服务器`
-- `#告警 状态`
+- `#告警 状态|开启|关闭`
 - `#操作日志`
 - `#记忆 状态`
 - `#知识库 状态`
-- `#日报 状态`
-- `#节假日`
-- `#管理员 列表`
+- `#昨日画像 <备注/QQ号>`
+- `#群聊画像 <备注/QQ号>`
+- `#日报 状态|发送|开启|关闭|时间`
+- `#节假日 状态|发送|开启|关闭|时间`
+- `#定时任务 列表|添加|删除|状态|开启|关闭`
+- `#管理员 列表|添加|移除`
 - `#闭嘴` / `#说话`
-- `#拉黑 <QQ号>`
+- `#拉黑 <QQ号>` / `#拉黑 解除 <QQ号>`
 
-## Windows Server 2022 部署
+## 公网后台
 
-推荐流程：
-
-1. 安装 Node.js 22
-2. 安装 NapCat，并确认 QQ 已登录
-3. 上传或解压本项目到固定目录
-4. 复制环境变量模板为 `.env`
-5. 填写 `.env`
-6. 修改 `config/groups.json`
-7. 安装依赖并构建
-8. 启动项目
-
-示例：
-
-```bat
-cd /d D:\apps\ubot
-pnpm install
-pnpm run build
-pnpm start
-```
-
-## Windows 打包
-
-```bash
-pnpm run package:win
-```
-
-输出位置：
-
-- `release/<项目名>-<版本>-win/`
-- `release/<项目名>-<版本>-win.zip`
-
-## 开机自启
-
-注册：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\register-startup-task.ps1
-```
-
-取消：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\unregister-startup-task.ps1
-```
-
-## 测试
-
-```bash
-pnpm test
-```
-
-## 对话与引用规则
-
-- 普通 `@机器人` 对话不自动 `@` 发言人，也不会自动 `@` 用户消息里提到的第三方。
-- 实时对话主动回复只会 `@` 被跟踪的发言人；如果该发言人消息里 `@` 了第三方，第三方只作为 AI 语义上下文。
-- `866209871` 群里普通消息包含“乘风”时会触发主动对话，机器人只会 `@` 发言人。
-- 群聊回复/引用消息会尝试通过 NapCat `get_msg` 读取原消息、发送者和图片概况，传给 AI 作为参考；读取失败不影响当前回复。
-- AI 正文里的第三方 `@QQ`、`@名字` 或 CQ at 会被降级成普通 QQ/名字，避免误触发第三方提醒。
-- `manualIdentities` 优先于群名片和昵称，用于识别被提到或被引用的人；回复时优先使用配置里的第一个名字，找不到配置时再使用群名片/昵称。
-- 配置了 `manualIdentities` 的群里，普通 `@机器人` 对话可触发受控 `@`：机器人先按人格决定是否愿意叫人，程序再按身份表唯一命中后最多 CQ `@` 1 人。
-- 同一个群最多并发处理 10 条消息；超过 10 条会排队，不再发送忙碌提示。
-
-## 定时任务
-
-- `@机器人 设置定时任务一个小时提醒群友喝水` 会在当前群创建每小时提醒任务。
-- `#定时任务 列表` 查看当前群任务。
-- `#定时任务 添加 每30分钟提醒群友站起来活动` 创建任务。
-- `#定时任务 删除 <任务ID>` 删除任务。
-- `#定时任务 关闭` 暂停当前群全部定时任务触发，不删除任务。
-- `#定时任务 开启` 恢复当前群全部定时任务触发。
-- `#定时任务 状态` 查看当前群定时任务总开关。
-- 定时提醒持久化在 `data/scheduled-reminders.json`，每次提醒会优先让 AI 换一种说法，失败时使用本地兜底文案。
-
-## 闭嘴模式
-
-- 群管理员或超级管理员可用 `#闭嘴` 让当前群机器人停止普通对话、语音、复读、乘风触发和实时对话。
-- 闭嘴后仍保留聊天总结、日报、节假日倒计时、定时任务提醒及这些功能的管理命令。
-- `#说话` 恢复当前群普通对话能力；闭嘴状态按群保存，不影响其他群。
-
-## 状态与运维
-
-- 群管理员或超级管理员可用 `#状态` 查看当前群机器人总览。
-- `#健康检查` / `#健康` 会检查 NapCat 连接、当前技能、允许技能、定时任务、日报和节假日配置。
-- `#服务器` 查看机器人进程所在服务器的主机、Node、运行时长、负载、内存、工作目录和 NapCat 连接状态。
-- `#记忆 状态` 查看当前群长期记忆和待审核候选数量。
-- `#知识库 状态` 查看当前群 FAQ 数量和关键词检索状态。
-- `#昨日画像 <备注/QQ号>` 查看指定成员昨日新增画像总结；省略参数默认查自己，所有群成员都可查询任意成员。
-- `#群聊画像 <备注/QQ号>` 汇总指定成员的整体长期群聊画像；省略参数默认查自己，所有群成员都可查询任意成员。
-- `#告警 状态 / 开启 / 关闭` 管理当前群是否接收自动运维告警；主动告警覆盖服务启动、NapCat 断连、连续发送失败和内存过高，NapCat 恢复状态由管理员主动查询。
-- `#操作日志` 查看当前群最近 10 条管理员操作，包括闭嘴、黑名单、实时对话、技能切换、定时任务和管理员变更。
-- 这些命令在闭嘴模式下仍可使用；被拉黑用户仍保持静默。
-
-## UBot v4.7.1 后台、群记忆和知识库
-
-- 设置 `ADMIN_HTTP_ENABLED=true` 后会启动独立后台服务，默认监听 `127.0.0.1:6200`。
-- 生产建议通过 Nginx 将 `https://bot.9958.uk` 反代到 `http://127.0.0.1:6200`，不要暴露 NapCat 反向 WebSocket。
-- 后台登录使用 `.env` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，会话由 `ADMIN_SESSION_SECRET` 签名。
-- 群记忆长期数据保存在 `data/group-memory.json`；自动提炼候选保存在 `data/group-memory-candidates.json`，候选必须在后台批准后才会进入 AI 上下文。
-- 文本 FAQ 知识库保存在 `data/knowledge-base.json`，机器人对话前会按关键词检索当前群启用 FAQ，最多注入 Top 3 条。
-- `manualIdentities` 仍然是身份识别最高优先级；群记忆只补充偏好、稳定事实、群规则和固定梗，不覆盖 QQ 身份表。
-- 后台“成员管理”会合并 NapCat 群成员、`manualIdentities` 和已有记忆归属，展示 QQ、群名片、昵称、系统备注、长期记忆数和待审候选数。
-- 成员备注和别名仍写入当前群 `manualIdentities`；成员画像候选必须选择具体 QQ 后才能按成员画像批准，也可以转为群事实后批准；候选和长期记忆会显示来源摘要、时间段、消息数和参与 QQ。
-- 自动提炼的记忆置信度达到 0.8 且满足归属规则时会自动批准进入长期记忆；低置信度、缺少成员归属或归属不在本批发言人里的画像仍留在候选池。
-- 画像候选提炼、每日画像审查、`#昨日画像` 和 `#群聊画像` 汇总使用独立的 `PROFILE_AI_*` 配置；普通聊天回复、日报、提醒和节假日文案仍使用原 `OPENAI_*` 配置。
-- 群管理员可用 `#模型切换 mimo/gpt` 切换当前群聊天回复模型；`gpt` 使用 `OPENAI_*`，`mimo` 使用 `PROFILE_AI_*`，主回复模型失败时会自动尝试另一个模型兜底。
-- 每天 0 点后按香港时间审查昨日新增的长期成员画像，生成一条 `daily_profile_review:<日期>` 来源的“昨日画像总结”，避免把每日总结再次套娃总结。
-- `#昨日画像` 和 `#群聊画像` 支持用 QQ、系统备注、别名、群名片或昵称查询；所有群成员都可以查询任意成员，多人模糊命中时会提示改用 QQ 号。
-
-## 黑名单
-
-- 群管理员或超级管理员可用 `#拉黑 <QQ号>` 拉黑当前群指定成员。
-- `#拉黑 解除 <QQ号>` 解除拉黑；黑名单按群保存，不影响其它群。
-- 被拉黑成员的发言仍进入日报和聊天总结统计，但机器人不会回复他的普通对话、语音、实时对话、关键词、复读或其它命令。
-
-## 发布与升级
-
-- 项目名：`UBot`
-- 当前版本：`v4.7.1`
-- npm 包名：`ubot`
-- Node.js：建议 Node 22
-- `npm run dev` / `npm run build` / `npm test` use `UBOT_NODE` when set, otherwise Windows falls back to `D:\environment\nvm\v22.17.0\node.exe` if it exists.
-- 发布包会排除 `.env`、`data/`、`config/groups.json`、`node_modules/`、`dist/`、`release/` 和 `NUL`，避免覆盖生产配置和数据。
-
-升级生产环境时保留原有 `.env`、`data/` 和 `config/groups.json`。尤其不要把生产的 NapCat 反向 WebSocket 配置覆盖掉，生产应保持：
+启用：
 
 ```env
-NAPCAT_REVERSE_WS_HOST=0.0.0.0
-NAPCAT_REVERSE_WS_PORT=6199
-NAPCAT_REVERSE_WS_PATH=/onebot/ws
-NAPCAT_ACCESS_TOKEN=<strong-token>
+ADMIN_HTTP_ENABLED=true
+ADMIN_HTTP_HOST=127.0.0.1
+ADMIN_HTTP_PORT=6200
+ADMIN_PUBLIC_BASE_URL=https://bot.9958.uk
 ```
 
-NapCat must send this token with `Authorization: Bearer <token>`. Query-string tokens are rejected.
+生产建议：
 
-## 分享项目给别人
+- Nginx 只反代后台 HTTP 服务，不暴露 NapCat 反向 WebSocket。
+- 静态资源 hash 缺失时返回 `404 asset_not_found` 且 `Cache-Control: no-store`，避免旧 chunk 回退到 SPA 造成 503 或白屏。
+- 登录后用 CSRF 会话保护管理 API；未登录访问管理 API 应返回 `401`。
 
-如果你要把项目发给别人，建议不要直接发正在运行的目录。
+后台模块：
 
-推荐发脱敏分享包或 GitHub Release 包：
+- 总览：候选记忆、长期记忆、系统状态和知识库概览。
+- 群配置：群开关、模型、技能、语音、日报、节假日、提醒和权限。
+- 成员管理：成员搜索、备注编辑、画像记录、记忆收集开关和成员记忆跳转。
+- 候选记忆：审核、批量批准、拒绝和证据查看。
+- 长期记忆：启停、编辑、删除、成员筛选和去重任务。
+- 画像记录：昨日画像、整体画像和公开链接管理。
+- 知识库：FAQ 增删改查和导入预览。
+- 任务中心：后台任务列表、详情、时间线、结果和失败原因。
+- 操作审计：管理员操作日志。
+- 系统状态：模型检测、NapCat、服务器和模型健康历史。
+- Skills 管理：skill JSON、导入导出、备份恢复和 MiMo TTS 风格配置。
+- 指令管理：内置指令文案、别名和启停。
 
-- `release/ubot-4.7.1-win/`
-- `release/ubot-4.7.1-win.zip`
-- `RELEASE-v4.7.1.md`
+## 任务中心
 
-这样不会带上你的真实 `.env`、API Key、对话历史和生产群配置。
+任务数据保存在 `data/admin-tasks.json`。
+
+V1.0.0 会在读取任务列表或任务详情时自动判断陈旧任务：
+
+- 普通 queued/running 任务超过 30 分钟未更新会标记失败。
+- `model-check` 任务超过 10 分钟未更新会标记失败。
+- 当前进程内正在执行的任务不会被误判。
+- 失败任务会写入 `finishedAt`、`durationMs`、`progress: 100` 和自动失败原因。
+
+这用于处理生产中残留的“模型检测 环境语音模型”长期执行中状态。
+
+## 部署升级
+
+生产目录示例：`/opt/ai-project`。
+
+升级时必须保留：
+
+- `.env`
+- `data/`
+- `config/groups.json`
+- 生产 NapCat 登录态和反向 WebSocket 配置
+
+不要用发布包覆盖上述运行数据。推荐流程：
+
+```bash
+git fetch --all
+git checkout main
+git pull
+npm ci
+npm run build
+systemctl restart ai-project.service
+```
+
+部署后验证：
+
+```bash
+systemctl is-active ai-project.service
+journalctl -u ai-project.service -n 100 --no-pager
+curl -I https://bot.9958.uk/login
+curl -i https://bot.9958.uk/api/session
+```
+
+期望：
+
+- `ai-project.service` 为 `active`。
+- 日志存在 NapCat reverse WebSocket connected。
+- `/login` 返回 `200`。
+- 未登录访问受保护 API 返回 `401`。
+- 公网后台可登录并访问总览、任务中心、系统状态、群配置和 Skills 管理。
+
+## 发布
+
+- 当前版本：`v1.0.0`
+- npm 包名：`ubot`
+- Node.js：`>=22.0.0`
+- 发布说明：`RELEASE-v1.0.0.md`
+- GitHub Release tag：`v1.0.0`
+
+发布前必须通过：
+
+```bash
+npm test
+git diff --check
+```

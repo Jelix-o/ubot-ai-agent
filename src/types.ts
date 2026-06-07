@@ -91,6 +91,7 @@ export interface SkillDefinition {
   knowledge: string[];
   sourceSkillLines?: string[];
   ttsStyleHint?: string;
+  ttsConfig?: SkillTtsConfig;
   exampleExchanges?: Array<{
     user: string;
     assistant: string;
@@ -107,6 +108,21 @@ export interface SkillDefinition {
   respectLineBreaks?: boolean;
   allowBurstOnHighEmotion?: boolean;
   highEmotionKeywords?: string[];
+}
+
+export interface SkillTtsConfig {
+  stylePrompt?: string;
+  voice?: string;
+  dialect?: string;
+  personaTone?: string;
+  baseEmotion?: string;
+  compoundEmotion?: string;
+  overallTone?: string;
+  voiceTexture?: string;
+  paceRhythm?: string;
+  emotionState?: string;
+  voiceFeature?: string;
+  laughCry?: string;
 }
 
 export interface MessageImageInput {
@@ -273,6 +289,7 @@ export interface GroupBotConfig {
     enabled: boolean;
   }>;
   voiceReplyEnabled?: boolean;
+  defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
 }
 

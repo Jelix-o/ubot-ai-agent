@@ -158,11 +158,11 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 }
 
 .overview-list-panel {
-  min-height: 400px;
+  min-height: 500px;
 }
 
 .overview-scroll-list {
-  max-height: 352px;
+  max-height: 430px;
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 4px;

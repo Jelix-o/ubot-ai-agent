@@ -6,16 +6,16 @@ import test from "node:test";
 
 import type { SkillDefinition, SystemModelConfig } from "../types.js";
 import { ConfiguredTtsService, type RuntimeTtsService } from "./configured-tts-service.js";
-import { TtsServiceError, type TtsSynthesisResult } from "./tts-service.js";
+import { TtsServiceError, type TtsSynthesisOptions, type TtsSynthesisResult } from "./tts-service.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
 
 class FakeRuntimeTtsService implements RuntimeTtsService {
-  calls: Array<{ text: string; skillId: string }> = [];
+  calls: Array<{ text: string; skillId: string; options?: TtsSynthesisOptions }> = [];
 
   constructor(private readonly label: string) {}
 
-  async synthesize(text: string, skill: SkillDefinition): Promise<TtsSynthesisResult> {
-    this.calls.push({ text, skillId: skill.id });
+  async synthesize(text: string, skill: SkillDefinition, options?: TtsSynthesisOptions): Promise<TtsSynthesisResult> {
+    this.calls.push({ text, skillId: skill.id, options });
     return {
       filePath: `${this.label}.wav`,
       recordFile: `base64://${this.label}`,
@@ -60,6 +60,27 @@ test("ConfiguredTtsService uses selected enabled tts model from system settings"
   assert.equal(created[0]?.baseUrl, "https://configured.example/v1");
   assert.equal(created[0]?.model, "configured-tts");
   assert.equal(created[0]?.apiKey, "configured-key");
+});
+
+test("ConfiguredTtsService forwards synthesis options to selected runtime", async () => {
+  const store = await createSettingsStore();
+  const configured = new FakeRuntimeTtsService("configured");
+
+  await store.update({
+    models: [makeTtsModel({ id: "tts-main", model: "mimo-v2.5-tts", apiKey: "tts-key" })],
+    selectedModelIds: { tts: "tts-main" },
+  });
+
+  const service = new ConfiguredTtsService(
+    new FakeRuntimeTtsService("fallback"),
+    store,
+    defaultOptions(),
+    () => configured,
+  );
+
+  await service.synthesize("sing this", testSkill, { mode: "singing" });
+
+  assert.deepEqual(configured.calls[0]?.options, { mode: "singing" });
 });
 
 test("ConfiguredTtsService falls back when selected tts model is disabled or missing api key", async () => {

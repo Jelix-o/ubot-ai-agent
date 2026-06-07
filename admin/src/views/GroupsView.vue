@@ -80,6 +80,7 @@ function defaultGroupConfig(): GroupConfig {
     opsAlertsEnabled: true,
     triggerKeywords: [{ keyword: "乘风", enabled: true }],
     voiceReplyEnabled: true,
+    defaultVoiceReplyEnabled: false,
     memoryDisabledUserIds: [],
   };
 }
@@ -452,7 +453,8 @@ watch(() => app.groupId, () => {
           <label><input v-model="form.scheduledRemindersEnabled" type="checkbox" /> 定时提醒</label>
           <label><input v-model="form.opsAlertsEnabled" type="checkbox" /> 运维告警</label>
           <label><input v-model="form.botMuted" type="checkbox" /> 机器人静音</label>
-          <label><input v-model="form.voiceReplyEnabled" type="checkbox" /> 语音回复</label>
+          <label><input v-model="form.voiceReplyEnabled" type="checkbox" /> 语音功能</label>
+          <label><input v-model="form.defaultVoiceReplyEnabled" type="checkbox" /> 默认语音回复</label>
         </div>
       </section>
 

@@ -54,6 +54,19 @@ test("admin skills and command lists use the simplified table surfaces", async (
   ]);
 
   assert.match(skillsView, /SkillDefinition/);
+  assert.match(skillsView, /ttsConfig/);
+  assert.match(skillsView, /整体 TTS 风格提示/);
+  assert.match(skillsView, /TTS 音色/);
+  assert.match(skillsView, /方言/);
+  assert.match(skillsView, /人设腔调/);
+  assert.match(skillsView, /基础情绪/);
+  assert.match(skillsView, /复合情绪/);
+  assert.match(skillsView, /整体语调/);
+  assert.match(skillsView, /音色定位/);
+  assert.match(skillsView, /语速与节奏/);
+  assert.match(skillsView, /情绪状态/);
+  assert.match(skillsView, /语音特征/);
+  assert.match(skillsView, /哭笑表达/);
   assert.match(skillsView, /type="file"\s+accept="application\/json,\.json"/);
   assert.match(skillsView, /downloadJson/);
   assert.match(skillsView, /grid-template-columns:\s*minmax\(180px,\s*0\.9fr\)\s*minmax\(220px,\s*1fr\)\s*86px\s*96px\s*180px/);
@@ -131,6 +144,8 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(groupsView, /MultiTagSelect/);
   assert.match(groupsView, /v-model="form\.allowedSkillIds"/);
   assert.match(groupsView, /v-model="form\.memoryDisabledUserIds"/);
+  assert.match(groupsView, /v-model="form\.defaultVoiceReplyEnabled"/);
+  assert.match(groupsView, /默认语音回复/);
 });
 
 test("admin knowledge import stays preview-first and uses formatted timestamps", async () => {
@@ -159,7 +174,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v4\.7\.1/);
+  assert.match(appShell, /UBot v1\.0\.0/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="top-popover theme-popover"/);
@@ -202,7 +217,9 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(routerFile, /path:\s*"\/commands"[\s\S]*path:\s*"\/tasks"[\s\S]*path:\s*"\/audit"[\s\S]*path:\s*"\/health"/);
   assert.match(routerFile, /path:\s*"\/health"[\s\S]*path:\s*"\/settings"/);
   assert.match(routerFile, /name:\s*"settings"[\s\S]*superOnly:\s*true/);
-  assert.match(routerFile, /component:\s*\(\)\s*=>\s*import\("\.\/views\/OverviewView\.vue"\)/);
+  assert.match(routerFile, /import AppOverviewView from "\.\/views\/OverviewView\.vue"/);
+  assert.match(routerFile, /component:\s*AppOverviewView/);
+  assert.doesNotMatch(routerFile, /component:\s*\(\)\s*=>\s*import/);
 
   const adminServer = await readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8");
   assert.match(adminServer, /getServerStatusSnapshot/);
@@ -215,6 +232,8 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(adminServer, /title:\s*`批量审核/);
   assert.match(adminServer, /title:\s*`画像生成/);
   assert.match(adminServer, /title:\s*`模型检测/);
+  assert.match(adminServer, /isAdminAssetPath/);
+  assert.match(adminServer, /asset_not_found/);
 });
 
 test("admin system status separates environment and server health", async () => {

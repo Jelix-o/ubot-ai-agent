@@ -4,7 +4,7 @@ import { useRoute } from "vue-router";
 
 import SearchableSelect from "../components/SearchableSelect.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
-import { api, queryString, type MemberProfile, type Memory, type MemoryType, type Pagination } from "../services/api";
+import { api, queryString, type AdminTaskRecord, type MemberProfile, type Memory, type MemoryType, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { evidenceSpeakers, evidenceSummary, formatDateTime } from "../utils/format";
 
@@ -21,7 +21,32 @@ const evidenceItem = shallowRef<Memory>();
 const evidenceLoading = shallowRef(false);
 const busyIds = shallowRef<Set<string>>(new Set());
 const dedupLoading = shallowRef(false);
-const dedupDecisions = shallowRef<Array<{ action: string; targetId?: string; duplicateId: string; reason: string; similarity: number }>>([]);
+const dedupTask = shallowRef<AdminTaskRecord | null>(null);
+const dedupTaskMessage = shallowRef("");
+const dedupDecisions = shallowRef<DedupDecision[]>([]);
+let dedupPollTimer: ReturnType<typeof setTimeout> | undefined;
+
+interface DedupDecision {
+  action: string;
+  targetId?: string;
+  duplicateId: string;
+  reason: string;
+  similarity: number;
+}
+
+interface DedupPreviewResult {
+  groupId: string;
+  subjectUserId: string;
+  decisionCount: number;
+  decisions: DedupDecision[];
+  semanticStats?: Record<string, number>;
+}
+
+interface DedupPreviewResponse extends Partial<DedupPreviewResult> {
+  queued?: boolean;
+  taskId?: string;
+  task?: AdminTaskRecord;
+}
 const editForm = reactive({
   title: "",
   content: "",
@@ -235,15 +260,73 @@ async function bulk(action: "disable" | "delete"): Promise<void> {
   }
 }
 
+function clearDedupPolling(): void {
+  if (dedupPollTimer) {
+    clearTimeout(dedupPollTimer);
+    dedupPollTimer = undefined;
+  }
+}
+
+function readDedupPreviewResult(task: AdminTaskRecord): DedupPreviewResult | undefined {
+  const result = task.result as DedupPreviewResult | undefined;
+  if (!result || !Array.isArray(result.decisions)) return undefined;
+  return result;
+}
+
+function finishDedupPreview(result: DedupPreviewResult): void {
+  dedupDecisions.value = result.decisions;
+  dedupLoading.value = false;
+  dedupTaskMessage.value = "";
+  clearDedupPolling();
+  app.showToast(`发现 ${result.decisions.length} 组疑似重复记忆`);
+}
+
+async function pollDedupPreviewTask(taskId: string): Promise<void> {
+  if (dedupTask.value?.id !== taskId) return;
+  try {
+    const task = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(taskId)}`);
+    if (dedupTask.value?.id !== taskId) return;
+    dedupTask.value = task;
+    if (task.status === "succeeded") {
+      const result = readDedupPreviewResult(task);
+      if (!result) {
+        throw new Error("去重任务完成，但结果格式异常");
+      }
+      finishDedupPreview(result);
+      return;
+    }
+    if (task.status === "failed" || task.status === "cancelled") {
+      dedupLoading.value = false;
+      dedupTaskMessage.value = "";
+      clearDedupPolling();
+      app.showToast(task.error || "去重检测任务失败", "error");
+      return;
+    }
+    dedupTaskMessage.value = `后台检测中，进度 ${task.progress}%`;
+    dedupPollTimer = setTimeout(() => {
+      void pollDedupPreviewTask(taskId);
+    }, 1500);
+  } catch (error) {
+    dedupLoading.value = false;
+    dedupTaskMessage.value = "";
+    clearDedupPolling();
+    app.showToast((error as Error).message, "error");
+  }
+}
+
 async function previewDeduplicate(): Promise<void> {
   if (!app.groupId) return;
   if (!filters.userId) {
     app.showToast("请先选择一个记忆成员，再检查该成员的重复记忆。", "error");
     return;
   }
+  clearDedupPolling();
   dedupLoading.value = true;
+  dedupTask.value = null;
+  dedupTaskMessage.value = "正在提交后台检测任务...";
+  dedupDecisions.value = [];
   try {
-    const data = await api<{ decisions: Array<{ action: string; targetId?: string; duplicateId: string; reason: string; similarity: number }> }>("/api/memories/deduplicate/preview", {
+    const data = await api<DedupPreviewResponse>("/api/memories/deduplicate/preview", {
       method: "POST",
       body: JSON.stringify({
         groupId: app.groupId,
@@ -251,13 +334,28 @@ async function previewDeduplicate(): Promise<void> {
         subjectUserId: filters.userId,
       }),
     });
-    dedupDecisions.value = data.decisions;
-    app.showToast(`发现 ${data.decisions.length} 组疑似重复记忆`);
+    if (data.queued && data.taskId) {
+      dedupTask.value = data.task ?? null;
+      dedupTaskMessage.value = "后台检测任务已启动，模型判断较慢时会自动等待完成";
+      app.showToast("去重检测已转入后台任务");
+      dedupPollTimer = setTimeout(() => {
+        void pollDedupPreviewTask(data.taskId!);
+      }, 800);
+      return;
+    }
+    finishDedupPreview({
+      groupId: data.groupId ?? app.groupId,
+      subjectUserId: data.subjectUserId ?? filters.userId,
+      decisionCount: data.decisionCount ?? data.decisions?.length ?? 0,
+      decisions: data.decisions ?? [],
+      semanticStats: data.semanticStats,
+    });
   } catch (error) {
+    dedupTaskMessage.value = "";
     app.showToast((error as Error).message, "error");
-  } finally {
     dedupLoading.value = false;
   }
+
 }
 
 async function applyDeduplicate(): Promise<void> {
@@ -288,9 +386,13 @@ function onRefresh(): void {
 }
 
 function onGroupChanged(): void {
+  clearDedupPolling();
   selectedIds.value = new Set();
   pagination.page = 1;
   filters.userId = "";
+  dedupTask.value = null;
+  dedupTaskMessage.value = "";
+  dedupLoading.value = false;
   dedupDecisions.value = [];
   void Promise.all([load(), loadMemberOptions()]).catch((error) => app.showToast(error.message, "error"));
 }
@@ -319,6 +421,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  clearDedupPolling();
   window.removeEventListener("keydown", onKeydown);
 });
 
@@ -390,6 +493,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <button class="btn" type="button" :disabled="dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">
           应用去重
         </button>
+      </div>
+      <div v-if="dedupTaskMessage || dedupTask" class="dedup-task-status">
+        <span>{{ dedupTaskMessage || "后台任务已更新" }}</span>
+        <span v-if="dedupTask" class="muted">任务 {{ dedupTask.id }} · {{ dedupTask.status }} · {{ dedupTask.progress }}%</span>
       </div>
       <div v-if="dedupDecisions.length" class="dedup-results">
         <div class="dedup-summary">发现 {{ dedupDecisions.length }} 条处理建议，先展示前 5 条。</div>
@@ -553,6 +660,19 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.dedup-task-status {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .dedup-results {

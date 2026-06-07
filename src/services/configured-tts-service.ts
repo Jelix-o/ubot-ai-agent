@@ -1,10 +1,10 @@
 import { logWarn } from "../logger.js";
 import type { SkillDefinition, SystemModelConfig } from "../types.js";
-import { TtsService, TtsServiceError, type TtsSynthesisResult } from "./tts-service.js";
+import { TtsService, TtsServiceError, type TtsSynthesisOptions, type TtsSynthesisResult } from "./tts-service.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 
 export type RuntimeTtsService = {
-  synthesize(text: string, skill: SkillDefinition): Promise<TtsSynthesisResult>;
+  synthesize(text: string, skill: SkillDefinition, options?: TtsSynthesisOptions): Promise<TtsSynthesisResult>;
 };
 
 type RuntimeTtsFactory = (model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey">) => RuntimeTtsService;
@@ -36,10 +36,10 @@ export class ConfiguredTtsService implements RuntimeTtsService {
       ),
   ) {}
 
-  async synthesize(text: string, skill: SkillDefinition): Promise<TtsSynthesisResult> {
+  async synthesize(text: string, skill: SkillDefinition, options: TtsSynthesisOptions = {}): Promise<TtsSynthesisResult> {
     const resolved = await this.resolveService();
     try {
-      return await resolved.service.synthesize(text, skill);
+      return await resolved.service.synthesize(text, skill, options);
     } catch (error) {
       if (resolved.modelId && error instanceof TtsServiceError) {
         throw new TtsServiceError(error.message, {

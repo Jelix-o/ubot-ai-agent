@@ -53,6 +53,8 @@ import { parseVoiceCommand } from "./utils/voice-command.js";
 const SKILL_PREFIX = "#技能";
 const MODEL_PREFIX = "#模型";
 const VOICE_PREFIX = "#语音";
+const VOICE_REPLY_PREFIX = "#语音回复";
+const SING_PREFIX = "#唱歌";
 const CONVERSATION_PREFIX = "#对话";
 const LIVE_CHAT_PREFIX = "#实时对话";
 const DAILY_REPORT_PREFIX = "#日报";
@@ -109,6 +111,7 @@ const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限"
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
+const MSG_VOICE_REPLY_NO_PERMISSION = "你没有管理语音回复的权限";
 
 const RUNTIME_COMMAND_SPECS = {
   admin: { builtinPrefix: ADMIN_PREFIX, builtinAliases: [] },
@@ -131,7 +134,9 @@ const RUNTIME_COMMAND_SPECS = {
   server: { builtinPrefix: SERVER_PREFIX, builtinAliases: [] },
   status: { builtinPrefix: STATUS_PREFIX, builtinAliases: [] },
   skill: { builtinPrefix: SKILL_PREFIX, builtinAliases: [] },
+  sing: { builtinPrefix: SING_PREFIX, builtinAliases: [] },
   voice: { builtinPrefix: VOICE_PREFIX, builtinAliases: [] },
+  voice_reply: { builtinPrefix: VOICE_REPLY_PREFIX, builtinAliases: [] },
 } as const;
 
 type RuntimeCommandId = keyof typeof RUNTIME_COMMAND_SPECS;
@@ -194,6 +199,8 @@ interface MessageInteractionContext {
   interactionTargets: AiInteractionTarget[];
   replyContext?: AiReplyContext;
 }
+
+type ReplyOutputMode = "text" | "voice" | "singing";
 
 type OpsAlertType = "startup" | "napcat-down" | "memory-high" | "send-failure" | "send-recovered";
 
@@ -465,6 +472,12 @@ export class BotApplication {
       return;
     }
 
+    const voiceReplyCommand = matchRuntimeCommand(commandText, runtimeCommands, "voice_reply");
+    if (voiceReplyCommand) {
+      await this.handleVoiceReplyCommand(groupConfig, event, voiceReplyCommand.rewrittenText);
+      return;
+    }
+
     if (groupConfig.botMuted === true) {
       const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
       if (dailyReportCommand) {
@@ -569,6 +582,31 @@ export class BotApplication {
 
     const parsedMessage = parseGroupMessage(event.message, this.botQq);
     const messageContext = await this.buildMessageInteractionContext(groupConfig, parsedMessage);
+    const singCommand = matchRuntimeCommand(commandText, runtimeCommands, "sing");
+    if (singCommand) {
+      if (groupConfig.voiceReplyEnabled === false) {
+        await this.sendText(groupId, "本群语音功能已关闭");
+        return;
+      }
+      const singInput = singCommand.suffix.trim();
+      if (!singInput) {
+        await this.sendText(groupId, `唱歌命令格式：${runtimeCommandPrimary(runtimeCommands, "sing")} <内容>`);
+        return;
+      }
+      await this.groupLock.run(groupId, async () => {
+        await this.handleConversation(
+          groupConfig,
+          userId,
+          singInput,
+          parsedMessage.images,
+          "singing",
+          [],
+          messageContext,
+        );
+      });
+      return;
+    }
+
     const voiceRuntimeCommand = matchRuntimeCommand(commandText, runtimeCommands, "voice");
     const voiceCommandEnabled = isRuntimeCommandEnabled(runtimeCommands, "voice");
     const voiceCommand = parseVoiceCommand(
@@ -655,7 +693,7 @@ export class BotApplication {
           userId,
           parsedMessage.text,
           parsedMessage.images,
-          "text",
+          resolveDefaultReplyMode(groupConfig),
           [userId],
           messageContext,
         );
@@ -684,7 +722,7 @@ export class BotApplication {
         userId,
         parsedMessage.text,
         parsedMessage.images,
-        "text",
+        resolveDefaultReplyMode(groupConfig),
         [],
         messageContext,
         true,
@@ -802,7 +840,7 @@ export class BotApplication {
               candidate.userId,
               formatBufferedMessages(candidate.messages),
               [],
-              "text",
+              resolveDefaultReplyMode(groupConfig),
               [candidate.userId],
               buildBufferedInteractionContext(candidate.messages),
             );
@@ -1373,6 +1411,68 @@ export class BotApplication {
     await this.sendText(groupId, "机器人已恢复说话");
   }
 
+  private async handleVoiceReplyCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    commandText: string,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+    const normalized = commandText.replace(/\s+/g, " ").trim();
+
+    if (!(await this.isAdmin(groupConfig, userId))) {
+      await this.sendText(groupId, MSG_VOICE_REPLY_NO_PERMISSION);
+      return;
+    }
+
+    if (
+      normalized === VOICE_REPLY_PREFIX ||
+      normalized === `${VOICE_REPLY_PREFIX} 状态` ||
+      normalized === `${VOICE_REPLY_PREFIX} 查看`
+    ) {
+      await this.sendText(
+        groupId,
+        [
+          `语音功能：${groupConfig.voiceReplyEnabled === false ? "已关闭" : "已开启"}`,
+          `默认语音回复：${groupConfig.defaultVoiceReplyEnabled === true ? "已开启" : "已关闭"}`,
+          "说明：默认语音回复只影响普通 AI 回复，系统指令仍用文字返回。",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (
+      normalized === `${VOICE_REPLY_PREFIX} 开启` ||
+      normalized === `${VOICE_REPLY_PREFIX} 打开` ||
+      normalized.toLowerCase() === `${VOICE_REPLY_PREFIX} on`.toLowerCase()
+    ) {
+      await this.groupConfigService.updateGroupConfig(groupId, { defaultVoiceReplyEnabled: true });
+      await this.logAdminOperation(groupId, userId, "默认语音回复开启", undefined, "普通 AI 回复默认发送语音条");
+      await this.sendText(groupId, "已开启默认语音回复，普通 AI 回复会优先发送语音条。");
+      return;
+    }
+
+    if (
+      normalized === `${VOICE_REPLY_PREFIX} 关闭` ||
+      normalized.toLowerCase() === `${VOICE_REPLY_PREFIX} off`.toLowerCase()
+    ) {
+      await this.groupConfigService.updateGroupConfig(groupId, { defaultVoiceReplyEnabled: false });
+      await this.logAdminOperation(groupId, userId, "默认语音回复关闭", undefined, "普通 AI 回复恢复文字");
+      await this.sendText(groupId, "已关闭默认语音回复，普通 AI 回复会恢复文字。");
+      return;
+    }
+
+    await this.sendText(
+      groupId,
+      [
+        "语音回复命令格式：",
+        `${VOICE_REPLY_PREFIX} 状态`,
+        `${VOICE_REPLY_PREFIX} 开启`,
+        `${VOICE_REPLY_PREFIX} 关闭`,
+      ].join("\n"),
+    );
+  }
+
   private async handleStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
@@ -1397,6 +1497,7 @@ export class BotApplication {
         `说话：${groupConfig.botMuted === true ? "已闭嘴" : "正常"}`,
         `当前技能：${groupConfig.currentSkillId}${currentSkill ? `（${currentSkill.name}）` : "（未找到配置）"}`,
         `实时对话：${liveUsers.length > 0 ? `${liveUsers.length} 人，倒计时 ${formatLiveChatDelay(groupConfig)}` : `未开启，倒计时 ${formatLiveChatDelay(groupConfig)}`}`,
+        `语音回复：${groupConfig.voiceReplyEnabled === false ? "语音功能已关闭" : `语音功能已开启，默认语音${groupConfig.defaultVoiceReplyEnabled === true ? "已开启" : "已关闭"}`}`,
         `定时任务：${groupConfig.scheduledRemindersEnabled === false ? "已关闭" : "已开启"}，${scheduledTasks.length} 个`,
         `群聊日报：${groupConfig.dailyReportEnabled === false ? "已关闭" : `已开启，${groupConfig.dailyReportTime ?? "17:59"}`}`,
         `节假日倒计时：${groupConfig.holidayCountdownEnabled === false ? "已关闭" : `已开启，${groupConfig.holidayCountdownTime ?? "09:00"}`}`,
@@ -2170,7 +2271,7 @@ export class BotApplication {
     userId: string,
     userInput: string,
     images: MessageImageInput[],
-    replyMode: "text" | "voice" = "text",
+    replyMode: ReplyOutputMode = "text",
     prefixMentionUserIds: string[] = [],
     messageContext: MessageInteractionContext = { interactionTargets: [] },
     allowControlledMention = false,
@@ -2275,9 +2376,9 @@ export class BotApplication {
         skill.maxContextTurns * 2,
       );
 
-      if (replyMode === "voice") {
-        await this.handleVoiceReply(groupConfig.groupId, skill, replyText);
-        logInfo("Sent AI voice reply.", {
+      if (replyMode === "voice" || replyMode === "singing") {
+        await this.handleVoiceReply(groupConfig.groupId, skill, replyText, replyMode);
+        logInfo(replyMode === "singing" ? "Sent AI singing voice reply." : "Sent AI voice reply.", {
           groupId: groupConfig.groupId,
           skillId: skill.id,
           model: reply.model,
@@ -2483,11 +2584,14 @@ export class BotApplication {
     groupId: string,
     skill: SkillDefinition,
     replyText: string,
+    mode: Exclude<ReplyOutputMode, "text"> = "voice",
   ): Promise<void> {
     let cleanup: (() => Promise<void>) | undefined;
 
     try {
-      const synthesis = await this.ttsService.synthesize(replyText, skill);
+      const synthesis = await this.ttsService.synthesize(replyText, skill, {
+        mode: mode === "singing" ? "singing" : "speech",
+      });
       cleanup = synthesis.cleanup;
       await this.sendRecord(groupId, synthesis.recordFile);
       scheduleCleanup(synthesis.cleanup);
@@ -2502,6 +2606,13 @@ export class BotApplication {
         error: (error as Error).message,
         ...formatTtsErrorMeta(error),
       });
+    }
+
+    if (mode === "singing") {
+      await this.sendText(groupId, "当前 TTS 模型不支持唱歌，请切换到 mimo-v2.5-tts 后再试。");
+      const outgoingMessages = formatReplyMessages(skill, replyText);
+      await this.sendTextMessages(groupId, outgoingMessages);
+      return;
     }
 
     if (!this.allowNapCatAiVoiceFallback) {
@@ -4008,7 +4119,9 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
       lines: [
         `1. ${command("voice")} <内容>`,
         "2. @机器人 语音说 <内容>",
-        "作用：先生成回复，再把回复转成语音发送",
+        `3. ${command("voice_reply")} 状态 / 开启 / 关闭（管理员）`,
+        `4. ${command("sing")} <内容>`,
+        "作用：一次性语音会先生成回复再转成语音；默认语音回复会让普通 AI 回复优先发送语音条；唱歌使用 MiMo 唱歌模式",
       ],
     },
     {
@@ -4085,7 +4198,7 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
       title: "权限",
       aliases: ["权限", "auth", "permission"],
       lines: [
-        "普通成员：可用对话、语音、帮助和部分状态查询",
+        "普通成员：可用对话、语音、唱歌、帮助和部分状态查询",
         "群管理员：可用全部系统指令",
         "超级管理员：拥有全部权限，并可增删群管理员",
       ],
@@ -4098,7 +4211,7 @@ function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpF
     "系统功能总览：",
     "1. 对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
     `2. 技能：${command("skill")} 列表、${command("skill")} 切换 <skillId>`,
-    `3. 语音：${command("voice")} <内容> 或 @机器人 语音说 <内容>`,
+    `3. 语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
     `4. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
     `5. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
     `6. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
@@ -4110,7 +4223,7 @@ function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpF
     `12. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
     `分类帮助：${command("help")} 对话 / 语音 / 技能 / 实时对话 / 定时任务 / 日报 / 节假日 / 管理员 / 权限`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
-    "权限说明：普通成员可用对话、语音、帮助和部分查询；群管理员可用全部系统指令；超级管理员额外可管理管理员",
+    "权限说明：普通成员可用对话、语音、唱歌、帮助和部分查询；群管理员可用全部系统指令；超级管理员额外可管理管理员",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,
     `可用分类：${sections.map((section) => section.title).join("、")}`,
   ].join("\n");
@@ -4167,6 +4280,12 @@ function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
 function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
   const seconds = getLiveChatDelaySeconds(groupConfig);
   return seconds % 60 === 0 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
+}
+
+function resolveDefaultReplyMode(groupConfig: GroupBotConfig): ReplyOutputMode {
+  return groupConfig.defaultVoiceReplyEnabled === true && groupConfig.voiceReplyEnabled !== false
+    ? "voice"
+    : "text";
 }
 
 function buildProfileShortSummary(summary: string, maxChars = 140): string {

@@ -713,6 +713,13 @@ export class AdminHttpServer {
     if (staticFile && await this.trySendAdminStaticFile(res, staticFile)) {
       return;
     }
+    if (isAdminAssetPath(pathname)) {
+      this.sendText(res, "asset_not_found", "text/plain; charset=utf-8", {
+        statusCode: 404,
+        cacheControl: "no-store",
+      });
+      return;
+    }
 
     const authenticated = this.isAuthenticated(res.req as IncomingMessage);
     if (!authenticated) {
@@ -1027,20 +1034,42 @@ export class AdminHttpServer {
     }
     const service = new GroupMemoryDeduplicateService(this.options.groupMemoryStore, this.options.judgeMemorySemanticRelation);
     const semanticTimeoutMs = await this.getMemoryDedupSemanticTimeoutMs();
-    const dedupPreview = await service.previewGroup(groupId, {
-      subjectUserId,
-      ...(body.type === "member_profile" || body.type === "group_fact" ? { type: body.type } : {}),
-      semanticMode: "member",
-      useSemanticJudge: true,
-      semanticTimeoutMs,
-    });
-    this.sendJson(res, {
-      groupId,
-      subjectUserId,
-      decisionCount: dedupPreview.decisions.length,
-      decisions: dedupPreview.decisions,
-      semanticStats: dedupPreview.semanticStats,
-    });
+    const type = body.type === "member_profile" || body.type === "group_fact" ? body.type : undefined;
+    const runPreview = async () => {
+      const dedupPreview = await service.previewGroup(groupId, {
+        subjectUserId,
+        ...(type ? { type } : {}),
+        semanticMode: "member",
+        useSemanticJudge: true,
+        semanticTimeoutMs,
+      });
+      return {
+        groupId,
+        subjectUserId,
+        decisionCount: dedupPreview.decisions.length,
+        decisions: dedupPreview.decisions,
+        semanticStats: dedupPreview.semanticStats,
+      };
+    };
+    if (this.options.adminTaskStore) {
+      const task = await this.options.adminTaskStore.start({
+        type: "memory-dedup",
+        title: `记忆去重检测 ${subjectUserId}`,
+        groupId,
+        subjectUserId,
+        operatorUserId: session.userId ?? session.username,
+        detail: `preview; semanticJudge=true; timeoutMs=${semanticTimeoutMs}`,
+      }, runPreview);
+      this.sendJson(res, {
+        groupId,
+        subjectUserId,
+        queued: true,
+        taskId: task.id,
+        task,
+      }, 202);
+      return;
+    }
+    this.sendJson(res, await runPreview());
   }
 
   private async handleMemoryDeduplicateApply(req: IncomingMessage, res: ServerResponse, session: AdminSession): Promise<void> {
@@ -1061,7 +1090,7 @@ export class AdminHttpServer {
     const decisions = incoming.length > 0
       ? incoming.map(normalizeMemoryDedupDecision).filter((item): item is MemoryDedupDecision => Boolean(item))
       : (await service.previewGroup(groupId, {
-          subjectUserId: subjectUserId!,
+          subjectUserId,
           semanticMode: "member",
           useSemanticJudge: true,
           semanticTimeoutMs,
@@ -2814,7 +2843,7 @@ export class AdminHttpServer {
       return;
     }
     const message = error instanceof Error ? error.message : String(error);
-    if (message === "invalid_skill_id" || message === "invalid_skill" || message === "skill_exists") {
+    if (message === "invalid_skill_id" || message === "invalid_skill" || message === "invalid_skill_tts_config" || message === "skill_exists") {
       this.sendJson(res, { error: message }, 400);
       return;
     }
@@ -2878,6 +2907,10 @@ function resolveAdminStaticFile(pathname: string): string | undefined {
     return undefined;
   }
   return resolved;
+}
+
+function isAdminAssetPath(pathname: string): boolean {
+  return pathname === "/assets" || pathname.startsWith("/assets/");
 }
 
 function contentTypeFor(filePath: string): string {

@@ -23,9 +23,14 @@ export interface AdminTaskCreateInput {
 }
 
 const MAX_TASKS = 200;
+const DEFAULT_STALE_TASK_MS = 30 * 60 * 1000;
+const STALE_TASK_MS_BY_TYPE: Partial<Record<AdminTaskType, number>> = {
+  "model-check": 10 * 60 * 1000,
+};
 
 export class AdminTaskStore {
   private cachedData?: AdminTasksFile;
+  private readonly activeTaskIds = new Set<string>();
 
   constructor(private readonly filePath: string) {}
 
@@ -33,6 +38,7 @@ export class AdminTaskStore {
     tasks: AdminTaskRecord[];
     pagination: { page: number; pageSize: number; total: number; totalPages: number };
   }> {
+    await this.failStaleTasks();
     const data = await this.readData();
     const pageSize = Math.max(1, Math.min(100, Math.floor(args.pageSize)));
     const visibleGroupIds = args.visibleGroupIds ? new Set(args.visibleGroupIds) : undefined;
@@ -58,6 +64,7 @@ export class AdminTaskStore {
   }
 
   async get(id: string): Promise<AdminTaskRecord | undefined> {
+    await this.failStaleTasks();
     const data = await this.readData();
     const task = data.tasks.find((item) => item.id === id);
     return task ? cloneTask(task) : undefined;
@@ -109,9 +116,28 @@ export class AdminTaskStore {
     worker: (task: AdminTaskRecord) => Promise<T>,
   ): Promise<{ task: AdminTaskRecord; result: T }> {
     const task = await this.create(input);
+    return await this.execute(task, worker);
+  }
+
+  async start<T>(
+    input: AdminTaskCreateInput,
+    worker: (task: AdminTaskRecord) => Promise<T>,
+  ): Promise<AdminTaskRecord> {
+    const task = await this.create(input);
+    setTimeout(() => {
+      void this.execute(task, worker).catch(() => undefined);
+    }, 0);
+    return task;
+  }
+
+  private async execute<T>(
+    task: AdminTaskRecord,
+    worker: (task: AdminTaskRecord) => Promise<T>,
+  ): Promise<{ task: AdminTaskRecord; result: T }> {
+    this.activeTaskIds.add(task.id);
     const startedAt = new Date().toISOString();
-    await this.update(task.id, { status: "running", progress: 10, startedAt });
     try {
+      await this.update(task.id, { status: "running", progress: 10, startedAt });
       const result = await worker(task);
       const finishedAt = new Date().toISOString();
       const durationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
@@ -134,6 +160,42 @@ export class AdminTaskStore {
         durationMs,
       });
       throw error;
+    } finally {
+      this.activeTaskIds.delete(task.id);
+    }
+  }
+
+  private async failStaleTasks(now = new Date()): Promise<void> {
+    const data = await this.readData();
+    let changed = false;
+    const nowTime = now.getTime();
+    data.tasks = data.tasks.map((task) => {
+      if ((task.status !== "queued" && task.status !== "running") || this.activeTaskIds.has(task.id)) {
+        return task;
+      }
+      const baseTime = new Date(task.startedAt ?? task.updatedAt ?? task.createdAt).getTime();
+      if (!Number.isFinite(baseTime)) {
+        return task;
+      }
+      const staleMs = STALE_TASK_MS_BY_TYPE[task.type] ?? DEFAULT_STALE_TASK_MS;
+      if (nowTime - baseTime < staleMs) {
+        return task;
+      }
+      changed = true;
+      const finishedAt = now.toISOString();
+      const startedAt = task.startedAt ?? task.createdAt;
+      return normalizeTask({
+        ...task,
+        status: "failed",
+        progress: 100,
+        error: `任务执行超时，已自动标记失败。最后状态：${task.status}`,
+        updatedAt: finishedAt,
+        finishedAt,
+        durationMs: Math.max(0, nowTime - new Date(startedAt).getTime()),
+      });
+    });
+    if (changed) {
+      await this.writeData(data);
     }
   }
 

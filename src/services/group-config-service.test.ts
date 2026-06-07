@@ -44,6 +44,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.deepEqual((await service.getGroup("67890"))?.blacklistedUserIds, ["20001", "20002"]);
       assert.deepEqual((await service.getGroup("67891"))?.blacklistedUserIds, []);
       assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
+      assert.equal((await service.getGroup("67890"))?.defaultVoiceReplyEnabled, false);
     },
   );
 });
@@ -104,6 +105,7 @@ test("group config updates full editable config with validation", async () => {
         holidayCountdownWeekdays: [6],
         botMuted: true,
         scheduledRemindersEnabled: false,
+        defaultVoiceReplyEnabled: true,
         blacklistedUserIds: ["30001"],
         opsAlertsEnabled: false,
       });
@@ -125,6 +127,7 @@ test("group config updates full editable config with validation", async () => {
       assert.deepEqual(updated.holidayCountdownWeekdays, [6]);
       assert.equal(updated.botMuted, true);
       assert.equal(updated.scheduledRemindersEnabled, false);
+      assert.equal(updated.defaultVoiceReplyEnabled, true);
       assert.deepEqual(updated.blacklistedUserIds, ["30001"]);
       assert.equal(updated.opsAlertsEnabled, false);
       assert.deepEqual(updated.manualIdentities?.[0], { userIds: ["20001"], names: ["Tester"], note: "note" });

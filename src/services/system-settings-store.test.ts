@@ -373,6 +373,8 @@ test("SystemSettingsStore keeps command permissions immutable and ignores unknow
   assert.equal(updatedProfileCommand?.help, "Updated help text");
   assert.equal(next.commands.some((item) => item.id === "unknown_dangerous_command"), false);
   assert.equal(next.commands.some((item) => item.id === "model"), true);
+  assert.equal(next.commands.some((item) => item.id === "voice_reply" && item.primary === "#语音回复"), true);
+  assert.equal(next.commands.some((item) => item.id === "sing" && item.primary === "#唱歌"), true);
 });
 
 async function createStore(defaultModels: ConstructorParameters<typeof SystemSettingsStore>[1] = []): Promise<SystemSettingsStore> {
