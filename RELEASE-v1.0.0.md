@@ -1,6 +1,6 @@
 # UBot V1.0.0 Release Notes
 
-发布状态：代码已推送；线上 GitHub Release 已更新；生产部署按当前要求待执行
+发布状态：代码已推送；`v1.0.0` tag 已更新；线上 GitHub Release 正文和附件因当前 token 写权限不足待更新；生产部署按当前要求待执行
 
 ## 发布目标
 
@@ -57,8 +57,10 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
 - Git tag：`v1.0.0`
 - Release 文档：`RELEASE-v1.0.0.md`
 - 源码：GitHub `chatops/main`，发布 tag 指向包含 V1.0.0 所有变更的最终提交。
+- Windows 发布包：`release/ubot-1.0.0-win.zip`，本地已生成；GitHub Release 附件上传需要具备 Release 写权限的 GitHub token。
 
 发布执行注意：
 
 - 当前生产部署按用户要求暂不执行；部署前需要重新执行部署后验证清单。
 - `v1.0.0` tag 必须指向包含本文件所有变更的最终提交，GitHub Release 内容以本文档为准。
+- 当前环境变量中的 `GITHUB_TOKEN` 可读取 Release，但更新正文或上传附件会返回 `403 Resource not accessible by personal access token`；需要换用具备 `Contents/Release write` 权限的 token 后再执行 Release 页面更新。
