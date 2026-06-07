@@ -63,8 +63,26 @@ test("buildSystemPrompt includes manual group identity memory", () => {
   assert.equal(prompt.includes("927345463 / 1551925371：渣渣辉"), true);
   assert.equal(prompt.includes("识别人时必须以 QQ 号为准"), true);
   assert.equal(prompt.includes("优先使用身份表里的第一个名字作为主称呼"), true);
+  assert.equal(prompt.includes("输出身份表人名时必须逐字复制 names 字段"), true);
   assert.equal(prompt.includes("不要凭空编造身份表没有提供的人物关系设定"), true);
   assert.equal(prompt.includes("你拥有受控 @ 配置人员的能力"), true);
+});
+
+test("buildSystemPrompt warns against phonetic name rewrites for configured identities", () => {
+  const prompt = buildSystemPrompt(skill, {
+    groupId: "866209871",
+    currentUserId: "1569671790",
+    manualIdentities: [
+      {
+        userIds: ["10001"],
+        names: ["周学鹏"],
+      },
+    ],
+  });
+
+  assert.match(prompt, /周学鹏/);
+  assert.match(prompt, /不要把姓名音近改写成别的字/);
+  assert.match(prompt, /不确定时宁可复用用户原话或身份表原字/);
 });
 
 test("buildSystemPrompt includes approved group memory and matched knowledge", () => {

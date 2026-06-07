@@ -121,83 +121,102 @@ interface SentenceTtsTags {
 
 function inferSentenceTags(sentence: string): SentenceTtsTags {
   let baseEmotion = "平静";
-  let compoundEmotion = "";
+  let compoundEmotion = "释然";
   let overallTone = "干练";
   let voiceTexture = "清亮";
-  const audioTags: string[] = [];
+  let speedRhythm = "自然停顿";
+  let emotionalState = "平稳";
+  let voiceFeature = "清晰";
+  let cryLaughExpression = "无哭笑";
 
   if (/[!！]{1,}|哈哈|牛|太好了|开心|高兴|赢|成功|冲/.test(sentence)) {
     baseEmotion = "开心";
     compoundEmotion = "欣慰";
     overallTone = "活泼";
     voiceTexture = "清亮";
-    audioTags.push("激动");
+    speedRhythm = "语速稍快";
+    emotionalState = "激动";
+    voiceFeature = "明亮";
   }
   if (/伤心|难过|遗憾|可惜|唉|哭|心酸|失落/.test(sentence)) {
     baseEmotion = "悲伤";
     compoundEmotion = "怅然";
     overallTone = "深沉";
     voiceTexture = "沙哑";
-    audioTags.push("叹气", "气声");
+    speedRhythm = "叹气";
+    emotionalState = "低落";
+    voiceFeature = "气声";
   }
   if (/生气|离谱|过分|别闹|滚|烦|不耐烦/.test(sentence)) {
     baseEmotion = "愤怒";
     compoundEmotion = "无奈";
     overallTone = "凌厉";
     voiceTexture = "沙哑";
-    audioTags.push("不耐烦");
+    speedRhythm = "短促";
+    emotionalState = "不耐烦";
+    voiceFeature = "沙哑";
   }
   if (/害怕|紧张|完了|糟糕|危险|慌/.test(sentence)) {
     baseEmotion = "恐惧";
     compoundEmotion = "忐忑";
     overallTone = "严肃";
     voiceTexture = "清亮";
-    audioTags.push("屏息", "紧张", "声音颤抖");
+    speedRhythm = "屏息";
+    emotionalState = "紧张";
+    voiceFeature = "声音颤抖";
   }
   if (/[?？]$|为什么|怎么会|真的假的|不会吧/.test(sentence)) {
     baseEmotion = "惊讶";
-    compoundEmotion = compoundEmotion || "忐忑";
+    compoundEmotion = compoundEmotion === "释然" ? "忐忑" : compoundEmotion;
     overallTone = overallTone === "干练" ? "俏皮" : overallTone;
-    audioTags.push("震惊");
+    speedRhythm = speedRhythm === "自然停顿" ? "语尾上扬" : speedRhythm;
+    emotionalState = emotionalState === "平稳" ? "震惊" : emotionalState;
   }
   if (/谢谢|辛苦|没事|放心|晚安|温柔|陪你/.test(sentence)) {
     baseEmotion = "平静";
     compoundEmotion = "欣慰";
     overallTone = "温柔";
     voiceTexture = "醇雅";
+    speedRhythm = "轻缓";
+    emotionalState = "温柔";
+    voiceFeature = "柔和";
   }
   if (/累|困|疲惫|没力气|撑不住/.test(sentence)) {
     baseEmotion = baseEmotion === "平静" ? "悲伤" : baseEmotion;
     compoundEmotion = "无奈";
     overallTone = "慵懒";
     voiceTexture = "沙哑";
-    audioTags.push("长叹一口气", "疲惫", "气声");
+    speedRhythm = "长叹一口气";
+    emotionalState = "疲惫";
+    voiceFeature = "气声";
   }
   if (/委屈|冤枉|心虚|对不起|抱歉/.test(sentence)) {
     baseEmotion = "委屈";
     compoundEmotion = /对不起|抱歉|心虚/.test(sentence) ? "愧疚" : "无奈";
     overallTone = "温柔";
     voiceTexture = "沙哑";
-    audioTags.push(/心虚/.test(sentence) ? "心虚" : "委屈");
+    speedRhythm = "轻缓";
+    emotionalState = /心虚/.test(sentence) ? "心虚" : "委屈";
+    voiceFeature = "气声";
   }
   if (/冷笑/.test(sentence)) {
-    audioTags.push("冷笑");
+    cryLaughExpression = "冷笑";
   } else if (/哈哈哈|大笑|笑死/.test(sentence)) {
-    audioTags.push("大笑");
+    cryLaughExpression = "大笑";
   } else if (/哈哈|轻笑|乐|绷不住/.test(sentence)) {
-    audioTags.push("轻笑");
+    cryLaughExpression = "轻笑";
   }
   if (/嚎啕大哭/.test(sentence)) {
-    audioTags.push("嚎啕大哭");
+    cryLaughExpression = "嚎啕大哭";
   } else if (/呜咽/.test(sentence)) {
-    audioTags.push("呜咽");
+    cryLaughExpression = "呜咽";
   } else if (/呜|哭|哽咽|破防/.test(sentence)) {
-    audioTags.push("哽咽");
+    cryLaughExpression = "哽咽";
   }
 
   return {
     styleTags: [baseEmotion, compoundEmotion, overallTone, voiceTexture],
-    audioTags,
+    audioTags: [speedRhythm, emotionalState, voiceFeature, cryLaughExpression],
   };
 }
 
