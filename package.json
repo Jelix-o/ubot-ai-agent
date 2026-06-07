@@ -11,10 +11,10 @@
     "dev:admin": "node scripts/run-node22.cjs node_modules/vite/bin/vite.js --config admin/vite.config.ts",
     "start": "node dist/index.js",
     "clean:dist": "node scripts/clean-dist.cjs",
-    "build": "npm run clean:dist && npm run build:admin && npm run build:server",
+    "build": "node scripts/build.cjs",
     "build:admin": "node scripts/run-node22.cjs node_modules/vite/bin/vite.js build --config admin/vite.config.ts",
     "build:server": "node scripts/run-node22.cjs node_modules/typescript/lib/tsc.js -p tsconfig.json",
-    "test": "npm run build && node scripts/run-tests.cjs",
+    "test": "node scripts/test.cjs",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1",
     "release:github": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1"
   },

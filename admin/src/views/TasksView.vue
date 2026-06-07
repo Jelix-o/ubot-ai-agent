@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, shallowRef, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, shallowRef, watch } from "vue";
 
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { api, queryString, type AdminTaskRecord, type AdminTaskStatus, type AdminTaskType, type Pagination } from "../services/api";
@@ -11,6 +11,7 @@ const tasks = shallowRef<AdminTaskRecord[]>([]);
 const activeTask = shallowRef<AdminTaskRecord | null>(null);
 const loading = shallowRef(false);
 const detailLoading = shallowRef(false);
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const filters = reactive({
   q: "",
@@ -72,6 +73,7 @@ async function load(): Promise<void> {
     })}`);
     tasks.value = data.tasks;
     Object.assign(pagination, data.pagination);
+    syncAutoRefresh();
     if (activeTask.value) {
       const visibleTask = data.tasks.find((task) => task.id === activeTask.value?.id);
       if (visibleTask) activeTask.value = { ...activeTask.value, ...visibleTask };
@@ -158,12 +160,35 @@ function closeTaskDetail(): void {
   activeTask.value = null;
 }
 
+function syncAutoRefresh(): void {
+  if (runningCount.value > 0) {
+    if (!refreshTimer) {
+      refreshTimer = setInterval(() => {
+        if (!loading.value) {
+          void load().catch((error) => app.showToast(error.message, "error"));
+        }
+      }, 5000);
+    }
+    return;
+  }
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = undefined;
+  }
+}
+
 function onRefresh(): void {
   void load().catch((error) => app.showToast(error.message, "error"));
 }
 
 onMounted(() => {
   void load();
+});
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+  }
 });
 
 useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });

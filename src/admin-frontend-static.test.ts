@@ -418,6 +418,25 @@ test("windows release package avoids local runtime group config", async () => {
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
+test("local build and test scripts avoid nested npm update checks", async () => {
+  const [packageRaw, npmrc, buildScript, testScript] = await Promise.all([
+    readFile(path.join(repoRoot, "package.json"), "utf8"),
+    readFile(path.join(repoRoot, ".npmrc"), "utf8"),
+    readFile(path.join(repoRoot, "scripts", "build.cjs"), "utf8"),
+    readFile(path.join(repoRoot, "scripts", "test.cjs"), "utf8"),
+  ]);
+  const packageJson = JSON.parse(packageRaw) as { scripts?: Record<string, string> };
+
+  assert.equal(packageJson.scripts?.build, "node scripts/build.cjs");
+  assert.equal(packageJson.scripts?.test, "node scripts/test.cjs");
+  assert.match(npmrc, /^update-notifier=false\s*$/);
+  assert.doesNotMatch(buildScript, /npm run/);
+  assert.doesNotMatch(testScript, /npm run/);
+  assert.match(buildScript, /node_modules\/vite\/bin\/vite\.js/);
+  assert.match(buildScript, /node_modules\/typescript\/lib\/tsc\.js/);
+  assert.match(testScript, /scripts\/run-tests\.cjs/);
+});
+
 
 test("admin planning-console module stays removed", async () => {
   const [apiTypes, appIcon, adminServer, botSource, routerFile, commandsStore] = await Promise.all([
@@ -457,6 +476,12 @@ test("admin task center exposes task detail records", async () => {
   assert.match(tasksView, /activeTask = shallowRef<AdminTaskRecord \| null>\(null\)/);
   assert.match(tasksView, /activeTaskResult = computed/);
   assert.match(tasksView, /activeTaskTimeline = computed/);
+  assert.match(tasksView, /let refreshTimer: ReturnType<typeof setInterval> \| undefined/);
+  assert.match(tasksView, /function syncAutoRefresh\(\): void/);
+  assert.match(tasksView, /runningCount\.value > 0/);
+  assert.match(tasksView, /setInterval\(\(\) => \{/);
+  assert.match(tasksView, /clearInterval\(refreshTimer\)/);
+  assert.match(tasksView, /onUnmounted\(\(\) => \{/);
   assert.match(tasksView, /api<AdminTaskRecord>\(`\/api\/tasks\/\$\{encodeURIComponent\(task\.id\)\}`\)/);
   assert.match(tasksView, /class="task-detail"/);
   assert.match(tasksView, /基础信息/);
