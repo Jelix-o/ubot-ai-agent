@@ -270,7 +270,7 @@ curl -i https://bot.9958.uk/api/session
 - 发布说明：`RELEASE-v1.0.0.md`
 - GitHub 分支：`chatops/main`
 - GitHub Release tag：`v1.0.0`
-- 若 `v1.0.0` tag 已存在，发布前必须确认它指向包含当前 V1.0.0 变更的最终提交。
+- `v1.0.0` tag 应指向包含当前 V1.0.0 变更的最终提交。
 
 发布前必须通过：
 

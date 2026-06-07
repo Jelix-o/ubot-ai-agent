@@ -1,6 +1,6 @@
 # UBot V1.0.0 Release Notes
 
-发布状态：代码已推送；生产部署和线上 GitHub Release 待执行
+发布状态：代码已推送；线上 GitHub Release 已更新；生产部署按当前要求待执行
 
 ## 发布目标
 
@@ -56,9 +56,9 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
 
 - Git tag：`v1.0.0`
 - Release 文档：`RELEASE-v1.0.0.md`
-- 源码：GitHub `chatops/main`，代码基线包含 `3b6647a` 新增模型保存修复。
+- 源码：GitHub `chatops/main`，发布 tag 指向包含 V1.0.0 所有变更的最终提交。
 
 发布执行注意：
 
-- 当前文件标记为“生产部署和线上 GitHub Release 待执行”时，不要把既有 `v1.0.0` tag 当作最终产物；正式发布前必须确认 tag 指向包含本文件所有变更的提交。
-- 若 `v1.0.0` tag 已存在且指向旧提交，需要在完成提交和推送后按发布流程更新 tag 与 GitHub Release 内容。
+- 当前生产部署按用户要求暂不执行；部署前需要重新执行部署后验证清单。
+- `v1.0.0` tag 必须指向包含本文件所有变更的最终提交，GitHub Release 内容以本文档为准。
