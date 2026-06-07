@@ -373,6 +373,7 @@ export interface SystemSettings {
   dailyProfileReviewTime: string;
   memoryDedupEnabled: boolean;
   memoryDedupTime: string;
+  memoryDedupSemanticTimeoutMinutes: number;
   adminSecretHash?: string;
   groupAdminSecretHash?: string;
   adminSecretConfigured?: boolean;

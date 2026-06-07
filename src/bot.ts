@@ -1096,6 +1096,7 @@ export class BotApplication {
     }
 
     let memoryDedupTime = "23:00";
+    let memoryDedupSemanticTimeoutMs = 10 * 60 * 1000;
     if (this.systemSettingsStore) {
       try {
         const settings = await this.systemSettingsStore.get();
@@ -1106,6 +1107,7 @@ export class BotApplication {
           return;
         }
         memoryDedupTime = settings.memoryDedupTime || memoryDedupTime;
+        memoryDedupSemanticTimeoutMs = settings.memoryDedupSemanticTimeoutMinutes * 60 * 1000;
       } catch (error) {
         logWarn("Failed to read memory dedup settings; continuing with nightly dedup.", {
           error: (error as Error).message,
@@ -1134,9 +1136,22 @@ export class BotApplication {
       );
       for (const group of enabledGroups) {
         try {
-          const result = await deduplicateService.deduplicateMemberMemoriesForGroup(group.groupId);
-          if (result.decisionCount > 0 || result.appliedCount > 0 || result.skippedCount > 0) {
-            logInfo("Nightly member memory dedup completed.", result);
+          const result = await deduplicateService.deduplicateMemberMemoriesForGroup(group.groupId, {
+            useSemanticJudge: true,
+            semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
+          });
+          if (
+            result.decisionCount > 0 ||
+            result.appliedCount > 0 ||
+            result.skippedCount > 0 ||
+            result.semanticStats.called > 0 ||
+            result.semanticStats.timedOut > 0
+          ) {
+            logInfo("Nightly member memory dedup completed.", {
+              ...result,
+              semanticJudgeEnabled: true,
+              semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
+            });
           }
         } catch (error) {
           logWarn("Nightly member memory dedup failed for group.", {

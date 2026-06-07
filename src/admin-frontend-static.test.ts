@@ -84,6 +84,8 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(settingsView, /\/api\/system-settings/);
   assert.match(settingsView, /模型配置/);
   assert.match(settingsView, /管理员秘钥/);
+  assert.match(settingsView, /memoryDedupSemanticTimeoutMinutes/);
+  assert.match(settingsView, /去重模型单次判断超时（分钟）/);
   assert.match(settingsView, /v-model="model\.id"/);
   assert.match(settingsView, /placeholder="reply-pro"/);
   assert.match(settingsView, /modelRowKey\(model\)/);

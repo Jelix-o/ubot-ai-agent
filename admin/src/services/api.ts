@@ -296,6 +296,7 @@ export interface SystemSettings {
   dailyProfileReviewTime: string;
   memoryDedupEnabled: boolean;
   memoryDedupTime: string;
+  memoryDedupSemanticTimeoutMinutes: number;
   adminSecretConfigured?: boolean;
   groupAdminSecretConfigured?: boolean;
   defaultTriggerKeywords: Array<{ keyword: string; enabled: boolean }>;

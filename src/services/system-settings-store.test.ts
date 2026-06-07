@@ -194,12 +194,23 @@ test("SystemSettingsStore normalizes scheduler switches and times", async () => 
     dailyProfileReviewTime: "01:30",
     memoryDedupEnabled: false,
     memoryDedupTime: "22:15",
+    memoryDedupSemanticTimeoutMinutes: 10,
   });
 
   assert.equal(next.dailyProfileReviewEnabled, false);
   assert.equal(next.dailyProfileReviewTime, "01:30");
   assert.equal(next.memoryDedupEnabled, false);
   assert.equal(next.memoryDedupTime, "22:15");
+  assert.equal(next.memoryDedupSemanticTimeoutMinutes, 10);
+});
+
+test("SystemSettingsStore normalizes memory dedup semantic timeout minutes", async () => {
+  const store = await createStore();
+
+  assert.equal((await store.get()).memoryDedupSemanticTimeoutMinutes, 10);
+  assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: 0 })).memoryDedupSemanticTimeoutMinutes, 1);
+  assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: 99 })).memoryDedupSemanticTimeoutMinutes, 60);
+  assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: "bad" as never })).memoryDedupSemanticTimeoutMinutes, 10);
 });
 
 test("SystemSettingsStore rejects invalid scheduler time", async () => {

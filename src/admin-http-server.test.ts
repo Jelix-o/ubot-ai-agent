@@ -495,6 +495,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
         dailyProfileReviewTime: "01:30",
         memoryDedupEnabled: true,
         memoryDedupTime: "22:15",
+        memoryDedupSemanticTimeoutMinutes: 10,
         models: [
           ...settingsReadBody.models,
           {
@@ -558,11 +559,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       dailyProfileReviewTime: string;
       memoryDedupEnabled: boolean;
       memoryDedupTime: string;
+      memoryDedupSemanticTimeoutMinutes: number;
       models: Array<{ id: string; hasApiKey: boolean; apiKey?: string }>;
     };
     assert.equal(settingsUpdateBody.dailyProfileReviewEnabled, false);
     assert.equal(settingsUpdateBody.dailyProfileReviewTime, "01:30");
     assert.equal(settingsUpdateBody.memoryDedupTime, "22:15");
+    assert.equal(settingsUpdateBody.memoryDedupSemanticTimeoutMinutes, 10);
     const invalidSettingsUpdate = await fetch(`${baseUrl}/api/system-settings`, {
       method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -1701,11 +1704,11 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       decisions: Array<{ targetId?: string; duplicateId: string; reason?: string }>;
       semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number; skippedDisabled?: number };
     };
-    assert.equal(semanticDedupPreviewBody.decisions.some((item) => item.reason?.startsWith("semantic:")), false);
-    assert.equal(semanticDedupPreviewBody.semanticStats.called, 0);
-    assert.equal(semanticDedupPreviewBody.semanticStats.duplicate, 0);
+    assert.equal(semanticDedupPreviewBody.decisions.some((item) => item.reason?.startsWith("semantic:")), true);
+    assert.equal(semanticDedupPreviewBody.semanticStats.called, 1);
+    assert.equal(semanticDedupPreviewBody.semanticStats.duplicate, 1);
     assert.equal(semanticDedupPreviewBody.semanticStats.failed, 0);
-    assert.equal(semanticJudgeCalls, 0);
+    assert.equal(semanticJudgeCalls, 1);
     const semanticJudgeCallsBeforeChineseLocalDedup = semanticJudgeCalls;
     const chineseLocalDedupPreview = await fetch(`${baseUrl}/api/memories/deduplicate/preview`, {
       method: "POST",

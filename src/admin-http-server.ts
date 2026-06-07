@@ -1026,11 +1026,13 @@ export class AdminHttpServer {
       return;
     }
     const service = new GroupMemoryDeduplicateService(this.options.groupMemoryStore, this.options.judgeMemorySemanticRelation);
+    const semanticTimeoutMs = await this.getMemoryDedupSemanticTimeoutMs();
     const dedupPreview = await service.previewGroup(groupId, {
       subjectUserId,
       ...(body.type === "member_profile" || body.type === "group_fact" ? { type: body.type } : {}),
       semanticMode: "member",
-      useSemanticJudge: false,
+      useSemanticJudge: true,
+      semanticTimeoutMs,
     });
     this.sendJson(res, {
       groupId,
@@ -1055,12 +1057,14 @@ export class AdminHttpServer {
     }
     const incoming = Array.isArray(body.decisions) ? body.decisions : [];
     const service = new GroupMemoryDeduplicateService(this.options.groupMemoryStore, this.options.judgeMemorySemanticRelation);
+    const semanticTimeoutMs = await this.getMemoryDedupSemanticTimeoutMs();
     const decisions = incoming.length > 0
       ? incoming.map(normalizeMemoryDedupDecision).filter((item): item is MemoryDedupDecision => Boolean(item))
       : (await service.previewGroup(groupId, {
           subjectUserId: subjectUserId!,
           semanticMode: "member",
-          useSemanticJudge: false,
+          useSemanticJudge: true,
+          semanticTimeoutMs,
         })).decisions;
     const wrapped = this.options.adminTaskStore
       ? await this.options.adminTaskStore.run({
@@ -2242,6 +2246,18 @@ export class AdminHttpServer {
     }
 
     return this.options.getProfileAiHealthStatus(options);
+  }
+
+  private async getMemoryDedupSemanticTimeoutMs(): Promise<number> {
+    if (!this.options.systemSettingsStore) {
+      return 10 * 60 * 1000;
+    }
+    try {
+      const settings = await this.options.systemSettingsStore.getInternal();
+      return settings.memoryDedupSemanticTimeoutMinutes * 60 * 1000;
+    } catch {
+      return 10 * 60 * 1000;
+    }
   }
 
   private async getModelHealthStatuses(options: { refresh?: boolean; source?: ModelHealthHistoryEntry["source"] } = {}): Promise<ModelHealthStatus[]> {

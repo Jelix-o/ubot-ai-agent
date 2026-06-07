@@ -247,7 +247,7 @@ class FakeSystemSettingsStore {
     private readonly defaultTriggerKeywords: SystemSettings["defaultTriggerKeywords"] = [{ keyword: "乘风", enabled: true }],
     private readonly models: SystemSettings["models"] = [],
     private readonly profileShortSummaryMaxChars = 140,
-    private readonly scheduler: Partial<Pick<SystemSettings, "dailyProfileReviewEnabled" | "dailyProfileReviewTime" | "memoryDedupEnabled" | "memoryDedupTime">> = {},
+    private readonly scheduler: Partial<Pick<SystemSettings, "dailyProfileReviewEnabled" | "dailyProfileReviewTime" | "memoryDedupEnabled" | "memoryDedupTime" | "memoryDedupSemanticTimeoutMinutes">> = {},
   ) {}
 
   async get(): Promise<SystemSettings> {
@@ -258,6 +258,7 @@ class FakeSystemSettingsStore {
       dailyProfileReviewTime: this.scheduler.dailyProfileReviewTime ?? "00:00",
       memoryDedupEnabled: this.scheduler.memoryDedupEnabled ?? true,
       memoryDedupTime: this.scheduler.memoryDedupTime ?? "23:00",
+      memoryDedupSemanticTimeoutMinutes: this.scheduler.memoryDedupSemanticTimeoutMinutes ?? 10,
       defaultTriggerKeywords: this.defaultTriggerKeywords,
       models: this.models,
       selectedModelIds: {},
@@ -326,6 +327,7 @@ class FakeAiService {
   }> = [];
   healthOk = true;
   healthCalls = 0;
+  semanticJudgeCalls = 0;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 
   constructor(
@@ -382,6 +384,11 @@ class FakeAiService {
 
   async generateDailyReportInsights(): Promise<null> {
     return null;
+  }
+
+  async judgeMemorySemanticRelation(): Promise<{ action: "duplicate" | "merge" | "new"; reason: string }> {
+    this.semanticJudgeCalls += 1;
+    return { action: "new", reason: "test semantic judge" };
   }
 
   async generateChatPeriodSummary(): Promise<string | null> {
@@ -4124,4 +4131,51 @@ test("daily profile review tick follows system schedule settings", async () => {
 
   assert.equal(dailyProfileReviewService.reviewCalls.length, 1);
   assert.equal(dailyProfileReviewService.reviewCalls[0]?.dateKey, "2026-06-01");
+});
+
+test("nightly memory dedup uses semantic judge with configured schedule", async () => {
+  const groupMemoryStore = new FakeGroupMemoryStore();
+  groupMemoryStore.memories = [
+    {
+      id: "memory-1",
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "电影偏好",
+      content: "Tester 喜欢整理安静的科幻电影片单。",
+      confidence: 0.8,
+      source: "test",
+      enabled: true,
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    },
+    {
+      id: "memory-2",
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "跑步习惯",
+      content: "Tester 经常记录夜跑路线和每周里程目标。",
+      confidence: 0.8,
+      source: "test",
+      enabled: true,
+      createdAt: "2026-06-01T00:01:00.000Z",
+      updatedAt: "2026-06-01T00:01:00.000Z",
+    },
+  ];
+  const profileAiService = new FakeAiService(async () => ({ text: "ok", model: "profile-model", skillId: "assistant" }));
+  const { app } = createApp({
+    groupMemoryStore,
+    profileAiService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [], 140, {
+      memoryDedupTime: "01:30",
+      memoryDedupSemanticTimeoutMinutes: 10,
+    }),
+  });
+
+  await (app as unknown as { runMemoryDedupTick(now?: Date): Promise<void> }).runMemoryDedupTick(
+    new Date("2026-06-02T01:30:10+08:00"),
+  );
+
+  assert.equal(profileAiService.semanticJudgeCalls, 1);
 });

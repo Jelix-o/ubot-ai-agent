@@ -24,6 +24,7 @@ const settings = reactive<SystemSettings>({
   dailyProfileReviewTime: "00:00",
   memoryDedupEnabled: true,
   memoryDedupTime: "23:00",
+  memoryDedupSemanticTimeoutMinutes: 10,
   adminSecretConfigured: false,
   groupAdminSecretConfigured: false,
   defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
@@ -328,6 +329,7 @@ onMounted(() => {
             <div class="policy-row policy-wide">
               <label class="policy-toggle"><span>自动成员记忆去重</span><input v-model="settings.memoryDedupEnabled" type="checkbox" /></label>
               <label>记忆去重触发时间<input v-model="settings.memoryDedupTime" class="input" type="time" /></label>
+              <label>去重模型单次判断超时（分钟）<input v-model.number="settings.memoryDedupSemanticTimeoutMinutes" class="input" type="number" min="1" max="60" /></label>
             </div>
           </div>
         </div>
