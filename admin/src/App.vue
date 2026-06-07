@@ -888,6 +888,7 @@ kbd {
   }
 
   .topbar {
+    position: static;
     margin: -18px -12px 16px;
     padding: 14px 12px 10px;
     gap: 12px;

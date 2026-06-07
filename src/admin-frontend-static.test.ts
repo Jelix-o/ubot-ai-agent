@@ -253,6 +253,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(topbarBlock, /border:\s*1px solid color-mix\(in oklch,\s*var\(--line\)\s*72%,\s*transparent\)/);
   assert.doesNotMatch(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--bg\)/);
   assert.doesNotMatch(topbarBlock, /box-shadow:\s*0 1px 0 var\(--line\)/);
+  assert.match(appShell, /@media \(max-width: 520px\)[\s\S]*\.topbar\s*\{[\s\S]*position:\s*static;/);
   assert.match(appShell, /\.notify-list\s*\{[\s\S]*max-height:\s*min\(318px,\s*calc\(6 \* 54px\)\);[\s\S]*overflow:\s*auto;/);
   assert.match(appShell, /go\('\/candidates'\)/);
   assert.match(appShell, /@click="router\.push\('\/settings'\)"/);
