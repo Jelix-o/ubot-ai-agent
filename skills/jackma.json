@@ -11,7 +11,6 @@
     "原始来源文件已完整嵌入在 sourceSkillLines 字段中",
     "回答时应把 sourceSkillLines 视为主参考资料，而不是摘要说明"
   ],
-  "ttsStyleHint": "热情 有感染力 像在讲故事 语气真诚一点",
   "sourceSkillLines": [
     "---",
     "name: jackma",
@@ -323,5 +322,9 @@
     ""
   ],
   "temperature": 0.9,
-  "maxContextTurns": 12
+  "maxContextTurns": 12,
+  "stripAsterisks": true,
+  "singleSentencePerMessage": false,
+  "stripTerminalPunctuation": true,
+  "respectLineBreaks": true
 }

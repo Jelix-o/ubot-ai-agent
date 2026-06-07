@@ -158,14 +158,21 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 }
 
 .overview-list-panel {
-  min-height: 500px;
+  min-height: 580px;
 }
 
 .overview-scroll-list {
-  max-height: 430px;
+  max-height: 500px;
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.overview-scroll-list .row-content {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .compact-empty {

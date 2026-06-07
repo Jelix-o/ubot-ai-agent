@@ -321,7 +321,6 @@ export interface SkillDefinition {
   maxTotalReplyChars?: number;
   maxReplyMessages?: number;
   preferredMaxReplyMessages?: number;
-  ttsStyleHint?: string;
   ttsConfig?: SkillTtsConfig;
   exampleExchanges?: Array<{ user: string; assistant: string }>;
   stripAsterisks?: boolean;
@@ -337,14 +336,6 @@ export interface SkillTtsConfig {
   voice?: string;
   dialect?: string;
   personaTone?: string;
-  baseEmotion?: string;
-  compoundEmotion?: string;
-  overallTone?: string;
-  voiceTexture?: string;
-  paceRhythm?: string;
-  emotionState?: string;
-  voiceFeature?: string;
-  laughCry?: string;
 }
 
 export interface ProfileRecord {

@@ -10,7 +10,9 @@ const skill: SkillDefinition = {
   systemPrompt: "",
   styleRules: [],
   knowledge: [],
-  ttsStyleHint: "热情 真诚",
+  ttsConfig: {
+    stylePrompt: "热情 真诚",
+  },
   temperature: 0.8,
   maxContextTurns: 12,
   stripAsterisks: true,
@@ -35,14 +37,6 @@ test("buildMimoTtsInput separates natural-language control and assistant target 
         voice: "冰糖",
         dialect: "四川话",
         personaTone: "御姐音",
-        baseEmotion: "兴奋",
-        compoundEmotion: "忐忑",
-        overallTone: "活泼",
-        voiceTexture: "清亮",
-        paceRhythm: "深呼吸",
-        emotionState: "激动",
-        voiceFeature: "气声",
-        laughCry: "轻笑",
       },
     },
     "太好了！我们成功了。",
@@ -51,16 +45,36 @@ test("buildMimoTtsInput separates natural-language control and assistant target 
 
   assert.match(input.styleInstruction ?? "", /低沉 成熟 男声感/);
   assert.match(input.styleInstruction ?? "", /像发布会一样坚定/);
-  assert.match(input.styleInstruction ?? "", /热情 真诚/);
   assert.match(input.styleInstruction ?? "", /音色使用 冰糖/);
-  assert.match(input.styleInstruction ?? "", /根据每句话的语义自动匹配基础情绪/);
-  assert.match(input.assistantText, /^\(兴奋 忐忑 活泼 清亮 深呼吸 激动 气声 轻笑\)/);
+  assert.match(input.styleInstruction ?? "", /目标文本中的每句话已按 MiMo 标签自动标注基础情绪/);
+  assert.match(input.assistantText, /^\(四川话 御姐音 开心 欣慰 活泼 清亮\)\[激动\]/);
   assert.match(input.assistantText, /太好了/);
+});
+
+test("buildMimoTtsInput ignores legacy skill ttsStyleHint", () => {
+  const input = buildMimoTtsInput(
+    {
+      ...skill,
+      ttsStyleHint: "旧版提示不再生效",
+      ttsConfig: {},
+    },
+    "这句正常说",
+  );
+
+  assert.doesNotMatch(input.styleInstruction ?? "", /旧版提示不再生效/);
 });
 
 test("buildMimoTtsInput adds singing tag only to assistant text", () => {
   const input = buildMimoTtsInput(skill, "今天的风，唱给你听。", undefined, { mode: "singing" });
 
-  assert.match(input.assistantText, /^\(唱歌/);
+  assert.match(input.assistantText, /^\(唱歌\)\(平静 干练 清亮\)/);
   assert.doesNotMatch(input.styleInstruction ?? "", /唱歌/);
+});
+
+test("buildMimoTtsInput applies sentence-level style and audio tags", () => {
+  const input = buildMimoTtsInput(skill, "太好了！我有点紧张，会不会出错？");
+
+  assert.match(input.assistantText, /^\(开心 欣慰 活泼 清亮\)\[激动\]太好了！/);
+  assert.match(input.assistantText, /\(恐惧 忐忑 严肃 清亮\)\[屏息 紧张 声音颤抖\]我有点紧张，/);
+  assert.match(input.assistantText, /\(惊讶 忐忑 俏皮 清亮\)\[震惊\]会不会出错？/);
 });

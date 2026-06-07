@@ -3894,7 +3894,7 @@ function stripMentionPrefix(value: string): string {
 function normalizeIdentityCandidate(value: string): string {
   return stripMentionPrefix(value)
     .toLowerCase()
-    .replace(/^[\s,:;锛屻€傦紒锛熴€併€愩€慭[\]()锛堬級<>銆娿€?'`]+|[\s,:;锛屻€傦紒锛熴€併€愩€慭[\]()锛堬級<>銆娿€?'`]+$/g, "")
+    .replace(/^[\s,，:：;；。.!！?？、"'`()[\]（）【】<>《》]+|[\s,，:：;；。.!！?？、"'`()[\]（）【】<>《》]+$/g, "")
     .replace(/\s+/g, "");
 }
 

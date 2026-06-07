@@ -17,7 +17,9 @@ const skill: SkillDefinition = {
   systemPrompt: "",
   styleRules: [],
   knowledge: [],
-  ttsStyleHint: "热情 讲故事",
+  ttsConfig: {
+    stylePrompt: "热情 讲故事",
+  },
   temperature: 0.9,
   maxContextTurns: 12,
 };
@@ -37,7 +39,7 @@ test("TtsService decodes audio data, writes wav file, and exposes base64 record 
     assert.equal(payload.audio.format, "wav");
     assert.equal(payload.messages[0].role, "user");
     assert.match(payload.messages[0].content, /热情 讲故事/);
-    assert.match(payload.messages[0].content, /根据每句话的语义自动匹配基础情绪/);
+    assert.match(payload.messages[0].content, /目标文本中的每句话已按 MiMo 标签自动标注基础情绪/);
     assert.equal(payload.messages[1].role, "assistant");
     assert.match(payload.messages[1].content, /^\([^)]*\)/);
     assert.match(payload.messages[1].content, /先说结论/);
@@ -89,7 +91,7 @@ test("TtsService uses skill voice and MiMo assistant singing tags", async () => 
     assert.equal(payload.model, MIMO_TTS_MODEL);
     assert.equal(payload.audio.voice, "Chloe");
     assert.equal(payload.messages.at(-1)?.role, "assistant");
-    assert.match(payload.messages.at(-1)?.content ?? "", /^\(唱歌/);
+    assert.match(payload.messages.at(-1)?.content ?? "", /^\(唱歌\)/);
     return new Response(
       JSON.stringify({
         choices: [{ message: { audio: { data: Buffer.from("song").toString("base64") } } }],
@@ -113,7 +115,7 @@ test("TtsService uses skill voice and MiMo assistant singing tags", async () => 
       ttsConfig: { voice: "Chloe" },
     }, { mode: "singing" });
     assert.equal((await readFile(result.filePath)).toString(), "song");
-    assert.match(result.spokenText, /^\(唱歌/);
+    assert.match(result.spokenText, /^\(唱歌\)/);
     await result.cleanup();
   } finally {
     globalThis.fetch = originalFetch;

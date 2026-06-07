@@ -11,7 +11,6 @@
     "原始来源文件已完整嵌入在 sourceSkillLines 字段中",
     "回答时应把 sourceSkillLines 视为主参考资料，而不是摘要说明"
   ],
-  "ttsStyleHint": "真诚 热情 松弛一点 像私聊里回消息的雷总",
   "sourceSkillLines": [
     "---",
     "name: leijun",
@@ -333,5 +332,9 @@
     ""
   ],
   "temperature": 0.86,
-  "maxContextTurns": 12
+  "maxContextTurns": 12,
+  "stripAsterisks": true,
+  "singleSentencePerMessage": false,
+  "stripTerminalPunctuation": true,
+  "respectLineBreaks": true
 }

@@ -4,17 +4,9 @@ import path from "node:path";
 import type { SkillDefinition, SkillTtsConfig } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import {
-  MIMO_TTS_BASE_EMOTIONS,
-  MIMO_TTS_COMPOUND_EMOTIONS,
   MIMO_TTS_DIALECTS,
-  MIMO_TTS_EMOTION_STATES,
-  MIMO_TTS_LAUGH_CRY_EXPRESSIONS,
-  MIMO_TTS_OVERALL_TONES,
-  MIMO_TTS_PACE_RHYTHMS,
   MIMO_TTS_PERSONA_TONES,
   MIMO_TTS_PRESET_VOICES,
-  MIMO_TTS_VOICE_FEATURES,
-  MIMO_TTS_VOICE_TEXTURES,
 } from "./mimo-tts-config.js";
 
 export class SkillService {
@@ -38,7 +30,7 @@ export class SkillService {
     const skills = await Promise.all(
       jsonFiles.map(async (entry) => {
         const filePath = path.join(this.skillsDir, entry.name);
-        return readJsonFile<SkillDefinition>(filePath);
+        return normalizeSkillDefinition(await readJsonFile<SkillDefinition>(filePath));
       }),
     );
 
@@ -202,7 +194,6 @@ function normalizeSkillDefinition(value: SkillDefinition): SkillDefinition {
     styleRules: normalizeStringArray(value.styleRules),
     knowledge: normalizeStringArray(value.knowledge),
     ...(Array.isArray(value.sourceSkillLines) ? { sourceSkillLines: normalizeStringArray(value.sourceSkillLines, 2000, 1000) } : {}),
-    ...(legacyTtsStyleHint ? { ttsStyleHint: legacyTtsStyleHint } : {}),
     ...(Object.keys(ttsConfig).length > 0 ? { ttsConfig } : {}),
     ...(Array.isArray(value.exampleExchanges) ? { exampleExchanges: value.exampleExchanges.map((item) => ({
       user: String(item?.user ?? "").trim().slice(0, 1000),
@@ -214,10 +205,10 @@ function normalizeSkillDefinition(value: SkillDefinition): SkillDefinition {
     ...(value.maxTotalReplyChars !== undefined ? { maxTotalReplyChars: normalizeOptionalInt(value.maxTotalReplyChars, 20, 8000) } : {}),
     ...(value.maxReplyMessages !== undefined ? { maxReplyMessages: normalizeOptionalInt(value.maxReplyMessages, 1, 20) } : {}),
     ...(value.preferredMaxReplyMessages !== undefined ? { preferredMaxReplyMessages: normalizeOptionalInt(value.preferredMaxReplyMessages, 1, 20) } : {}),
-    ...(value.stripAsterisks !== undefined ? { stripAsterisks: value.stripAsterisks === true } : {}),
-    ...(value.singleSentencePerMessage !== undefined ? { singleSentencePerMessage: value.singleSentencePerMessage === true } : {}),
-    ...(value.stripTerminalPunctuation !== undefined ? { stripTerminalPunctuation: value.stripTerminalPunctuation === true } : {}),
-    ...(value.respectLineBreaks !== undefined ? { respectLineBreaks: value.respectLineBreaks === true } : {}),
+    stripAsterisks: value.stripAsterisks !== undefined ? value.stripAsterisks === true : true,
+    singleSentencePerMessage: value.singleSentencePerMessage === true,
+    stripTerminalPunctuation: value.stripTerminalPunctuation !== undefined ? value.stripTerminalPunctuation === true : true,
+    respectLineBreaks: value.respectLineBreaks !== undefined ? value.respectLineBreaks === true : true,
     ...(value.allowBurstOnHighEmotion !== undefined ? { allowBurstOnHighEmotion: value.allowBurstOnHighEmotion === true } : {}),
     ...(Array.isArray(value.highEmotionKeywords) ? { highEmotionKeywords: normalizeStringArray(value.highEmotionKeywords, 50, 40) } : {}),
   };
@@ -234,14 +225,6 @@ function normalizeSkillTtsConfig(value: unknown, legacyStylePrompt = ""): SkillT
   addEnum(next, "voice", record.voice, MIMO_TTS_PRESET_VOICES);
   addEnum(next, "dialect", record.dialect, MIMO_TTS_DIALECTS);
   addEnum(next, "personaTone", record.personaTone, MIMO_TTS_PERSONA_TONES);
-  addEnum(next, "baseEmotion", record.baseEmotion, MIMO_TTS_BASE_EMOTIONS);
-  addEnum(next, "compoundEmotion", record.compoundEmotion, MIMO_TTS_COMPOUND_EMOTIONS);
-  addEnum(next, "overallTone", record.overallTone, MIMO_TTS_OVERALL_TONES);
-  addEnum(next, "voiceTexture", record.voiceTexture, MIMO_TTS_VOICE_TEXTURES);
-  addEnum(next, "paceRhythm", record.paceRhythm, MIMO_TTS_PACE_RHYTHMS);
-  addEnum(next, "emotionState", record.emotionState, MIMO_TTS_EMOTION_STATES);
-  addEnum(next, "voiceFeature", record.voiceFeature, MIMO_TTS_VOICE_FEATURES);
-  addEnum(next, "laughCry", record.laughCry, MIMO_TTS_LAUGH_CRY_EXPRESSIONS);
   return next;
 }
 

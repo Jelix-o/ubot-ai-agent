@@ -1,5 +1,4 @@
 import type { SkillDefinition, SkillTtsConfig } from "../types.js";
-import { formatReplyMessages } from "./reply-format.js";
 
 export interface MimoTtsInput {
   styleInstruction?: string;
@@ -24,9 +23,22 @@ export function buildMimoTtsInput(
   globalStyleHint?: string,
   options: MimoTtsBuildOptions = {},
 ): MimoTtsInput {
-  const formattedMessages = formatReplyMessages(skill, replyText);
-  const combined = formattedMessages.length > 0 ? formattedMessages.join("，") : replyText;
-  const normalized = combined
+  const normalized = normalizeTtsText(replyText);
+
+  if (!normalized) {
+    return { assistantText: "" };
+  }
+
+  const styleInstruction = buildStyleInstruction(skill, globalStyleHint);
+  const assistantText = addSentenceStyleTags(normalized, skill.ttsConfig, options.mode === "singing");
+  return {
+    ...(styleInstruction ? { styleInstruction } : {}),
+    assistantText,
+  };
+}
+
+function normalizeTtsText(text: string): string {
+  return text
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) =>
@@ -43,17 +55,6 @@ export function buildMimoTtsInput(
     .replace(/\s+/g, " ")
     .replace(/[，。！？；：,.!?;:]{2,}/g, (match) => match[0] ?? "")
     .trim();
-
-  if (!normalized) {
-    return { assistantText: "" };
-  }
-
-  const styleInstruction = buildStyleInstruction(skill, globalStyleHint);
-  const assistantText = addSentenceStyleTags(normalized, skill.ttsConfig, options.mode === "singing");
-  return {
-    ...(styleInstruction ? { styleInstruction } : {}),
-    assistantText,
-  };
 }
 
 function buildStyleInstruction(skill: SkillDefinition, globalStyleHint?: string): string {
@@ -61,15 +62,10 @@ function buildStyleInstruction(skill: SkillDefinition, globalStyleHint?: string)
   return uniqueInstructionParts([
     globalStyleHint,
     config?.stylePrompt,
-    skill.ttsStyleHint,
     config?.voice ? `音色使用 ${config.voice}` : undefined,
     config?.dialect ? `带一点${config.dialect}口音，但不要影响可懂度` : undefined,
     config?.personaTone ? `人设腔调偏${config.personaTone}` : undefined,
-    config?.overallTone ? `整体语调${config.overallTone}` : undefined,
-    config?.voiceTexture ? `音色定位${config.voiceTexture}` : undefined,
-    config?.paceRhythm ? `语速与节奏体现${config.paceRhythm}` : undefined,
-    config?.emotionState ? `情绪状态包含${config.emotionState}` : undefined,
-    "根据每句话的语义自动匹配基础情绪、复合情绪、整体语调、音色定位、语速节奏、语音特征和哭笑表达，语气自然，不要把指令内容读出来。",
+    "目标文本中的每句话已按 MiMo 标签自动标注基础情绪、复合情绪、整体语调、音色定位、语速节奏、情绪状态、语音特征和哭笑表达；按标签自然演绎，不要把指令内容读出来。",
   ]).join("，").trim();
 }
 
@@ -91,68 +87,123 @@ function addSentenceStyleTags(text: string, config: SkillTtsConfig | undefined, 
     return singing ? `(唱歌)${text}` : text;
   }
 
-  return sentences.map((sentence, index) => {
-    const tags = [
-      ...(singing && index === 0 ? ["唱歌"] : []),
+  const taggedText = sentences.map((sentence) => {
+    const inferredTags = inferSentenceTags(sentence);
+    const styleTags = [
       ...configuredTags(config),
-      ...inferSentenceTags(sentence),
+      ...inferredTags.styleTags,
     ];
-    const uniqueTags = Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 8);
-    return uniqueTags.length ? `(${uniqueTags.join(" ")})${sentence}` : sentence;
+    const stylePrefix = formatTagBlock(styleTags);
+    const audioPrefix = formatTagBlock(inferredTags.audioTags, "square");
+    return `${stylePrefix}${audioPrefix}${sentence}`;
   }).join("");
+  return singing ? `(唱歌)${taggedText}` : taggedText;
+}
+
+function formatTagBlock(tags: string[], mode: "paren" | "square" = "paren"): string {
+  const uniqueTags = Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 8);
+  if (uniqueTags.length === 0) return "";
+  return mode === "square" ? `[${uniqueTags.join(" ")}]` : `(${uniqueTags.join(" ")})`;
 }
 
 function configuredTags(config: SkillTtsConfig | undefined): string[] {
   if (!config) return [];
   return [
-    config.baseEmotion,
-    config.compoundEmotion,
-    config.overallTone,
-    config.voiceTexture,
-    config.paceRhythm,
-    config.emotionState,
-    config.voiceFeature,
-    config.laughCry,
     config.dialect,
     config.personaTone,
   ].filter((value): value is string => Boolean(value?.trim()));
 }
 
-function inferSentenceTags(sentence: string): string[] {
-  const tags: string[] = [];
+interface SentenceTtsTags {
+  styleTags: string[];
+  audioTags: string[];
+}
+
+function inferSentenceTags(sentence: string): SentenceTtsTags {
+  let baseEmotion = "平静";
+  let compoundEmotion = "";
+  let overallTone = "干练";
+  let voiceTexture = "清亮";
+  const audioTags: string[] = [];
+
   if (/[!！]{1,}|哈哈|牛|太好了|开心|高兴|赢|成功|冲/.test(sentence)) {
-    tags.push("开心", "兴奋", "活泼", "语速加快");
+    baseEmotion = "开心";
+    compoundEmotion = "欣慰";
+    overallTone = "活泼";
+    voiceTexture = "清亮";
+    audioTags.push("激动");
   }
   if (/伤心|难过|遗憾|可惜|唉|哭|心酸|失落/.test(sentence)) {
-    tags.push("悲伤", "怅然", "低声");
+    baseEmotion = "悲伤";
+    compoundEmotion = "怅然";
+    overallTone = "深沉";
+    voiceTexture = "沙哑";
+    audioTags.push("叹气", "气声");
   }
   if (/生气|离谱|过分|别闹|滚|烦|不耐烦/.test(sentence)) {
-    tags.push("愤怒", "不耐烦", "凌厉");
+    baseEmotion = "愤怒";
+    compoundEmotion = "无奈";
+    overallTone = "凌厉";
+    voiceTexture = "沙哑";
+    audioTags.push("不耐烦");
   }
   if (/害怕|紧张|完了|糟糕|危险|慌/.test(sentence)) {
-    tags.push("紧张", "恐惧", "屏息");
+    baseEmotion = "恐惧";
+    compoundEmotion = "忐忑";
+    overallTone = "严肃";
+    voiceTexture = "清亮";
+    audioTags.push("屏息", "紧张", "声音颤抖");
   }
   if (/[?？]$|为什么|怎么会|真的假的|不会吧/.test(sentence)) {
-    tags.push("惊讶", "疑惑", "语尾上扬");
+    baseEmotion = "惊讶";
+    compoundEmotion = compoundEmotion || "忐忑";
+    overallTone = overallTone === "干练" ? "俏皮" : overallTone;
+    audioTags.push("震惊");
   }
   if (/谢谢|辛苦|没事|放心|晚安|温柔|陪你/.test(sentence)) {
-    tags.push("温柔", "平静", "轻声");
+    baseEmotion = "平静";
+    compoundEmotion = "欣慰";
+    overallTone = "温柔";
+    voiceTexture = "醇雅";
   }
-  if (/哈哈|笑死|乐|绷不住/.test(sentence)) {
-    tags.push("轻笑");
+  if (/累|困|疲惫|没力气|撑不住/.test(sentence)) {
+    baseEmotion = baseEmotion === "平静" ? "悲伤" : baseEmotion;
+    compoundEmotion = "无奈";
+    overallTone = "慵懒";
+    voiceTexture = "沙哑";
+    audioTags.push("长叹一口气", "疲惫", "气声");
   }
-  if (/呜|哭|哽咽|破防/.test(sentence)) {
-    tags.push("哽咽");
+  if (/委屈|冤枉|心虚|对不起|抱歉/.test(sentence)) {
+    baseEmotion = "委屈";
+    compoundEmotion = /对不起|抱歉|心虚/.test(sentence) ? "愧疚" : "无奈";
+    overallTone = "温柔";
+    voiceTexture = "沙哑";
+    audioTags.push(/心虚/.test(sentence) ? "心虚" : "委屈");
   }
-  if (tags.length === 0) {
-    tags.push("平静", "自然");
+  if (/冷笑/.test(sentence)) {
+    audioTags.push("冷笑");
+  } else if (/哈哈哈|大笑|笑死/.test(sentence)) {
+    audioTags.push("大笑");
+  } else if (/哈哈|轻笑|乐|绷不住/.test(sentence)) {
+    audioTags.push("轻笑");
   }
-  return tags;
+  if (/嚎啕大哭/.test(sentence)) {
+    audioTags.push("嚎啕大哭");
+  } else if (/呜咽/.test(sentence)) {
+    audioTags.push("呜咽");
+  } else if (/呜|哭|哽咽|破防/.test(sentence)) {
+    audioTags.push("哽咽");
+  }
+
+  return {
+    styleTags: [baseEmotion, compoundEmotion, overallTone, voiceTexture],
+    audioTags,
+  };
 }
 
 function splitSentences(text: string): string[] {
   return text
-    .match(/[^。！？!?；;]+[。！？!?；;]?/g)
+    .match(/[^。！？!?；;，,]+[。！？!?；;，,]?/g)
     ?.map((item) => item.trim())
     .filter(Boolean) ?? [];
 }

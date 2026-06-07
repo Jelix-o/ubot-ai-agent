@@ -90,6 +90,7 @@ export interface SkillDefinition {
   styleRules: string[];
   knowledge: string[];
   sourceSkillLines?: string[];
+  /** @deprecated Read only for old skill JSON imports. New saves migrate it to ttsConfig.stylePrompt. */
   ttsStyleHint?: string;
   ttsConfig?: SkillTtsConfig;
   exampleExchanges?: Array<{
@@ -115,14 +116,6 @@ export interface SkillTtsConfig {
   voice?: string;
   dialect?: string;
   personaTone?: string;
-  baseEmotion?: string;
-  compoundEmotion?: string;
-  overallTone?: string;
-  voiceTexture?: string;
-  paceRhythm?: string;
-  emotionState?: string;
-  voiceFeature?: string;
-  laughCry?: string;
 }
 
 export interface MessageImageInput {

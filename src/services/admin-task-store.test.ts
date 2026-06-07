@@ -120,6 +120,17 @@ test("AdminTaskStore marks stale queued and running persisted tasks as failed", 
           createdAt: oldStartedAt,
           updatedAt: oldStartedAt,
         },
+        {
+          id: "fresh-model-check",
+          type: "model-check",
+          status: "running",
+          title: "模型检测 新近语音模型",
+          operatorUserId: "admin",
+          progress: 50,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+        },
       ],
     };
     await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
@@ -136,6 +147,10 @@ test("AdminTaskStore marks stale queued and running persisted tasks as failed", 
     assert.equal(typeof modelCheck?.durationMs, "number");
     assert.equal(memoryDedup?.status, "failed");
     assert.match(memoryDedup?.error ?? "", /最后状态：queued/);
+
+    const runningPage = await store.listPage({ status: "running", page: 1, pageSize: 20 });
+    assert.equal(runningPage.pagination.total, 1);
+    assert.equal(runningPage.tasks[0]?.id, "fresh-model-check");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

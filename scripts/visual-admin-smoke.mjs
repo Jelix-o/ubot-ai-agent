@@ -434,6 +434,7 @@ try {
     await captureCdpScreenshots(baseUrl, auth.cookie, [
       ["login", "/login", { width: 1600, height: 1000 }],
       ...pages.map(([name, route]) => [name, route, { width: 1600, height: 1000 }]),
+      ["skills-editor", "/skills", { width: 1600, height: 1000, click: ".skill-table .table-row", afterClickScrollTo: ".tts-form-block" }],
       ["tasks-detail", "/tasks", { width: 1600, height: 1000, click: ".task-row .row-action", afterClickScrollTo: ".task-detail" }],
       ["audit-detail", "/audit", { width: 1600, height: 1000, click: ".audit-row .row-action", afterClickScrollTo: ".audit-detail" }],
       ["health-detail", "/health", { width: 1600, height: 1000, click: ".history-row .row-action", afterClickScrollTo: ".model-detail" }],
@@ -777,10 +778,10 @@ async function captureCdpScreenshots(baseUrl, cookie, targets) {
           await delay(650);
           if (viewport.afterClickScrollTo) {
             await cdp.send("Runtime.evaluate", {
-              expression: `(() => {
-                const target = document.querySelector(${JSON.stringify(viewport.afterClickScrollTo)});
-                if (target) target.scrollIntoView({ block: "nearest", inline: "nearest" });
-              })()`,
+                expression: `(() => {
+                  const target = document.querySelector(${JSON.stringify(viewport.afterClickScrollTo)});
+                  if (target) target.scrollIntoView({ block: "center", inline: "nearest" });
+                })()`,
             });
             await delay(250);
           }

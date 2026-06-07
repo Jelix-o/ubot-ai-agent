@@ -59,14 +59,16 @@ test("admin skills and command lists use the simplified table surfaces", async (
   assert.match(skillsView, /TTS 音色/);
   assert.match(skillsView, /方言/);
   assert.match(skillsView, /人设腔调/);
-  assert.match(skillsView, /基础情绪/);
-  assert.match(skillsView, /复合情绪/);
-  assert.match(skillsView, /整体语调/);
-  assert.match(skillsView, /音色定位/);
-  assert.match(skillsView, /语速与节奏/);
-  assert.match(skillsView, /情绪状态/);
-  assert.match(skillsView, /语音特征/);
-  assert.match(skillsView, /哭笑表达/);
+  assert.match(skillsView, /class="form-block tts-form-block"/);
+  assert.doesNotMatch(skillsView, /基础情绪/);
+  assert.doesNotMatch(skillsView, /复合情绪/);
+  assert.doesNotMatch(skillsView, /整体语调/);
+  assert.doesNotMatch(skillsView, /音色定位/);
+  assert.doesNotMatch(skillsView, /语速与节奏/);
+  assert.doesNotMatch(skillsView, /情绪状态/);
+  assert.doesNotMatch(skillsView, /语音特征/);
+  assert.doesNotMatch(skillsView, /哭笑表达/);
+  assert.doesNotMatch(skillsView, /旧版 TTS 提示/);
   assert.match(skillsView, /type="file"\s+accept="application\/json,\.json"/);
   assert.match(skillsView, /downloadJson/);
   assert.match(skillsView, /grid-template-columns:\s*minmax\(180px,\s*0\.9fr\)\s*minmax\(220px,\s*1fr\)\s*86px\s*96px\s*180px/);
@@ -325,6 +327,9 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
     assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
   }
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
+  assert.match(smokeScript, /\["skills-editor",\s*"\/skills"/);
+  assert.match(smokeScript, /click:\s*"\.skill-table \.table-row"/);
+  assert.match(smokeScript, /afterClickScrollTo:\s*"\.tts-form-block"/);
   assert.match(smokeScript, /\["tasks-detail",\s*"\/tasks"/);
   assert.match(smokeScript, /click:\s*"\.task-row \.row-action"/);
   assert.match(smokeScript, /afterClickScrollTo:\s*"\.task-detail"/);
