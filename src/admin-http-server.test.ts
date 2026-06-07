@@ -610,6 +610,51 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(settingsUpdateBody.models[0]?.apiKey, undefined);
     assert.equal(settingsUpdateBody.models.some((item) => item.id === "gpt"), true);
     assert.equal(settingsUpdateBody.models.some((item) => item.id === "mimo"), true);
+
+    const invalidModelSettingsUpdate = await fetch(`${baseUrl}/api/system-settings`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        models: [
+          ...settingsUpdateBody.models,
+          {
+            id: "bad-model",
+            name: "Bad Model",
+            shortName: "bad",
+            baseUrl: "",
+            model: "gpt-5.5",
+            purpose: "memory",
+            apiKey: "bad-key",
+            enabled: true,
+          },
+        ],
+      }),
+    });
+    assert.equal(invalidModelSettingsUpdate.status, 400);
+    assert.deepEqual(await invalidModelSettingsUpdate.json(), { error: "invalid_model_config" });
+
+    const duplicateModelSettingsUpdate = await fetch(`${baseUrl}/api/system-settings`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        models: [
+          ...settingsUpdateBody.models,
+          {
+            id: "gpt",
+            name: "Duplicate GPT",
+            shortName: "gpt",
+            baseUrl: "https://example.test/v1",
+            model: "gpt-5.5",
+            purpose: "memory",
+            apiKey: "duplicate-key",
+            enabled: true,
+          },
+        ],
+      }),
+    });
+    assert.equal(duplicateModelSettingsUpdate.status, 400);
+    assert.deepEqual(await duplicateModelSettingsUpdate.json(), { error: "duplicate_model_id" });
+
     const internalSettings = await systemSettingsStore.getInternal();
     assert.equal(internalSettings.models.find((item) => item.id === "profile-main")?.apiKey, "secret-key");
     assert.equal(internalSettings.models.find((item) => item.id === "reply-pro")?.apiKey, "reply-pro-key");

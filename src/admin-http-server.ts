@@ -1492,8 +1492,16 @@ export class AdminHttpServer {
       try {
         this.sendJson(res, await this.options.systemSettingsStore.update(body as Partial<SystemSettings>));
       } catch (error) {
-        if ((error as Error).message === "invalid_time") {
-          this.sendJson(res, { error: "invalid_time" }, 400);
+        const errorCode = (error as Error).message;
+        if ([
+          "invalid_time",
+          "invalid_models",
+          "invalid_model_config",
+          "invalid_model_id",
+          "duplicate_model_id",
+          "invalid_model_purpose",
+        ].includes(errorCode)) {
+          this.sendJson(res, { error: errorCode }, 400);
           return;
         }
         throw error;

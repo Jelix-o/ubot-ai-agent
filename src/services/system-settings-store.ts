@@ -29,6 +29,9 @@ export class SystemSettingsStore {
 
   async update(input: SystemSettingsUpdateInput): Promise<SystemSettings> {
     const current = await this.readData();
+    if (input.models !== undefined) {
+      validateModelUpdateInput(input.models);
+    }
     const removedDefaultModelIds = input.models === undefined
       ? current.removedDefaultModelIds ?? []
       : reconcileRemovedDefaultModelIds(current.removedDefaultModelIds, input.models, this.defaultModels);
@@ -213,6 +216,38 @@ function normalizeModels(
   return [...byId.values()];
 }
 
+function validateModelUpdateInput(value: unknown): void {
+  if (!Array.isArray(value)) {
+    throw new Error("invalid_models");
+  }
+  const seenIds = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      throw new Error("invalid_model_config");
+    }
+    const record = item as Partial<SystemModelConfig>;
+    const rawId = typeof record.id === "string" ? record.id.trim() : "";
+    const id = rawId ? normalizeModelId(rawId) : "";
+    if (!id) {
+      throw new Error("invalid_model_id");
+    }
+    if (seenIds.has(id)) {
+      throw new Error("duplicate_model_id");
+    }
+    seenIds.add(id);
+    if (!isSystemModelPurpose(record.purpose)) {
+      throw new Error("invalid_model_purpose");
+    }
+    const name = String(record.name ?? "").trim();
+    const shortName = String(record.shortName ?? "").trim();
+    const baseUrl = String(record.baseUrl ?? "").trim();
+    const model = String(record.model ?? "").trim();
+    if (!name || !shortName || !baseUrl || !model) {
+      throw new Error("invalid_model_config");
+    }
+  }
+}
+
 function reconcileRemovedDefaultModelIds(
   currentValue: unknown,
   incoming: unknown,
@@ -307,6 +342,12 @@ function sameUrl(left: string, right: string): boolean {
 }
 
 function normalizeModelPurpose(value: unknown): SystemModelConfig["purpose"] {
+  return isSystemModelPurpose(value)
+    ? value
+    : "custom";
+}
+
+function isSystemModelPurpose(value: unknown): value is SystemModelConfig["purpose"] {
   return value === "reply" ||
     value === "profile" ||
     value === "memory" ||
@@ -314,9 +355,7 @@ function normalizeModelPurpose(value: unknown): SystemModelConfig["purpose"] {
     value === "summary" ||
     value === "knowledge" ||
     value === "tts" ||
-    value === "custom"
-    ? value
-    : "custom";
+    value === "custom";
 }
 
 function normalizeModelId(value: string): string {

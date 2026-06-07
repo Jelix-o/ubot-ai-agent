@@ -45,6 +45,18 @@ const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; det
   { value: "custom", label: "自定义", detail: "预留模型，不自动接管系统能力" },
 ];
 
+const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
+const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
+  reply: "Reply Model",
+  profile: "Profile Model",
+  memory: "Memory Model",
+  dedup: "Dedup Model",
+  summary: "Summary Model",
+  knowledge: "Knowledge Model",
+  tts: "TTS Model",
+  custom: "Custom Model",
+};
+
 const activePurposeMeta = computed(() => modelPurposeOptions.find((item) => item.value === activePurpose.value)!);
 const activePurposeModels = computed(() => settings.models.filter((model) => model.purpose === activePurpose.value));
 const modelPurposeHealth = computed(() => {
@@ -62,10 +74,11 @@ const modelPurposeHealth = computed(() => {
 
 function modelTemplate(purpose = activePurpose.value): SystemModelConfig {
   const now = new Date().toISOString();
+  const id = createUniqueModelId(`${purpose}-model`);
   return {
-    id: `${purpose}-${Date.now()}`,
-    name: "",
-    shortName: "",
+    id,
+    name: modelPurposeDefaultNames[purpose],
+    shortName: purpose,
     baseUrl: "",
     model: "",
     purpose,
@@ -74,6 +87,27 @@ function modelTemplate(purpose = activePurpose.value): SystemModelConfig {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function createUniqueModelId(base: string): string {
+  const normalizedBase = normalizeUiModelId(base);
+  const existingIds = new Set(settings.models.map((model) => model.id.trim()).filter(Boolean));
+  if (!existingIds.has(normalizedBase)) return normalizedBase;
+  for (let index = 2; index < 1000; index += 1) {
+    const id = `${normalizedBase}-${index}`;
+    if (!existingIds.has(id)) return id;
+  }
+  return `${normalizedBase}-${Date.now()}`;
+}
+
+function normalizeUiModelId(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .slice(0, 64);
+  return normalized || "model";
 }
 
 function modelRowKey(model: SystemModelConfig): string {
@@ -92,6 +126,20 @@ function modelPurposeLabel(purpose: SystemModelPurpose): string {
 
 function markModelsDirty(): void {
   modelSettingsDirty.value = true;
+}
+
+function updateModelId(model: SystemModelConfig, event: Event): void {
+  const previousId = model.id;
+  const nextId = (event.target as HTMLInputElement).value;
+  model.id = nextId;
+  if (settings.selectedModelIds[model.purpose] === previousId) {
+    settings.selectedModelIds[model.purpose] = nextId.trim();
+  }
+  if (previousId && previousId !== nextId) {
+    const { [previousId]: _removed, ...remainingHealth } = modelHealthById.value;
+    modelHealthById.value = remainingHealth;
+  }
+  markModelsDirty();
 }
 
 function applyModelStatuses(statuses: ModelHealthStatus[]): void {
@@ -118,6 +166,8 @@ async function load(): Promise<void> {
 }
 
 async function save(): Promise<void> {
+  normalizeModelFieldsBeforeSave();
+  if (!validateModelsBeforeSave()) return;
   saving.value = true;
   try {
     const next = await api<SystemSettings>("/api/system-settings", {
@@ -135,6 +185,49 @@ async function save(): Promise<void> {
   } finally {
     saving.value = false;
   }
+}
+
+function normalizeModelFieldsBeforeSave(): void {
+  for (const model of settings.models) {
+    model.id = model.id.trim();
+    model.name = model.name.trim();
+    model.shortName = model.shortName.trim();
+    model.baseUrl = model.baseUrl.trim();
+    model.model = model.model.trim();
+    if (typeof model.apiKey === "string") {
+      model.apiKey = model.apiKey.trim();
+    }
+  }
+}
+
+function validateModelsBeforeSave(): boolean {
+  const seenIds = new Set<string>();
+  for (const model of settings.models) {
+    const id = model.id.trim();
+    if (!modelIdPattern.test(id)) {
+      activePurpose.value = model.purpose;
+      app.showToast(`模型 ID 无效：${id || "空"}`, "error");
+      return false;
+    }
+    if (seenIds.has(id)) {
+      activePurpose.value = model.purpose;
+      app.showToast(`模型 ID 重复：${id}`, "error");
+      return false;
+    }
+    seenIds.add(id);
+    const missing = [
+      !model.name.trim() ? "名称" : "",
+      !model.shortName.trim() ? "简称" : "",
+      !model.baseUrl.trim() ? "Base URL" : "",
+      !model.model.trim() ? "模型名" : "",
+    ].filter(Boolean);
+    if (missing.length) {
+      activePurpose.value = model.purpose;
+      app.showToast(`${modelPurposeLabel(model.purpose)} ${id} 缺少：${missing.join("、")}`, "error");
+      return false;
+    }
+  }
+  return true;
 }
 
 async function resetSecret(kind: "admin" | "group"): Promise<void> {
@@ -184,7 +277,11 @@ async function toggleGroup(group: GroupConfig): Promise<void> {
 }
 
 function addModel(): void {
-  settings.models.push(modelTemplate());
+  const model = modelTemplate();
+  settings.models.push(model);
+  if (model.purpose !== "reply") {
+    settings.selectedModelIds[model.purpose] = model.id;
+  }
   markModelsDirty();
   app.showToast("模型已添加，保存模型配置后才会生效。");
 }
@@ -391,7 +488,7 @@ onMounted(() => {
           </div>
           <span class="purpose-cell">{{ modelPurposeLabel(model.purpose) }}</span>
           <div class="model-name">
-            <input v-model="model.id" class="input" placeholder="reply-pro" @input="markModelsDirty" />
+            <input :value="model.id" class="input" placeholder="reply-pro" @input="updateModelId(model, $event)" />
             <input v-model="model.name" class="input" placeholder="名称" @input="markModelsDirty" />
             <input v-model="model.shortName" class="input" placeholder="简称" @input="markModelsDirty" />
           </div>

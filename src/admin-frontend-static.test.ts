@@ -101,7 +101,7 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(settingsView, /管理员秘钥/);
   assert.match(settingsView, /memoryDedupSemanticTimeoutMinutes/);
   assert.match(settingsView, /去重模型单次判断超时（分钟）/);
-  assert.match(settingsView, /v-model="model\.id"/);
+  assert.match(settingsView, /:value="model\.id"/);
   assert.match(settingsView, /placeholder="reply-pro"/);
   assert.match(settingsView, /modelRowKey\(model\)/);
   assert.doesNotMatch(settingsView, /:key="model\.id"/);
@@ -113,6 +113,11 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(settingsView, /markModelsDirty/);
   assert.match(settingsView, /activePurpose = shallowRef<SystemModelPurpose>\("reply"\)/);
   assert.match(settingsView, /modelTemplate\(purpose = activePurpose\.value\)/);
+  assert.match(settingsView, /createUniqueModelId\(`\$\{purpose\}-model`\)/);
+  assert.match(settingsView, /validateModelsBeforeSave/);
+  assert.match(settingsView, /modelIdPattern/);
+  assert.match(settingsView, /duplicate_model_id|模型 ID 重复/);
+  assert.match(settingsView, /updateModelId\(model,\s*\$event\)/);
   assert.match(settingsView, /const modelPurposeOptions/);
   assert.match(settingsView, /value:\s*"memory"/);
   assert.match(settingsView, /value:\s*"profile"/);

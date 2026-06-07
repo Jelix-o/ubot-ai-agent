@@ -187,6 +187,54 @@ test("SystemSettingsStore preserves an existing model api key when editing with 
   assert.equal(model?.hasApiKey, true);
 });
 
+test("SystemSettingsStore rejects incomplete and duplicate model updates", async () => {
+  const store = await createStore();
+
+  await assert.rejects(
+    store.update({
+      models: [{
+        id: "memory-model",
+        name: "Memory Model",
+        shortName: "memory",
+        baseUrl: "",
+        model: "gpt-5.5",
+        purpose: "memory",
+        apiKey: "memory-key",
+        enabled: true,
+      }],
+    }),
+    /invalid_model_config/,
+  );
+
+  await assert.rejects(
+    store.update({
+      models: [
+        {
+          id: "gpt",
+          name: "Profile GPT",
+          shortName: "gpt",
+          baseUrl: "https://example.test/v1",
+          model: "gpt-5.5",
+          purpose: "profile",
+          apiKey: "profile-key",
+          enabled: true,
+        },
+        {
+          id: "gpt",
+          name: "Memory GPT",
+          shortName: "gpt",
+          baseUrl: "https://example.test/v1",
+          model: "gpt-5.5",
+          purpose: "memory",
+          apiKey: "memory-key",
+          enabled: true,
+        },
+      ],
+    }),
+    /duplicate_model_id/,
+  );
+});
+
 test("SystemSettingsStore normalizes scheduler switches and times", async () => {
   const store = await createStore();
   const next = await store.update({
@@ -249,37 +297,38 @@ test("SystemSettingsStore accepts all system model purposes without exposing api
   }
 });
 
-test("SystemSettingsStore drops unsafe model ids before they reach reply switching", async () => {
+test("SystemSettingsStore rejects unsafe model ids before they reach reply switching", async () => {
   const store = await createStore();
-  const next = await store.update({
-    models: [
-      {
-        id: "reply-pro",
-        name: "Reply Pro",
-        shortName: "reply-pro",
-        baseUrl: "https://reply-pro.example/v1",
-        model: "reply-pro-model",
-        purpose: "reply",
-        apiKey: "reply-pro-key",
-        enabled: true,
-      },
-      {
-        id: "../bad",
-        name: "Bad",
-        shortName: "bad",
-        baseUrl: "https://bad.example/v1",
-        model: "bad-model",
-        purpose: "reply",
-        apiKey: "bad-key",
-        enabled: true,
-      },
-    ],
-  });
+  await assert.rejects(
+    store.update({
+      models: [
+        {
+          id: "reply-pro",
+          name: "Reply Pro",
+          shortName: "reply-pro",
+          baseUrl: "https://reply-pro.example/v1",
+          model: "reply-pro-model",
+          purpose: "reply",
+          apiKey: "reply-pro-key",
+          enabled: true,
+        },
+        {
+          id: "../bad",
+          name: "Bad",
+          shortName: "bad",
+          baseUrl: "https://bad.example/v1",
+          model: "bad-model",
+          purpose: "reply",
+          apiKey: "bad-key",
+          enabled: true,
+        },
+      ],
+    }),
+    /invalid_model_id/,
+  );
 
-  assert.equal(next.models.some((model) => model.id === "reply-pro"), true);
-  assert.equal(next.models.some((model) => model.id === "../bad"), false);
   const internal = await store.getInternal();
-  assert.equal(internal.models.find((model) => model.id === "reply-pro")?.apiKey, "reply-pro-key");
+  assert.equal(internal.models.some((model) => model.id === "reply-pro"), false);
   assert.equal(internal.models.some((model) => model.id === "../bad"), false);
 });
 

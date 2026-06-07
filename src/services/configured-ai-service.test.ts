@@ -89,6 +89,7 @@ test("ConfiguredAiService uses enabled profile model from system settings", asyn
 
   await store.update({
     models: [{
+      id: "profile_configured",
       name: "Profile",
       shortName: "profile",
       baseUrl: "https://configured.example/v1",
@@ -122,6 +123,7 @@ test("ConfiguredAiService falls back when profile model has no api key or is dis
   await store.update({
     models: [
       {
+        id: "profile_no_key",
         name: "No Key",
         shortName: "no-key",
         baseUrl: "https://nokey.example/v1",
@@ -130,6 +132,7 @@ test("ConfiguredAiService falls back when profile model has no api key or is dis
         enabled: true,
       },
       {
+        id: "profile_disabled",
         name: "Disabled",
         shortName: "disabled",
         baseUrl: "https://disabled.example/v1",
@@ -160,7 +163,7 @@ test("ConfiguredAiService reuses configured service until model config changes",
 
   await store.update({
     models: [{
-      id: "profile-model",
+      id: "profile_model",
       name: "Profile",
       shortName: "profile",
       baseUrl: "https://configured.example/v1",
@@ -182,7 +185,7 @@ test("ConfiguredAiService reuses configured service until model config changes",
 
   await store.update({
     models: [{
-      id: "profile-model",
+      id: "profile_model",
       name: "Profile",
       shortName: "profile",
       baseUrl: "https://configured.example/v1",
@@ -205,7 +208,7 @@ test("ConfiguredAiService prefers selected model id for a purpose", async () => 
   await store.update({
     models: [
       {
-        id: "reply-a",
+        id: "reply_a",
         name: "Reply A",
         shortName: "a",
         baseUrl: "https://reply-a.example/v1",
@@ -215,7 +218,7 @@ test("ConfiguredAiService prefers selected model id for a purpose", async () => 
         apiKey: "reply-a-key",
       },
       {
-        id: "reply-b",
+        id: "reply_b",
         name: "Reply B",
         shortName: "b",
         baseUrl: "https://reply-b.example/v1",
@@ -225,7 +228,7 @@ test("ConfiguredAiService prefers selected model id for a purpose", async () => 
         apiKey: "reply-b-key",
       },
     ],
-    selectedModelIds: { reply: "reply-b" },
+    selectedModelIds: { reply: "reply_b" },
   });
 
   const service = new ConfiguredAiService(fallback, store, "reply", (model) => {
@@ -254,7 +257,7 @@ test("ConfiguredAiService falls back when selected model is unavailable", async 
   await store.update({
     models: [
       {
-        id: "reply-a",
+        id: "reply_a",
         name: "Reply A",
         shortName: "a",
         baseUrl: "https://reply-a.example/v1",
@@ -264,7 +267,7 @@ test("ConfiguredAiService falls back when selected model is unavailable", async 
         apiKey: "reply-a-key",
       },
       {
-        id: "reply-b",
+        id: "reply_b",
         name: "Reply B",
         shortName: "b",
         baseUrl: "https://reply-b.example/v1",
@@ -274,7 +277,7 @@ test("ConfiguredAiService falls back when selected model is unavailable", async 
         apiKey: "reply-b-key",
       },
     ],
-    selectedModelIds: { reply: "reply-b" },
+    selectedModelIds: { reply: "reply_b" },
   });
 
   const service = new ConfiguredAiService(fallback, store, "reply", (model) => {
@@ -312,6 +315,7 @@ test("ConfiguredAiService delegates replies to enabled reply model only", async 
   await store.update({
     models: [
       {
+        id: "profile_configured",
         name: "Profile",
         shortName: "profile",
         baseUrl: "https://profile.example/v1",
@@ -321,6 +325,7 @@ test("ConfiguredAiService delegates replies to enabled reply model only", async 
         apiKey: "profile-key",
       },
       {
+        id: "reply_configured",
         name: "Reply",
         shortName: "reply",
         baseUrl: "https://reply.example/v1",
@@ -360,41 +365,41 @@ test("ConfiguredAiService routes memory, dedup, and summary calls to their dedic
   await store.update({
     models: [
       {
-        id: "memory-model",
+        id: "memory_model",
         name: "Memory",
         shortName: "memory",
         baseUrl: "https://memory.example/v1",
-        model: "memory-model",
+        model: "memory_model",
         purpose: "memory",
         enabled: true,
         apiKey: "memory-key",
       },
       {
-        id: "dedup-model",
+        id: "dedup_model",
         name: "Dedup",
         shortName: "dedup",
         baseUrl: "https://dedup.example/v1",
-        model: "dedup-model",
+        model: "dedup_model",
         purpose: "dedup",
         enabled: true,
         apiKey: "dedup-key",
       },
       {
-        id: "summary-model",
+        id: "summary_model",
         name: "Summary",
         shortName: "summary",
         baseUrl: "https://summary.example/v1",
-        model: "summary-model",
+        model: "summary_model",
         purpose: "summary",
         enabled: true,
         apiKey: "summary-key",
       },
       {
-        id: "profile-model",
+        id: "profile_model",
         name: "Profile",
         shortName: "profile",
         baseUrl: "https://profile.example/v1",
-        model: "profile-model",
+        model: "profile_model",
         purpose: "profile",
         enabled: true,
         apiKey: "profile-key",
@@ -423,9 +428,9 @@ test("ConfiguredAiService routes memory, dedup, and summary calls to their dedic
   });
 
   assert.deepEqual(created, [
-    "memory:memory-model",
-    "dedup:dedup-model",
-    "summary:summary-model",
+    "memory:memory_model",
+    "dedup:dedup_model",
+    "summary:summary_model",
   ]);
 });
 
@@ -436,11 +441,11 @@ test("ConfiguredAiService falls back from dedicated profile-family purpose to le
 
   await store.update({
     models: [{
-      id: "profile-model",
+      id: "profile_model",
       name: "Profile",
       shortName: "profile",
       baseUrl: "https://profile.example/v1",
-      model: "profile-model",
+      model: "profile_model",
       purpose: "profile",
       enabled: true,
       apiKey: "profile-key",
@@ -458,7 +463,7 @@ test("ConfiguredAiService falls back from dedicated profile-family purpose to le
     existing: { type: "member_profile", subjectUserId: "1", title: "A", content: "A likes tea", confidence: 0.9 },
   });
 
-  assert.deepEqual(created, ["profile:profile-model"]);
+  assert.deepEqual(created, ["profile:profile_model"]);
 });
 
 async function createSettingsStore(): Promise<SystemSettingsStore> {
