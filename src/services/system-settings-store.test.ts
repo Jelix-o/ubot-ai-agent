@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -424,6 +424,82 @@ test("SystemSettingsStore keeps command permissions immutable and ignores unknow
   assert.equal(next.commands.some((item) => item.id === "model"), true);
   assert.equal(next.commands.some((item) => item.id === "voice_reply" && item.primary === "#语音回复"), true);
   assert.equal(next.commands.some((item) => item.id === "sing" && item.primary === "#唱歌"), true);
+});
+
+test("SystemSettingsStore recovers settings when commands are corrupt without losing model keys", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
+  const filePath = path.join(dir, "system-settings.json");
+  await writeFile(filePath, `{
+  "profileSummaryMaxChars": 1800,
+  "profileShortSummaryMaxChars": 140,
+  "dailyProfileReviewEnabled": true,
+  "dailyProfileReviewTime": "00:00",
+  "memoryDedupEnabled": true,
+  "memoryDedupTime": "23:00",
+  "memoryDedupSemanticTimeoutMinutes": 10,
+  "defaultTriggerKeywords": [{ "keyword": "trigger", "enabled": true }],
+  "models": [
+    {
+      "id": "memory-gpt-55",
+      "name": "GPT 5.5 Memory",
+      "shortName": "gpt",
+      "baseUrl": "https://sub.9958.uk/v1",
+      "model": "gpt-5.5",
+      "purpose": "memory",
+      "apiKey": "memory-key",
+      "hasApiKey": true,
+      "enabled": true,
+      "createdAt": "2026-06-07T16:48:04.111Z",
+      "updatedAt": "2026-06-07T16:48:04.111Z"
+    }
+  ],
+  "removedDefaultModelIds": [],
+  "selectedModelIds": { "memory": "memory-gpt-55" },
+  "commands": [
+    {
+      "id": "conversation",
+      "title": "Broken",
+      "help": "unterminated
+    }
+  ],
+  "updatedAt": "2026-06-07T16:48:04.112Z"
+}
+`, "utf8");
+
+  const store = new SystemSettingsStore(filePath);
+  const publicSettings = await store.get();
+  assert.equal(publicSettings.models.find((model) => model.id === "memory-gpt-55")?.apiKey, undefined);
+  assert.equal(publicSettings.selectedModelIds.memory, "memory-gpt-55");
+  assert.equal(publicSettings.commands.some((command) => command.id === "model"), true);
+
+  const updated = await store.update({
+    models: [
+      ...publicSettings.models,
+      {
+        id: "knowledge-gpt-55",
+        name: "GPT 5.5 Knowledge",
+        shortName: "gpt",
+        baseUrl: "https://sub.9958.uk/v1",
+        model: "gpt-5.5",
+        purpose: "knowledge",
+        apiKey: "knowledge-key",
+        enabled: true,
+      },
+    ],
+    selectedModelIds: {
+      ...publicSettings.selectedModelIds,
+      knowledge: "knowledge-gpt-55",
+    },
+  });
+  assert.equal(updated.models.find((model) => model.id === "knowledge-gpt-55")?.hasApiKey, true);
+  assert.equal(updated.selectedModelIds.knowledge, "knowledge-gpt-55");
+
+  const internal = await store.getInternal();
+  assert.equal(internal.models.find((model) => model.id === "memory-gpt-55")?.apiKey, "memory-key");
+  assert.equal(internal.models.find((model) => model.id === "knowledge-gpt-55")?.apiKey, "knowledge-key");
+  const repairedRaw = await readFile(filePath, "utf8");
+  const repaired = JSON.parse(repairedRaw) as { commands: Array<{ id: string }> };
+  assert.equal(repaired.commands.some((command) => command.id === "model"), true);
 });
 
 async function createStore(defaultModels: ConstructorParameters<typeof SystemSettingsStore>[1] = []): Promise<SystemSettingsStore> {

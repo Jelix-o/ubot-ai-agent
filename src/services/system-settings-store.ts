@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import type { SystemCommandConfig, SystemModelConfig, SystemSettings } from "../types.js";
-import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
 import {
   ENV_TTS_MODEL_ID,
   LEGACY_MIMO_TTS_BASE_URL,
@@ -96,7 +97,12 @@ export class SystemSettingsStore {
       return this.cachedData;
     }
     try {
-      this.cachedData = normalizeSettings(await readJsonFile<Partial<SystemSettings>>(this.filePath), this.defaultModels);
+      const raw = await readFile(this.filePath, "utf8");
+      const parsed = parseSettingsJson(raw);
+      this.cachedData = normalizeSettings(parsed.value, this.defaultModels);
+      if (parsed.recovered) {
+        await this.writeData(this.cachedData);
+      }
       return this.cachedData;
     } catch (error) {
       const known = error as NodeJS.ErrnoException;
@@ -111,6 +117,33 @@ export class SystemSettingsStore {
   private async writeData(data: SystemSettings): Promise<void> {
     this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+  }
+}
+
+function parseSettingsJson(raw: string): { value: Partial<SystemSettings>; recovered: boolean } {
+  const body = stripUtf8Bom(raw);
+  try {
+    return { value: JSON.parse(body) as Partial<SystemSettings>, recovered: false };
+  } catch (error) {
+    const recovered = recoverSettingsWithDefaultCommands(body);
+    if (recovered) {
+      return { value: recovered, recovered: true };
+    }
+    throw error;
+  }
+}
+
+function recoverSettingsWithDefaultCommands(raw: string): Partial<SystemSettings> | undefined {
+  const commandsMatch = /,\s*\r?\n\s*"commands"\s*:/.exec(raw);
+  if (!commandsMatch) {
+    return undefined;
+  }
+  const topLevelUpdatedAt = raw.match(/\r?\n\s*"updatedAt"\s*:\s*"([^"]+)"\s*\r?\n\s*\}\s*$/)?.[1] ?? new Date().toISOString();
+  const candidate = `${raw.slice(0, commandsMatch.index)},\n  "commands": [],\n  "updatedAt": ${JSON.stringify(topLevelUpdatedAt)}\n}`;
+  try {
+    return JSON.parse(candidate) as Partial<SystemSettings>;
+  } catch {
+    return undefined;
   }
 }
 

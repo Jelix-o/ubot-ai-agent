@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, shallowRef, watch } from "vue";
+import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useRouter } from "vue-router";
 
@@ -27,6 +27,13 @@ const activeSummary = shallowRef<MemberProfileSummary>();
 const activeMember = shallowRef<MemberProfile>();
 const activeRecord = shallowRef<ProfileRecord>();
 const activeProfileType = shallowRef<"overall" | "yesterday">("overall");
+const readonly = computed(() => app.readonly);
+
+function ensureWritable(): boolean {
+  if (!readonly.value) return true;
+  app.showToast("只读模式不能修改成员或画像", "error");
+  return false;
+}
 
 async function load(): Promise<void> {
   if (!app.groupId) return;
@@ -63,6 +70,7 @@ async function loadRecords(): Promise<void> {
 }
 
 async function profile(member: MemberProfile, type: "overall" | "yesterday", refresh = false): Promise<void> {
+  if (refresh && !ensureWritable()) return;
   summaryLoading.value = true;
   activeMember.value = member;
   activeProfileType.value = type;
@@ -108,11 +116,13 @@ async function openRecord(record: ProfileRecord): Promise<void> {
 }
 
 async function regenerateActiveProfile(): Promise<void> {
+  if (!ensureWritable()) return;
   if (!activeMember.value) return;
   await profile(activeMember.value, activeRecord.value?.type || activeSummary.value?.type || activeProfileType.value, true);
 }
 
 async function deleteRecord(record: ProfileRecord): Promise<void> {
+  if (!ensureWritable()) return;
   if (!confirm(`删除这条${profileTypeLabel(record.type)}记录？`)) return;
   await api(`/api/profile-records/${encodeURIComponent(record.id)}`, { method: "DELETE" });
   if (activeRecord.value?.id === record.id) activeRecord.value = undefined;
@@ -121,6 +131,7 @@ async function deleteRecord(record: ProfileRecord): Promise<void> {
 }
 
 async function toggleMemoryCollection(member: MemberProfile): Promise<void> {
+  if (!ensureWritable()) return;
   if (!app.groupId || togglingMemoryUserId.value) return;
   togglingMemoryUserId.value = member.userId;
   try {
@@ -152,11 +163,13 @@ function applyFilters(): void {
 }
 
 function startEditNote(member: MemberProfile): void {
+  if (!ensureWritable()) return;
   editingNoteUserId.value = member.userId;
   noteDraft.value = member.note || "";
 }
 
 async function saveNote(member: MemberProfile): Promise<void> {
+  if (!ensureWritable()) return;
   if (!app.groupId || savingNoteUserId.value) return;
   savingNoteUserId.value = member.userId;
   try {
@@ -261,16 +274,16 @@ watch(() => [recordPagination.page, recordPagination.pageSize], () => {
             <div class="member-actions">
               <button class="ghost-btn" type="button" @click="profile(member, 'overall')">群聊画像</button>
               <button class="ghost-btn" type="button" @click="profile(member, 'yesterday')">昨日画像</button>
-              <button class="ghost-btn" type="button" @click="activeMember?.userId === member.userId ? regenerateActiveProfile() : profile(member, 'overall', true)">重新生成</button>
+              <button class="ghost-btn" type="button" :disabled="readonly" @click="activeMember?.userId === member.userId ? regenerateActiveProfile() : profile(member, 'overall', true)">重新生成</button>
               <button class="ghost-btn" type="button" @click="openMemberRecords(member)">画像记录</button>
               <button class="ghost-btn" type="button" @click="viewMemberMemories(member)">查看记忆</button>
-              <button class="ghost-btn" type="button" @click="startEditNote(member)">修改备注</button>
+              <button class="ghost-btn" type="button" :disabled="readonly" @click="startEditNote(member)">修改备注</button>
               <button class="ghost-btn" type="button" @click="deduplicateMemberMemories(member)">记忆去重</button>
               <button
                 class="ghost-btn"
                 :class="{ danger: !member.memoryDisabled }"
                 type="button"
-                :disabled="togglingMemoryUserId === member.userId"
+                :disabled="readonly || togglingMemoryUserId === member.userId"
                 @click="toggleMemoryCollection(member)"
               >
                 {{ member.memoryDisabled ? "启用记忆" : "禁用记忆" }}
@@ -344,7 +357,7 @@ watch(() => [recordPagination.page, recordPagination.pageSize], () => {
             <strong>{{ profileTypeLabel(record.type) }}</strong>
             <span>{{ formatDateTime(record.generatedAt) }}</span>
           </button>
-          <button class="ghost-btn danger" type="button" @click="deleteRecord(record)">删除</button>
+          <button class="ghost-btn danger" type="button" :disabled="readonly" @click="deleteRecord(record)">删除</button>
         </article>
         <div class="record-pager">
           <button class="ghost-btn" type="button" :disabled="recordPagination.page <= 1" @click="recordPagination.page -= 1">上一页</button>

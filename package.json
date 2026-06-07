@@ -1,6 +1,6 @@
 {
   "name": "ubot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,7 +15,8 @@
     "build:admin": "node scripts/run-node22.cjs node_modules/vite/bin/vite.js build --config admin/vite.config.ts",
     "build:server": "node scripts/run-node22.cjs node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "test": "npm run build && node scripts/run-tests.cjs",
-    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1"
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1",
+    "release:github": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -226,7 +226,7 @@ export interface SystemHealthData {
 }
 
 export interface AdminSession {
-  role: "super_admin" | "group_admin";
+  role: "super_admin" | "group_admin" | "viewer";
   username: string;
   userId?: string;
   allowedGroupIds: string[];
@@ -446,9 +446,14 @@ export interface BulkApproveResult {
 }
 
 let csrfToken = "";
+let readonlySession = false;
 
 export function setCsrfToken(token: string | undefined): void {
   csrfToken = token || "";
+}
+
+function setReadonlySession(session: AdminSession | undefined): void {
+  readonlySession = session?.role === "viewer";
 }
 
 function shouldSendCsrf(method: string | undefined): boolean {
@@ -457,6 +462,9 @@ function shouldSendCsrf(method: string | undefined): boolean {
 }
 
 export async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
+  if (readonlySession && shouldSendCsrf(options.method) && url !== "/api/logout") {
+    throw new Error("只读账号不能修改系统设置或内容");
+  }
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string> | undefined || {}),
@@ -495,6 +503,7 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
   if (url === "/api/session" || url === "/api/login") {
     const session = (data as { session?: AdminSession; csrfToken?: string });
     setCsrfToken(session.session?.csrfToken ?? session.csrfToken);
+    setReadonlySession(session.session ?? data as AdminSession);
   }
   return data;
 }

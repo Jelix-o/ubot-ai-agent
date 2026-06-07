@@ -47,6 +47,51 @@ test("admin member management keeps required member actions available", async ()
   assert.match(membersView, /query:\s*\{\s*userId:\s*member\.userId,\s*type:\s*"member_profile"/);
 });
 
+test("admin viewer sessions render non-system pages as read-only", async () => {
+  const [candidatesView, memoriesView, membersView, profilesView, knowledgeView] = await Promise.all([
+    readAdminFile(path.join("views", "CandidatesView.vue")),
+    readAdminFile(path.join("views", "MemoriesView.vue")),
+    readAdminFile(path.join("views", "MembersView.vue")),
+    readAdminFile(path.join("views", "ProfilesView.vue")),
+    readAdminFile(path.join("views", "KnowledgeView.vue")),
+  ]);
+
+  for (const view of [candidatesView, memoriesView, membersView, profilesView, knowledgeView]) {
+    assert.match(view, /readonly = computed\(\(\) => app\.readonly\)/);
+  }
+
+  assert.match(candidatesView, /function ensureWritable\(\): boolean/);
+  assert.match(candidatesView, /:disabled="readonly \|\| candidates\.bulkApproving \|\| candidates\.selectedCount === 0"/);
+  assert.match(candidatesView, /:disabled="readonly \|\| isBusy\(item\.id\) \|\| item\.status !== 'pending'"/);
+  assert.match(candidatesView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
+
+  assert.match(memoriesView, /function ensureWritable\(\): boolean/);
+  assert.match(memoriesView, /if \(readonly\.value\) return;/);
+  assert.match(memoriesView, /:disabled="readonly \|\| dedupLoading \|\| !dedupDecisions\.length"/);
+  assert.match(memoriesView, /:disabled="readonly \|\| loading \|\| !selectedIds\.size"/);
+  assert.match(memoriesView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
+
+  assert.match(membersView, /function ensureWritable\(\): boolean/);
+  assert.match(membersView, /refresh && !ensureWritable\(\)/);
+  assert.match(membersView, /:disabled="readonly" @click="activeMember\?\.userId === member\.userId \? regenerateActiveProfile\(\) : profile\(member, 'overall', true\)"/);
+  assert.match(membersView, /:disabled="readonly" @click="startEditNote\(member\)"/);
+  assert.match(membersView, /:disabled="readonly \|\| togglingMemoryUserId === member\.userId"/);
+  assert.match(membersView, /:disabled="readonly" @click="deleteRecord\(record\)"/);
+
+  assert.match(profilesView, /readonly\.value[\s\S]*只读模式不能重新生成画像/);
+  assert.match(profilesView, /readonly\.value[\s\S]*只读模式不能删除画像记录/);
+  assert.match(profilesView, /readonly\.value[\s\S]*只读模式不能修改公开链接/);
+  assert.match(profilesView, /:disabled="readonly" @click="updateShareState\(record, true\)"/);
+  assert.match(profilesView, /:disabled="readonly \|\| generating" @click="regenerate\(record\)"/);
+  assert.match(profilesView, /:disabled="readonly" @click="removeRecord\(record\)"/);
+
+  assert.match(knowledgeView, /function ensureWritable\(\): boolean/);
+  assert.match(knowledgeView, /:disabled="readonly" @click="startCreate"/);
+  assert.match(knowledgeView, /:disabled="readonly \|\| importLoading"/);
+  assert.match(knowledgeView, /:disabled="readonly \|\| loading" @click="save"/);
+  assert.match(knowledgeView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
+});
+
 test("admin skills and command lists use the simplified table surfaces", async () => {
   const [skillsView, commandsView] = await Promise.all([
     readAdminFile(path.join("views", "SkillsView.vue")),
@@ -145,13 +190,17 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(groupsView, /form\.replyModelMode/);
   assert.match(groupsView, /hasReplyModels = computed/);
   assert.match(groupsView, /reconcileReplyModelSelection/);
-  assert.match(groupsView, /:disabled="!hasReplyModels"/);
+  assert.match(groupsView, /:disabled="readonly \|\| !hasReplyModels"/);
   assert.match(groupsView, /请先在系统设置启用对话模型/);
   assert.match(groupsView, /系统设置中启用的对话模型会同步进入群内 #模型 切换列表/);
   assert.match(groupsView, /MultiTagSelect/);
   assert.match(groupsView, /v-model="form\.allowedSkillIds"/);
   assert.match(groupsView, /v-model="form\.memoryDisabledUserIds"/);
   assert.match(groupsView, /v-model="form\.defaultVoiceReplyEnabled"/);
+  assert.match(groupsView, /class="voice-child"/);
+  assert.match(groupsView, /:disabled="readonly \|\| !form\.voiceReplyEnabled"/);
+  assert.match(groupsView, /watch\(\(\) => form\.voiceReplyEnabled/);
+  assert.match(groupsView, /watch\(\(\) => form\.defaultVoiceReplyEnabled/);
   assert.match(groupsView, /默认语音回复/);
 });
 
@@ -181,7 +230,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v1\.0\.0/);
+  assert.match(appShell, /UBot v1\.0\.1/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -195,6 +244,8 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /await app\.logout\(\)/);
   assert.match(appShell, /@click\.stop="logout"/);
   assert.match(appShell, /class="content-scroll"/);
+  assert.match(appShell, /readonly-banner/);
+  assert.match(appShell, /普通用户只读模式/);
   assert.match(appShell, /\.content-scroll\s*\{[\s\S]*overflow:\s*visible;/);
   const topbarBlock = appShell.slice(appShell.indexOf(".topbar {"), appShell.indexOf(".top-title"));
   assert.match(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--surface\)\s*94%,\s*transparent\)/);
@@ -360,7 +411,7 @@ test("windows release package avoids local runtime group config", async () => {
 
   assert.doesNotMatch(packageScript, /"config",/);
   assert.match(packageScript, /"COMMANDS\.md"/);
-  assert.match(packageScript, /"RELEASE-v1\.0\.0\.md"/);
+  assert.match(packageScript, /"RELEASE-v1\.0\.1\.md"/);
   assert.match(packageScript, /groups\.example\.json/);
   assert.match(packageScript, /"superAdminUserIds": \[\]/);
   assert.match(packageScript, /"groups": \[\]/);
@@ -465,15 +516,19 @@ test("admin group config reloads on group switch and uses selectable config cont
 
   assert.match(groupsView, /watch\(\(\) => app\.groupId,\s*\(\) => \{\s*void load\(\);/);
   assert.match(groupsView, /manualIdentitiesText\.value = JSON\.stringify\(data\.manualIdentities \|\| \[\], null, 2\)/);
-  assert.match(groupsView, /<select v-model="form\.currentSkillId" class="select">/);
-  assert.match(groupsView, /<MultiTagSelect v-model="form\.allowedSkillIds"/);
-  assert.match(groupsView, /<MultiTagSelect v-model="form\.switcherUserIds"/);
-  assert.match(groupsView, /<MultiTagSelect v-model="form\.liveChatUserIds"/);
-  assert.match(groupsView, /<MultiTagSelect v-model="form\.blacklistedUserIds"/);
-  assert.match(groupsView, /<MultiTagSelect v-model="form\.memoryDisabledUserIds"/);
+  assert.match(groupsView, /<select v-model="form\.currentSkillId" class="select" :disabled="readonly">/);
+  assert.match(groupsView, /<MultiTagSelect v-model="form\.allowedSkillIds"[\s\S]*?:disabled="readonly"/);
+  assert.match(groupsView, /<MultiTagSelect v-model="form\.switcherUserIds"[\s\S]*?:disabled="readonly"/);
+  assert.match(groupsView, /<MultiTagSelect v-model="form\.liveChatUserIds"[\s\S]*?:disabled="readonly"/);
+  assert.match(groupsView, /<MultiTagSelect v-model="form\.blacklistedUserIds"[\s\S]*?:disabled="readonly"/);
+  assert.match(groupsView, /<MultiTagSelect v-model="form\.memoryDisabledUserIds"[\s\S]*?:disabled="readonly"/);
   assert.match(groupsView, /v-model:rule="reminderForm\.dateRule"/);
   assert.match(groupsView, /v-model:weekdays="reminderForm\.weekdays"/);
   assert.match(groupsView, /DateRulePicker/);
+  assert.match(groupsView, /DateRulePicker[\s\S]*?:disabled="readonly"/);
+  assert.match(groupsView, /<textarea v-model="manualIdentitiesText"[\s\S]*?:readonly="readonly"/);
+  assert.match(groupsView, /:disabled="readonly \|\| loading \|\| saving"/);
+  assert.match(groupsView, /只读模式不可保存/);
   assert.match(groupsView, /form\.dailyReportDateRule/);
   assert.match(groupsView, /form\.holidayCountdownDateRule/);
   assert.match(groupsView, /class="schedule-layout"/);

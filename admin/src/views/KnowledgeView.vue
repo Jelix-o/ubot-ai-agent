@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, shallowRef, watch } from "vue";
+import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import { useRefreshEvents } from "../composables/useRefreshEvents";
@@ -19,6 +19,7 @@ const formVisible = shallowRef(false);
 const importText = shallowRef("");
 const importLoading = shallowRef(false);
 const importCandidates = shallowRef<Array<{ title: string; question: string; answer: string; keywords: string[]; enabled?: boolean }>>([]);
+const readonly = computed(() => app.readonly);
 const form = reactive({
   title: "",
   question: "",
@@ -42,6 +43,12 @@ function parseKeywords(text: string): string[] {
   return text.split(/[\n,，、\s]+/).map((item) => item.trim()).filter(Boolean);
 }
 
+function ensureWritable(): boolean {
+  if (!readonly.value) return true;
+  app.showToast("只读模式不能修改知识库", "error");
+  return false;
+}
+
 function resetForm(): void {
   editingId.value = "";
   form.title = "";
@@ -52,11 +59,13 @@ function resetForm(): void {
 }
 
 function startCreate(): void {
+  if (!ensureWritable()) return;
   resetForm();
   formVisible.value = true;
 }
 
 function startEdit(item: KnowledgeEntry): void {
+  if (!ensureWritable()) return;
   editingId.value = item.id;
   formVisible.value = true;
   form.title = item.title;
@@ -89,6 +98,7 @@ function applyFilters(): void {
 }
 
 async function save(): Promise<void> {
+  if (!ensureWritable()) return;
   if (!form.title.trim() || !form.question.trim() || !form.answer.trim()) {
     app.showToast("标题、问题和答案不能为空", "error");
     return;
@@ -129,6 +139,7 @@ async function save(): Promise<void> {
 }
 
 async function toggleEnabled(item: KnowledgeEntry): Promise<void> {
+  if (!ensureWritable()) return;
   setBusy(item.id, true);
   try {
     await api<KnowledgeEntry>(`/api/knowledge/${encodeURIComponent(item.id)}`, {
@@ -145,6 +156,7 @@ async function toggleEnabled(item: KnowledgeEntry): Promise<void> {
 }
 
 async function deleteOne(item: KnowledgeEntry): Promise<void> {
+  if (!ensureWritable()) return;
   if (!confirm(`删除 FAQ「${item.title}」？`)) return;
   setBusy(item.id, true);
   try {
@@ -159,6 +171,7 @@ async function deleteOne(item: KnowledgeEntry): Promise<void> {
 }
 
 async function previewImport(): Promise<void> {
+  if (!ensureWritable()) return;
   if (!app.groupId) return;
   if (!importText.value.trim()) {
     app.showToast("请先粘贴历史聊天记录", "error");
@@ -180,6 +193,7 @@ async function previewImport(): Promise<void> {
 }
 
 async function applyImport(): Promise<void> {
+  if (!ensureWritable()) return;
   if (!app.groupId || !importCandidates.value.length) return;
   importLoading.value = true;
   try {
@@ -222,7 +236,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <h2>知识库（FAQ）<span class="tag">{{ pagination.total }}</span></h2>
         <p>管理常见问题与标准答案，机器人会优先参考知识库内容回复。</p>
       </div>
-      <button class="btn" type="button" @click="startCreate">新建 FAQ</button>
+      <button class="btn" type="button" :disabled="readonly" @click="startCreate">新建 FAQ</button>
     </div>
 
     <div class="knowledge-toolbar">
@@ -242,10 +256,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <p>先从聊天记录里提取 FAQ 候选，确认后再写入知识库，避免原始聊天全文污染知识库。</p>
         </div>
         <div class="row-actions">
-          <button class="ghost-btn" type="button" :disabled="importLoading" @click="previewImport">
-            {{ importLoading ? "处理中..." : "提取候选" }}
+          <button class="ghost-btn" type="button" :disabled="readonly || importLoading" @click="previewImport">
+            {{ readonly ? "只读模式不可提取" : importLoading ? "处理中..." : "提取候选" }}
           </button>
-          <button class="btn" type="button" :disabled="importLoading || !importCandidates.length" @click="applyImport">导入候选</button>
+          <button class="btn" type="button" :disabled="readonly || importLoading || !importCandidates.length" @click="applyImport">导入候选</button>
         </div>
       </div>
       <textarea v-model="importText" class="textarea import-textarea" placeholder="粘贴群聊历史记录，建议包含问答上下文。"></textarea>
@@ -276,7 +290,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <label class="check-line"><input v-model="form.enabled" type="checkbox" /> 启用</label>
       </div>
       <div class="row-actions">
-        <button class="btn" type="button" :disabled="loading" @click="save">{{ editingId ? "保存 FAQ" : "创建 FAQ" }}</button>
+        <button class="btn" type="button" :disabled="readonly || loading" @click="save">{{ readonly ? "只读模式不可保存" : editingId ? "保存 FAQ" : "创建 FAQ" }}</button>
         <button class="ghost-btn" type="button" :disabled="loading" @click="formVisible = false; resetForm()">取消</button>
       </div>
     </section>
@@ -287,7 +301,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       <div>
         <h3>知识库为空</h3>
         <p>还没有任何 FAQ 内容。可以手动新增 FAQ，帮助机器人更准确地回答群内问题。</p>
-        <button class="btn" type="button" @click="startCreate">新建 FAQ</button>
+        <button class="btn" type="button" :disabled="readonly" @click="startCreate">新建 FAQ</button>
       </div>
     </div>
     <div v-else class="faq-table">
@@ -311,9 +325,9 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <span>{{ formatDateTime(item.updatedAt || item.createdAt) }}</span>
         <span class="tag" :class="{ danger: !item.enabled }">{{ item.enabled ? "已启用" : "已禁用" }}</span>
         <div class="row-actions">
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id)" @click="startEdit(item)">编辑</button>
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id)" @click="toggleEnabled(item)">{{ item.enabled ? "禁用" : "启用" }}</button>
-          <button class="ghost-btn danger" type="button" :disabled="isBusy(item.id)" @click="deleteOne(item)">删除</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="startEdit(item)">编辑</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="toggleEnabled(item)">{{ item.enabled ? "禁用" : "启用" }}</button>
+          <button class="ghost-btn danger" type="button" :disabled="readonly || isBusy(item.id)" @click="deleteOne(item)">删除</button>
         </div>
       </article>
     </div>

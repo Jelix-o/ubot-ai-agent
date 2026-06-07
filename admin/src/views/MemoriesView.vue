@@ -24,6 +24,7 @@ const dedupLoading = shallowRef(false);
 const dedupTask = shallowRef<AdminTaskRecord | null>(null);
 const dedupTaskMessage = shallowRef("");
 const dedupDecisions = shallowRef<DedupDecision[]>([]);
+const readonly = computed(() => app.readonly);
 let dedupPollTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface DedupDecision {
@@ -72,6 +73,12 @@ function confidenceText(value: number): string {
 
 function isBusy(id: string): boolean {
   return busyIds.value.has(id);
+}
+
+function ensureWritable(): boolean {
+  if (!readonly.value) return true;
+  app.showToast("只读模式不能修改长期记忆", "error");
+  return false;
 }
 
 function setBusy(id: string, busy: boolean): void {
@@ -124,6 +131,7 @@ function applyFilters(): void {
 }
 
 function toggle(id: string): void {
+  if (readonly.value) return;
   const next = new Set(selectedIds.value);
   if (next.has(id)) next.delete(id);
   else next.add(id);
@@ -131,6 +139,7 @@ function toggle(id: string): void {
 }
 
 function togglePage(): void {
+  if (readonly.value) return;
   const allSelected = items.value.length > 0 && items.value.every((item) => selectedIds.value.has(item.id));
   selectedIds.value = allSelected
     ? new Set([...selectedIds.value].filter((id) => !items.value.some((item) => item.id === id)))
@@ -138,6 +147,7 @@ function togglePage(): void {
 }
 
 function startEdit(item: Memory): void {
+  if (!ensureWritable()) return;
   editingId.value = item.id;
   editForm.title = item.title;
   editForm.content = item.content;
@@ -174,6 +184,7 @@ function formattedEvidenceSummary(): string {
 }
 
 async function saveEdit(item: Memory): Promise<void> {
+  if (!ensureWritable()) return;
   if (!editForm.title.trim() || !editForm.content.trim()) {
     app.showToast("标题和内容不能为空", "error");
     return;
@@ -207,6 +218,7 @@ async function saveEdit(item: Memory): Promise<void> {
 }
 
 async function setEnabled(item: Memory, enabled: boolean): Promise<void> {
+  if (!ensureWritable()) return;
   setBusy(item.id, true);
   try {
     await api<Memory>(`/api/memories/${encodeURIComponent(item.id)}`, {
@@ -223,6 +235,7 @@ async function setEnabled(item: Memory, enabled: boolean): Promise<void> {
 }
 
 async function deleteOne(item: Memory): Promise<void> {
+  if (!ensureWritable()) return;
   if (!confirm(`删除长期记忆「${item.title}」？`)) return;
   setBusy(item.id, true);
   try {
@@ -238,6 +251,7 @@ async function deleteOne(item: Memory): Promise<void> {
 }
 
 async function bulk(action: "disable" | "delete"): Promise<void> {
+  if (!ensureWritable()) return;
   const ids = [...selectedIds.value];
   if (!ids.length) {
     app.showToast("请先选择长期记忆", "error");
@@ -359,6 +373,7 @@ async function previewDeduplicate(): Promise<void> {
 }
 
 async function applyDeduplicate(): Promise<void> {
+  if (!ensureWritable()) return;
   if (!app.groupId || dedupDecisions.value.length === 0) return;
   if (!filters.userId) {
     app.showToast("请先选择一个记忆成员，再应用去重。", "error");
@@ -490,8 +505,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <button class="ghost-btn" type="button" :disabled="dedupLoading" @click="previewDeduplicate">
           {{ dedupLoading ? "检测中..." : "检测当前成员重复" }}
         </button>
-        <button class="btn" type="button" :disabled="dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">
-          应用去重
+        <button class="btn" type="button" :disabled="readonly || dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">
+          {{ readonly ? "只读模式不可去重" : "应用去重" }}
         </button>
       </div>
       <div v-if="dedupTaskMessage || dedupTask" class="dedup-task-status">
@@ -510,17 +525,17 @@ watch(() => [pagination.page, pagination.pageSize], () => {
     </section>
 
     <div class="bulk-bar">
-      <label><input type="checkbox" :checked="items.length > 0 && items.every((item) => selectedIds.has(item.id))" :disabled="loading || !items.length" @change="togglePage" /> 选择当前页</label>
+      <label><input type="checkbox" :checked="items.length > 0 && items.every((item) => selectedIds.has(item.id))" :disabled="readonly || loading || !items.length" @change="togglePage" /> 选择当前页</label>
       <span class="muted">已选择 {{ selectedIds.size }} 项</span>
-      <button class="ghost-btn" type="button" :disabled="loading || !selectedIds.size" @click="bulk('disable')">批量停用</button>
-      <button class="ghost-btn danger" type="button" :disabled="loading || !selectedIds.size" @click="bulk('delete')">批量删除</button>
+      <button class="ghost-btn" type="button" :disabled="readonly || loading || !selectedIds.size" @click="bulk('disable')">批量停用</button>
+      <button class="ghost-btn danger" type="button" :disabled="readonly || loading || !selectedIds.size" @click="bulk('delete')">批量删除</button>
     </div>
 
     <div v-if="loading" class="empty">正在加载长期记忆...</div>
     <div v-else-if="!items.length" class="empty">暂无长期记忆。</div>
     <div v-else class="memory-list">
       <article v-for="item in items" :key="item.id" class="memory-row">
-        <input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="isBusy(item.id)" @change="toggle(item.id)" />
+        <input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="readonly || isBusy(item.id)" @change="toggle(item.id)" />
         <div class="memory-main">
           <template v-if="editingId === item.id">
             <div class="edit-grid">
@@ -561,9 +576,9 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         </div>
         <div v-if="editingId !== item.id" class="row-actions">
           <button class="ghost-btn" type="button" @click="openEvidence(item)">溯源</button>
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id)" @click="startEdit(item)">编辑</button>
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id)" @click="setEnabled(item, !item.enabled)">{{ item.enabled ? "停用" : "启用" }}</button>
-          <button class="ghost-btn danger" type="button" :disabled="isBusy(item.id)" @click="deleteOne(item)">删除</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="startEdit(item)">编辑</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="setEnabled(item, !item.enabled)">{{ item.enabled ? "停用" : "启用" }}</button>
+          <button class="ghost-btn danger" type="button" :disabled="readonly || isBusy(item.id)" @click="deleteOne(item)">删除</button>
         </div>
       </article>
     </div>

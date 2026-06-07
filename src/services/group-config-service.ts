@@ -472,6 +472,7 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 }
 
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
+  const voiceReplyEnabled = group.voiceReplyEnabled !== false;
   return {
     ...group,
     groupId: String(group.groupId || "").trim(),
@@ -498,8 +499,8 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     blacklistedUserIds: normalizeUserIds(group.blacklistedUserIds),
     opsAlertsEnabled: group.opsAlertsEnabled !== false,
     triggerKeywords: normalizeTriggerKeywords(group.triggerKeywords),
-    voiceReplyEnabled: group.voiceReplyEnabled !== false,
-    defaultVoiceReplyEnabled: group.defaultVoiceReplyEnabled === true,
+    voiceReplyEnabled,
+    defaultVoiceReplyEnabled: voiceReplyEnabled && group.defaultVoiceReplyEnabled === true,
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
   };
 }
@@ -583,9 +584,15 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("voiceReplyEnabled" in input) {
     next.voiceReplyEnabled = normalizeBoolean(input.voiceReplyEnabled, "invalid_group_config");
+    if (!next.voiceReplyEnabled) {
+      next.defaultVoiceReplyEnabled = false;
+    }
   }
   if ("defaultVoiceReplyEnabled" in input) {
     next.defaultVoiceReplyEnabled = normalizeBoolean(input.defaultVoiceReplyEnabled, "invalid_group_config");
+    if (next.defaultVoiceReplyEnabled) {
+      next.voiceReplyEnabled = true;
+    }
   }
   if ("memoryDisabledUserIds" in input) {
     next.memoryDisabledUserIds = normalizeUserIdsStrict(input.memoryDisabledUserIds);

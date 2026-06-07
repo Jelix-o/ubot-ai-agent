@@ -250,6 +250,17 @@ export class AdminHttpServer {
         return;
       }
 
+      if (
+        pathname.startsWith("/api/") &&
+        session &&
+        this.isReadOnlySession(session) &&
+        isStateChangingMethod(req.method) &&
+        pathname !== "/api/logout"
+      ) {
+        this.sendJson(res, { error: "readonly_session" }, 403);
+        return;
+      }
+
       if (!pathname.startsWith("/api/") && req.method === "GET") {
         await this.handleStaticApp(res, pathname);
         return;
@@ -801,12 +812,15 @@ export class AdminHttpServer {
     const body = await readJsonBody(req);
     const username = typeof body.username === "string" ? body.username : "";
     const password = typeof body.password === "string" ? body.password : "";
+    const mode = body.mode === "viewer" ? "viewer" : "admin";
     const loginKey = this.loginAttemptKey(req, username);
     if (this.isLoginLocked(loginKey)) {
       this.sendJson(res, { error: "too_many_login_attempts" }, 429);
       return;
     }
-    const session = await this.buildLoginSession(username, password);
+    const session = mode === "viewer"
+      ? await this.buildViewerSession(username)
+      : await this.buildLoginSession(username, password);
     if (!session) {
       this.recordFailedLogin(loginKey);
       this.sendJson(res, { error: "invalid_credentials" }, 401);
@@ -1410,6 +1424,10 @@ export class AdminHttpServer {
   ): Promise<void> {
     const type = url.searchParams.get("type") === "yesterday" ? "yesterday" : "overall";
     const refresh = url.searchParams.get("refresh") === "1";
+    if (this.isReadOnlySession(session) && refresh) {
+      this.sendJson(res, { error: "readonly_session" }, 403);
+      return;
+    }
     try {
       const generated = await this.generateProfileRecordResponse({
         groupId: route.groupId,
@@ -2589,6 +2607,23 @@ export class AdminHttpServer {
     };
   }
 
+  private async buildViewerSession(username: string): Promise<Omit<AdminSession, "csrfToken" | "expiresAt"> | undefined> {
+    const userId = username.trim();
+    if (!/^\d+$/.test(userId)) {
+      return undefined;
+    }
+    const groups = await this.findGroupsForViewer(userId);
+    if (groups.length === 0) {
+      return undefined;
+    }
+    return {
+      role: "viewer",
+      username: userId,
+      userId,
+      allowedGroupIds: groups.map((group) => group.groupId),
+    };
+  }
+
   private publicSession(session: AdminSession): Omit<AdminSession, "expiresAt"> & { publicBaseUrl: string } {
     return {
       role: session.role,
@@ -2684,12 +2719,15 @@ export class AdminHttpServer {
       return options.includeDisabled ? groups : groups.filter((group) => group.enabled !== false);
     }
     const allowed = new Set(session.allowedGroupIds);
-    return groups.filter((group) => (
-      group.enabled !== false &&
-      allowed.has(group.groupId) &&
-      session.userId !== undefined &&
-      group.switcherUserIds.includes(session.userId)
-    ));
+    if (session.role === "group_admin") {
+      return groups.filter((group) => (
+        group.enabled !== false &&
+        allowed.has(group.groupId) &&
+        session.userId !== undefined &&
+        group.switcherUserIds.includes(session.userId)
+      ));
+    }
+    return groups.filter((group) => group.enabled !== false && allowed.has(group.groupId));
   }
 
   private async canAccessGroup(session: AdminSession, groupId: string): Promise<boolean> {
@@ -2697,7 +2735,17 @@ export class AdminHttpServer {
       return true;
     }
     const group = await this.options.groupConfigService.getGroup(groupId);
-    return Boolean(group && group.enabled !== false && session.userId && group.switcherUserIds.includes(session.userId));
+    if (!group || group.enabled === false || !session.userId) {
+      return false;
+    }
+    if (session.role === "group_admin") {
+      return group.switcherUserIds.includes(session.userId);
+    }
+    if (!session.allowedGroupIds.includes(groupId)) {
+      return false;
+    }
+    const profiles = await this.getCachedMemberProfileData(groupId, { includeNapcatMembers: true });
+    return profiles?.members.some((member) => member.userId === session.userId) ?? false;
   }
 
   private requireSuperAdmin(session: AdminSession, res: ServerResponse): boolean {
@@ -2706,6 +2754,22 @@ export class AdminHttpServer {
     }
     this.sendJson(res, { error: "forbidden" }, 403);
     return false;
+  }
+
+  private isReadOnlySession(session: AdminSession): boolean {
+    return session.role === "viewer";
+  }
+
+  private async findGroupsForViewer(userId: string): Promise<GroupBotConfig[]> {
+    const groups = (await this.options.groupConfigService.getAll()).filter((group) => group.enabled !== false);
+    const visibleGroups: GroupBotConfig[] = [];
+    for (const group of groups) {
+      const profiles = await this.getCachedMemberProfileData(group.groupId, { includeNapcatMembers: true });
+      if (profiles?.members.some((member) => member.userId === userId)) {
+        visibleGroups.push(group);
+      }
+    }
+    return visibleGroups;
   }
 
   private async recordOperation(args: {
@@ -2813,7 +2877,7 @@ export class AdminHttpServer {
         csrfToken?: string;
         expiresAt?: string;
       };
-      const role = parsed.role === "group_admin" ? "group_admin" : "super_admin";
+      const role = parsed.role === "viewer" ? "viewer" : parsed.role === "group_admin" ? "group_admin" : "super_admin";
       return typeof parsed.username === "string" && typeof parsed.csrfToken === "string" && typeof parsed.expiresAt === "string"
         ? {
             role,

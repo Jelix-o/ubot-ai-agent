@@ -338,7 +338,7 @@ export interface ScheduledRemindersFile {
   tasks: Record<string, ScheduledReminderTask>;
 }
 
-export type AdminRole = "super_admin" | "group_admin";
+export type AdminRole = "super_admin" | "group_admin" | "viewer";
 
 export interface AdminSession {
   role: AdminRole;

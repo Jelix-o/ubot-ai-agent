@@ -2461,7 +2461,7 @@ test("admin manages default voice reply through group command", async () => {
 
   assert.match(transport.sent[0]?.text ?? "", /默认语音回复：已关闭/);
   assert.equal(groupConfigService.groups[0]?.defaultVoiceReplyEnabled, false);
-  assert.match(transport.sent[1]?.text ?? "", /已开启默认语音回复/);
+  assert.match(transport.sent[1]?.text ?? "", /已开启语音功能和默认语音回复/);
   assert.match(transport.sent[2]?.text ?? "", /默认语音回复：已开启/);
   assert.match(transport.sent[3]?.text ?? "", /已关闭默认语音回复/);
   assert.equal(groupConfigService.groups[0]?.defaultVoiceReplyEnabled, false);

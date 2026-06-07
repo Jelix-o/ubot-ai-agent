@@ -164,6 +164,37 @@ test("group config updates full editable config with validation", async () => {
   );
 });
 
+test("group config keeps default voice reply as a child switch of voice reply", async () => {
+  await withService(
+    {
+      groups: [
+        {
+          groupId: "67890",
+          currentSkillId: "assistant",
+          allowedSkillIds: ["assistant"],
+          switcherUserIds: [],
+          liveChatUserIds: [],
+          voiceReplyEnabled: false,
+          defaultVoiceReplyEnabled: true,
+        },
+      ],
+    },
+    async (service) => {
+      const normalized = await service.getGroup("67890");
+      assert.equal(normalized?.voiceReplyEnabled, false);
+      assert.equal(normalized?.defaultVoiceReplyEnabled, false);
+
+      const defaultOn = await service.updateGroupConfig("67890", { defaultVoiceReplyEnabled: true });
+      assert.equal(defaultOn.voiceReplyEnabled, true);
+      assert.equal(defaultOn.defaultVoiceReplyEnabled, true);
+
+      const voiceOff = await service.updateGroupConfig("67890", { voiceReplyEnabled: false });
+      assert.equal(voiceOff.voiceReplyEnabled, false);
+      assert.equal(voiceOff.defaultVoiceReplyEnabled, false);
+    },
+  );
+});
+
 test("group config adds and removes blacklisted users", async () => {
   await withService(
     {

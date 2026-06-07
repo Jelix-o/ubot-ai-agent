@@ -630,7 +630,8 @@ async function runStaticAdminSmoke() {
   }
   assertIncludes(app, "pendingCandidateCount", "notification badge");
   assertIncludes(settings, "/api/system-settings", "system settings API");
-  assertIncludes(settings, "v-model=\"model.id\"", "model id editor");
+  assertIncludes(settings, ":value=\"model.id\"", "model id editor value binding");
+  assertIncludes(settings, "updateModelId(model, $event)", "model id editor update handler");
   assertIncludes(settings, "type=\"password\"", "write-only model api key");
   assertIncludes(settings, "modelTemplate(purpose = activePurpose.value)", "new model active purpose template");
   assertIncludes(settings, "selectedModelIds", "selected model per purpose");

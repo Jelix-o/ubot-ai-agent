@@ -52,6 +52,7 @@ const scheduleEffectText = computed(() => [
   form.scheduledRemindersEnabled ? "定时提醒已启用" : undefined,
   `时区 ${scheduleTimezone.value}`,
 ].filter(Boolean).join(" · "));
+const readonly = computed(() => app.readonly);
 const reminderSubmitLabel = computed(() => editingReminderId.value ? "保存任务" : "添加任务");
 
 function defaultGroupConfig(): GroupConfig {
@@ -171,6 +172,10 @@ async function loadReminders(groupId = app.groupId, serial = loadSerial): Promis
 
 async function save(): Promise<void> {
   if (!app.groupId) return;
+  if (readonly.value) {
+    app.showToast("普通用户只读模式不能保存群配置", "error");
+    return;
+  }
   saving.value = true;
   try {
     let manualIdentities: GroupConfig["manualIdentities"];
@@ -201,10 +206,12 @@ async function save(): Promise<void> {
 }
 
 function addTriggerKeyword(): void {
+  if (readonly.value) return;
   form.triggerKeywords = [...(form.triggerKeywords || []), { keyword: "", enabled: true }];
 }
 
 function removeTriggerKeyword(index: number): void {
+  if (readonly.value) return;
   form.triggerKeywords = (form.triggerKeywords || []).filter((_, itemIndex) => itemIndex !== index);
 }
 
@@ -227,6 +234,7 @@ function weekdayLabel(value: number): string {
 }
 
 function resetReminderForm(): void {
+  if (readonly.value) return;
   editingReminderId.value = null;
   reminderForm.topic = "";
   reminderForm.executionStartTime = "09:00";
@@ -251,11 +259,13 @@ function fillReminderForm(reminder: ScheduledReminderTask, mode: "edit" | "copy"
 }
 
 function editReminder(reminder: ScheduledReminderTask): void {
+  if (readonly.value) return;
   fillReminderForm(reminder, "edit");
   app.showToast("已载入任务，可在上方表单编辑");
 }
 
 function copyReminder(reminder: ScheduledReminderTask): void {
+  if (readonly.value) return;
   fillReminderForm(reminder, "copy");
   app.showToast("已复制到新增任务表单");
 }
@@ -280,6 +290,10 @@ function reminderStatusClass(reminder: ScheduledReminderTask): string {
 }
 
 async function submitReminder(): Promise<void> {
+  if (readonly.value) {
+    app.showToast("普通用户只读模式不能修改定时任务", "error");
+    return;
+  }
   if (!app.groupId || !reminderForm.topic.trim()) {
     app.showToast("请填写定时任务内容", "error");
     return;
@@ -329,6 +343,7 @@ async function createReminder(): Promise<void> {
 }
 
 async function updateReminder(reminder: ScheduledReminderTask): Promise<void> {
+  if (readonly.value) return;
   remindersLoading.value = true;
   try {
     await api<ScheduledReminderTask>(`/api/groups/${encodeURIComponent(app.groupId)}/reminders/${encodeURIComponent(reminder.id)}`, {
@@ -355,6 +370,7 @@ async function updateReminder(reminder: ScheduledReminderTask): Promise<void> {
 }
 
 async function deleteReminder(reminder: ScheduledReminderTask): Promise<void> {
+  if (readonly.value) return;
   if (!confirm(`删除定时任务「${reminder.topic}」？`)) return;
   remindersLoading.value = true;
   try {
@@ -381,6 +397,18 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 
 watch(() => app.groupId, () => {
   void load();
+});
+
+watch(() => form.voiceReplyEnabled, (enabled) => {
+  if (!enabled) {
+    form.defaultVoiceReplyEnabled = false;
+  }
+});
+
+watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
+  if (enabled && !form.voiceReplyEnabled) {
+    form.voiceReplyEnabled = true;
+  }
 });
 </script>
 
@@ -417,9 +445,9 @@ watch(() => app.groupId, () => {
       <section class="panel group-config-card">
         <h3>基础设置</h3>
         <div class="field-grid">
-          <label class="switch-line"><input v-model="form.enabled" type="checkbox" /> 显示并启用该群</label>
+          <label class="switch-line"><input v-model="form.enabled" :disabled="readonly" type="checkbox" /> 显示并启用该群</label>
           <label>当前技能
-            <select v-model="form.currentSkillId" class="select">
+            <select v-model="form.currentSkillId" class="select" :disabled="readonly">
               <option value="">未选择</option>
               <option v-for="skill in skillOptions" :key="skill.id" :value="skill.id">
                 {{ skill.name }} / {{ skill.id }}
@@ -427,7 +455,7 @@ watch(() => app.groupId, () => {
             </select>
           </label>
           <label>回复模型
-            <select v-model="form.replyModelMode" class="select" :disabled="!hasReplyModels">
+            <select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels">
               <option v-if="!hasReplyModels" value="">请先在系统设置启用对话模型</option>
               <option v-for="model in replyModels" :key="model.id" :value="model.id">
                 {{ model.label }}
@@ -435,26 +463,28 @@ watch(() => app.groupId, () => {
             </select>
             <small class="muted">系统设置中启用的对话模型会同步进入群内 #模型 切换列表</small>
           </label>
-          <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" /></label>
-          <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" /></label>
-          <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" /></label>
-          <label>节日倒计时时间<input v-model="form.holidayCountdownTime" class="input" type="time" /></label>
+          <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly" /></label>
+          <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
+          <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
+          <label>节日倒计时时间<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
         </div>
       </section>
 
       <section class="panel group-config-card">
         <h3>回复策略</h3>
         <label>允许技能 ID
-          <MultiTagSelect v-model="form.allowedSkillIds" :options="skillSelectOptions" placeholder="搜索技能名称或 ID" />
+          <MultiTagSelect v-model="form.allowedSkillIds" :options="skillSelectOptions" :disabled="readonly" placeholder="搜索技能名称或 ID" />
         </label>
         <div class="switch-grid">
-          <label><input v-model="form.dailyReportEnabled" type="checkbox" /> 群聊日报</label>
-          <label><input v-model="form.holidayCountdownEnabled" type="checkbox" /> 节日倒计时</label>
-          <label><input v-model="form.scheduledRemindersEnabled" type="checkbox" /> 定时提醒</label>
-          <label><input v-model="form.opsAlertsEnabled" type="checkbox" /> 运维告警</label>
-          <label><input v-model="form.botMuted" type="checkbox" /> 机器人静音</label>
-          <label><input v-model="form.voiceReplyEnabled" type="checkbox" /> 语音功能</label>
-          <label><input v-model="form.defaultVoiceReplyEnabled" type="checkbox" /> 默认语音回复</label>
+          <label><input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" /> 群聊日报</label>
+          <label><input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" /> 节日倒计时</label>
+          <label><input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" /> 定时提醒</label>
+          <label><input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" /> 运维告警</label>
+          <label><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /> 机器人静音</label>
+          <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
+          <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
+            <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
+          </label>
         </div>
       </section>
 
@@ -462,28 +492,28 @@ watch(() => app.groupId, () => {
         <h3>触发关键词</h3>
         <div class="keyword-list">
           <div v-for="(item, index) in form.triggerKeywords" :key="index" class="keyword-row">
-            <input v-model="item.keyword" class="input" placeholder="例如：乘风" />
-            <label class="mini-check"><input v-model="item.enabled" type="checkbox" /> 启用</label>
-            <button class="ghost-btn danger" type="button" @click="removeTriggerKeyword(index)">删除</button>
+            <input v-model="item.keyword" class="input" placeholder="例如：乘风" :disabled="readonly" />
+            <label class="mini-check"><input v-model="item.enabled" :disabled="readonly" type="checkbox" /> 启用</label>
+            <button class="ghost-btn danger" type="button" :disabled="readonly" @click="removeTriggerKeyword(index)">删除</button>
           </div>
         </div>
-        <button class="ghost-btn" type="button" @click="addTriggerKeyword">新增关键词</button>
+        <button class="ghost-btn" type="button" :disabled="readonly" @click="addTriggerKeyword">新增关键词</button>
       </section>
 
       <section class="panel group-config-card">
         <h3>群管理</h3>
         <div class="field-grid">
           <label>管理员 QQ
-            <MultiTagSelect v-model="form.switcherUserIds" :options="memberSelectOptions" placeholder="搜索成员昵称或 QQ" />
+            <MultiTagSelect v-model="form.switcherUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label>实时对话 QQ
-            <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" placeholder="搜索成员昵称或 QQ" />
+            <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label class="wide">黑名单 QQ
-            <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" placeholder="搜索成员昵称或 QQ" />
+            <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label class="wide">禁用记忆收集成员 QQ
-            <MultiTagSelect v-model="form.memoryDisabledUserIds" :options="memberSelectOptions" placeholder="搜索成员昵称或 QQ" />
+            <MultiTagSelect v-model="form.memoryDisabledUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
         </div>
       </section>
@@ -503,9 +533,9 @@ watch(() => app.groupId, () => {
         <div class="schedule-layout">
           <section class="schedule-column schedule-basic">
             <h4>基础参数</h4>
-            <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" /></label>
-            <label>节日倒计时<input v-model="form.holidayCountdownTime" class="input" type="time" /></label>
-            <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" /></label>
+            <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
+            <label>节日倒计时<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
+            <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
             <label>使用时区<input class="input" :value="scheduleTimezone" disabled /></label>
           </section>
 
@@ -514,17 +544,17 @@ watch(() => app.groupId, () => {
             <label class="ability-card">
               <AppIcon name="candidate" />
               <span><strong>群聊日报</strong><small>按规则定时发送群聊日报</small></span>
-              <input v-model="form.dailyReportEnabled" type="checkbox" />
+              <input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" />
             </label>
             <label class="ability-card">
               <AppIcon name="health" />
               <span><strong>节日倒计时</strong><small>按规则发送节日倒计时提醒</small></span>
-              <input v-model="form.holidayCountdownEnabled" type="checkbox" />
+              <input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" />
             </label>
             <label class="ability-card">
               <AppIcon name="bell" />
               <span><strong>定时提醒</strong><small>执行自定义群定时任务提醒</small></span>
-              <input v-model="form.scheduledRemindersEnabled" type="checkbox" />
+              <input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" />
             </label>
           </section>
 
@@ -535,6 +565,7 @@ watch(() => app.groupId, () => {
                 title="日报日期规则"
                 :rule="form.dailyReportDateRule"
                 :weekdays="form.dailyReportWeekdays || []"
+                :disabled="readonly"
                 @update:rule="form.dailyReportDateRule = $event"
                 @update:weekdays="form.dailyReportWeekdays = $event"
               />
@@ -542,6 +573,7 @@ watch(() => app.groupId, () => {
                 title="节日倒计时日期规则"
                 :rule="form.holidayCountdownDateRule"
                 :weekdays="form.holidayCountdownWeekdays || []"
+                :disabled="readonly"
                 @update:rule="form.holidayCountdownDateRule = $event"
                 @update:weekdays="form.holidayCountdownWeekdays = $event"
               />
@@ -582,40 +614,40 @@ watch(() => app.groupId, () => {
           </div>
           <div class="reminder-head-actions">
             <span class="reminder-count">共 {{ reminders.length }} 个任务</span>
-            <button class="btn reminder-new-top" type="button" @click="resetReminderForm">新增任务</button>
+            <button class="btn reminder-new-top" type="button" :disabled="readonly" @click="resetReminderForm">新增任务</button>
           </div>
         </div>
         <div class="reminder-form" :class="{ editing: Boolean(editingReminderId) }">
           <div class="reminder-main-fields">
             <label class="reminder-topic">
               <span class="reminder-field-label">提醒内容</span>
-              <input v-model="reminderForm.topic" class="input" placeholder="输入提醒内容，例如喝水、整理日报" />
+              <input v-model="reminderForm.topic" class="input" placeholder="输入提醒内容，例如喝水、整理日报" :disabled="readonly" />
             </label>
             <label class="reminder-time">
               <span class="reminder-field-label">执行开始时间</span>
-              <input v-model="reminderForm.executionStartTime" class="input" type="time" />
+              <input v-model="reminderForm.executionStartTime" class="input" type="time" :disabled="readonly" />
             </label>
             <label class="reminder-time">
               <span class="reminder-field-label">执行结束时间</span>
-              <input v-model="reminderForm.executionEndTime" class="input" type="time" />
+              <input v-model="reminderForm.executionEndTime" class="input" type="time" :disabled="readonly" />
             </label>
             <label class="reminder-advance">
               <span class="reminder-field-label">执行间隔</span>
               <div class="suffix-input">
-                <input v-model.number="reminderForm.executionIntervalMinutes" class="input interval-input" type="number" min="1" />
+                <input v-model.number="reminderForm.executionIntervalMinutes" class="input interval-input" type="number" min="1" :disabled="readonly" />
                 <span>分钟</span>
               </div>
             </label>
             <label class="reminder-toggle-field">
               <span>启用</span>
               <span class="toggle-switch">
-                <input v-model="reminderForm.enabled" type="checkbox" />
+                <input v-model="reminderForm.enabled" :disabled="readonly" type="checkbox" />
                 <i></i>
               </span>
             </label>
             <div class="reminder-form-actions">
-              <button class="btn reminder-add" type="button" :disabled="remindersLoading" @click="submitReminder">{{ reminderSubmitLabel }}</button>
-              <button v-if="editingReminderId" class="ghost-btn reminder-cancel" type="button" :disabled="remindersLoading" @click="resetReminderForm">取消</button>
+              <button class="btn reminder-add" type="button" :disabled="readonly || remindersLoading" @click="submitReminder">{{ readonly ? "只读模式" : reminderSubmitLabel }}</button>
+              <button v-if="editingReminderId" class="ghost-btn reminder-cancel" type="button" :disabled="readonly || remindersLoading" @click="resetReminderForm">取消</button>
             </div>
           </div>
           <section class="reminder-rule-card">
@@ -628,6 +660,7 @@ watch(() => app.groupId, () => {
               v-model:weekdays="reminderForm.weekdays"
               compact
               show-weekday-preview
+              :disabled="readonly"
             />
           </section>
         </div>
@@ -655,9 +688,9 @@ watch(() => app.groupId, () => {
             </span>
             <span class="muted next-run">{{ formatDateTime(reminder.nextRunAt) }}</span>
             <div class="reminder-actions">
-              <button class="link-btn" type="button" :disabled="remindersLoading" @click="editReminder(reminder)">编辑</button>
-              <button class="link-btn" type="button" @click="copyReminder(reminder)">复制</button>
-              <button class="link-btn danger" type="button" :disabled="remindersLoading" @click="deleteReminder(reminder)">删除</button>
+              <button class="link-btn" type="button" :disabled="readonly || remindersLoading" @click="editReminder(reminder)">编辑</button>
+              <button class="link-btn" type="button" :disabled="readonly" @click="copyReminder(reminder)">复制</button>
+              <button class="link-btn danger" type="button" :disabled="readonly || remindersLoading" @click="deleteReminder(reminder)">删除</button>
             </div>
           </article>
         </div>
@@ -670,11 +703,11 @@ watch(() => app.groupId, () => {
             <p>配置机器人理解成员身份的信息，影响回复风格与画像归属。</p>
           </div>
         </div>
-        <textarea v-model="manualIdentitiesText" class="textarea json-editor" spellcheck="false" />
+        <textarea v-model="manualIdentitiesText" class="textarea json-editor" spellcheck="false" :readonly="readonly" />
       </section>
 
       <div class="save-bar">
-        <button class="btn" type="submit" :disabled="loading || saving">{{ saving ? "保存中..." : "保存群配置" }}</button>
+        <button class="btn" type="submit" :disabled="readonly || loading || saving">{{ readonly ? "只读模式不可保存" : saving ? "保存中..." : "保存群配置" }}</button>
         <button class="ghost-btn" type="button" :disabled="loading || saving" @click="load">重新读取</button>
         <span class="muted">保存后机器人会按最新配置运行。</span>
       </div>
@@ -789,6 +822,15 @@ dd {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.switch-grid .voice-child {
+  margin-left: 18px;
+  color: var(--muted);
+}
+
+.switch-grid .voice-child.disabled {
+  opacity: 0.58;
 }
 
 .multi-select {

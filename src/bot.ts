@@ -1446,9 +1446,12 @@ export class BotApplication {
       normalized === `${VOICE_REPLY_PREFIX} 打开` ||
       normalized.toLowerCase() === `${VOICE_REPLY_PREFIX} on`.toLowerCase()
     ) {
-      await this.groupConfigService.updateGroupConfig(groupId, { defaultVoiceReplyEnabled: true });
-      await this.logAdminOperation(groupId, userId, "默认语音回复开启", undefined, "普通 AI 回复默认发送语音条");
-      await this.sendText(groupId, "已开启默认语音回复，普通 AI 回复会优先发送语音条。");
+      await this.groupConfigService.updateGroupConfig(groupId, {
+        voiceReplyEnabled: true,
+        defaultVoiceReplyEnabled: true,
+      });
+      await this.logAdminOperation(groupId, userId, "默认语音回复开启", undefined, "语音功能与默认语音回复均已开启");
+      await this.sendText(groupId, "已开启语音功能和默认语音回复，普通 AI 回复会优先发送语音条。");
       return;
     }
 

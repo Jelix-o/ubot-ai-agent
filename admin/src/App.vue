@@ -26,8 +26,16 @@ const isLogin = computed(() => route.name === "login");
 const navItems = computed(() => routes.filter((item) => item.name !== "login" && (!item.meta?.superOnly || app.role === "super_admin")));
 const title = computed(() => String(route.meta.title || "UBot"));
 const subtitle = computed(() => String(route.meta.subtitle || ""));
-const roleLabel = computed(() => app.role === "super_admin" ? "超级管理员" : "群管理员");
-const userInitials = computed(() => app.role === "super_admin" ? "SA" : "GA");
+const roleLabel = computed(() => {
+  if (app.role === "super_admin") return "超级管理员";
+  if (app.role === "group_admin") return "群管理员";
+  return "普通用户只读";
+});
+const userInitials = computed(() => {
+  if (app.role === "super_admin") return "SA";
+  if (app.role === "group_admin") return "GA";
+  return "RO";
+});
 const pageCommandItems = computed(() => {
   const q = commandQuery.value.trim().toLowerCase();
   return navItems.value.filter((item) => {
@@ -242,7 +250,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span /> 系统运行中</strong>
-          <small>UBot v1.0.0</small>
+          <small>UBot v1.0.1</small>
         </div>
       </div>
     </aside>
@@ -317,7 +325,8 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
             <div v-if="userOpen" class="top-popover user-popover">
               <strong>{{ app.username }}</strong>
               <p>{{ roleLabel }}</p>
-              <p v-if="app.role !== 'super_admin'">可管理 {{ app.allowedGroupIds.length }} 个群</p>
+              <p v-if="app.role === 'group_admin'">可管理 {{ app.allowedGroupIds.length }} 个群</p>
+              <p v-else-if="app.readonly">可查看 {{ app.allowedGroupIds.length }} 个群</p>
               <button class="ghost-btn logout" type="button" data-smoke="logout" @click.stop="logout">退出登录</button>
             </div>
           </div>
@@ -327,6 +336,9 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <button v-if="notificationsOpen || themeOpen || userOpen || mobileNavOpen" class="popover-backdrop" type="button" aria-label="Close popover" @click="closeFloating(); mobileNavOpen = false" />
 
       <section class="content-scroll">
+        <div v-if="app.readonly" class="readonly-banner">
+          普通用户只读模式：可以查看所在群聊配置和数据，不能修改任何系统设置或内容。
+        </div>
         <RouterView />
       </section>
       <div v-if="app.toast.visible" class="toast" :class="app.toast.type">{{ app.toast.message }}</div>
@@ -530,6 +542,16 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   min-height: 0;
   overflow: visible;
   padding-bottom: 0;
+}
+
+.readonly-banner {
+  margin-bottom: 16px;
+  border: 1px solid color-mix(in oklch, var(--warning) 46%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--warning) 12%, var(--surface));
+  color: var(--text);
+  padding: 12px 14px;
+  font-weight: 800;
 }
 
 .top-actions {

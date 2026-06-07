@@ -22,6 +22,7 @@ export const useAppStore = defineStore("app", () => {
   let sessionPromise: Promise<void> | undefined;
 
   const currentGroup = computed(() => groups.value.find((group) => group.groupId === groupId.value));
+  const readonly = computed(() => role.value === "viewer");
 
   function applyTheme(mode = themeMode.value): void {
     themeMode.value = mode;
@@ -102,6 +103,7 @@ export const useAppStore = defineStore("app", () => {
     toast,
     themeMode,
     currentGroup,
+    readonly,
     applyTheme,
     showToast,
     loadSession,

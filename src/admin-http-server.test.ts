@@ -1865,6 +1865,165 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(invalidTargetDedupApplyBody.appliedCount, 0);
     assert.deepEqual(invalidTargetDedupApplyBody.skipped[0], { duplicateId: dedupBase.id, error: "target_disabled" });
 
+    const viewerLogin = await fetch(`${baseUrl}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "viewer", username: "20001" }),
+    });
+    assert.equal(viewerLogin.status, 200);
+    const viewerLoginBody = await viewerLogin.json() as { session: { csrfToken: string } };
+    activeCsrfToken = viewerLoginBody.session.csrfToken;
+    assert.match(activeCsrfToken, /^[A-Za-z0-9_-]{32,}$/);
+    const viewerCookie = viewerLogin.headers.get("set-cookie");
+    assert.ok(viewerCookie?.includes("HttpOnly"));
+
+    const viewerSession = await fetch(`${baseUrl}/api/session`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerSession.status, 200);
+    const viewerSessionBody = await viewerSession.json() as {
+      role: string;
+      username: string;
+      userId?: string;
+      allowedGroupIds: string[];
+      csrfToken: string;
+    };
+    activeCsrfToken = viewerSessionBody.csrfToken;
+    const viewerCsrfToken = activeCsrfToken;
+    assert.equal(viewerSessionBody.role, "viewer");
+    assert.equal(viewerSessionBody.username, "20001");
+    assert.equal(viewerSessionBody.userId, "20001");
+    assert.deepEqual(viewerSessionBody.allowedGroupIds, ["67890"]);
+
+    const viewerGroups = await fetch(`${baseUrl}/api/groups`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerGroups.status, 200);
+    const viewerGroupsBody = await viewerGroups.json() as { groups: Array<{ groupId: string }> };
+    assert.deepEqual(viewerGroupsBody.groups.map((group) => group.groupId), ["67890"]);
+
+    for (const readableUrl of [
+      `${baseUrl}/api/groups/67890/config`,
+      `${baseUrl}/api/groups/67890/members?page=1&pageSize=10`,
+      `${baseUrl}/api/memories?groupId=67890&page=1&pageSize=5`,
+      `${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=5`,
+      `${baseUrl}/api/knowledge?groupId=67890&page=1&pageSize=5`,
+      `${baseUrl}/api/profile-records?groupId=67890&userId=20001`,
+      `${baseUrl}/api/tasks?groupId=67890&page=1&pageSize=20`,
+      `${baseUrl}/api/model-options`,
+      `${baseUrl}/api/groups/67890/schedule-preview?days=2`,
+      `${baseUrl}/api/overview?groupId=67890`,
+      `${baseUrl}/api/logs?groupId=67890`,
+      `${baseUrl}/api/notifications`,
+    ]) {
+      const response = await fetch(readableUrl, { headers: { Cookie: viewerCookie ?? "" } });
+      assert.equal(response.status, 200, readableUrl);
+    }
+
+    const viewerModelOptions = await fetch(`${baseUrl}/api/model-options`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerModelOptions.status, 200);
+    const viewerModelOptionsBody = await viewerModelOptions.json() as {
+      models?: unknown[];
+      replyModels: Array<{ id: string; apiKey?: string }>;
+    };
+    assert.equal(viewerModelOptionsBody.models, undefined);
+    assert.equal(viewerModelOptionsBody.replyModels.some((item) => item.id === "reply-pro"), true);
+    assert.equal(viewerModelOptionsBody.replyModels.every((item) => item.apiKey === undefined), true);
+
+    const viewerForbiddenGroup = await fetch(`${baseUrl}/api/groups/99999/config`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerForbiddenGroup.status, 403);
+
+    const viewerCachedProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerCachedProfileSummary.status, 200);
+    const viewerCachedProfileSummaryBody = await viewerCachedProfileSummary.json() as { cached: boolean; record?: { id: string } };
+    assert.equal(viewerCachedProfileSummaryBody.cached, true);
+
+    const viewerRefreshProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall&refresh=1`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerRefreshProfileSummary.status, 403);
+    assert.deepEqual(await viewerRefreshProfileSummary.json(), { error: "readonly_session" });
+
+    const viewerPendingCandidate = await candidateStore.addCandidate({
+      groupId: "67890",
+      type: "group_fact",
+      title: "Viewer readonly candidate",
+      content: "Viewer sessions must not mutate candidates.",
+    });
+    const viewerReadonlyWrites: Array<[string, RequestInit]> = [
+      [`${baseUrl}/api/groups/67890/config`, {
+        method: "PUT",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ botMuted: true }),
+      }],
+      [`${baseUrl}/api/groups/67890/members/30002/identity`, {
+        method: "PUT",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ names: ["Newbie"], note: "viewer should not edit" }),
+      }],
+      [`${baseUrl}/api/profile-records`, {
+        method: "POST",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: "67890", userId: "20001", type: "overall" }),
+      }],
+      [`${baseUrl}/api/profile-records/${profileRecordIdForPermission}`, {
+        method: "PUT",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: "{}",
+      }],
+      [`${baseUrl}/api/profile-records/${profileRecordIdForPermission}/share`, {
+        method: "PUT",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ publicEnabled: false }),
+      }],
+      [`${baseUrl}/api/memories/bulk`, {
+        method: "POST",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "disable", ids: [dedupBase.id] }),
+      }],
+      [`${baseUrl}/api/memory-candidates/${viewerPendingCandidate.id}/reject`, {
+        method: "POST",
+        headers: { Cookie: viewerCookie ?? "" },
+      }],
+      [`${baseUrl}/api/knowledge/import/preview`, {
+        method: "POST",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: "67890", text: "Q: viewer import\nA: readonly" }),
+      }],
+      [`${baseUrl}/api/knowledge/${knowledgeEntry.id}`, {
+        method: "PUT",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "viewer should not edit knowledge" }),
+      }],
+      [`${baseUrl}/api/groups/67890/reminders`, {
+        method: "POST",
+        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
+        body: JSON.stringify({ topic: "viewer reminder", intervalMinutes: 30 }),
+      }],
+    ];
+    for (const [url, init] of viewerReadonlyWrites) {
+      const response = await fetch(url, init);
+      assert.equal(response.status, 403, url);
+      assert.deepEqual(await response.json(), { error: "readonly_session" }, url);
+    }
+    assert.equal((await candidateStore.get(viewerPendingCandidate.id))?.status, "pending");
+    assert.equal((await knowledgeBaseStore.get(knowledgeEntry.id))?.title, updatedKnowledge.title);
+
+    const viewerNonMemberLogin = await fetch(`${baseUrl}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "viewer", username: "44444" }),
+    });
+    assert.equal(viewerNonMemberLogin.status, 401);
+    activeCsrfToken = superAdminCsrfToken;
+    assert.notEqual(viewerCsrfToken, superAdminCsrfToken);
+
     const groupAdminLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

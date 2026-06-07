@@ -20,6 +20,7 @@ const filters = reactive({
   userId: "",
   type: "" as "" | "overall" | "yesterday",
 });
+const readonly = computed(() => app.readonly);
 const memberSelectOptions = computed(() => memberOptions.value.map((member) => ({
   value: member.userId,
   label: `${member.displayName} / ${member.userId}`,
@@ -70,6 +71,10 @@ async function openRecord(record: ProfileRecord): Promise<void> {
 }
 
 async function regenerate(record?: ProfileRecord): Promise<void> {
+  if (readonly.value) {
+    app.showToast("只读模式不能重新生成画像", "error");
+    return;
+  }
   const target = record || activeRecord.value;
   const userId = target?.userId || filters.userId;
   const type = target?.type || filters.type || "overall";
@@ -94,6 +99,10 @@ async function regenerate(record?: ProfileRecord): Promise<void> {
 }
 
 async function removeRecord(record: ProfileRecord): Promise<void> {
+  if (readonly.value) {
+    app.showToast("只读模式不能删除画像记录", "error");
+    return;
+  }
   if (!confirm(`删除这条${profileTypeLabel(record.type)}记录？`)) return;
   await api(`/api/profile-records/${encodeURIComponent(record.id)}`, { method: "DELETE" });
   if (activeRecord.value?.id === record.id) activeRecord.value = undefined;
@@ -140,6 +149,10 @@ async function copyShareUrl(record: ProfileRecord): Promise<void> {
 }
 
 async function updateShareState(record: ProfileRecord, publicEnabled: boolean): Promise<void> {
+  if (readonly.value) {
+    app.showToast("只读模式不能修改公开链接", "error");
+    return;
+  }
   const updated = await api<ProfileRecord>(`/api/profile-records/${encodeURIComponent(record.id)}/share`, {
     method: "PUT",
     body: JSON.stringify({
@@ -235,11 +248,11 @@ watch(() => [pagination.page, pagination.pageSize], () => {
             <span class="tag" :class="{ danger: record.publicEnabled === false || Boolean(record.revokedAt) }">{{ shareStatusLabel(record) }}</span>
             <button v-if="record.shareUrl" class="ghost-btn" type="button" :disabled="!canUseShareUrl(record)" @click="openShareUrl(record)">查看链接</button>
             <button v-if="record.shareUrl" class="ghost-btn" type="button" :disabled="!canUseShareUrl(record)" @click="copyShareUrl(record)">复制链接</button>
-            <button v-if="!record.shareToken" class="ghost-btn" type="button" @click="updateShareState(record, true)">生成链接</button>
-            <button v-else-if="record.publicEnabled !== false && !record.revokedAt" class="ghost-btn danger" type="button" @click="updateShareState(record, false)">撤销公开</button>
-            <button v-else class="ghost-btn" type="button" @click="updateShareState(record, true)">恢复公开</button>
-            <button class="ghost-btn" type="button" :disabled="generating" @click="regenerate(record)">重新生成</button>
-            <button class="ghost-btn danger" type="button" @click="removeRecord(record)">删除</button>
+            <button v-if="!record.shareToken" class="ghost-btn" type="button" :disabled="readonly" @click="updateShareState(record, true)">生成链接</button>
+            <button v-else-if="record.publicEnabled !== false && !record.revokedAt" class="ghost-btn danger" type="button" :disabled="readonly" @click="updateShareState(record, false)">撤销公开</button>
+            <button v-else class="ghost-btn" type="button" :disabled="readonly" @click="updateShareState(record, true)">恢复公开</button>
+            <button class="ghost-btn" type="button" :disabled="readonly || generating" @click="regenerate(record)">重新生成</button>
+            <button class="ghost-btn danger" type="button" :disabled="readonly" @click="removeRecord(record)">删除</button>
           </div>
         </article>
       </div>

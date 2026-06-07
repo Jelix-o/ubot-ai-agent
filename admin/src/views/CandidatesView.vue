@@ -18,6 +18,7 @@ const evidenceItem = shallowRef<Candidate>();
 const evidenceLoading = shallowRef(false);
 const memberOptions = shallowRef<MemberProfile[]>([]);
 const savingIds = shallowRef<Set<string>>(new Set());
+const readonly = computed(() => app.readonly);
 const editForm = reactive({
   title: "",
   content: "",
@@ -56,6 +57,12 @@ function confidenceText(value: number): string {
 
 function needsSubject(item: Candidate): boolean {
   return item.type === "member_profile" && !item.subjectUserId;
+}
+
+function ensureWritable(): boolean {
+  if (!readonly.value) return true;
+  app.showToast("只读模式不能修改候选记忆", "error");
+  return false;
 }
 
 function candidateErrorLabel(error: string): string {
@@ -99,6 +106,7 @@ async function loadMemberOptions(): Promise<void> {
 }
 
 async function approveSelected(): Promise<void> {
+  if (!ensureWritable()) return;
   try {
     const result = await candidates.approveSelected();
     await load();
@@ -110,6 +118,7 @@ async function approveSelected(): Promise<void> {
 }
 
 async function approveOne(item: Candidate, asGroupFact = false): Promise<void> {
+  if (!ensureWritable()) return;
   if (!asGroupFact && needsSubject(item)) {
     app.showToast("这条成员画像缺少记忆成员，请先编辑选择成员，或点击“作为群事实”。", "error");
     return;
@@ -135,6 +144,7 @@ async function approveOne(item: Candidate, asGroupFact = false): Promise<void> {
 }
 
 async function rejectOne(item: Candidate): Promise<void> {
+  if (!ensureWritable()) return;
   setBusy(item.id, true);
   try {
     await api(`/api/memory-candidates/${encodeURIComponent(item.id)}/reject`, { method: "POST", body: "{}" });
@@ -150,6 +160,7 @@ async function rejectOne(item: Candidate): Promise<void> {
 }
 
 function startEdit(item: Candidate): void {
+  if (!ensureWritable()) return;
   editingId.value = item.id;
   activeId.value = item.id;
   editForm.title = item.title;
@@ -186,6 +197,7 @@ function formattedEvidenceSummary(): string {
 }
 
 async function saveEdit(item: Candidate): Promise<void> {
+  if (!ensureWritable()) return;
   if (!editForm.title.trim() || !editForm.content.trim()) {
     app.showToast("标题和内容不能为空", "error");
     return;
@@ -217,6 +229,7 @@ async function saveEdit(item: Candidate): Promise<void> {
 }
 
 async function deleteOne(item: Candidate): Promise<void> {
+  if (!ensureWritable()) return;
   if (!confirm(`删除候选记忆「${item.title}」？`)) return;
   setBusy(item.id, true);
   try {
@@ -326,12 +339,12 @@ watch(() => [candidates.pagination.page, candidates.pagination.pageSize], () => 
     </div>
 
     <div class="bulk-bar">
-      <label><input type="checkbox" :checked="candidates.allPageSelected" :disabled="candidates.bulkApproving || candidates.items.length === 0" @change="candidates.togglePage()" /> 选择当前页待处理项</label>
+      <label><input type="checkbox" :checked="candidates.allPageSelected" :disabled="readonly || candidates.bulkApproving || candidates.items.length === 0" @change="candidates.togglePage()" /> 选择当前页待处理项</label>
       <span class="muted">已选择 {{ candidates.selectedCount }} 项</span>
-      <button class="btn" type="button" :disabled="candidates.bulkApproving || candidates.selectedCount === 0" @click="approveSelected">
-        {{ candidates.bulkApproving ? "正在入长期记忆..." : "批量入长期记忆" }}
+      <button class="btn" type="button" :disabled="readonly || candidates.bulkApproving || candidates.selectedCount === 0" @click="approveSelected">
+        {{ readonly ? "只读模式不可入库" : candidates.bulkApproving ? "正在入长期记忆..." : "批量入长期记忆" }}
       </button>
-      <button class="ghost-btn" type="button" :disabled="candidates.bulkApproving || candidates.selectedCount === 0" @click="candidates.clearSelection()">清空选择</button>
+      <button class="ghost-btn" type="button" :disabled="readonly || candidates.bulkApproving || candidates.selectedCount === 0" @click="candidates.clearSelection()">清空选择</button>
       <span class="muted push-right">共 {{ candidates.pagination.total }} 条 · 当前 {{ candidates.pagination.page }}/{{ candidates.pagination.totalPages }} 页</span>
     </div>
 
@@ -339,7 +352,7 @@ watch(() => [candidates.pagination.page, candidates.pagination.pageSize], () => 
     <div v-else-if="!candidates.items.length" class="empty">当前筛选下没有候选记忆。</div>
     <div v-else class="candidate-list">
       <article v-for="item in candidates.items" :key="item.id" class="candidate-row" :class="{ active: activeId === item.id }">
-        <input type="checkbox" :checked="candidates.selectedIds.has(item.id)" :disabled="isBusy(item.id) || item.status !== 'pending'" @change="candidates.toggle(item.id)" />
+        <input type="checkbox" :checked="candidates.selectedIds.has(item.id)" :disabled="readonly || isBusy(item.id) || item.status !== 'pending'" @change="candidates.toggle(item.id)" />
         <div class="candidate-main">
           <template v-if="editingId === item.id">
             <div class="edit-grid">
@@ -387,12 +400,12 @@ watch(() => [candidates.pagination.page, candidates.pagination.pageSize], () => 
           </template>
         </div>
         <div v-if="editingId !== item.id" class="candidate-actions">
-          <button class="ghost-btn strong" type="button" :disabled="isBusy(item.id) || item.status !== 'pending'" @click="approveOne(item)">入长期记忆</button>
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id) || item.status !== 'pending'" @click="approveOne(item, true)">作为群事实</button>
+          <button class="ghost-btn strong" type="button" :disabled="readonly || isBusy(item.id) || item.status !== 'pending'" @click="approveOne(item)">入长期记忆</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id) || item.status !== 'pending'" @click="approveOne(item, true)">作为群事实</button>
           <button class="ghost-btn" type="button" @click="openEvidence(item)">溯源</button>
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id)" @click="startEdit(item)">编辑</button>
-          <button class="ghost-btn" type="button" :disabled="isBusy(item.id) || item.status !== 'pending'" @click="rejectOne(item)">不采纳</button>
-          <button class="ghost-btn danger" type="button" :disabled="isBusy(item.id)" @click="deleteOne(item)">删除</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="startEdit(item)">编辑</button>
+          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id) || item.status !== 'pending'" @click="rejectOne(item)">不采纳</button>
+          <button class="ghost-btn danger" type="button" :disabled="readonly || isBusy(item.id)" @click="deleteOne(item)">删除</button>
         </div>
       </article>
     </div>
