@@ -145,6 +145,10 @@ const ADMIN_LOGIN_MAX_FAILURES = 5;
 const ADMIN_LOGIN_LOCK_MS = 15 * 60 * 1000;
 const ADMIN_STATIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "admin");
 const ADMIN_STATIC_INDEX = path.join(ADMIN_STATIC_DIR, "index.html");
+const ADMIN_HTML_CACHE_CONTROL = "private, no-store";
+const ADMIN_API_CACHE_CONTROL = "private, no-store";
+const ADMIN_SPECULATION_RULES_PATH = "/admin-speculation-rules.json";
+const ADMIN_SPECULATION_RULES = JSON.stringify({ prefetch: [] });
 const STATIC_CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -214,6 +218,13 @@ export class AdminHttpServer {
 
       if (req.method === "GET" && pathname === "/admin-app.js") {
         this.sendStaticText(res, ADMIN_APP_JS, "application/javascript; charset=utf-8");
+        return;
+      }
+
+      if (req.method === "GET" && pathname === ADMIN_SPECULATION_RULES_PATH) {
+        this.sendText(res, ADMIN_SPECULATION_RULES, "application/speculationrules+json; charset=utf-8", {
+          cacheControl: ADMIN_HTML_CACHE_CONTROL,
+        });
         return;
       }
 
@@ -775,11 +786,11 @@ export class AdminHttpServer {
     try {
       const body = await readFile(filePath);
       this.sendBuffer(res, body, contentType, {
-        cacheControl: contentType.includes("text/html") ? "no-cache" : "public, max-age=31536000, immutable",
+        cacheControl: cacheControlForAdminStatic(contentType),
       });
     } catch (error) {
       if (fallback !== undefined) {
-        this.sendText(res, fallback, contentType, { cacheControl: "no-cache" });
+        this.sendText(res, fallback, contentType, { cacheControl: cacheControlForAdminStatic(contentType) });
         return;
       }
       throw error;
@@ -2826,7 +2837,7 @@ export class AdminHttpServer {
   }
 
   private sendJson(res: ServerResponse, data: unknown, statusCode = 200): void {
-    this.sendText(res, JSON.stringify(data), "application/json; charset=utf-8", { statusCode });
+    this.sendText(res, JSON.stringify(data), "application/json; charset=utf-8", { statusCode, cacheControl: ADMIN_API_CACHE_CONTROL });
   }
 
   private sendProfileRecordGenerationError(res: ServerResponse, error: unknown): void {
@@ -2868,11 +2879,18 @@ export class AdminHttpServer {
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Length", content.byteLength);
     if (options.cacheControl) res.setHeader("Cache-Control", options.cacheControl);
+    if (contentType.includes("text/html")) {
+      res.setHeader("Speculation-Rules", `"${ADMIN_SPECULATION_RULES_PATH}"`);
+    }
     res.end(content);
   }
 
   private sendRedirect(res: ServerResponse, location: string): void {
-    res.writeHead(302, { Location: location });
+    res.writeHead(302, {
+      Location: location,
+      "Cache-Control": ADMIN_HTML_CACHE_CONTROL,
+      "Speculation-Rules": `"${ADMIN_SPECULATION_RULES_PATH}"`,
+    });
     res.end();
   }
 
@@ -2892,9 +2910,16 @@ export class AdminHttpServer {
     res.setHeader("Content-Length", payload.byteLength);
     res.setHeader("Vary", "Accept-Encoding");
     if (options.cacheControl) res.setHeader("Cache-Control", options.cacheControl);
+    if (contentType.includes("text/html")) {
+      res.setHeader("Speculation-Rules", `"${ADMIN_SPECULATION_RULES_PATH}"`);
+    }
     if (shouldCompress) res.setHeader("Content-Encoding", "gzip");
     res.end(payload);
   }
+}
+
+function cacheControlForAdminStatic(contentType: string): string {
+  return contentType.includes("text/html") ? ADMIN_HTML_CACHE_CONTROL : "public, max-age=31536000, immutable";
 }
 
 function resolveAdminStaticFile(pathname: string): string | undefined {

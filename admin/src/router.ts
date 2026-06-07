@@ -40,7 +40,7 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   if (to.name === "login") return true;
   const app = useAppStore();
-  if (!app.username) {
+  if (!app.sessionLoaded) {
     await app.loadSession();
   }
   if (to.meta.superOnly && app.role !== "super_admin") {

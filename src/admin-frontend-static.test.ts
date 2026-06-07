@@ -177,6 +177,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /UBot v1\.0\.0/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
+  assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
   assert.match(appShell, /class="top-popover theme-popover"/);
   assert.match(appShell, /class="top-popover user-popover"/);
   assert.match(appShell, /<AppIcon name="theme"/);
@@ -220,6 +221,15 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(routerFile, /import AppOverviewView from "\.\/views\/OverviewView\.vue"/);
   assert.match(routerFile, /component:\s*AppOverviewView/);
   assert.doesNotMatch(routerFile, /component:\s*\(\)\s*=>\s*import/);
+  assert.match(routerFile, /if \(!app\.sessionLoaded\) \{\s*await app\.loadSession\(\);/);
+  assert.doesNotMatch(routerFile, /if \(!app\.username\) \{\s*await app\.loadSession\(\);/);
+
+  const appStore = await readAdminFile(path.join("stores", "app.ts"));
+  assert.match(appStore, /const sessionLoaded = shallowRef\(false\)/);
+  assert.match(appStore, /let sessionPromise: Promise<void> \| undefined/);
+  assert.match(appStore, /if \(sessionLoaded\.value\) return/);
+  assert.match(appStore, /if \(sessionPromise\) return sessionPromise/);
+  assert.match(appStore, /sessionLoaded\.value = true/);
 
   const adminServer = await readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8");
   assert.match(adminServer, /getServerStatusSnapshot/);
@@ -234,6 +244,10 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(adminServer, /title:\s*`模型检测/);
   assert.match(adminServer, /isAdminAssetPath/);
   assert.match(adminServer, /asset_not_found/);
+  assert.match(adminServer, /ADMIN_SPECULATION_RULES_PATH = "\/admin-speculation-rules\.json"/);
+  assert.match(adminServer, /ADMIN_SPECULATION_RULES = JSON\.stringify\(\{ prefetch: \[\] \}\)/);
+  assert.match(adminServer, /"Speculation-Rules": `"\$\{ADMIN_SPECULATION_RULES_PATH\}"`/);
+  assert.match(adminServer, /res\.setHeader\("Speculation-Rules", `"\$\{ADMIN_SPECULATION_RULES_PATH\}"`\)/);
 });
 
 test("admin system status separates environment and server health", async () => {

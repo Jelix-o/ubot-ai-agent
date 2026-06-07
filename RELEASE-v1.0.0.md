@@ -22,6 +22,8 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
   - 非唱歌模型会拒绝 `#唱歌` 并回退文字提示。
 - 指令管理新增 `#唱歌`。
 - 管理后台路由改为静态导入，缺失 hash 静态资源返回 `404 asset_not_found` 和 `Cache-Control: no-store`，避免旧 chunk 被 SPA fallback 误处理。
+- 管理后台菜单响应优化：会话加载改为单次复用，侧边栏点击不再重复阻塞等待 `/api/session`。
+- 管理后台预取缓存保护：后台 HTML、未登录 302 跳转和 `/api/*` 响应返回 `private, no-store`，源站提供空的 `/admin-speculation-rules.json`，避免 Cloudflare Speed Brain / 浏览器预取把 `/memories` 等后台路由缓存成 `503 Service Unavailable (from prefetch cache)`。
 - 模型健康历史写入串行化，避免“检测全部模型”并发记录时触发 Windows atomic rename 冲突。
 
 ## MiMo TTS v2.5 支持范围
@@ -51,6 +53,8 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
 - 日志出现 NapCat reverse WebSocket connected。
 - `https://bot.9958.uk/login` 返回 200。
 - 未登录访问受保护 API 返回 401。
+- `https://bot.9958.uk/memories` 未登录返回 302 到 `/login`，并带 `Cache-Control: private, no-store` 与源站空 `Speculation-Rules`。
+- `https://bot.9958.uk/admin-speculation-rules.json` 返回 `{"prefetch":[]}`。
 - 公网后台可访问总览、群配置、成员管理、任务中心、系统状态、Skills 管理和指令管理。
 - 任务中心不再长期保留陈旧 running 的“模型检测 环境语音模型”任务。
 

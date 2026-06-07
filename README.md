@@ -12,7 +12,7 @@ UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊
 - 成员管理：合并 NapCat 群成员、人工身份和记忆归属，可编辑备注，编辑时自动带出现有备注。
 - 记忆系统：待处理候选记忆、长期记忆、成员画像、每日画像审查和记忆去重任务。
 - 知识库：当前群 FAQ 按关键词检索注入回复上下文。
-- 运维后台：公网管理台、模型健康历史、任务中心、操作日志、系统状态和静态资源缓存保护。
+- 运维后台：公网管理台、模型健康历史、任务中心、操作日志、系统状态、静态资源缓存保护和后台路由预取保护。
 
 ## 目录结构
 
@@ -198,6 +198,8 @@ ADMIN_PUBLIC_BASE_URL=https://bot.9958.uk
 - Nginx 只反代后台 HTTP 服务，不暴露 NapCat 反向 WebSocket。
 - 静态资源 hash 缺失时返回 `404 asset_not_found` 且 `Cache-Control: no-store`，避免旧 chunk 回退到 SPA 造成 503 或白屏。
 - 登录后用 CSRF 会话保护管理 API；未登录访问管理 API 应返回 `401`。
+- 后台 HTML、302 登录跳转和 `/api/*` 响应返回 `Cache-Control: private, no-store`；源站提供空的 `/admin-speculation-rules.json`，避免 Cloudflare Speed Brain 或浏览器预取把 `/memories`、`/groups` 等后台路径缓存成 `503 Service Unavailable (from prefetch cache)`。
+- 侧边栏导航复用已加载的会话状态，避免每次点击菜单都重复等待 `/api/session`。
 
 后台模块：
 

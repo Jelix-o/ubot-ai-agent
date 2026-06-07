@@ -14,10 +14,12 @@ export const useAppStore = defineStore("app", () => {
   const role = shallowRef<AdminSession["role"]>("super_admin");
   const allowedGroupIds = shallowRef<string[]>([]);
   const publicBaseUrl = shallowRef("");
+  const sessionLoaded = shallowRef(false);
   const notifications = shallowRef<NotificationData>({ pendingCandidateCount: 0, latestCandidates: [] });
   const toast = reactive({ message: "", type: "ok" as "ok" | "error", visible: false });
   const themeMode = shallowRef<ThemeMode>((localStorage.getItem(themeStorageKey) as ThemeMode) || "system");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let sessionPromise: Promise<void> | undefined;
 
   const currentGroup = computed(() => groups.value.find((group) => group.groupId === groupId.value));
 
@@ -40,11 +42,27 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function loadSession(): Promise<void> {
+    if (sessionLoaded.value) return;
+    if (sessionPromise) return sessionPromise;
+    sessionPromise = loadSessionNow().finally(() => {
+      sessionPromise = undefined;
+    });
+    return sessionPromise;
+  }
+
+  async function refreshSession(): Promise<void> {
+    sessionLoaded.value = false;
+    sessionPromise = undefined;
+    return loadSession();
+  }
+
+  async function loadSessionNow(): Promise<void> {
     const session = await api<AdminSession>("/api/session");
     username.value = session.username;
     role.value = session.role;
     allowedGroupIds.value = session.allowedGroupIds;
     publicBaseUrl.value = session.publicBaseUrl;
+    sessionLoaded.value = true;
   }
 
   async function loadNotifications(): Promise<void> {
@@ -64,6 +82,11 @@ export const useAppStore = defineStore("app", () => {
 
   async function logout(): Promise<void> {
     await api("/api/logout", { method: "POST", body: "{}" });
+    sessionLoaded.value = false;
+    sessionPromise = undefined;
+    username.value = "";
+    allowedGroupIds.value = [];
+    publicBaseUrl.value = "";
     window.location.href = "/login";
   }
 
@@ -74,6 +97,7 @@ export const useAppStore = defineStore("app", () => {
     role,
     allowedGroupIds,
     publicBaseUrl,
+    sessionLoaded,
     notifications,
     toast,
     themeMode,
@@ -81,6 +105,7 @@ export const useAppStore = defineStore("app", () => {
     applyTheme,
     showToast,
     loadSession,
+    refreshSession,
     loadGroups,
     loadNotifications,
     logout,

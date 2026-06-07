@@ -333,15 +333,30 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
 
     const unauthorized = await fetch(`${baseUrl}/api/groups`);
     assert.equal(unauthorized.status, 401);
+    assert.equal(unauthorized.headers.get("cache-control"), "private, no-store");
 
     const loginPage = await fetch(`${baseUrl}/login`);
     assert.equal(loginPage.status, 200);
+    assert.equal(loginPage.headers.get("cache-control"), "private, no-store");
+    assert.equal(loginPage.headers.get("speculation-rules"), '"/admin-speculation-rules.json"');
     const loginPageText = await loginPage.text();
     assert.equal(loginPageText.includes('id="app"'), true);
     assert.equal(loginPageText.includes("/assets/"), true);
     assert.equal(loginPageText.includes("ubot-admin-theme"), true);
     const assetMatch = loginPageText.match(/src="([^"]+\.js)"/);
     assert.ok(assetMatch?.[1]);
+
+    const adminSpeculationRules = await fetch(`${baseUrl}/admin-speculation-rules.json`);
+    assert.equal(adminSpeculationRules.status, 200);
+    assert.equal(adminSpeculationRules.headers.get("content-type")?.includes("application/speculationrules+json"), true);
+    assert.equal(adminSpeculationRules.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(await adminSpeculationRules.json(), { prefetch: [] });
+
+    const unauthenticatedMemories = await fetch(`${baseUrl}/memories`, { redirect: "manual" });
+    assert.equal(unauthenticatedMemories.status, 302);
+    assert.equal(unauthenticatedMemories.headers.get("location"), "/login");
+    assert.equal(unauthenticatedMemories.headers.get("cache-control"), "private, no-store");
+    assert.equal(unauthenticatedMemories.headers.get("speculation-rules"), '"/admin-speculation-rules.json"');
 
     const adminCss = await fetch(`${baseUrl}/admin.css`);
     assert.equal(adminCss.status, 200);
@@ -852,6 +867,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(dashboardPage.status, 200);
+    assert.equal(dashboardPage.headers.get("cache-control"), "private, no-store");
+    assert.equal(dashboardPage.headers.get("speculation-rules"), '"/admin-speculation-rules.json"');
     const dashboardPageText = await dashboardPage.text();
     assert.equal(dashboardPageText.includes('id="app"'), true);
     assert.equal(dashboardPageText.includes("/assets/"), true);

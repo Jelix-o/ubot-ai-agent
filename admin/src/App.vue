@@ -177,7 +177,8 @@ onMounted(async () => {
   window.addEventListener("keydown", onSearchKeydown);
   if (!isLogin.value) {
     await app.loadSession();
-    await Promise.all([app.loadGroups(), app.loadNotifications()]);
+    void app.loadGroups();
+    void app.loadNotifications();
   }
 });
 
@@ -232,7 +233,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       </div>
 
       <nav class="nav-list">
-        <RouterLink v-for="item in navItems" :key="String(item.name)" :to="item.path" class="nav-item" @click="mobileNavOpen = false">
+        <RouterLink v-for="item in navItems" :key="String(item.name)" :to="item.path" class="nav-item" rel="nofollow" @click="mobileNavOpen = false">
           <AppIcon :name="iconFor(item.name)" />
           <span>{{ item.meta?.title }}</span>
         </RouterLink>
