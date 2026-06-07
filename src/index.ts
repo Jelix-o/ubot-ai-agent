@@ -87,6 +87,7 @@ async function main(): Promise<void> {
   );
   const profileRecordStore = new ProfileRecordStore(config.profileRecordsPath);
   const adminTaskStore = new AdminTaskStore(config.adminTasksPath);
+  await sweepAdminTasksOnStartup(adminTaskStore);
   const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath);
   const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath);
   const napcatRuntime: NapCatRuntime =
@@ -176,6 +177,16 @@ async function main(): Promise<void> {
   logInfo("NapCat QQ skill bot started.", {
     mode: config.napcatMode,
   });
+}
+
+async function sweepAdminTasksOnStartup(adminTaskStore: AdminTaskStore): Promise<void> {
+  try {
+    await adminTaskStore.sweepStaleTasks();
+  } catch (error) {
+    logError("Failed to sweep stale admin tasks on startup.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function createAdminHttpServer(

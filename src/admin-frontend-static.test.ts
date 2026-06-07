@@ -465,6 +465,16 @@ test("admin task center exposes task detail records", async () => {
   assert.match(tasksView, /查看详情/);
 });
 
+test("runtime startup sweeps stale admin tasks before serving the admin center", async () => {
+  const indexFile = await readFile(path.join(process.cwd(), "src", "index.ts"), "utf8");
+
+  assert.match(indexFile, /const adminTaskStore = new AdminTaskStore\(config\.adminTasksPath\)/);
+  assert.match(indexFile, /await sweepAdminTasksOnStartup\(adminTaskStore\)/);
+  assert.match(indexFile, /async function sweepAdminTasksOnStartup\(adminTaskStore: AdminTaskStore\): Promise<void>/);
+  assert.match(indexFile, /await adminTaskStore\.sweepStaleTasks\(\)/);
+  assert.match(indexFile, /Failed to sweep stale admin tasks on startup/);
+});
+
 test("admin audit view exposes operation log filters and table", async () => {
   const [auditView, apiTypes] = await Promise.all([
     readAdminFile(path.join("views", "AuditView.vue")),
