@@ -4,6 +4,7 @@ release/
 share/
 data/
 .claude/
+.codex_tmp/
 .npm-cache/
 
 .env
