@@ -1,6 +1,6 @@
 # UBot V1.0.0 Release Notes
 
-发布状态：待发布
+发布状态：代码已推送；生产部署和线上 GitHub Release 待执行
 
 ## 发布目标
 
@@ -24,6 +24,7 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
 - 管理后台路由改为静态导入，缺失 hash 静态资源返回 `404 asset_not_found` 和 `Cache-Control: no-store`，避免旧 chunk 被 SPA fallback 误处理。
 - 管理后台菜单响应优化：会话加载改为单次复用，侧边栏点击不再重复阻塞等待 `/api/session`。
 - 管理后台预取缓存保护：后台 HTML、未登录 302 跳转和 `/api/*` 响应返回 `private, no-store`，源站提供空的 `/admin-speculation-rules.json`，避免 Cloudflare Speed Brain / 浏览器预取把 `/memories` 等后台路由缓存成 `503 Service Unavailable (from prefetch cache)`。
+- 系统设置的模型管理修复新增模型保存链路：新增模型会生成稳定唯一 ID，保存前校验 ID、必填项和重复项，后端对无效模型返回明确 `400`，不再静默丢弃导致“新增后消失”。
 - 模型健康历史写入串行化，避免“检测全部模型”并发记录时触发 Windows atomic rename 冲突。
 
 ## MiMo TTS v2.5 支持范围
@@ -37,7 +38,7 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
 
 - `node scripts/run-node22.cjs node_modules/typescript/lib/tsc.js -p tsconfig.json --noEmit`
 - `npm test`
-- 345 个 `node:test` 用例全部通过。
+- 347 个 `node:test` 用例全部通过。
 
 ## 部署后验证清单
 
@@ -55,9 +56,9 @@ V1.0.0 是 UBot 的正式版基线，统一机器人、群管理后台、MiMo TT
 
 - Git tag：`v1.0.0`
 - Release 文档：`RELEASE-v1.0.0.md`
-- 源码：GitHub `chatops/main`
+- 源码：GitHub `chatops/main`，代码基线包含 `3b6647a` 新增模型保存修复。
 
 发布执行注意：
 
-- 当前文件标记为“待发布”时，不要把既有 `v1.0.0` tag 当作最终产物；正式发布前必须确认 tag 指向包含本文件所有变更的提交。
+- 当前文件标记为“生产部署和线上 GitHub Release 待执行”时，不要把既有 `v1.0.0` tag 当作最终产物；正式发布前必须确认 tag 指向包含本文件所有变更的提交。
 - 若 `v1.0.0` tag 已存在且指向旧提交，需要在完成提交和推送后按发布流程更新 tag 与 GitHub Release 内容。

@@ -34,12 +34,13 @@ try {
 
 $itemsToCopy = @(
   "dist",
-  "config",
   "skills",
   "scripts",
   "package.json",
   "package-lock.json",
   "README.md",
+  "COMMANDS.md",
+  "RELEASE-v1.0.0.md",
   ".env.example",
   ".env.server-2022.example"
 )
@@ -50,6 +51,17 @@ foreach ($item in $itemsToCopy) {
     Copy-Item -LiteralPath $source -Destination $bundleDir -Recurse -Force
   }
 }
+
+$configDir = Join-Path $bundleDir "config"
+New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+
+$groupsExample = @'
+{
+  "superAdminUserIds": [],
+  "groups": []
+}
+'@
+Set-Content -Path (Join-Path $configDir "groups.example.json") -Value $groupsExample -Encoding UTF8
 
 $distDir = Join-Path $bundleDir "dist"
 if (Test-Path $distDir) {
@@ -69,6 +81,7 @@ $runCmd = @'
 @echo off
 setlocal
 cd /d %~dp0
+if not exist config\groups.json copy config\groups.example.json config\groups.json >nul
 node dist\index.js
 '@
 Set-Content -Path (Join-Path $bundleDir "run.cmd") -Value $runCmd -Encoding ASCII

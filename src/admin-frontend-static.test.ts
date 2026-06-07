@@ -355,6 +355,18 @@ test("admin visual smoke covers all routes and key mobile viewports", async () =
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
 });
 
+test("windows release package avoids local runtime group config", async () => {
+  const packageScript = await readFile(path.join(repoRoot, "scripts", "package-win.ps1"), "utf8");
+
+  assert.doesNotMatch(packageScript, /"config",/);
+  assert.match(packageScript, /"COMMANDS\.md"/);
+  assert.match(packageScript, /"RELEASE-v1\.0\.0\.md"/);
+  assert.match(packageScript, /groups\.example\.json/);
+  assert.match(packageScript, /"superAdminUserIds": \[\]/);
+  assert.match(packageScript, /"groups": \[\]/);
+  assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
+});
+
 
 test("admin planning-console module stays removed", async () => {
   const [apiTypes, appIcon, adminServer, botSource, routerFile, commandsStore] = await Promise.all([

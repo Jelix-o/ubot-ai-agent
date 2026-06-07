@@ -75,7 +75,7 @@ Copy-Item .env.example .env
 
 ## 群配置
 
-配置文件默认是 `config/groups.json`。
+配置文件默认是 `config/groups.json`。Windows 发布包只附带安全的 `config/groups.example.json`；首次运行 `run.cmd` 时如果没有 `config/groups.json`，会自动复制这个空白示例，生产升级时不要覆盖已有 `config/groups.json`。
 
 ```json
 {
@@ -234,7 +234,7 @@ V1.0.0 会在读取任务列表或任务详情时自动判断陈旧任务：
 - `config/groups.json`
 - 生产 NapCat 登录态和反向 WebSocket 配置
 
-不要用发布包覆盖上述运行数据。推荐流程：
+Windows 发布包不会携带本机真实 `config/groups.json`，只带 `config/groups.example.json`；首次运行时缺少 `groups.json` 才会复制示例。不要用发布包覆盖上述运行数据。推荐流程：
 
 ```bash
 git fetch --all
