@@ -274,7 +274,7 @@ export interface ModelOption {
   shortName?: string;
   purpose: SystemModelPurpose;
   enabled: boolean;
-  hasApiKey: boolean;
+  hasApiKey?: boolean;
   baseUrl?: string;
   model?: string;
 }

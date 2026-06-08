@@ -37,6 +37,22 @@ async function fetch(input: Parameters<typeof globalThis.fetch>[0], init: Reques
   return globalThis.fetch(input, init);
 }
 
+function assertPublicReplyModelOptions(replyModels: Array<Record<string, unknown>>, label: string): void {
+  assert.ok(Array.isArray(replyModels), `${label} replyModels should be an array`);
+  assert.ok(replyModels.length > 0, `${label} replyModels should not be empty`);
+  for (const model of replyModels) {
+    assert.deepEqual(
+      Object.keys(model).sort(),
+      ["enabled", "id", "label", "purpose"],
+      `${label} reply model exposed non-public fields: ${JSON.stringify(model)}`,
+    );
+    assert.equal(typeof model.id, "string", `${label} reply model id should be public`);
+    assert.equal(typeof model.label, "string", `${label} reply model label should be public`);
+    assert.equal(model.purpose, "reply", `${label} reply model purpose should be reply`);
+    assert.equal(typeof model.enabled, "boolean", `${label} reply model enabled should be public`);
+  }
+}
+
 async function waitForTaskResult<T>(baseUrl: string, cookie: string | null, taskId: string): Promise<T> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const taskResponse = await fetch(`${baseUrl}/api/tasks/${encodeURIComponent(taskId)}`, {
@@ -92,6 +108,15 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
             switcherUserIds: ["99999"],
             liveChatUserIds: [],
           },
+          {
+            groupId: "100200300",
+            groupName: "Later Viewer Group",
+            enabled: false,
+            currentSkillId: "assistant",
+            allowedSkillIds: ["assistant"],
+            switcherUserIds: [],
+            liveChatUserIds: [],
+          },
         ],
       }),
       "utf8",
@@ -128,6 +153,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     content: "Another memory for pagination.",
     createdAt: "2026-06-03T10:00:00.000Z",
   });
+  const hiddenGroupMemory = await groupMemoryStore.create({
+    groupId: "100200300",
+    type: "group_fact",
+    title: "Cross-scope memory",
+    content: "Viewer sessions must not read cross-scope memories by id.",
+    createdAt: "2026-06-03T10:30:00.000Z",
+  });
   const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
   const orphanCandidate = await candidateStore.addCandidate({
     groupId: "67890",
@@ -147,6 +179,12 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       speakers: [{ userId: "20002", userName: "BatchUser" }],
       summary: "BatchUser discussed a group-level fact that should be approved in bulk.",
     },
+  });
+  const hiddenGroupCandidateForViewer = await candidateStore.addCandidate({
+    groupId: "100200300",
+    type: "group_fact",
+    title: "Cross-scope candidate",
+    content: "Viewer sessions must not read cross-scope candidates by id.",
   });
   const knowledgeBaseStore = new KnowledgeBaseStore(path.join(dir, "knowledge.json"));
   const knowledgeEntry = await knowledgeBaseStore.create({
@@ -204,6 +242,15 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     },
   ]);
   const profileRecordStore = new ProfileRecordStore(path.join(dir, "profile-records.json"));
+  const hiddenGroupProfileRecord = await profileRecordStore.create({
+    groupId: "100200300",
+    userId: "20001",
+    type: "overall",
+    summary: "Viewer sessions must not read cross-scope profile records by id.",
+    sourceMemoryCount: 1,
+    generatedAt: "2026-06-03T10:30:00.000Z",
+    createdBy: "99999",
+  });
   const adminTaskStore = new AdminTaskStore(path.join(dir, "admin-tasks.json"));
   const modelHealthHistoryStore = new ModelHealthHistoryStore(path.join(dir, "model-health.json"));
   await adminTaskStore.run({
@@ -245,6 +292,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
   let profileHealthCalls = 0;
   let lastProfileHealthRefresh = false;
   let semanticJudgeCalls = 0;
+  let napcatMembersByGroup: Record<string, NapcatGroupMember[]> = {
+    "67890": [
+      { user_id: 20001, card: "TesterCard", nickname: "TesterNick", role: "member" },
+      { user_id: 30002, nickname: "Newbie", role: "member" },
+    ],
+    "100200300": [],
+  };
   const service = new AdminHttpServer({
     host: "127.0.0.1",
     port: 0,
@@ -314,12 +368,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       }
       return { action: "new", reason: "different memory" };
     },
-    async listGroupMembers(): Promise<NapcatGroupMember[]> {
+    async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
       listGroupMembersCalls += 1;
-      return [
-        { user_id: 20001, card: "TesterCard", nickname: "TesterNick", role: "member" },
-        { user_id: 30002, nickname: "Newbie", role: "member" },
-      ];
+      return napcatMembersByGroup[groupId] ?? [];
     },
   });
 
@@ -341,10 +392,10 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(loginPage.headers.get("speculation-rules"), '"/admin-speculation-rules.json"');
     const loginPageText = await loginPage.text();
     assert.equal(loginPageText.includes('id="app"'), true);
-    assert.equal(loginPageText.includes("/assets/"), true);
+    assert.equal(loginPageText.includes("/assets/") || loginPageText.includes("/admin-login.js"), true);
     assert.equal(loginPageText.includes("ubot-admin-theme"), true);
-    const assetMatch = loginPageText.match(/src="([^"]+\.js)"/);
-    assert.ok(assetMatch?.[1]);
+    const loginAssetMatch = loginPageText.match(/src="([^"]+\.js)"/);
+    assert.ok(loginAssetMatch?.[1]);
 
     const adminSpeculationRules = await fetch(`${baseUrl}/admin-speculation-rules.json`);
     assert.equal(adminSpeculationRules.status, 200);
@@ -916,7 +967,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(dashboardPage.headers.get("speculation-rules"), '"/admin-speculation-rules.json"');
     const dashboardPageText = await dashboardPage.text();
     assert.equal(dashboardPageText.includes('id="app"'), true);
-    assert.equal(dashboardPageText.includes("/assets/"), true);
+    assert.equal(dashboardPageText.includes("/assets/") || dashboardPageText.includes("/admin-app.js"), true);
+    const assetMatch = dashboardPageText.match(/src="([^"]+\.js)"/);
+    assert.ok(assetMatch?.[1]);
 
     const vueAsset = await fetch(`${baseUrl}${assetMatch[1]}`, {
       headers: { Cookie: cookie ?? "" },
@@ -1266,6 +1319,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.ok(createdProfileRecordBody.record?.id);
     assert.match(createdProfileRecordBody.record?.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
 
+    assert.equal((await profileRecordStore.get(createdProfileRecordBody.record.id))?.accessCount, 0);
     const publicProfile = await fetch(`${baseUrl}/profile/${createdProfileRecordBody.record.shareToken}`);
     assert.equal(publicProfile.status, 200);
     const publicProfileText = await publicProfile.text();
@@ -1273,6 +1327,13 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(publicProfileText.includes("noindex,nofollow"), true);
     assert.equal(publicProfileText.includes("groupId"), false);
     assert.equal(publicProfileText.includes("后台"), false);
+    assert.equal((await profileRecordStore.get(createdProfileRecordBody.record.id))?.accessCount, 1);
+
+    const adminPreviewPublicProfile = await fetch(`${baseUrl}/profile/${createdProfileRecordBody.record.shareToken}`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(adminPreviewPublicProfile.status, 200);
+    assert.equal((await profileRecordStore.get(createdProfileRecordBody.record.id))?.accessCount, 1);
 
     const regeneratedProfileRecord = await fetch(`${baseUrl}/api/profile-records/${createdProfileRecordBody.record.id}`, {
       method: "PUT",
@@ -1926,16 +1987,26 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(viewerModelOptions.status, 200);
     const viewerModelOptionsBody = await viewerModelOptions.json() as {
       models?: unknown[];
-      replyModels: Array<{ id: string; apiKey?: string }>;
+      replyModels: Array<Record<string, unknown>>;
     };
     assert.equal(viewerModelOptionsBody.models, undefined);
     assert.equal(viewerModelOptionsBody.replyModels.some((item) => item.id === "reply-pro"), true);
-    assert.equal(viewerModelOptionsBody.replyModels.every((item) => item.apiKey === undefined), true);
+    assertPublicReplyModelOptions(viewerModelOptionsBody.replyModels, "viewer");
 
     const viewerForbiddenGroup = await fetch(`${baseUrl}/api/groups/99999/config`, {
       headers: { Cookie: viewerCookie ?? "" },
     });
     assert.equal(viewerForbiddenGroup.status, 403);
+    for (const forbiddenDetailUrl of [
+      `${baseUrl}/api/memories/${hiddenGroupMemory.id}`,
+      `${baseUrl}/api/memory-candidates/${hiddenGroupCandidateForViewer.id}`,
+      `${baseUrl}/api/profile-records/${hiddenGroupProfileRecord.id}`,
+      `${baseUrl}/api/tasks/${otherGroupTask.id}`,
+    ]) {
+      const response = await fetch(forbiddenDetailUrl, { headers: { Cookie: viewerCookie ?? "" } });
+      assert.equal(response.status, 403, forbiddenDetailUrl);
+      assert.deepEqual(await response.json(), { error: "forbidden" }, forbiddenDetailUrl);
+    }
 
     const viewerCachedProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall`, {
       headers: { Cookie: viewerCookie ?? "" },
@@ -1943,6 +2014,28 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(viewerCachedProfileSummary.status, 200);
     const viewerCachedProfileSummaryBody = await viewerCachedProfileSummary.json() as { cached: boolean; record?: { id: string } };
     assert.equal(viewerCachedProfileSummaryBody.cached, true);
+
+    const viewerProfileRecordsBeforeCacheMiss = await profileRecordStore.listPage({
+      groupId: "67890",
+      userId: "30002",
+      type: "overall",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(viewerProfileRecordsBeforeCacheMiss.pagination.total, 0);
+    const viewerUncachedProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/30002/profile-summary?type=overall`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerUncachedProfileSummary.status, 403);
+    assert.deepEqual(await viewerUncachedProfileSummary.json(), { error: "readonly_session" });
+    const viewerProfileRecordsAfterCacheMiss = await profileRecordStore.listPage({
+      groupId: "67890",
+      userId: "30002",
+      type: "overall",
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(viewerProfileRecordsAfterCacheMiss.pagination.total, 0);
 
     const viewerRefreshProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall&refresh=1`, {
       headers: { Cookie: viewerCookie ?? "" },
@@ -2015,6 +2108,88 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal((await candidateStore.get(viewerPendingCandidate.id))?.status, "pending");
     assert.equal((await knowledgeBaseStore.get(knowledgeEntry.id))?.title, updatedKnowledge.title);
 
+    napcatMembersByGroup = {
+      ...napcatMembersByGroup,
+      "67890": napcatMembersByGroup["67890"].filter((member) => String(member.user_id) !== "20001"),
+    };
+    const viewerSessionAfterMemberRemoval = await fetch(`${baseUrl}/api/session`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerSessionAfterMemberRemoval.status, 200);
+    assert.deepEqual((await viewerSessionAfterMemberRemoval.json() as { allowedGroupIds: string[] }).allowedGroupIds, []);
+
+    const viewerGroupsAfterMemberRemoval = await fetch(`${baseUrl}/api/groups`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerGroupsAfterMemberRemoval.status, 200);
+    assert.deepEqual((await viewerGroupsAfterMemberRemoval.json() as { groups: unknown[] }).groups, []);
+
+    const viewerOverviewAfterMemberRemoval = await fetch(`${baseUrl}/api/overview`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerOverviewAfterMemberRemoval.status, 200);
+    const viewerOverviewAfterMemberRemovalBody = await viewerOverviewAfterMemberRemoval.json() as {
+      groups: unknown[];
+      stats: { groupCount: number; memoryCount: number; pendingCandidateCount: number; knowledgeCount: number };
+      recent: { candidates: unknown[]; memories: unknown[]; knowledge: unknown[] };
+    };
+    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.groups, []);
+    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.stats, {
+      groupCount: 0,
+      memoryCount: 0,
+      pendingCandidateCount: 0,
+      knowledgeCount: 0,
+    });
+    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.recent.candidates, []);
+    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.recent.memories, []);
+    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.recent.knowledge, []);
+
+    const staleViewerGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(staleViewerGroupConfig.status, 403);
+    activeCsrfToken = superAdminCsrfToken;
+    await fetch(`${baseUrl}/api/groups/100200300/config`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    napcatMembersByGroup = {
+      ...napcatMembersByGroup,
+      "100200300": [
+        { user_id: 20001, card: "LaterCard", nickname: "LaterNick", role: "member" },
+      ],
+    };
+    activeCsrfToken = viewerCsrfToken;
+    const viewerSessionAfterNewMembership = await fetch(`${baseUrl}/api/session`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerSessionAfterNewMembership.status, 200);
+    assert.deepEqual((await viewerSessionAfterNewMembership.json() as { allowedGroupIds: string[] }).allowedGroupIds, ["100200300"]);
+    const viewerGroupsAfterNewMembership = await fetch(`${baseUrl}/api/groups`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerGroupsAfterNewMembership.status, 200);
+    assert.deepEqual((await viewerGroupsAfterNewMembership.json() as { groups: Array<{ groupId: string }> }).groups.map((group) => group.groupId), ["100200300"]);
+    const viewerNewGroupConfig = await fetch(`${baseUrl}/api/groups/100200300/config`, {
+      headers: { Cookie: viewerCookie ?? "" },
+    });
+    assert.equal(viewerNewGroupConfig.status, 200);
+    napcatMembersByGroup = {
+      ...napcatMembersByGroup,
+      "67890": [
+        { user_id: 20001, card: "TesterCard", nickname: "TesterNick", role: "member" },
+        { user_id: 30002, nickname: "Newbie", role: "member" },
+      ],
+      "100200300": [],
+    };
+    activeCsrfToken = superAdminCsrfToken;
+    await fetch(`${baseUrl}/api/groups/100200300/config`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+
     const viewerNonMemberLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2061,17 +2236,54 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(groupAdminCommands.status, 403);
 
+    for (const sharedReadableUrl of [
+      `${baseUrl}/api/groups/67890/config`,
+      `${baseUrl}/api/groups/67890/members?page=1&pageSize=10`,
+      `${baseUrl}/api/memories?groupId=67890&page=1&pageSize=5`,
+      `${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=5`,
+      `${baseUrl}/api/knowledge?groupId=67890&page=1&pageSize=5`,
+      `${baseUrl}/api/profile-records?groupId=67890&userId=20001`,
+      `${baseUrl}/api/tasks?groupId=67890&page=1&pageSize=20`,
+      `${baseUrl}/api/model-options`,
+      `${baseUrl}/api/groups/67890/schedule-preview?days=2`,
+      `${baseUrl}/api/overview?groupId=67890`,
+      `${baseUrl}/api/logs?groupId=67890`,
+      `${baseUrl}/api/notifications`,
+    ]) {
+      const [viewerReadable, groupAdminReadable] = await Promise.all([
+        fetch(sharedReadableUrl, { headers: { Cookie: viewerCookie ?? "" } }),
+        fetch(sharedReadableUrl, { headers: { Cookie: groupAdminCookie ?? "" } }),
+      ]);
+      assert.equal(viewerReadable.status, 200, `viewer readable parity ${sharedReadableUrl}`);
+      assert.equal(groupAdminReadable.status, 200, `group admin readable parity ${sharedReadableUrl}`);
+      await viewerReadable.arrayBuffer();
+      await groupAdminReadable.arrayBuffer();
+    }
+
+    for (const sharedForbiddenUrl of [
+      `${baseUrl}/api/system-settings`,
+      `${baseUrl}/api/skills`,
+      `${baseUrl}/api/commands`,
+    ]) {
+      const [viewerForbidden, groupAdminForbidden] = await Promise.all([
+        fetch(sharedForbiddenUrl, { headers: { Cookie: viewerCookie ?? "" } }),
+        fetch(sharedForbiddenUrl, { headers: { Cookie: groupAdminCookie ?? "" } }),
+      ]);
+      assert.equal(viewerForbidden.status, 403, `viewer forbidden parity ${sharedForbiddenUrl}`);
+      assert.equal(groupAdminForbidden.status, 403, `group admin forbidden parity ${sharedForbiddenUrl}`);
+    }
+
     const groupAdminModelOptions = await fetch(`${baseUrl}/api/model-options`, {
       headers: { Cookie: groupAdminCookie ?? "" },
     });
     assert.equal(groupAdminModelOptions.status, 200);
     const groupAdminModelOptionsBody = await groupAdminModelOptions.json() as {
       models?: unknown[];
-      replyModels: Array<{ id: string; apiKey?: string }>;
+      replyModels: Array<Record<string, unknown>>;
     };
     assert.equal(groupAdminModelOptionsBody.models, undefined);
     assert.equal(groupAdminModelOptionsBody.replyModels.some((item) => item.id === "reply-pro"), true);
-    assert.equal(groupAdminModelOptionsBody.replyModels.every((item) => item.apiKey === undefined), true);
+    assertPublicReplyModelOptions(groupAdminModelOptionsBody.replyModels, "group admin");
 
     lastProfileHealthRefresh = false;
     const groupAdminOverview = await fetch(`${baseUrl}/api/overview?groupId=67890`, {

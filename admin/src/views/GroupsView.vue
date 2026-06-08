@@ -407,7 +407,7 @@ watch(() => form.voiceReplyEnabled, (enabled) => {
 
 watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
   if (enabled && !form.voiceReplyEnabled) {
-    form.voiceReplyEnabled = true;
+    form.defaultVoiceReplyEnabled = false;
   }
 });
 </script>

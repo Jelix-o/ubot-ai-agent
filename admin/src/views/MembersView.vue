@@ -197,6 +197,7 @@ function viewMemberMemories(member: MemberProfile): void {
 }
 
 function deduplicateMemberMemories(member: MemberProfile): void {
+  if (!ensureWritable()) return;
   void router.push({ path: "/memories", query: { userId: member.userId, type: "member_profile", dedup: "1" } });
 }
 
@@ -278,7 +279,7 @@ watch(() => [recordPagination.page, recordPagination.pageSize], () => {
               <button class="ghost-btn" type="button" @click="openMemberRecords(member)">画像记录</button>
               <button class="ghost-btn" type="button" @click="viewMemberMemories(member)">查看记忆</button>
               <button class="ghost-btn" type="button" :disabled="readonly" @click="startEditNote(member)">修改备注</button>
-              <button class="ghost-btn" type="button" @click="deduplicateMemberMemories(member)">记忆去重</button>
+              <button class="ghost-btn" type="button" :disabled="readonly" @click="deduplicateMemberMemories(member)">记忆去重</button>
               <button
                 class="ghost-btn"
                 :class="{ danger: !member.memoryDisabled }"

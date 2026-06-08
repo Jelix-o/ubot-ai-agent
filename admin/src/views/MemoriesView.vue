@@ -329,6 +329,7 @@ async function pollDedupPreviewTask(taskId: string): Promise<void> {
 }
 
 async function previewDeduplicate(): Promise<void> {
+  if (!ensureWritable()) return;
   if (!app.groupId) return;
   if (!filters.userId) {
     app.showToast("请先选择一个记忆成员，再检查该成员的重复记忆。", "error");
@@ -502,8 +503,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <p>请选择一个记忆成员后再检查重复。去重只处理该成员的长期记忆，避免全局扫描超时。</p>
       </div>
       <div class="dedup-actions">
-        <button class="ghost-btn" type="button" :disabled="dedupLoading" @click="previewDeduplicate">
-          {{ dedupLoading ? "检测中..." : "检测当前成员重复" }}
+        <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate">
+          {{ readonly ? "只读模式不可检测" : dedupLoading ? "检测中..." : "检测当前成员重复" }}
         </button>
         <button class="btn" type="button" :disabled="readonly || dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">
           {{ readonly ? "只读模式不可去重" : "应用去重" }}

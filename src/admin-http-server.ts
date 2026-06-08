@@ -230,7 +230,7 @@ export class AdminHttpServer {
 
       const publicProfileRoute = matchRoute(pathname, /^\/profile\/([^/]+)$/);
       if (req.method === "GET" && publicProfileRoute) {
-        await this.handlePublicProfilePage(res, publicProfileRoute.id);
+        await this.handlePublicProfilePage(req, res, publicProfileRoute.id);
         return;
       }
 
@@ -300,7 +300,7 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/api/session") {
-      this.sendJson(res, this.publicSession(session));
+      this.sendJson(res, await this.publicSession(session));
       return;
     }
 
@@ -756,7 +756,7 @@ export class AdminHttpServer {
     await this.sendAdminStaticFile(res, ADMIN_STATIC_INDEX, "text/html; charset=utf-8", ADMIN_APP_HTML_V2);
   }
 
-  private async handlePublicProfilePage(res: ServerResponse, shareToken: string): Promise<void> {
+  private async handlePublicProfilePage(req: IncomingMessage, res: ServerResponse, shareToken: string): Promise<void> {
     const record = this.options.profileRecordStore
       ? await this.options.profileRecordStore.getByShareToken(shareToken)
       : undefined;
@@ -774,7 +774,9 @@ export class AdminHttpServer {
       });
       return;
     }
-    await this.options.profileRecordStore?.recordShareAccess(record.id);
+    if (!this.getSession(req)) {
+      await this.options.profileRecordStore?.recordShareAccess(record.id);
+    }
     this.sendText(res, publicProfileHtml(record.summary), "text/html; charset=utf-8", {
       cacheControl: "private, no-store",
     });
@@ -831,7 +833,7 @@ export class AdminHttpServer {
     const expires = new Date(Date.now() + 12 * 60 * 60 * 1000);
     const nextSession: AdminSession = { ...session, csrfToken: randomBytes(32).toString("base64url"), expiresAt: expires.toISOString() };
     this.setSessionCookie(res, this.signSession(nextSession), expires);
-    this.sendJson(res, { ok: true, session: this.publicSession(nextSession) });
+    this.sendJson(res, { ok: true, session: await this.publicSession(nextSession) });
   }
 
   private async handleTasks(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -1435,6 +1437,7 @@ export class AdminHttpServer {
         type,
         refresh,
         createdBy: session.username,
+        cacheOnly: this.isReadOnlySession(session),
       });
       this.sendJson(res, generated);
     } catch (error) {
@@ -1636,10 +1639,11 @@ export class AdminHttpServer {
 
   private async handleModelOptions(res: ServerResponse, session: AdminSession): Promise<void> {
     if (!this.options.systemSettingsStore) {
+      const replyModel = { id: "gpt", label: "GPT", purpose: "reply", enabled: true };
       this.sendJson(res, {
-        replyModels: [
-          { id: "gpt", label: "GPT", purpose: "reply", enabled: true, hasApiKey: true },
-        ],
+        replyModels: session.role === "super_admin"
+          ? [{ ...replyModel, hasApiKey: true }]
+          : [replyModel],
       });
       return;
     }
@@ -1656,13 +1660,22 @@ export class AdminHttpServer {
       baseUrl: model.baseUrl,
       model: model.model,
     }));
+    const replyModels = models.filter((model) => (
+      model.enabled &&
+      model.hasApiKey &&
+      model.purpose === "reply"
+    ));
+    const publicReplyModels = replyModels.map((model) => ({
+      id: model.id,
+      label: model.label,
+      purpose: model.purpose,
+      enabled: model.enabled,
+    }));
     this.sendJson(res, {
       ...(session.role === "super_admin" ? { models } : {}),
-      replyModels: models.filter((model) => (
-        model.enabled &&
-        model.hasApiKey &&
-        model.purpose === "reply"
-      )),
+      replyModels: session.role === "super_admin"
+        ? replyModels
+        : publicReplyModels,
     });
   }
 
@@ -1959,6 +1972,7 @@ export class AdminHttpServer {
     refresh: boolean;
     createdBy: string;
     replaceRecordId?: string;
+    cacheOnly?: boolean;
   }): Promise<GeneratedProfileRecordResponse> {
     if (!/^\d+$/.test(args.userId)) {
       throw new ProfileRecordGenerationError("invalid_user_id", 400);
@@ -1992,6 +2006,9 @@ export class AdminHttpServer {
           record: latest,
         };
       }
+    }
+    if (args.cacheOnly) {
+      throw new ProfileRecordGenerationError("readonly_session", 403);
     }
     const result = args.type === "yesterday"
       ? await this.options.dailyProfileReviewService.getYesterdaySummaryDetail({
@@ -2624,12 +2641,15 @@ export class AdminHttpServer {
     };
   }
 
-  private publicSession(session: AdminSession): Omit<AdminSession, "expiresAt"> & { publicBaseUrl: string } {
+  private async publicSession(session: AdminSession): Promise<Omit<AdminSession, "expiresAt"> & { publicBaseUrl: string }> {
+    const allowedGroupIds = session.role === "viewer" && session.userId
+      ? (await this.findGroupsForViewer(session.userId)).map((group) => group.groupId)
+      : session.allowedGroupIds;
     return {
       role: session.role,
       username: session.username,
       ...(session.userId ? { userId: session.userId } : {}),
-      allowedGroupIds: session.allowedGroupIds,
+      allowedGroupIds,
       csrfToken: session.csrfToken,
       publicBaseUrl: this.options.publicBaseUrl,
     };
@@ -2644,7 +2664,11 @@ export class AdminHttpServer {
     const groups = await this.visibleGroups(session);
     const groupIds = new Set(groups.map((group) => group.groupId));
     const requestedGroupId = url.searchParams.get("groupId") ?? undefined;
-    const searchGroups = requestedGroupId && groupIds.has(requestedGroupId)
+    if (requestedGroupId && !groupIds.has(requestedGroupId)) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const searchGroups = requestedGroupId
       ? groups.filter((group) => group.groupId === requestedGroupId)
       : groups;
     const [memories, candidates, knowledge, profileRecordsPage] = await Promise.all([
@@ -2727,6 +2751,18 @@ export class AdminHttpServer {
         group.switcherUserIds.includes(session.userId)
       ));
     }
+    if (session.role === "viewer" && session.userId) {
+      const visible: GroupBotConfig[] = [];
+      for (const group of groups) {
+        if (group.enabled === false) {
+          continue;
+        }
+        if (await this.isCurrentNapcatGroupMember(group.groupId, session.userId)) {
+          visible.push(group);
+        }
+      }
+      return visible;
+    }
     return groups.filter((group) => group.enabled !== false && allowed.has(group.groupId));
   }
 
@@ -2741,11 +2777,7 @@ export class AdminHttpServer {
     if (session.role === "group_admin") {
       return group.switcherUserIds.includes(session.userId);
     }
-    if (!session.allowedGroupIds.includes(groupId)) {
-      return false;
-    }
-    const profiles = await this.getCachedMemberProfileData(groupId, { includeNapcatMembers: true });
-    return profiles?.members.some((member) => member.userId === session.userId) ?? false;
+    return this.isCurrentNapcatGroupMember(groupId, session.userId);
   }
 
   private requireSuperAdmin(session: AdminSession, res: ServerResponse): boolean {
@@ -2764,12 +2796,15 @@ export class AdminHttpServer {
     const groups = (await this.options.groupConfigService.getAll()).filter((group) => group.enabled !== false);
     const visibleGroups: GroupBotConfig[] = [];
     for (const group of groups) {
-      const profiles = await this.getCachedMemberProfileData(group.groupId, { includeNapcatMembers: true });
-      if (profiles?.members.some((member) => member.userId === userId)) {
+      if (await this.isCurrentNapcatGroupMember(group.groupId, userId)) {
         visibleGroups.push(group);
       }
     }
     return visibleGroups;
+  }
+
+  private async isCurrentNapcatGroupMember(groupId: string, userId: string): Promise<boolean> {
+    return (await this.safeListGroupMembers(groupId)).some((member) => String(member.user_id) === userId);
   }
 
   private async recordOperation(args: {

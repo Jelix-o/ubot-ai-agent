@@ -46,6 +46,18 @@ npm run build
 npm test
 ```
 
+V1.0.1 本地验收：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.0.1-local.ps1
+```
+
+包含本地全系统截图的验收：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.0.1-local.ps1 -WithScreenshots
+```
+
 本地后台全系统截图验证：
 
 ```powershell
@@ -121,7 +133,7 @@ Copy-Item .env.example .env
 
 ## 普通用户只读后台
 
-普通用户在登录页选择普通用户模式，只输入 QQ 号即可登录。后端通过 NapCat 群成员数据判断这个 QQ 所在的已启用群，并创建 `viewer` 会话。
+普通用户在登录页选择普通用户模式，只输入 QQ 号即可登录。后端通过当前 NapCat 群成员数据判断这个 QQ 所在的已启用群，并创建 `viewer` 会话；会话返回和后续访问都会重新按当前群成员关系计算可见群。
 
 只读用户可以查看群管理员能看到的群内数据：
 

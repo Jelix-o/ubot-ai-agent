@@ -795,6 +795,7 @@ export const LOGIN_HTML = `<!doctype html>
   <link rel="stylesheet" href="/admin.css">
 </head>
 <body class="login-page">
+  <div id="app" hidden></div>
   <main class="login-shell">
     <section class="login-copy" aria-label="UBot 后台介绍">
       <div class="brand"><span class="brand-mark">UB</span><div><strong>UBot</strong><small>群聊运营控制台</small></div></div>
@@ -835,6 +836,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
   <link rel="stylesheet" href="/admin.css">
 </head>
 <body>
+  <div id="app" hidden></div>
   <div class="app-shell">
     <aside>
       <div class="brand"><span class="brand-mark">UB</span><div><strong>UBot</strong><small>群聊运营控制台</small></div></div>

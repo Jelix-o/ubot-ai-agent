@@ -185,8 +185,12 @@ test("group config keeps default voice reply as a child switch of voice reply", 
       assert.equal(normalized?.defaultVoiceReplyEnabled, false);
 
       const defaultOn = await service.updateGroupConfig("67890", { defaultVoiceReplyEnabled: true });
-      assert.equal(defaultOn.voiceReplyEnabled, true);
-      assert.equal(defaultOn.defaultVoiceReplyEnabled, true);
+      assert.equal(defaultOn.voiceReplyEnabled, false);
+      assert.equal(defaultOn.defaultVoiceReplyEnabled, false);
+
+      const voiceOn = await service.updateGroupConfig("67890", { voiceReplyEnabled: true, defaultVoiceReplyEnabled: true });
+      assert.equal(voiceOn.voiceReplyEnabled, true);
+      assert.equal(voiceOn.defaultVoiceReplyEnabled, true);
 
       const voiceOff = await service.updateGroupConfig("67890", { voiceReplyEnabled: false });
       assert.equal(voiceOff.voiceReplyEnabled, false);

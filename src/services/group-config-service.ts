@@ -590,8 +590,8 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("defaultVoiceReplyEnabled" in input) {
     next.defaultVoiceReplyEnabled = normalizeBoolean(input.defaultVoiceReplyEnabled, "invalid_group_config");
-    if (next.defaultVoiceReplyEnabled) {
-      next.voiceReplyEnabled = true;
+    if (!next.voiceReplyEnabled) {
+      next.defaultVoiceReplyEnabled = false;
     }
   }
   if ("memoryDisabledUserIds" in input) {
