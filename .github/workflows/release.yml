@@ -29,6 +29,8 @@ jobs:
         run: npm run package:win
 
       - name: Publish GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: npm run release:github
+        uses: softprops/action-gh-release@v2
+        with:
+          name: UBot V1.0.1
+          body_path: RELEASE-v1.0.1.md
+          files: release/ubot-1.0.1-win.zip
