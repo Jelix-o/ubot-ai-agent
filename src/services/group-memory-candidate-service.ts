@@ -3,8 +3,10 @@ import type { GroupMemory, GroupMemoryCandidate, GroupMemoryCandidateStatus, Gro
 import type { AiService, ExtractedGroupMemoryCandidate, MemoryCandidateExtractionMessage } from "./ai-service.js";
 import type { GroupMemoryCandidateListPageArgs, GroupMemoryCandidateListPageResult, GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
 import type { GroupMemoryStore } from "./group-memory-store.js";
+import type { SystemSettingsStore } from "./system-settings-store.js";
 
-const AUTO_APPROVE_CONFIDENCE_THRESHOLD = 0.8;
+const DEFAULT_MEMORY_CANDIDATE_CONFIDENCE_THRESHOLD_PERCENT = 60;
+const DEFAULT_MEMORY_AUTO_APPROVE_CONFIDENCE_THRESHOLD_PERCENT = 80;
 const EVIDENCE_MESSAGE_LIMIT = 30;
 const EVIDENCE_SUMMARY_LIMIT = 2400;
 const MESSAGE_TEXT_LIMIT = 1000;
@@ -31,6 +33,13 @@ export interface GroupMemoryCandidateFlushStats {
   refinedMemoryCount: number;
 }
 
+interface MemoryConfidencePolicy {
+  candidateThreshold: number;
+  autoApproveThreshold: number;
+  effectiveAutoApproveThreshold: number;
+  unattendedModeEnabled: boolean;
+}
+
 export class GroupMemoryCandidateService {
   private readonly buffers = new Map<string, BufferedMemoryMessage[]>();
   private readonly approveInflight = new Map<string, Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>>>();
@@ -41,6 +50,7 @@ export class GroupMemoryCandidateService {
     private readonly aiService: Pick<AiService, "extractGroupMemoryCandidates"> &
       Partial<Pick<AiService, "normalizeMemoryCandidateLanguage" | "judgeMemorySemanticRelation">>,
     private readonly batchSize = 8,
+    private readonly systemSettingsStore?: Pick<SystemSettingsStore, "get">,
   ) {}
 
   async list(args: { groupId?: string; status?: GroupMemoryCandidateStatus } = {}): Promise<GroupMemoryCandidate[]> {
@@ -117,15 +127,17 @@ export class GroupMemoryCandidateService {
       this.memoryStore.list(candidate.groupId),
       this.candidateStore.list({ groupId: candidate.groupId }),
     ]);
+    const policy = await this.getMemoryConfidencePolicy();
     const duplicateDecision = await this.findDuplicateDecision(
       candidate,
       existingMemories.filter(isDedupReferenceMemory),
       existingCandidates.filter((item) => item.id !== id),
+      policy,
     );
 
     if (duplicateDecision.kind === "skip" || duplicateDecision.kind === "refine_memory") {
       const memory = duplicateDecision.memory;
-      const shouldRefine = duplicateDecision.kind === "refine_memory" || isMoreSpecificMemory(candidate, memory);
+      const shouldRefine = duplicateDecision.kind === "refine_memory" || isMoreSpecificMemory(candidate, memory, policy);
       const mergedTitle = duplicateDecision.kind === "refine_memory" ? duplicateDecision.mergedTitle : undefined;
       const mergedContent = duplicateDecision.kind === "refine_memory" ? duplicateDecision.mergedContent : undefined;
       const updatedMemory = shouldRefine
@@ -224,11 +236,17 @@ export class GroupMemoryCandidateService {
         this.candidateStore.list({ groupId }),
       ]);
       const dedupReferenceMemories = existingMemories.filter(isDedupReferenceMemory);
+      const policy = await this.getMemoryConfidencePolicy();
       const candidates = await this.aiService.extractGroupMemoryCandidates({
         groupId,
         messages,
         existingMemories: dedupReferenceMemories,
         existingCandidates: existingCandidates.filter((candidate) => candidate.status !== "rejected"),
+        confidencePolicy: {
+          candidateThreshold: policy.candidateThreshold,
+          autoApproveThreshold: policy.autoApproveThreshold,
+          unattendedModeEnabled: policy.unattendedModeEnabled,
+        },
       });
       let autoApprovedCount = 0;
       let pendingCount = 0;
@@ -237,10 +255,34 @@ export class GroupMemoryCandidateService {
       let mergedCandidateCount = 0;
       let refinedMemoryCount = 0;
       for (const rawCandidate of candidates) {
+        if (!meetsCandidateThreshold(rawCandidate, policy)) {
+          skippedLowValueCount += 1;
+          logInfo("Skipped below-threshold group memory candidate.", {
+            groupId,
+            type: rawCandidate.type,
+            subjectUserId: rawCandidate.subjectUserId,
+            title: rawCandidate.title,
+            confidence: rawCandidate.confidence,
+            candidateThreshold: policy.candidateThreshold,
+          });
+          continue;
+        }
         const candidate = await this.normalizeCandidate(rawCandidate);
         if (!candidate) {
           await this.addPendingLanguageReviewCandidate(groupId, rawCandidate, evidence);
           pendingCount += 1;
+          continue;
+        }
+        if (!meetsCandidateThreshold(candidate, policy)) {
+          skippedLowValueCount += 1;
+          logInfo("Skipped below-threshold group memory candidate.", {
+            groupId,
+            type: candidate.type,
+            subjectUserId: candidate.subjectUserId,
+            title: candidate.title,
+            confidence: candidate.confidence,
+            candidateThreshold: policy.candidateThreshold,
+          });
           continue;
         }
         const lowValueReason = getLowValueMemoryReason(candidate);
@@ -270,7 +312,7 @@ export class GroupMemoryCandidateService {
           source: "auto",
           evidence,
         };
-        const duplicateDecision = await this.findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, existingCandidates);
+        const duplicateDecision = await this.findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, existingCandidates, policy);
         if (duplicateDecision.kind === "skip" || duplicateDecision.kind === "skip_candidate") {
           skippedDuplicateCount += 1;
           continue;
@@ -311,7 +353,7 @@ export class GroupMemoryCandidateService {
           if (merged) {
             replaceCandidate(existingCandidates, merged);
             mergedCandidateCount += 1;
-            if (!forcedPending && shouldAutoApprove(merged) && merged.status === "pending") {
+            if (!forcedPending && shouldAutoApprove(merged, policy) && merged.status === "pending") {
               await this.candidateStore.approve(merged.id, this.memoryStore);
               const approvedCandidate = { ...merged, status: "approved" as const };
               replaceCandidate(existingCandidates, approvedCandidate);
@@ -341,7 +383,7 @@ export class GroupMemoryCandidateService {
           ...normalizedCandidate,
         });
         replaceCandidate(existingCandidates, result.candidate);
-        if (!forcedPending && shouldAutoApprove(result.candidate) && (result.created || result.candidate.status === "pending")) {
+        if (!forcedPending && shouldAutoApprove(result.candidate, policy) && (result.created || result.candidate.status === "pending")) {
           const approved = await this.candidateStore.approve(result.candidate.id, this.memoryStore);
           if (approved) {
             replaceCandidate(existingCandidates, approved.candidate);
@@ -416,12 +458,46 @@ export class GroupMemoryCandidateService {
     });
   }
 
+  private async getMemoryConfidencePolicy(): Promise<MemoryConfidencePolicy> {
+    if (!this.systemSettingsStore) {
+      return defaultMemoryConfidencePolicy();
+    }
+    try {
+      const settings = await this.systemSettingsStore.get();
+      const candidateThresholdPercent = normalizeThresholdPercent(
+        settings.memoryCandidateConfidenceThreshold,
+        DEFAULT_MEMORY_CANDIDATE_CONFIDENCE_THRESHOLD_PERCENT,
+      );
+      const autoApproveThresholdPercent = normalizeThresholdPercent(
+        settings.memoryAutoApproveConfidenceThreshold,
+        DEFAULT_MEMORY_AUTO_APPROVE_CONFIDENCE_THRESHOLD_PERCENT,
+      );
+      if (candidateThresholdPercent >= autoApproveThresholdPercent) {
+        return defaultMemoryConfidencePolicy();
+      }
+      const candidateThreshold = percentToConfidence(candidateThresholdPercent);
+      const autoApproveThreshold = percentToConfidence(autoApproveThresholdPercent);
+      return {
+        candidateThreshold,
+        autoApproveThreshold,
+        effectiveAutoApproveThreshold: settings.memoryUnattendedModeEnabled ? candidateThreshold : autoApproveThreshold,
+        unattendedModeEnabled: settings.memoryUnattendedModeEnabled === true,
+      };
+    } catch (error) {
+      logWarn("Failed to read memory confidence settings; using defaults.", {
+        error: (error as Error).message,
+      });
+      return defaultMemoryConfidencePolicy();
+    }
+  }
+
   private async findDuplicateDecision(
     candidate: CandidateLike,
     memories: GroupMemory[],
     candidates: GroupMemoryCandidate[],
+    policy: MemoryConfidencePolicy,
   ): Promise<DuplicateDecision> {
-    const localDecision = findDuplicateDecision(candidate, memories, candidates);
+    const localDecision = findDuplicateDecision(candidate, memories, candidates, policy);
     if (
       (localDecision.kind === "skip" ||
         localDecision.kind === "skip_candidate" ||
@@ -480,11 +556,38 @@ export class GroupMemoryCandidateService {
   }
 }
 
-function shouldAutoApprove(candidate: GroupMemoryCandidate): boolean {
-  if (candidate.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD) {
+function shouldAutoApprove(candidate: GroupMemoryCandidate, policy: MemoryConfidencePolicy): boolean {
+  if (candidate.confidence < policy.effectiveAutoApproveThreshold) {
     return false;
   }
   return candidate.type === "group_fact" || Boolean(candidate.subjectUserId);
+}
+
+function meetsCandidateThreshold(candidate: ExtractedGroupMemoryCandidate, policy: MemoryConfidencePolicy): boolean {
+  return candidate.confidence >= policy.candidateThreshold;
+}
+
+function defaultMemoryConfidencePolicy(): MemoryConfidencePolicy {
+  const candidateThreshold = percentToConfidence(DEFAULT_MEMORY_CANDIDATE_CONFIDENCE_THRESHOLD_PERCENT);
+  const autoApproveThreshold = percentToConfidence(DEFAULT_MEMORY_AUTO_APPROVE_CONFIDENCE_THRESHOLD_PERCENT);
+  return {
+    candidateThreshold,
+    autoApproveThreshold,
+    effectiveAutoApproveThreshold: autoApproveThreshold,
+    unattendedModeEnabled: false,
+  };
+}
+
+function normalizeThresholdPercent(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isInteger(parsed)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function percentToConfidence(value: number): number {
+  return Math.max(0, Math.min(1, value / 100));
 }
 
 function getLowValueMemoryReason(candidate: ExtractedGroupMemoryCandidate): string | undefined {
@@ -537,11 +640,12 @@ function findDuplicateDecision(
   candidate: CandidateLike,
   memories: GroupMemory[],
   candidates: GroupMemoryCandidate[],
+  policy: MemoryConfidencePolicy,
 ): DuplicateDecision {
   const comparableMemories = memories.filter((memory) => memory.enabled && sameScope(candidate, memory));
   const duplicateMemory = findMostSimilar(candidate, comparableMemories);
   if (duplicateMemory && duplicateMemory.similarity >= DUPLICATE_SIMILARITY_THRESHOLD) {
-    if (isMoreSpecificMemory(candidate, duplicateMemory.item)) {
+    if (isMoreSpecificMemory(candidate, duplicateMemory.item, policy)) {
       return { kind: "refine_memory", memory: duplicateMemory.item, similarity: duplicateMemory.similarity };
     }
     return { kind: "skip", memory: duplicateMemory.item, similarity: duplicateMemory.similarity };
@@ -549,7 +653,7 @@ function findDuplicateDecision(
 
   if (duplicateMemory && duplicateMemory.similarity >= RELATED_SIMILARITY_THRESHOLD) {
     const titleOverlap = textSimilarity(candidate.title, duplicateMemory.item.title);
-    if (titleOverlap >= DUPLICATE_SIMILARITY_THRESHOLD && isMoreSpecificMemory(candidate, duplicateMemory.item)) {
+    if (titleOverlap >= DUPLICATE_SIMILARITY_THRESHOLD && isMoreSpecificMemory(candidate, duplicateMemory.item, policy)) {
       return { kind: "refine_memory", memory: duplicateMemory.item, similarity: duplicateMemory.similarity };
     }
   }
@@ -591,8 +695,8 @@ function isDedupReferenceMemory(memory: GroupMemory): boolean {
   return memory.enabled && !memory.source.startsWith("daily_profile_review:");
 }
 
-function isMoreSpecificMemory(candidate: CandidateLike, memory: GroupMemory): boolean {
-  if (candidate.confidence < AUTO_APPROVE_CONFIDENCE_THRESHOLD) {
+function isMoreSpecificMemory(candidate: CandidateLike, memory: GroupMemory, policy: MemoryConfidencePolicy): boolean {
+  if (candidate.confidence < policy.autoApproveThreshold) {
     return false;
   }
 

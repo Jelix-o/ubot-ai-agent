@@ -18,6 +18,7 @@ export interface GroupConfig {
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
+  roastModeUserIds?: string[];
   manualIdentities?: Array<{ userIds: string[]; names: string[]; note?: string }>;
   liveChatDelaySeconds?: number;
   dailyReportEnabled?: boolean;
@@ -298,6 +299,9 @@ export interface SystemSettings {
   memoryDedupEnabled: boolean;
   memoryDedupTime: string;
   memoryDedupSemanticTimeoutMinutes: number;
+  memoryCandidateConfidenceThreshold: number;
+  memoryAutoApproveConfidenceThreshold: number;
+  memoryUnattendedModeEnabled: boolean;
   adminSecretConfigured?: boolean;
   groupAdminSecretConfigured?: boolean;
   defaultTriggerKeywords: Array<{ keyword: string; enabled: boolean }>;
@@ -472,10 +476,18 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
   if (csrfToken && shouldSendCsrf(options.method)) {
     headers["X-CSRF-Token"] = csrfToken;
   }
-  const res = await fetch(url, {
-    headers,
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers,
+      ...options,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(detail === "Failed to fetch"
+      ? "网络连接失败或服务器暂时无响应，请稍后重试。"
+      : `网络连接失败或服务器暂时无响应：${detail}`);
+  }
   if (res.status === 401) {
     if (window.location.pathname !== "/login") {
       window.location.href = "/login";

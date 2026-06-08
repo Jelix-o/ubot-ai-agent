@@ -1,4 +1,4 @@
-import type { SkillDefinition, SkillTtsConfig } from "../types.js";
+import type { SkillDefinition } from "../types.js";
 
 export interface MimoTtsInput {
   styleInstruction?: string;
@@ -23,30 +23,39 @@ export function buildMimoTtsInput(
   globalStyleHint?: string,
   options: MimoTtsBuildOptions = {},
 ): MimoTtsInput {
-  const normalized = normalizeTtsText(replyText);
+  const normalized = cleanTtsTargetText(replyText);
 
   if (!normalized) {
     return { assistantText: "" };
   }
 
-  const styleInstruction = buildStyleInstruction(skill, globalStyleHint);
-  const assistantText = addSentenceStyleTags(normalized, skill.ttsConfig, options.mode === "singing");
+  const singing = options.mode === "singing";
+  const styleInstruction = buildStyleInstruction(skill, normalized, globalStyleHint, singing);
+  const assistantText = singing ? `(唱歌)${normalized}` : normalized;
   return {
     ...(styleInstruction ? { styleInstruction } : {}),
     assistantText,
   };
 }
 
-function normalizeTtsText(text: string): string {
+function cleanTtsTargetText(text: string): string {
   return text
     .replace(/\r\n/g, "\n")
+    .replace(/```[a-zA-Z0-9_-]*\n?/g, "")
+    .replace(/```/g, "")
     .split("\n")
     .map((line) =>
       line
         .replace(/^\s{0,3}(?:[-*•]+|\d+\.)\s+/g, "")
+        .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
         .replace(/\*\*(.*?)\*\*/g, "$1")
         .replace(/__(.*?)__/g, "$1")
         .replace(/`([^`]+)`/g, "$1")
+        .replace(/<[^>]+>/g, "")
+        .replace(/[（(【\[]([^）)\]】]{1,30})[）)】\]]/g, (match, content: string) =>
+          isStageDirection(content) ? "" : match,
+        )
         .replace(/[*_~]/g, "")
         .trim(),
     )
@@ -57,15 +66,30 @@ function normalizeTtsText(text: string): string {
     .trim();
 }
 
-function buildStyleInstruction(skill: SkillDefinition, globalStyleHint?: string): string {
+function isStageDirection(content: string): boolean {
+  const normalized = content.trim();
+  if (!normalized) return false;
+  if (/^\d+$/.test(normalized)) return false;
+  return /(?:语气|语调|口吻|腔调|声线|音色|音量|语速|节奏|停顿|情绪|表情|旁白|独白|内心|唱腔|念白|轻声|低声|小声|大声|压低|提高|温柔|坚定|激动|开心|难过|伤心|紧张|害怕|生气|撒娇|俏皮|严肃|冷静|深情|哽咽|哭|笑|轻笑|大笑|冷笑|叹气|喘息|地$)/u.test(normalized);
+}
+
+function buildStyleInstruction(
+  skill: SkillDefinition,
+  cleanText: string,
+  globalStyleHint?: string,
+  singing = false,
+): string {
   const config = skill.ttsConfig;
+  const inferredInstruction = buildInferredStyleInstruction(cleanText);
   return uniqueInstructionParts([
     globalStyleHint,
     config?.stylePrompt,
     config?.voice ? `音色使用 ${config.voice}` : undefined,
     config?.dialect ? `带一点${config.dialect}口音，但不要影响可懂度` : undefined,
     config?.personaTone ? `人设腔调偏${config.personaTone}` : undefined,
-    "目标文本中的每句话已按 MiMo 标签自动标注基础情绪、复合情绪、整体语调、音色定位、语速节奏、情绪状态、语音特征和哭笑表达；按标签自然演绎，不要把指令内容读出来。",
+    singing ? "使用唱歌模式自然演绎正文，保持旋律感，不要把括号标签、舞台提示或控制说明唱出来。" : undefined,
+    inferredInstruction,
+    "assistant 消息只包含需要合成的干净正文；本消息中的风格、语气、情绪、音色、语速和舞台控制说明只用于演绎，不要朗读。",
   ]).join("，").trim();
 }
 
@@ -81,37 +105,19 @@ function uniqueInstructionParts(values: Array<string | undefined>): string[] {
   return parts;
 }
 
-function addSentenceStyleTags(text: string, config: SkillTtsConfig | undefined, singing: boolean): string {
+function buildInferredStyleInstruction(text: string): string | undefined {
   const sentences = splitSentences(text);
-  if (sentences.length === 0) {
-    return singing ? `(唱歌)${text}` : text;
-  }
+  if (sentences.length === 0) return undefined;
 
-  const taggedText = sentences.map((sentence) => {
-    const inferredTags = inferSentenceTags(sentence);
-    const styleTags = [
-      ...configuredTags(config),
-      ...inferredTags.styleTags,
-    ];
-    const stylePrefix = formatTagBlock(styleTags);
-    const audioPrefix = formatTagBlock(inferredTags.audioTags, "square");
-    return `${stylePrefix}${audioPrefix}${sentence}`;
-  }).join("");
-  return singing ? `(唱歌)${taggedText}` : taggedText;
+  const inferred = sentences.map(inferSentenceTags);
+  const styleTags = uniqueTags(inferred.flatMap((item) => item.styleTags));
+  const audioTags = uniqueTags(inferred.flatMap((item) => item.audioTags));
+  if (styleTags.length === 0 && audioTags.length === 0) return undefined;
+  return `根据正文语义自然演绎，参考风格：${styleTags.join("、")}；参考语音表现：${audioTags.join("、")}`;
 }
 
-function formatTagBlock(tags: string[], mode: "paren" | "square" = "paren"): string {
-  const uniqueTags = Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 8);
-  if (uniqueTags.length === 0) return "";
-  return mode === "square" ? `[${uniqueTags.join(" ")}]` : `(${uniqueTags.join(" ")})`;
-}
-
-function configuredTags(config: SkillTtsConfig | undefined): string[] {
-  if (!config) return [];
-  return [
-    config.dialect,
-    config.personaTone,
-  ].filter((value): value is string => Boolean(value?.trim()));
+function uniqueTags(tags: string[]): string[] {
+  return Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 12);
 }
 
 interface SentenceTtsTags {

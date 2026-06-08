@@ -24,8 +24,12 @@ const dedupLoading = shallowRef(false);
 const dedupTask = shallowRef<AdminTaskRecord | null>(null);
 const dedupTaskMessage = shallowRef("");
 const dedupDecisions = shallowRef<DedupDecision[]>([]);
+const dedupMode = shallowRef<DedupMode>("fast");
+const dedupPollFailures = shallowRef(0);
 const readonly = computed(() => app.readonly);
 let dedupPollTimer: ReturnType<typeof setTimeout> | undefined;
+
+type DedupMode = "fast" | "deep";
 
 interface DedupDecision {
   action: string;
@@ -38,6 +42,7 @@ interface DedupDecision {
 interface DedupPreviewResult {
   groupId: string;
   subjectUserId: string;
+  mode?: DedupMode;
   decisionCount: number;
   decisions: DedupDecision[];
   semanticStats?: Record<string, number>;
@@ -47,6 +52,7 @@ interface DedupPreviewResponse extends Partial<DedupPreviewResult> {
   queued?: boolean;
   taskId?: string;
   task?: AdminTaskRecord;
+  mode?: DedupMode;
 }
 const editForm = reactive({
   title: "",
@@ -291,8 +297,20 @@ function finishDedupPreview(result: DedupPreviewResult): void {
   dedupDecisions.value = result.decisions;
   dedupLoading.value = false;
   dedupTaskMessage.value = "";
+  dedupPollFailures.value = 0;
   clearDedupPolling();
   app.showToast(`发现 ${result.decisions.length} 组疑似重复记忆`);
+}
+
+function dedupModeLabel(mode: DedupMode): string {
+  return mode === "deep" ? "深度检测" : "快速检测";
+}
+
+function scheduleDedupPoll(taskId: string, delayMs = 1500): void {
+  clearDedupPolling();
+  dedupPollTimer = setTimeout(() => {
+    void pollDedupPreviewTask(taskId);
+  }, delayMs);
 }
 
 async function pollDedupPreviewTask(taskId: string): Promise<void> {
@@ -300,6 +318,7 @@ async function pollDedupPreviewTask(taskId: string): Promise<void> {
   try {
     const task = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(taskId)}`);
     if (dedupTask.value?.id !== taskId) return;
+    dedupPollFailures.value = 0;
     dedupTask.value = task;
     if (task.status === "succeeded") {
       const result = readDedupPreviewResult(task);
@@ -316,19 +335,25 @@ async function pollDedupPreviewTask(taskId: string): Promise<void> {
       app.showToast(task.error || "去重检测任务失败", "error");
       return;
     }
-    dedupTaskMessage.value = `后台检测中，进度 ${task.progress}%`;
-    dedupPollTimer = setTimeout(() => {
-      void pollDedupPreviewTask(taskId);
-    }, 1500);
+    dedupTaskMessage.value = `${dedupModeLabel(dedupMode.value)}后台处理中，进度 ${task.progress}%`;
+    scheduleDedupPoll(taskId);
   } catch (error) {
+    dedupPollFailures.value += 1;
+    if (dedupPollFailures.value <= 3) {
+      dedupTaskMessage.value = `连接暂时中断，正在重试（${dedupPollFailures.value}/3）。任务仍在后台运行。`;
+      scheduleDedupPoll(taskId, 2500);
+      return;
+    }
     dedupLoading.value = false;
-    dedupTaskMessage.value = "";
+    dedupTaskMessage.value = dedupTask.value
+      ? `轮询已暂停，请到任务中心查看任务 ${dedupTask.value.id}。`
+      : "";
     clearDedupPolling();
     app.showToast((error as Error).message, "error");
   }
 }
 
-async function previewDeduplicate(): Promise<void> {
+async function previewDeduplicate(mode: DedupMode = "fast"): Promise<void> {
   if (!ensureWritable()) return;
   if (!app.groupId) return;
   if (!filters.userId) {
@@ -336,9 +361,11 @@ async function previewDeduplicate(): Promise<void> {
     return;
   }
   clearDedupPolling();
+  dedupMode.value = mode;
+  dedupPollFailures.value = 0;
   dedupLoading.value = true;
   dedupTask.value = null;
-  dedupTaskMessage.value = "正在提交后台检测任务...";
+  dedupTaskMessage.value = `正在提交${dedupModeLabel(mode)}后台任务...`;
   dedupDecisions.value = [];
   try {
     const data = await api<DedupPreviewResponse>("/api/memories/deduplicate/preview", {
@@ -347,20 +374,20 @@ async function previewDeduplicate(): Promise<void> {
         groupId: app.groupId,
         type: filters.type || undefined,
         subjectUserId: filters.userId,
+        mode,
       }),
     });
     if (data.queued && data.taskId) {
       dedupTask.value = data.task ?? null;
-      dedupTaskMessage.value = "后台检测任务已启动，模型判断较慢时会自动等待完成";
-      app.showToast("去重检测已转入后台任务");
-      dedupPollTimer = setTimeout(() => {
-        void pollDedupPreviewTask(data.taskId!);
-      }, 800);
+      dedupTaskMessage.value = `${dedupModeLabel(mode)}任务已启动${mode === "deep" ? "，会调用模型语义判断" : "，只跑本地相似度"}。`;
+      app.showToast(`${dedupModeLabel(mode)}已转入后台任务`);
+      scheduleDedupPoll(data.taskId, 800);
       return;
     }
     finishDedupPreview({
       groupId: data.groupId ?? app.groupId,
       subjectUserId: data.subjectUserId ?? filters.userId,
+      mode: data.mode ?? mode,
       decisionCount: data.decisionCount ?? data.decisions?.length ?? 0,
       decisions: data.decisions ?? [],
       semanticStats: data.semanticStats,
@@ -408,6 +435,7 @@ function onGroupChanged(): void {
   filters.userId = "";
   dedupTask.value = null;
   dedupTaskMessage.value = "";
+  dedupPollFailures.value = 0;
   dedupLoading.value = false;
   dedupDecisions.value = [];
   void Promise.all([load(), loadMemberOptions()]).catch((error) => app.showToast(error.message, "error"));
@@ -430,7 +458,7 @@ onMounted(() => {
   if (type) filters.type = type;
   void Promise.all([load(), loadMemberOptions()]).then(() => {
     if (route.query.dedup === "1") {
-      void previewDeduplicate();
+      void previewDeduplicate("fast");
     }
   });
   window.addEventListener("keydown", onKeydown);
@@ -503,8 +531,11 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <p>请选择一个记忆成员后再检查重复。去重只处理该成员的长期记忆，避免全局扫描超时。</p>
       </div>
       <div class="dedup-actions">
-        <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate">
-          {{ readonly ? "只读模式不可检测" : dedupLoading ? "检测中..." : "检测当前成员重复" }}
+        <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate('fast')">
+          {{ readonly ? "只读模式不可检测" : dedupLoading && dedupMode === "fast" ? "快速检测中..." : "快速检测当前成员重复" }}
+        </button>
+        <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate('deep')">
+          {{ readonly ? "只读模式不可检测" : dedupLoading && dedupMode === "deep" ? "深度检测中..." : "深度检测" }}
         </button>
         <button class="btn" type="button" :disabled="readonly || dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">
           {{ readonly ? "只读模式不可去重" : "应用去重" }}
@@ -512,7 +543,9 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       </div>
       <div v-if="dedupTaskMessage || dedupTask" class="dedup-task-status">
         <span>{{ dedupTaskMessage || "后台任务已更新" }}</span>
-        <span v-if="dedupTask" class="muted">任务 {{ dedupTask.id }} · {{ dedupTask.status }} · {{ dedupTask.progress }}%</span>
+        <span v-if="dedupTask" class="muted">
+          {{ dedupModeLabel(dedupMode) }} · 任务 {{ dedupTask.id }} · {{ dedupTask.status }} · {{ dedupTask.progress }}% · {{ formatDateTime(dedupTask.updatedAt) }}
+        </span>
       </div>
       <div v-if="dedupDecisions.length" class="dedup-results">
         <div class="dedup-summary">发现 {{ dedupDecisions.length }} 条处理建议，先展示前 5 条。</div>

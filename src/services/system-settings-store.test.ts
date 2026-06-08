@@ -261,6 +261,78 @@ test("SystemSettingsStore normalizes memory dedup semantic timeout minutes", asy
   assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: "bad" as never })).memoryDedupSemanticTimeoutMinutes, 10);
 });
 
+test("SystemSettingsStore manages memory confidence thresholds", async () => {
+  const store = await createStore();
+
+  const defaults = await store.get();
+  assert.equal(defaults.memoryCandidateConfidenceThreshold, 60);
+  assert.equal(defaults.memoryAutoApproveConfidenceThreshold, 80);
+  assert.equal(defaults.memoryUnattendedModeEnabled, false);
+
+  const next = await store.update({
+    memoryCandidateConfidenceThreshold: 55,
+    memoryAutoApproveConfidenceThreshold: 88,
+    memoryUnattendedModeEnabled: true,
+  });
+  assert.equal(next.memoryCandidateConfidenceThreshold, 55);
+  assert.equal(next.memoryAutoApproveConfidenceThreshold, 88);
+  assert.equal(next.memoryUnattendedModeEnabled, true);
+});
+
+test("SystemSettingsStore rejects invalid memory confidence thresholds", async () => {
+  const store = await createStore();
+
+  await assert.rejects(
+    store.update({ memoryCandidateConfidenceThreshold: -1 }),
+    /invalid_memory_confidence_thresholds/,
+  );
+
+  await assert.rejects(
+    store.update({ memoryAutoApproveConfidenceThreshold: 101 }),
+    /invalid_memory_confidence_thresholds/,
+  );
+
+  await assert.rejects(
+    store.update({
+      memoryCandidateConfidenceThreshold: 80,
+      memoryAutoApproveConfidenceThreshold: 80,
+    }),
+    /invalid_memory_confidence_thresholds/,
+  );
+
+  await assert.rejects(
+    store.update({
+      memoryCandidateConfidenceThreshold: 90,
+      memoryAutoApproveConfidenceThreshold: 70,
+    }),
+    /invalid_memory_confidence_thresholds/,
+  );
+});
+
+test("SystemSettingsStore backfills memory confidence thresholds for legacy files", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
+  const filePath = path.join(dir, "system-settings.json");
+  await writeFile(filePath, JSON.stringify({
+    profileSummaryMaxChars: 1800,
+    profileShortSummaryMaxChars: 140,
+    dailyProfileReviewEnabled: true,
+    dailyProfileReviewTime: "00:00",
+    memoryDedupEnabled: true,
+    memoryDedupTime: "23:00",
+    memoryDedupSemanticTimeoutMinutes: 10,
+    defaultTriggerKeywords: [{ keyword: "trigger", enabled: true }],
+    models: [],
+    selectedModelIds: {},
+    commands: [],
+    updatedAt: "2026-06-07T16:48:04.112Z",
+  }), "utf8");
+
+  const settings = await new SystemSettingsStore(filePath).get();
+  assert.equal(settings.memoryCandidateConfidenceThreshold, 60);
+  assert.equal(settings.memoryAutoApproveConfidenceThreshold, 80);
+  assert.equal(settings.memoryUnattendedModeEnabled, false);
+});
+
 test("SystemSettingsStore rejects invalid scheduler time", async () => {
   const store = await createStore();
   await assert.rejects(

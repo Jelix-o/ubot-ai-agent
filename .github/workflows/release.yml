@@ -31,6 +31,6 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: UBot V1.0.1
-          body_path: RELEASE-v1.0.1.md
-          files: release/ubot-1.0.1-win.zip
+          name: UBot V1.0.2
+          body_path: RELEASE-v1.0.2.md
+          files: release/ubot-1.0.2-win.zip

@@ -213,7 +213,7 @@ test("candidate service deduplicates and approves candidates into long term memo
             type: "group_fact",
             title: "固定群规",
             content: "提问前先贴上下文。",
-            confidence: 0.55,
+            confidence: 0.65,
           },
         ];
       },
@@ -263,7 +263,7 @@ test("candidate evidence keeps detailed summaries when approved into memory", as
             type: "group_fact",
             title: "详细证据",
             content: "详细来源证据需要在批准后保留下来。",
-            confidence: 0.55,
+            confidence: 0.65,
           },
         ];
       },

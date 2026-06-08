@@ -368,6 +368,11 @@ test("extractGroupMemoryCandidates leaves room for reasoning model output", asyn
         updatedAt: "2026-06-01T10:00:00.000Z",
       },
     ],
+    confidencePolicy: {
+      candidateThreshold: 0.55,
+      autoApproveThreshold: 0.88,
+      unattendedModeEnabled: true,
+    },
     messages: [
       {
         userId: "20001",
@@ -380,6 +385,8 @@ test("extractGroupMemoryCandidates leaves room for reasoning model output", asyn
 
   const request = calls[0] as { max_tokens?: number; messages?: Array<{ content: string }> };
   assert.equal(request.max_tokens, 8000);
+  assert.match(request.messages?.[0]?.content ?? "", /55%/);
+  assert.match(request.messages?.[0]?.content ?? "", /88%/);
   assert.match(request.messages?.[0]?.content ?? "", /必须使用简体中文/);
   assert.match(request.messages?.[0]?.content ?? "", /含义相同或高度相似时不要新增/);
   assert.match(request.messages?.[1]?.content ?? "", /Existing approved long-term memories/);

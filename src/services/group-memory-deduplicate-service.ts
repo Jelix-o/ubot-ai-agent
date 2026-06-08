@@ -35,6 +35,14 @@ export interface MemoryDedupPreviewBuildResult {
   semanticStats: MemoryDedupSemanticStats;
 }
 
+export interface MemoryDedupProgressEvent {
+  phase: "loaded" | "local_scanned" | "semantic_pair" | "completed";
+  memoryCount: number;
+  semanticCandidatePairCount: number;
+  semanticPairLimit: number;
+  semanticPairsProcessed: number;
+}
+
 export interface MemoryDedupApplyResult {
   applied: Array<{ duplicateId: string; action: string; targetId?: string }>;
   skipped: Array<{ duplicateId: string; error: string }>;
@@ -50,7 +58,12 @@ export class GroupMemoryDeduplicateService {
 
   async preview(
     memories: GroupMemory[],
-    options: { semanticMode?: "member" | "global"; useSemanticJudge?: boolean; semanticTimeoutMs?: number } = {},
+    options: {
+      semanticMode?: "member" | "global";
+      useSemanticJudge?: boolean;
+      semanticTimeoutMs?: number;
+      onProgress?: (event: MemoryDedupProgressEvent) => Promise<void> | void;
+    } = {},
   ): Promise<MemoryDedupPreviewBuildResult> {
     return buildMemoryDeduplicateDecisions(memories, this.judgeMemorySemanticRelation, options);
   }
@@ -117,16 +130,25 @@ export class GroupMemoryDeduplicateService {
       semanticMode?: "member" | "global";
       useSemanticJudge?: boolean;
       semanticTimeoutMs?: number;
+      onProgress?: (event: MemoryDedupProgressEvent) => Promise<void> | void;
     } = {},
   ): Promise<MemoryDedupPreviewBuildResult> {
     const memories = (await this.memoryStore.list(groupId))
       .filter((memory) => memory.enabled)
       .filter((memory) => !options.subjectUserId || memory.subjectUserId === options.subjectUserId)
       .filter((memory) => !options.type || memory.type === options.type);
+    await options.onProgress?.({
+      phase: "loaded",
+      memoryCount: memories.length,
+      semanticCandidatePairCount: 0,
+      semanticPairLimit: 0,
+      semanticPairsProcessed: 0,
+    });
     return this.preview(memories, {
       semanticMode: options.semanticMode,
       useSemanticJudge: options.useSemanticJudge,
       semanticTimeoutMs: options.semanticTimeoutMs,
+      onProgress: options.onProgress,
     });
   }
 
@@ -211,7 +233,12 @@ export function normalizeMemoryDedupDecision(value: unknown): MemoryDedupDecisio
 async function buildMemoryDeduplicateDecisions(
   memories: GroupMemory[],
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>,
-  options: { semanticMode?: "member" | "global"; useSemanticJudge?: boolean; semanticTimeoutMs?: number } = {},
+  options: {
+    semanticMode?: "member" | "global";
+    useSemanticJudge?: boolean;
+    semanticTimeoutMs?: number;
+    onProgress?: (event: MemoryDedupProgressEvent) => Promise<void> | void;
+  } = {},
 ): Promise<MemoryDedupPreviewBuildResult> {
   const decisions: MemoryDedupDecision[] = [];
   const semanticPairs: Array<{ left: GroupMemory; right: GroupMemory; similarity: number }> = [];
@@ -248,10 +275,22 @@ async function buildMemoryDeduplicateDecisions(
     }
   }
 
+  const semanticPairLimit = judgeMemorySemanticRelation && options.useSemanticJudge !== false && semanticPairs.length > 0
+    ? Math.min(DEDUP_SEMANTIC_PAIR_LIMIT, semanticPairs.length)
+    : 0;
+  await options.onProgress?.({
+    phase: "local_scanned",
+    memoryCount: active.length,
+    semanticCandidatePairCount: semanticPairs.length,
+    semanticPairLimit,
+    semanticPairsProcessed: 0,
+  });
+
   if (judgeMemorySemanticRelation && options.useSemanticJudge !== false && semanticPairs.length > 0) {
     semanticStats.candidatePairCount = semanticPairs.length;
     const alreadyDuplicateIds = new Set(decisions.map((decision) => decision.duplicateId));
     const protectedTargetIds = new Set(decisions.flatMap((decision) => decision.targetId ? [decision.targetId] : []));
+    let semanticPairsProcessed = 0;
     for (const pair of semanticPairs
       .sort((left, right) => right.similarity - left.similarity)
       .slice(0, DEDUP_SEMANTIC_PAIR_LIMIT)) {
@@ -268,6 +307,14 @@ async function buildMemoryDeduplicateDecisions(
         semanticStats,
         options.semanticTimeoutMs ?? DEDUP_SEMANTIC_PAIR_TIMEOUT_MS,
       );
+      semanticPairsProcessed += 1;
+      await options.onProgress?.({
+        phase: "semantic_pair",
+        memoryCount: active.length,
+        semanticCandidatePairCount: semanticPairs.length,
+        semanticPairLimit,
+        semanticPairsProcessed,
+      });
       if (!semanticDecision.decision) {
         continue;
       }
@@ -288,6 +335,13 @@ async function buildMemoryDeduplicateDecisions(
     if (seen.has(decision.duplicateId)) return false;
     seen.add(decision.duplicateId);
     return true;
+  });
+  await options.onProgress?.({
+    phase: "completed",
+    memoryCount: active.length,
+    semanticCandidatePairCount: semanticPairs.length,
+    semanticPairLimit,
+    semanticPairsProcessed: semanticPairLimit,
   });
   return { decisions: uniqueDecisions, semanticStats };
 }

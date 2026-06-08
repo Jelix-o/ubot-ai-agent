@@ -91,6 +91,47 @@ test("memory semantic deduplicate judge times out per pair without blocking prev
   }
 });
 
+test("memory semantic deduplicate preview reports deep-mode progress", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-dedup-progress-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "movie taste",
+      content: "Collects quiet science fiction films and prefers short recommendations.",
+      source: "test",
+    });
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "running habit",
+      content: "Usually records evening running routes and weekly distance goals.",
+      source: "test",
+    });
+
+    const phases: string[] = [];
+    const service = new GroupMemoryDeduplicateService(store, async () => ({ action: "new", reason: "different" }));
+
+    const preview = await service.previewGroup("67890", {
+      subjectUserId: "20001",
+      semanticMode: "member",
+      useSemanticJudge: true,
+      semanticTimeoutMs: 100,
+      onProgress(event) {
+        phases.push(`${event.phase}:${event.semanticPairsProcessed}/${event.semanticPairLimit}`);
+      },
+    });
+
+    assert.equal(preview.semanticStats.called, 1);
+    assert.deepEqual(phases, ["loaded:0/0", "local_scanned:0/1", "semantic_pair:1/1", "completed:1/1"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("scheduled member memory dedup skips semantic judge by default", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-dedup-scheduled-fast-"));
   try {

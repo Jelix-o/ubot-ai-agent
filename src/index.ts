@@ -78,6 +78,8 @@ async function main(): Promise<void> {
     new GroupMemoryCandidateStore(config.groupMemoryCandidatesPath),
     groupMemoryStore,
     runtimeProfileAiService,
+    8,
+    systemSettingsStore,
   );
   const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath);
   const skillService = new SkillService(config.skillsDir);

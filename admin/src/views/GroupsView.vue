@@ -64,6 +64,7 @@ function defaultGroupConfig(): GroupConfig {
     allowedSkillIds: [],
     switcherUserIds: [],
     liveChatUserIds: [],
+    roastModeUserIds: [],
     manualIdentities: [],
     liveChatDelaySeconds: 30,
     dailyReportEnabled: false,
@@ -91,6 +92,7 @@ function resetForm(data: GroupConfig): void {
     allowedSkillIds: [...(data.allowedSkillIds || [])],
     switcherUserIds: [...(data.switcherUserIds || [])],
     liveChatUserIds: [...(data.liveChatUserIds || [])],
+    roastModeUserIds: [...(data.roastModeUserIds || [])],
     manualIdentities: [...(data.manualIdentities || [])],
     blacklistedUserIds: [...(data.blacklistedUserIds || [])],
     triggerKeywords: [...(data.triggerKeywords || [])],
@@ -508,6 +510,9 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           </label>
           <label>实时对话 QQ
             <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
+          </label>
+          <label>嘴臭模式 QQ
+            <MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label class="wide">黑名单 QQ
             <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />

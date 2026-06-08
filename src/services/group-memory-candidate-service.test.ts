@@ -94,6 +94,37 @@ test("English memory candidates stay pending for manual language review when nor
   }
 });
 
+test("below-threshold English candidates do not enter language review pending queue", async () => {
+  const fixture = await createFixture({
+    memoryCandidateConfidenceThreshold: 70,
+    memoryAutoApproveConfidenceThreshold: 90,
+    memoryUnattendedModeEnabled: true,
+  });
+  try {
+    fixture.ai.candidates = [
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "Food preference",
+        content: "Tester prefers spicy food.",
+        confidence: 0.65,
+      },
+    ];
+    fixture.ai.normalized = null;
+
+    fixture.service.queueMessage(message("Tester prefers spicy food long term."));
+    const stats = await fixture.service.flushGroup("67890");
+
+    assert.equal(stats?.skippedLowValueCount, 1);
+    assert.equal(stats?.pendingCount, 0);
+    assert.equal(fixture.ai.normalizeCalls.length, 0);
+    assert.equal((await fixture.memoryStore.list("67890")).length, 0);
+    assert.equal((await fixture.candidateStore.list({ groupId: "67890" })).length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("manual approval merges semantic duplicate into existing memory instead of creating another memory", async () => {
   const fixture = await createFixture();
   try {
@@ -283,6 +314,102 @@ test("durable preference candidates still auto approve", async () => {
   }
 });
 
+test("memory confidence thresholds skip, pend, and auto approve candidates", async () => {
+  const fixture = await createFixture({
+    memoryCandidateConfidenceThreshold: 70,
+    memoryAutoApproveConfidenceThreshold: 90,
+    memoryUnattendedModeEnabled: false,
+  });
+  try {
+    fixture.ai.candidates = [
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "低置信偏好",
+        content: "Tester 长期喜欢简短回答。",
+        confidence: 0.69,
+      },
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "候选偏好",
+        content: "Tester 长期喜欢直接给结论。",
+        confidence: 0.72,
+      },
+      {
+        type: "group_fact",
+        title: "高置信群规",
+        content: "群里长期约定发布问题前先补上下文。",
+        confidence: 0.92,
+      },
+    ];
+
+    fixture.service.queueMessage(message("Tester 说自己长期喜欢直接给结论，群里也约定先补上下文。"));
+    const stats = await fixture.service.flushGroup("67890");
+
+    assert.equal(stats?.skippedLowValueCount, 1);
+    assert.equal(stats?.pendingCount, 1);
+    assert.equal(stats?.autoApprovedCount, 1);
+    const pending = await fixture.candidateStore.list({ groupId: "67890", status: "pending" });
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.title, "候选偏好");
+    const memories = await fixture.memoryStore.list("67890");
+    assert.equal(memories.length, 1);
+    assert.equal(memories[0]?.title, "高置信群规");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("unattended mode auto approves candidate-threshold memories without bypassing safeguards", async () => {
+  const fixture = await createFixture({
+    memoryCandidateConfidenceThreshold: 60,
+    memoryAutoApproveConfidenceThreshold: 90,
+    memoryUnattendedModeEnabled: true,
+  });
+  try {
+    fixture.ai.candidates = [
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "合格偏好",
+        content: "Tester 长期喜欢先看结论。",
+        confidence: 0.65,
+      },
+      {
+        type: "member_profile",
+        subjectUserId: "99999",
+        title: "归属不明偏好",
+        content: "该成员长期喜欢夜间沟通。",
+        confidence: 0.72,
+      },
+      {
+        type: "member_profile",
+        subjectUserId: "20001",
+        title: "Food preference",
+        content: "Tester prefers spicy food.",
+        confidence: 0.95,
+      },
+    ];
+    fixture.ai.normalized = null;
+
+    fixture.service.queueMessage(message("Tester 说长期喜欢先看结论，也提到了其他人的夜间沟通偏好。"));
+    const stats = await fixture.service.flushGroup("67890");
+
+    assert.equal(stats?.autoApprovedCount, 1);
+    assert.equal(stats?.pendingCount, 2);
+    const memories = await fixture.memoryStore.list("67890");
+    assert.equal(memories.length, 1);
+    assert.equal(memories[0]?.title, "合格偏好");
+    const pending = await fixture.candidateStore.list({ groupId: "67890", status: "pending" });
+    assert.equal(pending.length, 2);
+    assert.equal(pending.some((candidate) => candidate.title === "归属不明偏好"), true);
+    assert.equal(pending.some((candidate) => candidate.source === "auto:language_review"), true);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("concurrent manual approvals of the same candidate create only one memory", async () => {
   const fixture = await createFixture();
   try {
@@ -332,7 +459,11 @@ test("approving an already approved candidate is idempotent and does not create 
   }
 });
 
-async function createFixture(): Promise<{
+async function createFixture(settings?: {
+  memoryCandidateConfidenceThreshold: number;
+  memoryAutoApproveConfidenceThreshold: number;
+  memoryUnattendedModeEnabled: boolean;
+}): Promise<{
   ai: FakeMemoryAi;
   service: GroupMemoryCandidateService;
   memoryStore: GroupMemoryStore;
@@ -345,7 +476,15 @@ async function createFixture(): Promise<{
   const ai = new FakeMemoryAi();
   return {
     ai,
-    service: new GroupMemoryCandidateService(candidateStore, memoryStore, ai, 8),
+    service: new GroupMemoryCandidateService(
+      candidateStore,
+      memoryStore,
+      ai,
+      8,
+      settings
+        ? { async get() { return settings as never; } }
+        : undefined,
+    ),
     memoryStore,
     candidateStore,
     cleanup: () => rm(dir, { recursive: true, force: true }),

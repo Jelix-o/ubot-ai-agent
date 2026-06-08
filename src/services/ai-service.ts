@@ -179,9 +179,10 @@ export class AiService {
     userInput: string;
     images?: MessageImageInput[];
     identityContext?: AiIdentityContext;
+    scenarioInstruction?: string;
   }): Promise<AiReply> {
-    const { skill, history, userInput, images = [], identityContext } = args;
-    const messages = buildChatMessages(skill, history, userInput, images, identityContext);
+    const { skill, history, userInput, images = [], identityContext, scenarioInstruction } = args;
+    const messages = buildChatMessages(skill, history, userInput, images, identityContext, scenarioInstruction);
 
     // Some OpenAI-compatible gateways only provide text through stream chunks.
     const streamReply = await this.tryStreamReply(messages, skill.temperature);
@@ -326,6 +327,11 @@ export class AiService {
     messages: MemoryCandidateExtractionMessage[];
     existingMemories?: Array<Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence" | "source" | "updatedAt">>;
     existingCandidates?: Array<Pick<GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence" | "status" | "updatedAt">>;
+    confidencePolicy?: {
+      candidateThreshold: number;
+      autoApproveThreshold: number;
+      unattendedModeEnabled: boolean;
+    };
   }): Promise<ExtractedGroupMemoryCandidate[]> {
     if (args.messages.length === 0) {
       return [];
@@ -338,6 +344,7 @@ export class AiService {
       .join("\n");
     const existingMemoryLines = formatExistingMemoryContext(args.existingMemories ?? []);
     const existingCandidateLines = formatExistingCandidateContext(args.existingCandidates ?? []);
+    const confidencePolicy = formatMemoryConfidencePolicy(args.confidencePolicy);
     const extractionSystemPrompt = [
       "你是 QQ 群长期记忆候选提炼器。",
       "只提炼稳定、耐久、能长期帮助机器人理解成员或群聊的信息。",
@@ -348,7 +355,7 @@ export class AiService {
       "如果新聊天对已有记忆有实质补充，只输出同一 subject、同一主题的更完整中文候选，内容要合并旧含义和新细节。",
       "优先输出少量高价值候选；同一 subject 的紧密相关事实合并成一条，互不相关的稳定主题才拆开。",
       "title 和 content 必须使用简体中文。不要输出英文标题或英文内容，除非英文是专有名词、产品名或原文称呼。",
-      "置信度：发言人直接说明自己的稳定事实或群内明确确认的稳定群事实用 >=0.85；较弱但可用的事实用 0.65-0.79；太弱则不输出。",
+      `置信度策略：低于 ${confidencePolicy.candidatePercent}% 的事实不要输出；${confidencePolicy.candidatePercent}%-${confidencePolicy.autoApprovePercent - 1}% 只作为候选审核；达到 ${confidencePolicy.autoApprovePercent}% 及以上才是高置信长期记忆。${confidencePolicy.unattendedModeEnabled ? `当前无人值守已开启，程序会把达到 ${confidencePolicy.candidatePercent}% 且归属明确、中文合格的候选直接入库。` : ""}`,
       "只返回 JSON，不要 markdown。",
       'Schema: {"candidates":[{"type":"member_profile","subjectUserId":"123","title":"简短中文标题","content":"中文稳定事实","confidence":0.7}]}',
       "如果没有值得记录的内容，返回 {\"candidates\":[]}。",
@@ -896,6 +903,7 @@ export function buildChatMessages(
   userInput: string,
   images: MessageImageInput[] = [],
   identityContext?: AiIdentityContext,
+  scenarioInstruction?: string,
 ): ChatMessage[] {
   const exampleMessages =
     skill.exampleExchanges?.flatMap((example) => [
@@ -914,7 +922,7 @@ export function buildChatMessages(
   return [
     {
       role: "system",
-      content: buildSystemPrompt(skill, identityContext),
+      content: buildSystemPrompt(skill, identityContext, scenarioInstruction),
     },
     ...exampleMessages,
     ...history.map((turn) => ({
@@ -1140,7 +1148,32 @@ function formatExistingCandidateContext(
     .join("\n");
 }
 
-export function buildSystemPrompt(skill: SkillDefinition, identityContext?: AiIdentityContext): string {
+function formatMemoryConfidencePolicy(policy: {
+  candidateThreshold: number;
+  autoApproveThreshold: number;
+  unattendedModeEnabled: boolean;
+} | undefined): { candidatePercent: number; autoApprovePercent: number; unattendedModeEnabled: boolean } {
+  const candidatePercent = confidenceToPercent(policy?.candidateThreshold, 60);
+  const autoApprovePercent = confidenceToPercent(policy?.autoApproveThreshold, 80);
+  return {
+    candidatePercent: Math.min(candidatePercent, Math.max(0, autoApprovePercent - 1)),
+    autoApprovePercent,
+    unattendedModeEnabled: policy?.unattendedModeEnabled === true,
+  };
+}
+
+function confidenceToPercent(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(100, Math.round(value * 100)));
+}
+
+export function buildSystemPrompt(
+  skill: SkillDefinition,
+  identityContext?: AiIdentityContext,
+  scenarioInstruction?: string,
+): string {
   const commonChatBehavior = COMMON_PERSONA_CHAT_RULES.map((rule) => `- ${rule}`).join("\n");
   const style = skill.styleRules.map((rule) => `- ${rule}`).join("\n");
   const knowledge = skill.knowledge.map((item) => `- ${item}`).join("\n");
@@ -1187,6 +1220,7 @@ export function buildSystemPrompt(skill: SkillDefinition, identityContext?: AiId
     groupMemoryContext ? ["", "Approved group memory:", groupMemoryContext].join("\n") : "",
     knowledgeContext ? ["", "Matched group knowledge:", knowledgeContext].join("\n") : "",
     interactionContext ? ["", "Current interaction context:", interactionContext].join("\n") : "",
+    scenarioInstruction ? ["", "Current one-shot scenario:", scenarioInstruction].join("\n") : "",
     examples,
     sourceSkill,
   ].join("\n");

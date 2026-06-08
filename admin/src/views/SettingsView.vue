@@ -25,6 +25,9 @@ const settings = reactive<SystemSettings>({
   memoryDedupEnabled: true,
   memoryDedupTime: "23:00",
   memoryDedupSemanticTimeoutMinutes: 10,
+  memoryCandidateConfidenceThreshold: 60,
+  memoryAutoApproveConfidenceThreshold: 80,
+  memoryUnattendedModeEnabled: false,
   adminSecretConfigured: false,
   groupAdminSecretConfigured: false,
   defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
@@ -167,6 +170,7 @@ async function load(): Promise<void> {
 
 async function save(): Promise<void> {
   normalizeModelFieldsBeforeSave();
+  if (!validateMemoryPolicyBeforeSave()) return;
   if (!validateModelsBeforeSave()) return;
   saving.value = true;
   try {
@@ -185,6 +189,24 @@ async function save(): Promise<void> {
   } finally {
     saving.value = false;
   }
+}
+
+function validateMemoryPolicyBeforeSave(): boolean {
+  const candidateThreshold = settings.memoryCandidateConfidenceThreshold;
+  const autoApproveThreshold = settings.memoryAutoApproveConfidenceThreshold;
+  if (!Number.isInteger(candidateThreshold) || candidateThreshold < 0 || candidateThreshold > 100) {
+    app.showToast("候选记忆阈值必须是 0-100 的整数百分比", "error");
+    return false;
+  }
+  if (!Number.isInteger(autoApproveThreshold) || autoApproveThreshold < 0 || autoApproveThreshold > 100) {
+    app.showToast("长期记忆阈值必须是 0-100 的整数百分比", "error");
+    return false;
+  }
+  if (candidateThreshold >= autoApproveThreshold) {
+    app.showToast("候选记忆阈值必须低于长期记忆阈值", "error");
+    return false;
+  }
+  return true;
 }
 
 function normalizeModelFieldsBeforeSave(): void {
@@ -428,6 +450,11 @@ onMounted(() => {
               <label>记忆去重触发时间<input v-model="settings.memoryDedupTime" class="input" type="time" /></label>
               <label>去重模型单次判断超时（分钟）<input v-model.number="settings.memoryDedupSemanticTimeoutMinutes" class="input" type="number" min="1" max="60" /></label>
             </div>
+            <div class="policy-row policy-wide memory-policy-row">
+              <label>候选记忆阈值（%）<input v-model.number="settings.memoryCandidateConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
+              <label>长期记忆阈值（%）<input v-model.number="settings.memoryAutoApproveConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
+              <label class="policy-toggle"><span>无人值守候选入库</span><input v-model="settings.memoryUnattendedModeEnabled" type="checkbox" /></label>
+            </div>
           </div>
         </div>
 
@@ -578,6 +605,10 @@ onMounted(() => {
   grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.7fr);
   align-items: center;
   gap: 12px;
+}
+
+.memory-policy-row {
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
 }
 
 .policy-toggle {

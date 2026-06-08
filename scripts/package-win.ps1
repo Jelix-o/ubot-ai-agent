@@ -40,8 +40,8 @@ $itemsToCopy = @(
   "package-lock.json",
   "README.md",
   "COMMANDS.md",
-  "RELEASE-v1.0.1.md",
-  "V1.0.1-LOCAL-AUDIT.md",
+  "RELEASE-v1.0.2.md",
+  "V1.0.2-LOCAL-AUDIT.md",
   ".env.example",
   ".env.server-2022.example"
 )

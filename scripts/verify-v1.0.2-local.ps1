@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$releaseZip = Join-Path $projectRoot "release\ubot-1.0.1-win.zip"
+$releaseZip = Join-Path $projectRoot "release\ubot-1.0.2-win.zip"
 $contactSheet = Join-Path $projectRoot "release\admin-ui-smoke\_contact-sheet.png"
 
 function Invoke-Step {
@@ -56,8 +56,8 @@ try {
         "config\groups.example.json",
         "README.md",
         "COMMANDS.md",
-        "RELEASE-v1.0.1.md",
-        "V1.0.1-LOCAL-AUDIT.md"
+        "RELEASE-v1.0.2.md",
+        "V1.0.2-LOCAL-AUDIT.md"
       )) {
         if ($entryNames -notcontains $required) {
           throw "Release package missing required entry: $required"
@@ -142,7 +142,7 @@ try {
   }
 
   Write-Host ""
-  Write-Host "V1.0.1 local verification passed."
+  Write-Host "V1.0.2 local verification passed."
 } finally {
   Pop-Location
 }

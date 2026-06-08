@@ -39,10 +39,12 @@ test("TtsService decodes audio data, writes wav file, and exposes base64 record 
     assert.equal(payload.audio.format, "wav");
     assert.equal(payload.messages[0].role, "user");
     assert.match(payload.messages[0].content, /热情 讲故事/);
-    assert.match(payload.messages[0].content, /目标文本中的每句话已按 MiMo 标签自动标注基础情绪/);
+    assert.match(payload.messages[0].content, /参考风格：平静、释然、干练、清亮/);
+    assert.match(payload.messages[0].content, /本消息中的风格、语气、情绪、音色、语速和舞台控制说明只用于演绎，不要朗读/);
     assert.equal(payload.messages[1].role, "assistant");
-    assert.match(payload.messages[1].content, /^\([^)]*\)/);
-    assert.match(payload.messages[1].content, /先说结论/);
+    assert.equal(payload.messages[1].content, "先说结论，这事能做");
+    assert.doesNotMatch(payload.messages[1].content, /^\([^)]*\)/);
+    assert.doesNotMatch(payload.messages[1].content, /\[[^\]]+\]/);
 
     return new Response(
       JSON.stringify({
@@ -91,7 +93,10 @@ test("TtsService uses skill voice and MiMo assistant singing tags", async () => 
     assert.equal(payload.model, MIMO_TTS_MODEL);
     assert.equal(payload.audio.voice, "Chloe");
     assert.equal(payload.messages.at(-1)?.role, "assistant");
-    assert.match(payload.messages.at(-1)?.content ?? "", /^\(唱歌\)/);
+    assert.equal(payload.messages.at(-1)?.content, "(唱歌)唱一段给我听");
+    assert.doesNotMatch(payload.messages.at(-1)?.content ?? "", /\(平静|开心|悲伤/);
+    assert.doesNotMatch(payload.messages.at(-1)?.content ?? "", /\[[^\]]+\]/);
+    assert.match(payload.messages[0]?.content ?? "", /使用唱歌模式自然演绎正文/);
     return new Response(
       JSON.stringify({
         choices: [{ message: { audio: { data: Buffer.from("song").toString("base64") } } }],
@@ -115,7 +120,7 @@ test("TtsService uses skill voice and MiMo assistant singing tags", async () => 
       ttsConfig: { voice: "Chloe" },
     }, { mode: "singing" });
     assert.equal((await readFile(result.filePath)).toString(), "song");
-    assert.match(result.spokenText, /^\(唱歌\)/);
+    assert.equal(result.spokenText, "(唱歌)唱一段给我听");
     await result.cleanup();
   } finally {
     globalThis.fetch = originalFetch;

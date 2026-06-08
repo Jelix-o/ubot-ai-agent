@@ -26,6 +26,7 @@ import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import {
   GroupMemoryDeduplicateService,
+  type MemoryDedupProgressEvent,
   normalizeMemoryDedupDecision,
   type MemoryDedupDecision,
 } from "./services/group-memory-deduplicate-service.js";
@@ -1061,18 +1062,22 @@ export class AdminHttpServer {
     }
     const service = new GroupMemoryDeduplicateService(this.options.groupMemoryStore, this.options.judgeMemorySemanticRelation);
     const semanticTimeoutMs = await this.getMemoryDedupSemanticTimeoutMs();
+    const mode = body.mode === "deep" ? "deep" : "fast";
+    const previewSemanticTimeoutMs = mode === "deep" ? Math.min(semanticTimeoutMs, 30 * 1000) : semanticTimeoutMs;
     const type = body.type === "member_profile" || body.type === "group_fact" ? body.type : undefined;
-    const runPreview = async () => {
+    const runPreview = async (updateTaskProgress?: (event: MemoryDedupProgressEvent) => Promise<void>) => {
       const dedupPreview = await service.previewGroup(groupId, {
         subjectUserId,
         ...(type ? { type } : {}),
         semanticMode: "member",
-        useSemanticJudge: true,
-        semanticTimeoutMs,
+        useSemanticJudge: mode === "deep",
+        semanticTimeoutMs: previewSemanticTimeoutMs,
+        ...(updateTaskProgress ? { onProgress: updateTaskProgress } : {}),
       });
       return {
         groupId,
         subjectUserId,
+        mode,
         decisionCount: dedupPreview.decisions.length,
         decisions: dedupPreview.decisions,
         semanticStats: dedupPreview.semanticStats,
@@ -1085,11 +1090,17 @@ export class AdminHttpServer {
         groupId,
         subjectUserId,
         operatorUserId: session.userId ?? session.username,
-        detail: `preview; semanticJudge=true; timeoutMs=${semanticTimeoutMs}`,
-      }, runPreview);
+        detail: `preview; mode=${mode}; semanticJudge=${mode === "deep"}; timeoutMs=${previewSemanticTimeoutMs}`,
+      }, async (_task, updateProgress) => runPreview(async (event) => {
+        await updateProgress(
+          progressForMemoryDedupEvent(event, mode),
+          detailForMemoryDedupEvent(event, mode, previewSemanticTimeoutMs),
+        );
+      }));
       this.sendJson(res, {
         groupId,
         subjectUserId,
+        mode,
         queued: true,
         taskId: task.id,
         task,
@@ -1521,6 +1532,7 @@ export class AdminHttpServer {
           "invalid_model_id",
           "duplicate_model_id",
           "invalid_model_purpose",
+          "invalid_memory_confidence_thresholds",
         ].includes(errorCode)) {
           this.sendJson(res, { error: errorCode }, 400);
           return;
@@ -3272,6 +3284,27 @@ function normalizeTaskStatus(value: string | undefined): AdminTaskStatus | undef
   return value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled"
     ? value
     : undefined;
+}
+
+function progressForMemoryDedupEvent(event: MemoryDedupProgressEvent, mode: "fast" | "deep"): number {
+  if (event.phase === "loaded") return 18;
+  if (event.phase === "local_scanned") return mode === "deep" && event.semanticPairLimit > 0 ? 35 : 80;
+  if (event.phase === "semantic_pair") {
+    if (event.semanticPairLimit <= 0) return 80;
+    return Math.min(90, 35 + Math.floor((event.semanticPairsProcessed / event.semanticPairLimit) * 55));
+  }
+  return 95;
+}
+
+function detailForMemoryDedupEvent(event: MemoryDedupProgressEvent, mode: "fast" | "deep", timeoutMs: number): string {
+  return [
+    `preview; mode=${mode}`,
+    `phase=${event.phase}`,
+    `memories=${event.memoryCount}`,
+    `semanticCandidates=${event.semanticCandidatePairCount}`,
+    `semanticProcessed=${event.semanticPairsProcessed}/${event.semanticPairLimit}`,
+    `timeoutMs=${timeoutMs}`,
+  ].join("; ");
 }
 
 function normalizeModelPurpose(value: string): SystemModelPurpose {

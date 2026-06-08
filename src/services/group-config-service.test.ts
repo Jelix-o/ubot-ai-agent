@@ -29,6 +29,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
           allowedSkillIds: ["assistant"],
           switcherUserIds: [],
           liveChatUserIds: [],
+          roastModeUserIds: ["20003", "bad", "20003", " 20004 "],
           blacklistedUserIds: ["20001", "bad", "20001", " 20002 "],
         },
         {
@@ -42,7 +43,9 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
     },
     async (service) => {
       assert.deepEqual((await service.getGroup("67890"))?.blacklistedUserIds, ["20001", "20002"]);
+      assert.deepEqual((await service.getGroup("67890"))?.roastModeUserIds, ["20003", "20004"]);
       assert.deepEqual((await service.getGroup("67891"))?.blacklistedUserIds, []);
+      assert.deepEqual((await service.getGroup("67891"))?.roastModeUserIds, []);
       assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
       assert.equal((await service.getGroup("67890"))?.defaultVoiceReplyEnabled, false);
     },
@@ -92,6 +95,7 @@ test("group config updates full editable config with validation", async () => {
         allowedSkillIds: ["zxp", "zxp", "assistant"],
         switcherUserIds: ["10001", "10001"],
         liveChatUserIds: ["20001"],
+        roastModeUserIds: ["20002", "20002"],
         manualIdentities: [{ userIds: ["20001"], names: ["Tester"], note: "note" }],
         liveChatDelaySeconds: 30,
         dailyReportEnabled: false,
@@ -115,6 +119,7 @@ test("group config updates full editable config with validation", async () => {
       assert.deepEqual(updated.allowedSkillIds, ["zxp", "assistant"]);
       assert.deepEqual(updated.switcherUserIds, ["10001"]);
       assert.deepEqual(updated.liveChatUserIds, ["20001"]);
+      assert.deepEqual(updated.roastModeUserIds, ["20002"]);
       assert.equal(updated.liveChatDelaySeconds, 30);
       assert.equal(updated.dailyReportEnabled, false);
       assert.equal(updated.dailyReportTime, "18:05");
@@ -146,6 +151,10 @@ test("group config updates full editable config with validation", async () => {
       );
       await assert.rejects(
         () => service.updateGroupConfig("67890", { switcherUserIds: ["bad"] }),
+        { code: "invalid_user_ids" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { roastModeUserIds: ["bad"] }),
         { code: "invalid_user_ids" },
       );
       await assert.rejects(

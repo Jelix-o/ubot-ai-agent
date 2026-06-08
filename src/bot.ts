@@ -113,6 +113,13 @@ const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 const MSG_VOICE_REPLY_NO_PERMISSION = "你没有管理语音回复的权限";
 
+const ROAST_MODE_SCENARIO_INSTRUCTION = [
+  "本轮是群管理后台配置的“嘴臭模式”主动接话。",
+  "保持当前 skill 的完整人格、语气、表达 DNA 和回复格式，不要切换成通用助理。",
+  "把当前发言人视为刚刚挑衅或攻击了机器人：你可以像被骂急了一样反击，语气尖锐、嘴硬、阴阳怪气、嘲讽感强，允许不讲太多道理，优先短促有力。",
+  "围绕对方这几句发言本身开火，不要编造现实身份、隐私、家庭、疾病、民族、性别、地域等不可验证攻击点，不要输出威胁或煽动现实伤害。",
+].join("\n");
+
 const RUNTIME_COMMAND_SPECS = {
   admin: { builtinPrefix: ADMIN_PREFIX, builtinAliases: [] },
   blacklist: { builtinPrefix: BLACKLIST_PREFIX, builtinAliases: [] },
@@ -198,6 +205,11 @@ export interface MessageTransport {
 interface MessageInteractionContext {
   interactionTargets: AiInteractionTarget[];
   replyContext?: AiReplyContext;
+}
+
+interface ConversationOptions {
+  allowControlledMention?: boolean;
+  scenarioInstruction?: string;
 }
 
 type ReplyOutputMode = "text" | "voice" | "singing";
@@ -701,7 +713,7 @@ export class BotApplication {
       return;
     }
 
-    if (this.isLiveChatUser(groupConfig, userId) && !parsedMessage.hasAtBot && parsedMessage.text) {
+    if (this.isActiveChatTrackedUser(groupConfig, userId) && shouldBufferActiveChatMessage(parsedMessage, commandText)) {
       this.liveChatService.addMessage(groupId, userId, parsedMessage.text, Date.now(), messageContext);
     }
 
@@ -784,7 +796,7 @@ export class BotApplication {
       const groups = await this.getEnabledGroupConfigs();
 
       for (const groupConfig of groups) {
-        const trackedUserIds = groupConfig.liveChatUserIds;
+        const trackedUserIds = getActiveChatUserIds(groupConfig);
         if (trackedUserIds.length === 0) {
           continue;
         }
@@ -835,6 +847,7 @@ export class BotApplication {
 
         try {
           await this.groupLock.run(groupId, async () => {
+            const isRoastMode = this.isRoastModeUser(groupConfig, candidate.userId);
             await this.handleConversation(
               groupConfig,
               candidate.userId,
@@ -843,6 +856,9 @@ export class BotApplication {
               resolveDefaultReplyMode(groupConfig),
               [candidate.userId],
               buildBufferedInteractionContext(candidate.messages),
+              {
+                ...(isRoastMode ? { scenarioInstruction: ROAST_MODE_SCENARIO_INSTRUCTION } : {}),
+              },
             );
           });
           logInfo("Sent live chat reply.", {
@@ -850,6 +866,7 @@ export class BotApplication {
             userId: candidate.userId,
             messageCount: candidate.messages.length,
             delaySeconds,
+            roastMode: this.isRoastModeUser(groupConfig, candidate.userId),
           });
         } catch (error) {
           logError("Live chat tick failed.", {
@@ -2277,8 +2294,11 @@ export class BotApplication {
     replyMode: ReplyOutputMode = "text",
     prefixMentionUserIds: string[] = [],
     messageContext: MessageInteractionContext = { interactionTargets: [] },
-    allowControlledMention = false,
+    optionsOrAllowControlledMention: ConversationOptions | boolean = false,
   ): Promise<void> {
+    const options: ConversationOptions = typeof optionsOrAllowControlledMention === "boolean"
+      ? { allowControlledMention: optionsOrAllowControlledMention }
+      : optionsOrAllowControlledMention;
     const skill = await this.resolveSkill(groupConfig);
     const history = await this.conversationStore.getTurns(groupConfig.groupId, userId);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
@@ -2328,6 +2348,7 @@ export class BotApplication {
       userInput: normalizedUserInput,
       images: resolvedImages,
       identityContext,
+      ...(options.scenarioInstruction ? { scenarioInstruction: options.scenarioInstruction } : {}),
     };
 
     try {
@@ -2338,7 +2359,7 @@ export class BotApplication {
       );
       const replyText = sanitizeMentionEcho(reply.text, buildSanitizeTargets(messageContext));
       const controlledMentionUserId =
-        allowControlledMention && resolvedMentionUserIds.length === 0 && replyMode === "text"
+        options.allowControlledMention === true && resolvedMentionUserIds.length === 0 && replyMode === "text"
           ? await this.resolveControlledMentionUserId({
               groupConfig,
               skill,
@@ -2456,6 +2477,7 @@ export class BotApplication {
       userInput: string;
       images?: MessageImageInput[];
       identityContext?: AiIdentityContext;
+      scenarioInstruction?: string;
     },
   ): Promise<ReplyAiResult> {
     const route = await this.getReplyAiRoute(groupConfig);
@@ -2956,6 +2978,14 @@ export class BotApplication {
 
   private isLiveChatUser(groupConfig: GroupBotConfig, userId: string): boolean {
     return groupConfig.liveChatUserIds.includes(userId);
+  }
+
+  private isRoastModeUser(groupConfig: GroupBotConfig, userId: string): boolean {
+    return (groupConfig.roastModeUserIds ?? []).includes(userId);
+  }
+
+  private isActiveChatTrackedUser(groupConfig: GroupBotConfig, userId: string): boolean {
+    return this.isLiveChatUser(groupConfig, userId) || this.isRoastModeUser(groupConfig, userId);
   }
 
   private isBlacklistedUser(groupConfig: GroupBotConfig, userId: string): boolean {
@@ -4278,6 +4308,22 @@ function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
   }
 
   return (groupConfig.liveChatDelayMinutes ?? 5) * 60;
+}
+
+function getActiveChatUserIds(groupConfig: GroupBotConfig): string[] {
+  return Array.from(new Set([
+    ...groupConfig.liveChatUserIds,
+    ...(groupConfig.roastModeUserIds ?? []),
+  ]));
+}
+
+function shouldBufferActiveChatMessage(
+  parsedMessage: ReturnType<typeof parseGroupMessage>,
+  commandText: string,
+): boolean {
+  return !parsedMessage.hasAtBot &&
+    Boolean(parsedMessage.text.trim()) &&
+    !commandText.trim().startsWith("#");
 }
 
 function formatLiveChatDelay(groupConfig: GroupBotConfig): string {

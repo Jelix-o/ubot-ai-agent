@@ -72,6 +72,29 @@ test("AdminTaskStore starts background task runs without waiting for result", as
   });
 });
 
+test("AdminTaskStore lets background tasks persist progress updates", async () => {
+  await withStore(async (store) => {
+    const wrapped = await store.run({
+      type: "memory-dedup",
+      title: "Deep memory dedup preview",
+      groupId: "67890",
+      subjectUserId: "20001",
+      operatorUserId: "admin",
+      detail: "preview; mode=deep",
+    }, async (_task, updateProgress) => {
+      const updated = await updateProgress(55, "preview; mode=deep; phase=semantic_pair");
+      assert.equal(updated?.progress, 55);
+      assert.equal(updated?.detail, "preview; mode=deep; phase=semantic_pair");
+      return { decisionCount: 1 };
+    });
+
+    assert.equal(wrapped.task.status, "succeeded");
+    assert.equal(wrapped.task.progress, 100);
+    assert.deepEqual(wrapped.task.result, { decisionCount: 1 });
+    assert.equal(wrapped.task.detail, "preview; mode=deep; phase=semantic_pair");
+  });
+});
+
 test("AdminTaskStore records failed task runs", async () => {
   await withStore(async (store) => {
     await assert.rejects(
@@ -179,6 +202,35 @@ test("AdminTaskStore marks stale active model checks as failed", async () => {
     assert.equal(failed?.progress, 100);
     assert.match(failed?.error ?? "", /自动标记失败|鑷姩鏍囪澶辫触/);
     assert.equal(typeof failed?.durationMs, "number");
+  });
+});
+
+test("AdminTaskStore marks active memory dedup tasks stale after twelve minutes", async () => {
+  await withStore(async (store) => {
+    const neverFinishes = new Promise<never>(() => undefined);
+    const started = await store.start({
+      type: "memory-dedup",
+      title: "Deep memory dedup preview",
+      groupId: "67890",
+      subjectUserId: "20001",
+      operatorUserId: "admin",
+    }, async () => neverFinishes);
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if ((await store.get(started.id))?.status === "running") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const running = await store.get(started.id);
+    assert.equal(running?.status, "running");
+    assert.ok(running?.startedAt);
+
+    await store.sweepStaleTasks(new Date(new Date(running.startedAt).getTime() + (11 * 60 * 1000)));
+    assert.equal((await store.get(started.id))?.status, "running");
+
+    await store.sweepStaleTasks(new Date(new Date(running.startedAt).getTime() + (13 * 60 * 1000)));
+    const failed = await store.get(started.id);
+    assert.equal(failed?.status, "failed");
+    assert.equal(failed?.progress, 100);
   });
 });
 

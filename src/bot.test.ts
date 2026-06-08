@@ -265,6 +265,9 @@ class FakeSystemSettingsStore {
       memoryDedupEnabled: this.scheduler.memoryDedupEnabled ?? true,
       memoryDedupTime: this.scheduler.memoryDedupTime ?? "23:00",
       memoryDedupSemanticTimeoutMinutes: this.scheduler.memoryDedupSemanticTimeoutMinutes ?? 10,
+      memoryCandidateConfidenceThreshold: 60,
+      memoryAutoApproveConfidenceThreshold: 80,
+      memoryUnattendedModeEnabled: false,
       defaultTriggerKeywords: this.defaultTriggerKeywords,
       models: this.models,
       selectedModelIds: {},
@@ -323,6 +326,7 @@ class FakeAiService {
     userInput: string;
     images?: Array<{ url?: string; file?: string; summary?: string }>;
     identityContext?: AiIdentityContext;
+    scenarioInstruction?: string;
   }> = [];
   controlledMentionCalls: Array<{
     skill: SkillDefinition;
@@ -349,6 +353,7 @@ class FakeAiService {
     userInput: string;
     images?: Array<{ url?: string; file?: string; summary?: string }>;
     identityContext?: AiIdentityContext;
+    scenarioInstruction?: string;
   }): Promise<AiReply> {
     this.calls.push(args);
     return this.responder();
@@ -661,6 +666,7 @@ function cloneGroup(group: GroupBotConfig): GroupBotConfig {
     allowedSkillIds: [...group.allowedSkillIds],
     switcherUserIds: [...group.switcherUserIds],
     liveChatUserIds: [...group.liveChatUserIds],
+    roastModeUserIds: [...(group.roastModeUserIds ?? [])],
     blacklistedUserIds: [...(group.blacklistedUserIds ?? [])],
     opsAlertsEnabled: group.opsAlertsEnabled !== false,
     manualIdentities: group.manualIdentities?.map((identity) => ({
@@ -2745,6 +2751,163 @@ test("buffers tracked users and replies during live chat tick when bot stayed si
   assert.equal(aiService.calls.length, 1);
   assert.equal(aiService.calls[0]?.userInput, "1. 第一句\n2. 第二句");
   assert.equal(transport.sent.at(-1)?.text, "[CQ:at,qq=20001] 我接一句");
+});
+
+test("roast mode users reuse live chat timing and add one-shot scenario instruction", async () => {
+  const { app, aiService, transport } = await withMockedNow(
+    Date.parse("2026-04-13T02:00:00.000Z"),
+    async () =>
+      createApp({
+        groupConfigService: new FakeGroupConfigService([
+          {
+            groupId: "67890",
+            currentSkillId: "assistant",
+            allowedSkillIds: ["assistant"],
+            switcherUserIds: ["99999"],
+            liveChatUserIds: [],
+            roastModeUserIds: ["20001"],
+            liveChatDelayMinutes: 1,
+            dailyReportEnabled: true,
+            dailyReportTime: "18:00",
+            dailyReportTopUserCount: 3,
+          },
+        ]),
+        aiService: new FakeAiService(async () => ({
+          text: "嘴硬回击",
+          model: "test-model",
+          skillId: "assistant",
+        })),
+      }),
+  );
+
+  await withMockedNow(Date.parse("2026-04-13T02:00:00.000Z"), async () => {
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "你这机器人也不行啊" } }], 20001));
+  });
+  await withMockedNow(Date.parse("2026-04-13T02:01:05.000Z"), async () => {
+    await (app as unknown as { runLiveChatTick(): Promise<void> }).runLiveChatTick();
+  });
+
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.userInput, "你这机器人也不行啊");
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /嘴臭模式/);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /保持当前 skill/);
+  assert.equal(transport.sent.at(-1)?.text, "[CQ:at,qq=20001] 嘴硬回击");
+});
+
+test("roast mode follows default voice reply config", async () => {
+  const { app, aiService, transport, ttsService } = await withMockedNow(
+    Date.parse("2026-04-13T02:00:00.000Z"),
+    async () =>
+      createApp({
+        groupConfigService: new FakeGroupConfigService([
+          {
+            groupId: "67890",
+            currentSkillId: "assistant",
+            allowedSkillIds: ["assistant"],
+            switcherUserIds: ["99999"],
+            liveChatUserIds: [],
+            roastModeUserIds: ["20001"],
+            liveChatDelayMinutes: 1,
+            dailyReportEnabled: true,
+            dailyReportTime: "18:00",
+            dailyReportTopUserCount: 3,
+            voiceReplyEnabled: true,
+            defaultVoiceReplyEnabled: true,
+          },
+        ]),
+        aiService: new FakeAiService(async () => ({
+          text: "语音回击",
+          model: "test-model",
+          skillId: "assistant",
+        })),
+        ttsService: new FakeTtsService(async () => ({
+          filePath: "D:/tmp/roast.wav",
+          recordFile: "base64://cm9hc3Q=",
+          async cleanup() {},
+        })),
+      }),
+  );
+
+  await withMockedNow(Date.parse("2026-04-13T02:00:00.000Z"), async () => {
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "又来攻击机器人" } }], 20001));
+  });
+  await withMockedNow(Date.parse("2026-04-13T02:01:05.000Z"), async () => {
+    await (app as unknown as { runLiveChatTick(): Promise<void> }).runLiveChatTick();
+  });
+
+  assert.equal(aiService.calls.length, 1);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /嘴臭模式/);
+  assert.equal(ttsService.calls[0]?.text, "语音回击");
+  assert.equal(ttsService.calls[0]?.options?.mode, "speech");
+  assert.equal(transport.records[0]?.recordFile, "base64://cm9hc3Q=");
+  assert.equal(transport.sent.length, 0);
+});
+
+test("roast mode takes precedence over normal live chat for overlapping users", async () => {
+  const { app, aiService } = await withMockedNow(
+    Date.parse("2026-04-13T02:00:00.000Z"),
+    async () =>
+      createApp({
+        groupConfigService: new FakeGroupConfigService([
+          {
+            groupId: "67890",
+            currentSkillId: "assistant",
+            allowedSkillIds: ["assistant"],
+            switcherUserIds: ["99999"],
+            liveChatUserIds: ["20001"],
+            roastModeUserIds: ["20001"],
+            liveChatDelayMinutes: 1,
+            dailyReportEnabled: true,
+            dailyReportTime: "18:00",
+            dailyReportTopUserCount: 3,
+          },
+        ]),
+      }),
+  );
+
+  await withMockedNow(Date.parse("2026-04-13T02:00:00.000Z"), async () => {
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "同名单触发" } }], 20001));
+  });
+  await withMockedNow(Date.parse("2026-04-13T02:01:05.000Z"), async () => {
+    await (app as unknown as { runLiveChatTick(): Promise<void> }).runLiveChatTick();
+  });
+
+  assert.equal(aiService.calls.length, 1);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /嘴臭模式/);
+});
+
+test("blacklisted roast mode users stay silent", async () => {
+  const { app, aiService, transport } = await withMockedNow(
+    Date.parse("2026-04-13T02:00:00.000Z"),
+    async () =>
+      createApp({
+        groupConfigService: new FakeGroupConfigService([
+          {
+            groupId: "67890",
+            currentSkillId: "assistant",
+            allowedSkillIds: ["assistant"],
+            switcherUserIds: ["99999"],
+            liveChatUserIds: [],
+            roastModeUserIds: ["20001"],
+            blacklistedUserIds: ["20001"],
+            liveChatDelayMinutes: 1,
+            dailyReportEnabled: true,
+            dailyReportTime: "18:00",
+            dailyReportTopUserCount: 3,
+          },
+        ]),
+      }),
+  );
+
+  await withMockedNow(Date.parse("2026-04-13T02:00:00.000Z"), async () => {
+    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "黑名单里也不触发" } }], 20001));
+  });
+  await withMockedNow(Date.parse("2026-04-13T02:01:05.000Z"), async () => {
+    await (app as unknown as { runLiveChatTick(): Promise<void> }).runLiveChatTick();
+  });
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, 0);
 });
 
 test("live chat only mentions the tracked speaker when their message mentions someone else", async () => {

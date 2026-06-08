@@ -261,6 +261,7 @@ export interface GroupBotConfig {
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
+  roastModeUserIds?: string[];
   manualIdentities?: GroupManualIdentity[];
   liveChatDelaySeconds?: number;
   liveChatDelayMinutes?: number;
@@ -384,6 +385,9 @@ export interface SystemSettings {
   memoryDedupEnabled: boolean;
   memoryDedupTime: string;
   memoryDedupSemanticTimeoutMinutes: number;
+  memoryCandidateConfidenceThreshold: number;
+  memoryAutoApproveConfidenceThreshold: number;
+  memoryUnattendedModeEnabled: boolean;
   adminSecretHash?: string;
   groupAdminSecretHash?: string;
   adminSecretConfigured?: boolean;

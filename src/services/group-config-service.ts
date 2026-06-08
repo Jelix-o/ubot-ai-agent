@@ -16,6 +16,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "allowedSkillIds"
   | "switcherUserIds"
   | "liveChatUserIds"
+  | "roastModeUserIds"
   | "manualIdentities"
   | "liveChatDelaySeconds"
   | "dailyReportEnabled"
@@ -482,6 +483,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     allowedSkillIds: Array.from(new Set(group.allowedSkillIds ?? [])),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
+    roastModeUserIds: normalizeUserIds(group.roastModeUserIds),
     manualIdentities: normalizeManualIdentities(group.manualIdentities),
     liveChatDelaySeconds: normalizeDelaySeconds(group.liveChatDelaySeconds),
     liveChatDelayMinutes: normalizeDelayMinutes(group.liveChatDelayMinutes),
@@ -532,6 +534,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("liveChatUserIds" in input) {
     next.liveChatUserIds = normalizeUserIdsStrict(input.liveChatUserIds);
+  }
+  if ("roastModeUserIds" in input) {
+    next.roastModeUserIds = normalizeUserIdsStrict(input.roastModeUserIds);
   }
   if ("manualIdentities" in input) {
     next.manualIdentities = normalizeManualIdentitiesStrict(input.manualIdentities);

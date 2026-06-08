@@ -107,8 +107,11 @@ test("admin viewer sessions render non-system pages as read-only", async () => {
 
   assert.match(memoriesView, /function ensureWritable\(\): boolean/);
   assert.match(memoriesView, /if \(readonly\.value\) return;/);
-  assert.match(memoriesView, /async function previewDeduplicate\(\): Promise<void> \{\s*if \(!ensureWritable\(\)\) return;/);
-  assert.match(memoriesView, /:disabled="readonly \|\| dedupLoading" @click="previewDeduplicate"/);
+  assert.match(memoriesView, /async function previewDeduplicate\(mode: DedupMode = "fast"\): Promise<void> \{\s*if \(!ensureWritable\(\)\) return;/);
+  assert.match(memoriesView, /@click="previewDeduplicate\('fast'\)"/);
+  assert.match(memoriesView, /@click="previewDeduplicate\('deep'\)"/);
+  assert.match(memoriesView, /dedupPollFailures\.value <= 3/);
+  assert.match(memoriesView, /轮询已暂停，请到任务中心查看任务/);
   assert.match(memoriesView, /:disabled="readonly \|\| dedupLoading \|\| !dedupDecisions\.length"/);
   assert.match(memoriesView, /:disabled="readonly \|\| loading \|\| !selectedIds\.size"/);
   assert.match(memoriesView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
@@ -304,7 +307,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v1\.0\.1/);
+  assert.match(appShell, /UBot v1\.0\.2/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -577,68 +580,64 @@ test("windows release package avoids local runtime group config", async () => {
 
   assert.doesNotMatch(packageScript, /"config",/);
   assert.match(packageScript, /"COMMANDS\.md"/);
-  assert.match(packageScript, /"RELEASE-v1\.0\.1\.md"/);
-  assert.match(packageScript, /"V1\.0\.1-LOCAL-AUDIT\.md"/);
+  assert.match(packageScript, /"RELEASE-v1\.0\.2\.md"/);
+  assert.match(packageScript, /"V1\.0\.2-LOCAL-AUDIT\.md"/);
   assert.match(packageScript, /groups\.example\.json/);
   assert.match(packageScript, /"superAdminUserIds": \[\]/);
   assert.match(packageScript, /"groups": \[\]/);
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
-test("v1.0.1 docs and release metadata stay current", async () => {
-  const [packageRaw, readmeDoc, commandsDoc, releaseNotes, localAudit, releaseScript, localVerifyScript] = await Promise.all([
+test("v1.0.2 docs and release metadata stay current", async () => {
+  const [packageRaw, readmeDoc, commandsDoc, releaseNotes, localAudit, releaseScript, localVerifyScript, releaseWorkflow] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASE-v1.0.1.md"), "utf8"),
-    readFile(path.join(repoRoot, "V1.0.1-LOCAL-AUDIT.md"), "utf8"),
+    readFile(path.join(repoRoot, "RELEASE-v1.0.2.md"), "utf8"),
+    readFile(path.join(repoRoot, "V1.0.2-LOCAL-AUDIT.md"), "utf8"),
     readFile(path.join(repoRoot, "scripts", "publish-github-release.ps1"), "utf8"),
-    readFile(path.join(repoRoot, "scripts", "verify-v1.0.1-local.ps1"), "utf8"),
+    readFile(path.join(repoRoot, "scripts", "verify-v1.0.2-local.ps1"), "utf8"),
+    readFile(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8"),
   ]);
   const packageJson = JSON.parse(packageRaw) as { version?: string };
 
-  assert.equal(packageJson.version, "1.0.1");
-  assert.match(readmeDoc, /^# UBot V1\.0\.1/m);
-  assert.match(readmeDoc, /V1\.0\.1 聚焦普通用户只读后台、语音回复依赖关系、模型配置恢复、V1\.0\.1 发布资产和本地全量验证/);
-  assert.match(readmeDoc, /## 普通用户只读后台/);
-  assert.match(readmeDoc, /普通用户在登录页选择普通用户模式，只输入 QQ 号即可登录/);
-  assert.match(readmeDoc, /后续访问都会重新按当前群成员关系计算可见群/);
-  assert.match(readmeDoc, /\{ "error": "readonly_session" \}/);
-  assert.match(readmeDoc, /当前版本：`v1\.0\.1`/);
-  assert.match(readmeDoc, /GitHub Release tag：`v1\.0\.1`/);
-  assert.match(readmeDoc, /scripts\/verify-v1\.0\.1-local\.ps1/);
-  assert.doesNotMatch(readmeDoc, /^# UBot V1\.0\.0/m);
+  assert.equal(packageJson.version, "1.0.2");
+  assert.match(readmeDoc, /^# UBot V1\.0\.2/m);
+  assert.match(readmeDoc, /v1\.0\.2/);
+  assert.match(readmeDoc, /RELEASE-v1\.0\.2\.md/);
+  assert.match(readmeDoc, /scripts\/verify-v1\.0\.2-local\.ps1/);
+  assert.doesNotMatch(readmeDoc, /^# UBot V1\.0\.[01]/m);
 
-  assert.match(commandsDoc, /^# UBot V1\.0\.1 系统指令清单/m);
-  assert.match(commandsDoc, /这份文档汇总 V1\.0\.1 当前支持的群聊指令/);
-  assert.doesNotMatch(commandsDoc, /^# UBot V1\.0\.0 系统指令清单/m);
+  assert.match(commandsDoc, /^# UBot V1\.0\.2/m);
+  assert.match(commandsDoc, /V1\.0\.2/);
+  assert.doesNotMatch(commandsDoc, /^# UBot V1\.0\.[01]/m);
 
-  assert.match(releaseNotes, /^# UBot V1\.0\.1 Release Notes/m);
-  assert.match(releaseNotes, /按用户确认恢复发布范围/);
-  assert.match(releaseNotes, /`npm test`：359\/359 通过/);
-  assert.match(releaseNotes, /生成 50 张后台截图和 contact sheet/);
-  assert.match(releaseNotes, /截图像素 smoke/);
-  assert.match(releaseNotes, /Windows 发布包：`release\/ubot-1\.0\.1-win\.zip`/);
-  assert.match(releaseNotes, /scripts\/verify-v1\.0\.1-local\.ps1/);
-  assert.doesNotMatch(releaseNotes, /`npm test`：35[28]\/35[28] 通过/);
-  assert.doesNotMatch(releaseNotes, /生成 29 张后台截图/);
+  assert.match(releaseNotes, /^# UBot V1\.0\.2 Release Notes/m);
+  assert.match(releaseNotes, /记忆置信度策略/);
+  assert.match(releaseNotes, /无人值守候选入库/);
+  assert.match(releaseNotes, /`npm test`：369\/369 通过/);
+  assert.match(releaseNotes, /Windows 发布包：`release\/ubot-1\.0\.2-win\.zip`/);
+  assert.match(releaseNotes, /scripts\/verify-v1\.0\.2-local\.ps1/);
+  assert.doesNotMatch(releaseNotes, /ubot-1\.0\.1-win\.zip/);
 
-  assert.match(localAudit, /^# UBot V1\.0\.1 Local Completion Audit/m);
-  assert.match(localAudit, /Ordinary QQ users can enter the admin console with only a QQ account/);
-  assert.match(localAudit, /Ordinary QQ users cannot modify any system setting or content/);
-  assert.match(localAudit, /existing viewer session can see the new group without re-login/);
-  assert.match(localAudit, /`defaultVoiceReplyEnabled` is a child switch of `voiceReplyEnabled`/);
-  assert.match(localAudit, /`release\/admin-ui-smoke\/` contains 50 PNG files/);
-  assert.match(localAudit, /screenshot pixel smoke passed/);
+  assert.match(localAudit, /^# UBot V1\.0\.2 Local Completion Audit/m);
+  assert.match(localAudit, /System settings expose memory candidate threshold/);
+  assert.match(localAudit, /Unattended mode does not bypass safety protections/);
+  assert.match(localAudit, /Below-threshold English candidates do not enter language-review pending queue/);
+  assert.match(localAudit, /Group config supports roast mode users/);
+  assert.match(localAudit, /MiMo TTS uses clean assistant text/);
   assert.match(localAudit, /Zip checks show no real `\.env`, `config\/groups\.json`, `system-settings\.json`, or runtime logs/);
-  assert.match(localAudit, /GitHub upload and deployment scope/);
   assert.match(localAudit, /Release And Deployment Checklist/);
-  assert.match(localAudit, /scripts\/verify-v1\.0\.1-local\.ps1/);
+  assert.match(localAudit, /scripts\/verify-v1\.0\.2-local\.ps1/);
 
-  assert.match(releaseScript, /\[string\]\$Tag = "v1\.0\.1"/);
-  assert.match(releaseScript, /\[string\]\$Name = "UBot V1\.0\.1"/);
-  assert.match(releaseScript, /\[string\]\$ReleaseNotesPath = "RELEASE-v1\.0\.1\.md"/);
-  assert.match(releaseScript, /\[string\]\$AssetPath = "release\/ubot-1\.0\.1-win\.zip"/);
+  assert.match(releaseScript, /\[string\]\$Tag = "v1\.0\.2"/);
+  assert.match(releaseScript, /\[string\]\$Name = "UBot V1\.0\.2"/);
+  assert.match(releaseScript, /\[string\]\$ReleaseNotesPath = "RELEASE-v1\.0\.2\.md"/);
+  assert.match(releaseScript, /\[string\]\$AssetPath = "release\/ubot-1\.0\.2-win\.zip"/);
+
+  assert.match(releaseWorkflow, /name: UBot V1\.0\.2/);
+  assert.match(releaseWorkflow, /body_path: RELEASE-v1\.0\.2\.md/);
+  assert.match(releaseWorkflow, /files: release\/ubot-1\.0\.2-win\.zip/);
 
   assert.match(localVerifyScript, /param\([\s\S]*\[switch\]\$WithScreenshots/);
   assert.match(localVerifyScript, /npm test/);
@@ -646,7 +645,7 @@ test("v1.0.1 docs and release metadata stay current", async () => {
   assert.match(localVerifyScript, /npm run package:win/);
   assert.match(localVerifyScript, /publish-github-release\.ps1 -DryRun/);
   assert.match(localVerifyScript, /config\\groups\.json/);
-  assert.match(localVerifyScript, /V1\.0\.1-LOCAL-AUDIT\.md/);
+  assert.match(localVerifyScript, /V1\.0\.2-LOCAL-AUDIT\.md/);
   assert.match(localVerifyScript, /System\.Drawing/);
   assert.match(localVerifyScript, /unique sampled colors/);
   assert.match(localVerifyScript, /Screenshot pixel smoke passed/);
@@ -655,7 +654,6 @@ test("v1.0.1 docs and release metadata stay current", async () => {
   assert.doesNotMatch(localVerifyScript, /sk-[A-Za-z0-9_-]{8,}/);
   assert.doesNotMatch(localVerifyScript, /git push|git tag|shutdown|Stop-Computer/);
 });
-
 test("local build and test scripts avoid nested npm update checks", async () => {
   const [packageRaw, npmrc, buildScript, testScript] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),

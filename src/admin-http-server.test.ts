@@ -568,7 +568,15 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(settingsRead.status, 200);
-    const settingsReadBody = await settingsRead.json() as { models: Array<{ id: string; name: string; shortName: string; baseUrl: string; model: string; purpose: string; enabled: boolean; hasApiKey: boolean }> };
+    const settingsReadBody = await settingsRead.json() as {
+      memoryCandidateConfidenceThreshold: number;
+      memoryAutoApproveConfidenceThreshold: number;
+      memoryUnattendedModeEnabled: boolean;
+      models: Array<{ id: string; name: string; shortName: string; baseUrl: string; model: string; purpose: string; enabled: boolean; hasApiKey: boolean }>;
+    };
+    assert.equal(settingsReadBody.memoryCandidateConfidenceThreshold, 60);
+    assert.equal(settingsReadBody.memoryAutoApproveConfidenceThreshold, 80);
+    assert.equal(settingsReadBody.memoryUnattendedModeEnabled, false);
     const settingsUpdate = await fetch(`${baseUrl}/api/system-settings`, {
       method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -580,6 +588,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
         memoryDedupEnabled: true,
         memoryDedupTime: "22:15",
         memoryDedupSemanticTimeoutMinutes: 10,
+        memoryCandidateConfidenceThreshold: 55,
+        memoryAutoApproveConfidenceThreshold: 88,
+        memoryUnattendedModeEnabled: true,
         models: [
           ...settingsReadBody.models,
           {
@@ -644,12 +655,18 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       memoryDedupEnabled: boolean;
       memoryDedupTime: string;
       memoryDedupSemanticTimeoutMinutes: number;
+      memoryCandidateConfidenceThreshold: number;
+      memoryAutoApproveConfidenceThreshold: number;
+      memoryUnattendedModeEnabled: boolean;
       models: Array<{ id: string; hasApiKey: boolean; apiKey?: string }>;
     };
     assert.equal(settingsUpdateBody.dailyProfileReviewEnabled, false);
     assert.equal(settingsUpdateBody.dailyProfileReviewTime, "01:30");
     assert.equal(settingsUpdateBody.memoryDedupTime, "22:15");
     assert.equal(settingsUpdateBody.memoryDedupSemanticTimeoutMinutes, 10);
+    assert.equal(settingsUpdateBody.memoryCandidateConfidenceThreshold, 55);
+    assert.equal(settingsUpdateBody.memoryAutoApproveConfidenceThreshold, 88);
+    assert.equal(settingsUpdateBody.memoryUnattendedModeEnabled, true);
     const invalidSettingsUpdate = await fetch(`${baseUrl}/api/system-settings`, {
       method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
@@ -657,6 +674,16 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(invalidSettingsUpdate.status, 400);
     assert.deepEqual(await invalidSettingsUpdate.json(), { error: "invalid_time" });
+    const invalidMemoryThresholdUpdate = await fetch(`${baseUrl}/api/system-settings`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        memoryCandidateConfidenceThreshold: 90,
+        memoryAutoApproveConfidenceThreshold: 80,
+      }),
+    });
+    assert.equal(invalidMemoryThresholdUpdate.status, 400);
+    assert.deepEqual(await invalidMemoryThresholdUpdate.json(), { error: "invalid_memory_confidence_thresholds" });
     assert.equal(settingsUpdateBody.models[0]?.hasApiKey, true);
     assert.equal(settingsUpdateBody.models[0]?.apiKey, undefined);
     assert.equal(settingsUpdateBody.models.some((item) => item.id === "gpt"), true);
@@ -1110,6 +1137,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
         allowedSkillIds: ["assistant", "assistant", "zxp"],
         switcherUserIds: ["99999"],
         liveChatUserIds: ["20001"],
+        roastModeUserIds: ["20002", "20002"],
         manualIdentities: [],
         liveChatDelaySeconds: 45,
         dailyReportEnabled: true,
@@ -1127,6 +1155,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const updateGroupConfigBody = await updateGroupConfig.json() as {
       replyModelMode: string;
       allowedSkillIds: string[];
+      roastModeUserIds?: string[];
       liveChatDelaySeconds: number;
       dailyReportEnabled: boolean;
       botMuted: boolean;
@@ -1134,6 +1163,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     };
     assert.equal(updateGroupConfigBody.replyModelMode, "mimo");
     assert.deepEqual(updateGroupConfigBody.allowedSkillIds, ["assistant", "zxp"]);
+    assert.deepEqual(updateGroupConfigBody.roastModeUserIds, ["20002"]);
     assert.equal(updateGroupConfigBody.liveChatDelaySeconds, 45);
     assert.equal(updateGroupConfigBody.dailyReportEnabled, true);
     assert.equal(updateGroupConfigBody.botMuted, false);
@@ -1830,29 +1860,40 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(dedupPreviewQueued.queued, true);
     assert.equal(dedupPreviewQueued.task.status, "queued");
     const dedupPreviewBody = await waitForTaskResult<{
+      mode: "fast" | "deep";
       decisions: Array<{ targetId?: string; duplicateId: string; reason?: string }>;
       semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number };
     }>(baseUrl, cookie, dedupPreviewQueued.taskId);
+    assert.equal(dedupPreviewBody.mode, "fast");
     assert.equal(dedupPreviewBody.decisions.some((item) => item.targetId === dedupBase.id && item.duplicateId === duplicateMemory.id), true);
     assert.equal(dedupPreviewBody.semanticStats.called, 0);
 
     const semanticDedupPreview = await fetch(`${baseUrl}/api/memories/deduplicate/preview`, {
       method: "POST",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
-      body: JSON.stringify({ groupId: "67890", subjectUserId: "30002" }),
+      body: JSON.stringify({ groupId: "67890", subjectUserId: "30002", mode: "deep" }),
     });
     assert.equal(semanticDedupPreview.status, 202);
     const semanticDedupPreviewQueued = await semanticDedupPreview.json() as { queued: boolean; taskId: string };
     assert.equal(semanticDedupPreviewQueued.queued, true);
     const semanticDedupPreviewBody = await waitForTaskResult<{
+      mode: "fast" | "deep";
       decisions: Array<{ targetId?: string; duplicateId: string; reason?: string }>;
       semanticStats: { called: number; duplicate: number; merge: number; new: number; failed: number; skippedDisabled?: number };
     }>(baseUrl, cookie, semanticDedupPreviewQueued.taskId);
+    assert.equal(semanticDedupPreviewBody.mode, "deep");
     assert.equal(semanticDedupPreviewBody.decisions.some((item) => item.reason?.startsWith("semantic:")), true);
     assert.equal(semanticDedupPreviewBody.semanticStats.called, 1);
     assert.equal(semanticDedupPreviewBody.semanticStats.duplicate, 1);
     assert.equal(semanticDedupPreviewBody.semanticStats.failed, 0);
     assert.equal(semanticJudgeCalls, 1);
+    const semanticDedupTask = await fetch(`${baseUrl}/api/tasks/${encodeURIComponent(semanticDedupPreviewQueued.taskId)}`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(semanticDedupTask.status, 200);
+    const semanticDedupTaskBody = await semanticDedupTask.json() as AdminTaskRecord;
+    assert.match(semanticDedupTaskBody.detail ?? "", /mode=deep/);
+    assert.match(semanticDedupTaskBody.detail ?? "", /semanticProcessed=1\/1/);
     const semanticJudgeCallsBeforeChineseLocalDedup = semanticJudgeCalls;
     const chineseLocalDedupPreview = await fetch(`${baseUrl}/api/memories/deduplicate/preview`, {
       method: "POST",

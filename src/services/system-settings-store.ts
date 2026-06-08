@@ -33,6 +33,7 @@ export class SystemSettingsStore {
     if (input.models !== undefined) {
       validateModelUpdateInput(input.models);
     }
+    validateMemoryConfidenceThresholdUpdateInput(input);
     const removedDefaultModelIds = input.models === undefined
       ? current.removedDefaultModelIds ?? []
       : reconcileRemovedDefaultModelIds(current.removedDefaultModelIds, input.models, this.defaultModels);
@@ -157,6 +158,9 @@ function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { api
     memoryDedupEnabled: true,
     memoryDedupTime: "23:00",
     memoryDedupSemanticTimeoutMinutes: 10,
+    memoryCandidateConfidenceThreshold: 60,
+    memoryAutoApproveConfidenceThreshold: 80,
+    memoryUnattendedModeEnabled: false,
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
     models: normalizeModels(defaultModels, []),
     removedDefaultModelIds: [],
@@ -173,6 +177,17 @@ function normalizeSettings(
   const fallback = defaultSettings(defaultModels);
   const removedDefaultModelIds = normalizeRemovedDefaultModelIds(value.removedDefaultModelIds, defaultModels);
   const models = normalizeModels(value.models, defaultModels, removedDefaultModelIds);
+  const memoryCandidateConfidenceThreshold = normalizeConfidenceThreshold(
+    value.memoryCandidateConfidenceThreshold,
+    fallback.memoryCandidateConfidenceThreshold,
+  );
+  const memoryAutoApproveConfidenceThreshold = normalizeConfidenceThreshold(
+    value.memoryAutoApproveConfidenceThreshold,
+    fallback.memoryAutoApproveConfidenceThreshold,
+  );
+  if (memoryCandidateConfidenceThreshold >= memoryAutoApproveConfidenceThreshold) {
+    throw new Error("invalid_memory_confidence_thresholds");
+  }
   return {
     profileSummaryMaxChars: normalizePositiveInt(value.profileSummaryMaxChars, fallback.profileSummaryMaxChars, 100, 6000),
     profileShortSummaryMaxChars: normalizePositiveInt(value.profileShortSummaryMaxChars, fallback.profileShortSummaryMaxChars, 40, 600),
@@ -186,6 +201,9 @@ function normalizeSettings(
       1,
       60,
     ),
+    memoryCandidateConfidenceThreshold,
+    memoryAutoApproveConfidenceThreshold,
+    memoryUnattendedModeEnabled: value.memoryUnattendedModeEnabled === true,
     ...(normalizeSecretHash(value.adminSecretHash) ? { adminSecretHash: normalizeSecretHash(value.adminSecretHash) } : {}),
     ...(normalizeSecretHash(value.groupAdminSecretHash) ? { groupAdminSecretHash: normalizeSecretHash(value.groupAdminSecretHash) } : {}),
     defaultTriggerKeywords: normalizeTriggerKeywords(value.defaultTriggerKeywords),
@@ -213,6 +231,14 @@ function normalizePositiveInt(value: unknown, fallback: number, min: number, max
     return fallback;
   }
   return Math.max(min, Math.min(max, numberValue));
+}
+
+function normalizeConfidenceThreshold(value: unknown, fallback: number): number {
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isInteger(numberValue)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(100, numberValue));
 }
 
 function normalizeTriggerKeywords(value: unknown): SystemSettings["defaultTriggerKeywords"] {
@@ -279,6 +305,23 @@ function validateModelUpdateInput(value: unknown): void {
       throw new Error("invalid_model_config");
     }
   }
+}
+
+function validateMemoryConfidenceThresholdUpdateInput(value: SystemSettingsUpdateInput): void {
+  if (
+    !isValidConfidenceThresholdUpdateValue(value.memoryCandidateConfidenceThreshold) ||
+    !isValidConfidenceThresholdUpdateValue(value.memoryAutoApproveConfidenceThreshold)
+  ) {
+    throw new Error("invalid_memory_confidence_thresholds");
+  }
+}
+
+function isValidConfidenceThresholdUpdateValue(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(numberValue) && numberValue >= 0 && numberValue <= 100;
 }
 
 function reconcileRemovedDefaultModelIds(

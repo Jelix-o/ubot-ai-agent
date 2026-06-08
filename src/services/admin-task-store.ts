@@ -22,9 +22,12 @@ export interface AdminTaskCreateInput {
   detail?: string;
 }
 
+export type AdminTaskProgressUpdater = (progress: number, detail?: string) => Promise<AdminTaskRecord | undefined>;
+
 const MAX_TASKS = 200;
 const DEFAULT_STALE_TASK_MS = 30 * 60 * 1000;
 const STALE_TASK_MS_BY_TYPE: Partial<Record<AdminTaskType, number>> = {
+  "memory-dedup": 12 * 60 * 1000,
   "model-check": 10 * 60 * 1000,
 };
 
@@ -113,7 +116,7 @@ export class AdminTaskStore {
 
   async run<T>(
     input: AdminTaskCreateInput,
-    worker: (task: AdminTaskRecord) => Promise<T>,
+    worker: (task: AdminTaskRecord, updateProgress: AdminTaskProgressUpdater) => Promise<T>,
   ): Promise<{ task: AdminTaskRecord; result: T }> {
     const task = await this.create(input);
     return await this.execute(task, worker);
@@ -121,7 +124,7 @@ export class AdminTaskStore {
 
   async start<T>(
     input: AdminTaskCreateInput,
-    worker: (task: AdminTaskRecord) => Promise<T>,
+    worker: (task: AdminTaskRecord, updateProgress: AdminTaskProgressUpdater) => Promise<T>,
   ): Promise<AdminTaskRecord> {
     const task = await this.create(input);
     setTimeout(() => {
@@ -136,13 +139,23 @@ export class AdminTaskStore {
 
   private async execute<T>(
     task: AdminTaskRecord,
-    worker: (task: AdminTaskRecord) => Promise<T>,
+    worker: (task: AdminTaskRecord, updateProgress: AdminTaskProgressUpdater) => Promise<T>,
   ): Promise<{ task: AdminTaskRecord; result: T }> {
     const startedAt = new Date().toISOString();
     this.activeTaskStartedAt.set(task.id, new Date(startedAt).getTime());
+    const updateProgress: AdminTaskProgressUpdater = async (progress, detail) => {
+      const current = (await this.readData()).tasks.find((item) => item.id === task.id);
+      if (!current || current.status !== "running") {
+        return current ? cloneTask(current) : undefined;
+      }
+      return await this.update(task.id, {
+        progress,
+        ...(detail ? { detail } : {}),
+      });
+    };
     try {
       await this.update(task.id, { status: "running", progress: 10, startedAt });
-      const result = await worker(task);
+      const result = await worker(task, updateProgress);
       const finishedAt = new Date().toISOString();
       const durationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
       const current = (await this.readData()).tasks.find((item) => item.id === task.id);

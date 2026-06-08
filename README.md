@@ -1,6 +1,6 @@
-# UBot V1.0.1
+# UBot V1.0.2
 
-UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊机器人和群运营后台。V1.0.1 聚焦普通用户只读后台、语音回复依赖关系、模型配置恢复、V1.0.1 发布资产和本地全量验证。
+UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊机器人和群运营后台。V1.0.2 聚焦可配置记忆置信度阈值、无人值守候选入库、深度记忆去重、嘴臭模式和 MiMo TTS 干净正文合成。
 
 ## 核心能力
 
@@ -8,7 +8,7 @@ UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊
 - 语音回复：支持 `#语音 <内容>`、`#唱歌 <内容>`、群语音功能开关和普通 AI 回复默认语音条。
 - 普通用户只读后台：普通 QQ 用户只输入 QQ 号即可登录，只能查看这个 QQ 所在群的后台数据，不能修改系统中任何设置或内容。
 - 群配置：默认语音回复是语音功能的子开关；关闭语音功能会同步关闭默认语音回复。
-- 记忆系统：待处理候选记忆、长期记忆、成员画像、每日画像审查和记忆去重任务。
+- 记忆系统：待处理候选记忆、长期记忆、成员画像、每日画像审查、记忆去重任务，以及可配置候选阈值、自动入库阈值和无人值守候选入库策略。
 - 知识库：FAQ 可按关键词检索并注入回复上下文。
 - 运维后台：总览、群配置、成员管理、候选记忆、长期记忆、画像记录、知识库、任务中心、操作审计、系统状态、Skills、指令和系统设置。
 - 模型管理：按用途配置系统模型；当 `data/system-settings.json` 的 `commands` 段损坏时，可恢复默认指令并保留已配置模型和 API Key。
@@ -22,7 +22,7 @@ UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊
 - `data/`：生产运行数据，部署升级时必须保留。
 - `dist/`：构建产物。
 - `COMMANDS.md`：群内指令清单。
-- `RELEASE-v1.0.1.md`：V1.0.1 发布说明。
+- `RELEASE-v1.0.2.md`：V1.0.2 发布说明。
 
 ## 本地开发
 
@@ -46,16 +46,16 @@ npm run build
 npm test
 ```
 
-V1.0.1 本地验收：
+V1.0.2 本地验收：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.0.1-local.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.0.2-local.ps1
 ```
 
 包含本地全系统截图的验收：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.0.1-local.ps1 -WithScreenshots
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-v1.0.2-local.ps1 -WithScreenshots
 ```
 
 本地后台全系统截图验证：
@@ -163,8 +163,9 @@ UBot 的 TTS 请求按 MiMo V2.5 组织：
 
 - 目标合成文本只放在 `role: "assistant"` 消息里。
 - 自然语言风格、导演提示和整体控制放在 `role: "user"` 消息里，不会被读出。
-- 音频标签写在 assistant 文本中。
-- 基础情绪、复合情绪、整体语调、音色定位、语速与节奏、情绪状态、语音特征、哭笑表达按每句话语义自动判断。
+- `assistant` 文本保持干净正文，避免语气、情绪或舞台提示被读出。
+- `#唱歌` 只在 `assistant` 文本前保留必要的 `(唱歌)` 标签。
+- 基础情绪、整体语调、音色定位、语速与节奏、情绪状态、语音特征和哭笑表达按正文语义自动判断后写入 `user` 风格指令。
 - 旧版 TTS 提示字段不再作为手工控制项参与句子级生成。
 - `mimo-v2.5-tts` 支持预置音色和唱歌标签。
 - `mimo-v2.5-tts-voicedesign` 使用 `audio.optimize_text_preview = true`，不发送预置 `audio.voice`。
@@ -255,12 +256,12 @@ curl -i https://bot.9958.uk/api/session
 
 ## 发布
 
-- 当前版本：`v1.0.1`
+- 当前版本：`v1.0.2`
 - npm 包名：`ubot`
 - Node.js：`>=22.0.0`
-- 发布说明：`RELEASE-v1.0.1.md`
-- GitHub 分支：`chatops/main`
-- GitHub Release tag：`v1.0.1`
+- 发布说明：`RELEASE-v1.0.2.md`
+- GitHub 分支：`main`
+- GitHub Release tag：`v1.0.2`
 
 发布前必须通过：
 
