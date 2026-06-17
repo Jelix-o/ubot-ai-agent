@@ -56,6 +56,10 @@ export class DailyReportService {
     await this.store.markSent(groupId, toLocalDateKey(now));
   }
 
+  async clearStore(): Promise<void> {
+    await this.store.clearAll();
+  }
+
   async buildReport(groupConfig: GroupBotConfig, now = new Date()): Promise<string> {
     const dayKey = toLocalDateKey(now);
     const messages = await this.store.getMessages(groupConfig.groupId, dayKey);

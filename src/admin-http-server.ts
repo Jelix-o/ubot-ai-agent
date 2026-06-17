@@ -67,6 +67,7 @@ interface AdminHttpServerOptions {
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
   getProfileAiHealthStatus?: (options?: { refresh?: boolean }) => Promise<AiHealthStatus>;
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>;
+  summarizeOverallMemberProfile?: (args: { groupId: string; userId: string; displayName: string; memories: GroupMemory[] }) => Promise<string | null>;
   listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
   listGroups?: () => Promise<NapcatGroupInfo[]>;
 }
@@ -645,6 +646,11 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/memories/summarize" && req.method === "POST") {
+      await this.handleMemorySummarize(req, res, session);
+      return;
+    }
+
     const memoryRoute = matchRoute(pathname, /^\/api\/memories\/([^/]+)$/);
     if (memoryRoute) {
       await this.handleMemoryItem(req, res, memoryRoute, session);
@@ -1155,6 +1161,89 @@ export class AdminHttpServer {
     this.sendJson(res, {
       ...result,
       ...(wrapped.task ? { task: wrapped.task } : {}),
+    });
+  }
+
+  private async handleMemorySummarize(req: IncomingMessage, res: ServerResponse, session: AdminSession): Promise<void> {
+    const body = await readJsonBody(req);
+    const groupId = optionalString(body.groupId);
+    if (!groupId || !(await this.canAccessGroup(session, groupId))) {
+      this.sendJson(res, { error: groupId ? "forbidden" : "invalid_group_id" }, groupId ? 403 : 400);
+      return;
+    }
+
+    const subjectUserId = optionalUserId(body.subjectUserId);
+    if (!subjectUserId) {
+      this.sendJson(res, { error: "subject_user_id_required" }, 400);
+      return;
+    }
+
+    if (!this.options.summarizeOverallMemberProfile) {
+      this.sendJson(res, { error: "summarize_not_available" }, 500);
+      return;
+    }
+
+    const memories = await this.options.groupMemoryStore.list(groupId);
+    const userMemories = memories.filter(
+      (m) => m.enabled && m.type === "member_profile" && m.subjectUserId === subjectUserId,
+    );
+
+    if (userMemories.length === 0) {
+      this.sendJson(res, { error: "no_memories_found" }, 404);
+      return;
+    }
+
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "group_not_found" }, 404);
+      return;
+    }
+
+    const subjectLabel = buildSubjectLabel(groupConfig, subjectUserId, undefined, "member_profile");
+    const summary = await this.options.summarizeOverallMemberProfile({
+      groupId,
+      userId: subjectUserId,
+      displayName: subjectLabel.label,
+      memories: userMemories,
+    });
+
+    if (!summary) {
+      this.sendJson(res, { error: "summarize_failed" }, 500);
+      return;
+    }
+
+    const newMemory = await this.options.groupMemoryStore.create({
+      groupId,
+      type: "member_profile",
+      subjectUserId,
+      title: `${subjectLabel.label}的综合画像`,
+      content: summary,
+      confidence: 1,
+      source: "manual_summary",
+      enabled: true,
+    });
+
+    for (const memory of userMemories) {
+      if (memory.id !== newMemory.id) {
+        await this.options.groupMemoryStore.update(memory.id, { enabled: false });
+      }
+    }
+
+    this.invalidateMemberProfileCache(groupId);
+    await this.recordOperation({
+      session,
+      groupId,
+      action: "memory_summarize",
+      target: subjectUserId,
+      detail: `summarized ${userMemories.length} memories`,
+    });
+
+    this.sendJson(res, {
+      groupId,
+      subjectUserId,
+      summary,
+      originalMemoryCount: userMemories.length,
+      newMemoryId: newMemory.id,
     });
   }
 

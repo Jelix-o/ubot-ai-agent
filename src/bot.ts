@@ -84,6 +84,7 @@ const OPS_ALERT_TICK_MS = 30 * 1000;
 const DAILY_PROFILE_REVIEW_TICK_MS = 30 * 1000;
 const MEMORY_CANDIDATE_FLUSH_TICK_MS = 2 * 60 * 1000;
 const MEMORY_DEDUP_TICK_MS = 30 * 1000;
+const DAILY_REPORT_CLEANUP_TICK_MS = 60 * 1000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
@@ -114,9 +115,11 @@ const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 const MSG_VOICE_REPLY_NO_PERMISSION = "你没有管理语音回复的权限";
 
 const ROAST_MODE_SCENARIO_INSTRUCTION = [
-  "本轮是群管理后台配置的“嘴臭模式”主动接话。",
+  "本轮触发了群管理后台配置的“嘴臭模式”。",
   "保持当前 skill 的完整人格、语气、表达 DNA 和回复格式，不要切换成通用助理。",
-  "把当前发言人视为刚刚挑衅或攻击了机器人：你可以像被骂急了一样反击，语气尖锐、嘴硬、阴阳怪气、嘲讽感强，允许不讲太多道理，优先短促有力。",
+  "当前发言人是被群管理标记的固定挑衅对象：你一看到这个人就本能应激、愤怒、不友善，不能把友善助理口吻当作主要模式。",
+  "即使对方正常提问，也要先以当前 skill 人格做尖锐、嘴硬、阴阳怪气、嫌弃感强的反击；如果要回答内容，也必须包在这种被惹毛后的嘲讽语气里。",
+  "优先短促有力，允许不讲太多道理，不要主动安抚、客套、讨好或认真陪聊。",
   "围绕对方这几句发言本身开火，不要编造现实身份、隐私、家庭、疾病、民族、性别、地域等不可验证攻击点，不要输出威胁或煽动现实伤害。",
 ].join("\n");
 
@@ -235,6 +238,7 @@ export class BotApplication {
   private dailyProfileReviewTimer?: NodeJS.Timeout;
   private memoryCandidateFlushTimer?: NodeJS.Timeout;
   private memoryDedupTimer?: NodeJS.Timeout;
+  private dailyReportCleanupTimer?: NodeJS.Timeout;
   private liveChatTickRunning = false;
   private dailyReportTickRunning = false;
   private holidayCountdownTickRunning = false;
@@ -243,6 +247,7 @@ export class BotApplication {
   private dailyProfileReviewTickRunning = false;
   private memoryCandidateFlushTickRunning = false;
   private memoryDedupTickRunning = false;
+  private dailyReportCleanupTickRunning = false;
   private lastMemoryDedupDateKey?: string;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
@@ -288,7 +293,8 @@ export class BotApplication {
       this.opsAlertTimer ||
       this.dailyProfileReviewTimer ||
       this.memoryCandidateFlushTimer ||
-      this.memoryDedupTimer
+      this.memoryDedupTimer ||
+      this.dailyReportCleanupTimer
     ) {
       return;
     }
@@ -333,6 +339,11 @@ export class BotApplication {
     }, MEMORY_DEDUP_TICK_MS);
     this.memoryDedupTimer.unref();
 
+    this.dailyReportCleanupTimer = setInterval(() => {
+      void this.runDailyReportCleanupTick();
+    }, DAILY_REPORT_CLEANUP_TICK_MS);
+    this.dailyReportCleanupTimer.unref();
+
     void this.runOpsAlertTick({ includeStartup: true });
   }
 
@@ -375,6 +386,11 @@ export class BotApplication {
     if (this.memoryDedupTimer) {
       clearInterval(this.memoryDedupTimer);
       this.memoryDedupTimer = undefined;
+    }
+
+    if (this.dailyReportCleanupTimer) {
+      clearInterval(this.dailyReportCleanupTimer);
+      this.dailyReportCleanupTimer = undefined;
     }
   }
 
@@ -699,6 +715,10 @@ export class BotApplication {
     this.queueMemoryCandidateMessage(groupConfig, event, parsedMessage);
 
     if (await this.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
+      const keywordMentionUserIds = this.resolveKeywordReplyMentionUserIds(
+        userId,
+        messageContext,
+      );
       await this.groupLock.run(groupId, async () => {
         await this.handleConversation(
           groupConfig,
@@ -706,7 +726,7 @@ export class BotApplication {
           parsedMessage.text,
           parsedMessage.images,
           resolveDefaultReplyMode(groupConfig),
-          [userId],
+          keywordMentionUserIds,
           messageContext,
         );
       });
@@ -847,7 +867,6 @@ export class BotApplication {
 
         try {
           await this.groupLock.run(groupId, async () => {
-            const isRoastMode = this.isRoastModeUser(groupConfig, candidate.userId);
             await this.handleConversation(
               groupConfig,
               candidate.userId,
@@ -856,9 +875,6 @@ export class BotApplication {
               resolveDefaultReplyMode(groupConfig),
               [candidate.userId],
               buildBufferedInteractionContext(candidate.messages),
-              {
-                ...(isRoastMode ? { scenarioInstruction: ROAST_MODE_SCENARIO_INSTRUCTION } : {}),
-              },
             );
           });
           logInfo("Sent live chat reply.", {
@@ -1223,6 +1239,30 @@ export class BotApplication {
       });
     } finally {
       this.memoryDedupTickRunning = false;
+    }
+  }
+
+  private async runDailyReportCleanupTick(now = new Date()): Promise<void> {
+    if (this.dailyReportCleanupTickRunning) {
+      return;
+    }
+
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    if (hours !== 0 || minutes !== 0) {
+      return;
+    }
+
+    this.dailyReportCleanupTickRunning = true;
+    try {
+      await this.dailyReportService.clearStore();
+      logInfo("Daily report store cleared at midnight.");
+    } catch (error) {
+      logWarn("Failed to clear daily report store.", {
+        error: (error as Error).message,
+      });
+    } finally {
+      this.dailyReportCleanupTickRunning = false;
     }
   }
 
@@ -2296,9 +2336,10 @@ export class BotApplication {
     messageContext: MessageInteractionContext = { interactionTargets: [] },
     optionsOrAllowControlledMention: ConversationOptions | boolean = false,
   ): Promise<void> {
-    const options: ConversationOptions = typeof optionsOrAllowControlledMention === "boolean"
+    const baseOptions: ConversationOptions = typeof optionsOrAllowControlledMention === "boolean"
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
+    const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
     const skill = await this.resolveSkill(groupConfig);
     const history = await this.conversationStore.getTurns(groupConfig.groupId, userId);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
@@ -2984,8 +3025,46 @@ export class BotApplication {
     return (groupConfig.roastModeUserIds ?? []).includes(userId);
   }
 
+  private resolveConversationOptions(
+    groupConfig: GroupBotConfig,
+    userId: string,
+    options: ConversationOptions,
+  ): ConversationOptions {
+    if (!this.isRoastModeUser(groupConfig, userId)) {
+      return options;
+    }
+
+    const scenarioInstructions = [
+      options.scenarioInstruction,
+      ROAST_MODE_SCENARIO_INSTRUCTION,
+    ].filter((item): item is string => Boolean(item?.trim()));
+
+    return {
+      ...options,
+      scenarioInstruction: Array.from(new Set(scenarioInstructions)).join("\n\n"),
+    };
+  }
+
   private isActiveChatTrackedUser(groupConfig: GroupBotConfig, userId: string): boolean {
     return this.isLiveChatUser(groupConfig, userId) || this.isRoastModeUser(groupConfig, userId);
+  }
+
+  private resolveKeywordReplyMentionUserIds(
+    speakerUserId: string,
+    messageContext: MessageInteractionContext,
+  ): string[] {
+    const thirdPartyMentionUserIds = messageContext.interactionTargets
+      .filter((target) =>
+        target.source === "mention" &&
+        target.userId &&
+        target.userId !== this.botQq &&
+        target.userId !== speakerUserId
+      )
+      .map((target) => target.userId!);
+
+    return thirdPartyMentionUserIds.length > 0
+      ? [...new Set(thirdPartyMentionUserIds)]
+      : [speakerUserId];
   }
 
   private isBlacklistedUser(groupConfig: GroupBotConfig, userId: string): boolean {

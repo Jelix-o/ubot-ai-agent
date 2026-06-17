@@ -401,6 +401,47 @@ function visibleGroups(): GroupConfig[] {
   });
 }
 
+const summaryGroupId = shallowRef("");
+const summaryUserId = shallowRef("");
+const summarizing = shallowRef(false);
+const summaryMembers = shallowRef<Array<{ userId: string; displayName: string }>>([]);
+
+async function loadSummaryMembers(): Promise<void> {
+  if (!summaryGroupId.value) {
+    summaryMembers.value = [];
+    return;
+  }
+  try {
+    const data = await api<{ members: Array<{ userId: string; displayName: string }> }>(
+      `/api/groups/${encodeURIComponent(summaryGroupId.value)}/members`,
+    );
+    summaryMembers.value = data.members;
+  } catch {
+    summaryMembers.value = [];
+  }
+}
+
+async function triggerMemorySummary(): Promise<void> {
+  if (!summaryGroupId.value) {
+    app.showToast("请选择群", "error");
+    return;
+  }
+  if (!summaryUserId.value) {
+    app.showToast("请选择成员", "error");
+    return;
+  }
+  summarizing.value = true;
+  try {
+    const { summarizeMemories } = await import("../services/api");
+    const result = await summarizeMemories(summaryGroupId.value, summaryUserId.value);
+    app.showToast(`汇总完成，已将 ${result.originalMemoryCount} 条记忆合并为 1 条综合画像`);
+  } catch (error) {
+    app.showToast((error as Error).message, "error");
+  } finally {
+    summarizing.value = false;
+  }
+}
+
 onMounted(() => {
   void load();
 });
@@ -454,6 +495,27 @@ onMounted(() => {
               <label>候选记忆阈值（%）<input v-model.number="settings.memoryCandidateConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
               <label>长期记忆阈值（%）<input v-model.number="settings.memoryAutoApproveConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
               <label class="policy-toggle"><span>无人值守候选入库</span><input v-model="settings.memoryUnattendedModeEnabled" type="checkbox" /></label>
+            </div>
+            <div class="policy-row policy-wide memory-summary-row">
+              <label>手动记忆汇总
+                <select v-model="summaryGroupId" class="input" @change="loadSummaryMembers">
+                  <option value="">选择群</option>
+                  <option v-for="group in allGroups" :key="group.groupId" :value="group.groupId">
+                    {{ group.groupName || group.groupId }}
+                  </option>
+                </select>
+              </label>
+              <label>选择成员
+                <select v-model="summaryUserId" class="input" :disabled="!summaryGroupId">
+                  <option value="">选择成员</option>
+                  <option v-for="member in summaryMembers" :key="member.userId" :value="member.userId">
+                    {{ member.displayName }}
+                  </option>
+                </select>
+              </label>
+              <button class="btn" type="button" :disabled="summarizing || !summaryGroupId || !summaryUserId" @click="triggerMemorySummary">
+                {{ summarizing ? "汇总中..." : "开始汇总" }}
+              </button>
             </div>
           </div>
         </div>
@@ -609,6 +671,20 @@ onMounted(() => {
 
 .memory-policy-row {
   grid-template-columns: repeat(3, minmax(150px, 1fr));
+}
+
+.memory-summary-row {
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+}
+
+.memory-summary-row select {
+  min-height: 36px;
+}
+
+.memory-summary-row button {
+  align-self: end;
+  white-space: nowrap;
 }
 
 .policy-toggle {

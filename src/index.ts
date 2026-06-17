@@ -236,6 +236,7 @@ function createAdminHttpServer(
     getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),
     getProfileAiHealthStatus: (options) => profileAiService.checkHealth(options),
     judgeMemorySemanticRelation: (args) => profileAiService.judgeMemorySemanticRelation(args),
+    summarizeOverallMemberProfile: (args) => profileAiService.summarizeOverallMemberProfile(args),
     listGroupMembers: (groupId) => napcatRuntime.listGroupMembers ? napcatRuntime.listGroupMembers(groupId) : Promise.resolve([]),
     listGroups: () => napcatRuntime.listGroups ? napcatRuntime.listGroups() : Promise.resolve([]),
   });

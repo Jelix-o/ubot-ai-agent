@@ -58,6 +58,12 @@ export class DailyReportStore {
     await this.writeData(data);
   }
 
+  async clearAll(): Promise<void> {
+    const data = await this.readData();
+    data.days = {};
+    await this.writeData(data);
+  }
+
   private async readData(): Promise<DailyReportStoreFile> {
     if (this.cachedData) {
       return this.cachedData;

@@ -48,7 +48,7 @@ export class GroupMemoryCandidateService {
     private readonly candidateStore: GroupMemoryCandidateStore,
     private readonly memoryStore: GroupMemoryStore,
     private readonly aiService: Pick<AiService, "extractGroupMemoryCandidates"> &
-      Partial<Pick<AiService, "normalizeMemoryCandidateLanguage" | "judgeMemorySemanticRelation">>,
+      Partial<Pick<AiService, "normalizeMemoryCandidateLanguage">>,
     private readonly batchSize = 8,
     private readonly systemSettingsStore?: Pick<SystemSettingsStore, "get">,
   ) {}
@@ -497,62 +497,7 @@ export class GroupMemoryCandidateService {
     candidates: GroupMemoryCandidate[],
     policy: MemoryConfidencePolicy,
   ): Promise<DuplicateDecision> {
-    const localDecision = findDuplicateDecision(candidate, memories, candidates, policy);
-    if (
-      (localDecision.kind === "skip" ||
-        localDecision.kind === "skip_candidate" ||
-        localDecision.kind === "refine_memory" ||
-        localDecision.kind === "merge") &&
-      localDecision.similarity >= DUPLICATE_SIMILARITY_THRESHOLD
-    ) {
-      return localDecision;
-    }
-
-    const semanticTargets = [
-      ...memories.filter((memory) => memory.enabled && sameScope(candidate, memory)),
-      ...candidates.filter((item) => item.status !== "rejected" && sameScope(candidate, item)),
-    ]
-      .map((item) => ({ item, score: memorySimilarity(candidate, item) }))
-      .filter((item) => item.score >= 0.36)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 3);
-
-    for (const target of semanticTargets) {
-      const result = await this.aiService.judgeMemorySemanticRelation?.({
-        candidate,
-        existing: target.item,
-      });
-      if (!result || result.action === "new") {
-        continue;
-      }
-      if (result.action === "duplicate") {
-        return isMemory(target.item)
-          ? { kind: "skip", memory: target.item, similarity: target.score }
-          : { kind: "skip_candidate", candidate: target.item, similarity: target.score };
-      }
-      if (result.action === "merge") {
-        const mergedTitle = result.title && isMostlyChinese(result.title) ? result.title : undefined;
-        const mergedContent = result.content && isMostlyChinese(result.content) ? result.content : undefined;
-        if (isMemory(target.item)) {
-          return {
-            kind: "refine_memory",
-            memory: target.item,
-            similarity: target.score,
-            ...(mergedTitle ? { mergedTitle } : {}),
-            ...(mergedContent ? { mergedContent } : {}),
-          };
-        }
-        return {
-          kind: "merge",
-          candidate: target.item,
-          similarity: target.score,
-          ...(mergedTitle ? { mergedTitle } : {}),
-          ...(mergedContent ? { mergedContent } : {}),
-        };
-      }
-    }
-
-    return localDecision;
+    return findDuplicateDecision(candidate, memories, candidates, policy);
   }
 }
 

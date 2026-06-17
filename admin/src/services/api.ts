@@ -1,4 +1,4 @@
-﻿export interface Pagination {
+export interface Pagination {
   page: number;
   pageSize: number;
   total: number;
@@ -528,5 +528,20 @@ export function queryString(params: Record<string, string | number | boolean | u
   }
   const text = search.toString();
   return text ? `?${text}` : "";
+}
+
+export interface MemorySummaryResult {
+  groupId: string;
+  subjectUserId?: string;
+  summary: string;
+  originalMemoryCount: number;
+  newMemoryId: string;
+}
+
+export async function summarizeMemories(groupId: string, subjectUserId?: string): Promise<MemorySummaryResult> {
+  return api<MemorySummaryResult>("/api/memories/summarize", {
+    method: "POST",
+    body: JSON.stringify({ groupId, subjectUserId }),
+  });
 }
 
