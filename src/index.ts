@@ -38,7 +38,7 @@ type NapCatRuntime = MessageTransport & {
   on(event: "groupMessage", listener: (event: NapcatGroupMessageEvent) => void): unknown;
 };
 
-async function main(): Promise<void> {
+async function main(): Promise<BotApplication> {
   const config = loadConfig();
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
   const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
@@ -179,6 +179,8 @@ async function main(): Promise<void> {
   logInfo("NapCat QQ skill bot started.", {
     mode: config.napcatMode,
   });
+
+  return app;
 }
 
 async function sweepAdminTasksOnStartup(adminTaskStore: AdminTaskStore): Promise<void> {
@@ -380,9 +382,23 @@ function buildDefaultSystemModels(config: ReturnType<typeof loadConfig>): Array<
   ];
 }
 
-main().catch((error) => {
+const appPromise = main().catch((error) => {
   logError("Application startup failed.", {
     error: error instanceof Error ? error.message : String(error),
   });
   process.exitCode = 1;
+  return undefined;
 });
+
+// Graceful shutdown: flush pending data before exit
+const shutdown = async () => {
+  logInfo("Shutting down, flushing pending data...");
+  const bot = await appPromise;
+  if (bot) {
+    await bot.stop();
+  }
+  logInfo("Shutdown complete.");
+  process.exit(0);
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
