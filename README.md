@@ -1,6 +1,6 @@
-# UBot V1.0.2
+# UBot V1.1.0
 
-UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊机器人和群运营后台。V1.0.2 聚焦可配置记忆置信度阈值、无人值守候选入库、深度记忆去重、嘴臭模式和 MiMo TTS 干净正文合成。
+UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊机器人和群运营后台。V1.1.0 聚焦系统性能优化，通过定时器统一调度、对话存储延迟写入和缓存机制改进，降低系统开销，提升运行效率。
 
 ## 核心能力
 
@@ -22,7 +22,7 @@ UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue 3` 的 QQ 群聊
 - `data/`：生产运行数据，部署升级时必须保留。
 - `dist/`：构建产物。
 - `COMMANDS.md`：群内指令清单。
-- `RELEASE-v1.0.2.md`：V1.0.2 发布说明。
+- `RELEASE-v1.1.0.md`：V1.1.0 发布说明。
 
 ## 本地开发
 
