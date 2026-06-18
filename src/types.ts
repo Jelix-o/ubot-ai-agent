@@ -362,6 +362,7 @@ export interface SystemModelConfig {
   apiKey?: string;
   hasApiKey: boolean;
   enabled: boolean;
+  apiProtocol?: "openai" | "anthropic";
   createdAt: string;
   updatedAt: string;
 }

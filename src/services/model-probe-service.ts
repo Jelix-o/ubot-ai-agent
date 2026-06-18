@@ -1,6 +1,7 @@
 import os from "node:os";
 
 import { AiService } from "./ai-service.js";
+import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { AiHealthStatus, SystemModelConfig } from "../types.js";
 import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
 
@@ -19,7 +20,7 @@ interface TtsProbeResponse {
   }>;
 }
 
-export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey">): Promise<ModelProbeStatus> {
+export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol">): Promise<ModelProbeStatus> {
   return model.purpose === "tts" ? probeTtsModel(model) : probeChatModel(model);
 }
 
@@ -48,9 +49,16 @@ export function getServerStatusSnapshot(): Record<string, unknown> {
   };
 }
 
-async function probeChatModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "apiKey">): Promise<ModelProbeStatus> {
+async function probeChatModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "apiKey" | "apiProtocol">): Promise<ModelProbeStatus> {
   const startedAt = Date.now();
-  const health = await new AiService(model.baseUrl, model.apiKey ?? "", model.model).checkHealth({ refresh: true, cacheTtlMs: 0 });
+  let service: AiService;
+  if (model.apiProtocol === "anthropic") {
+    const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "");
+    service = new AiService(model.baseUrl, model.apiKey ?? "", model.model, client as any);
+  } else {
+    service = new AiService(model.baseUrl, model.apiKey ?? "", model.model);
+  }
+  const health = await service.checkHealth({ refresh: true, cacheTtlMs: 0 });
   return {
     ...health,
     detail: health.ok ? `文本模型连接正常：${health.detail}` : normalizeProbeDetail(health.detail),

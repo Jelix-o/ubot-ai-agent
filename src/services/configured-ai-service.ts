@@ -2,6 +2,7 @@ import { logWarn } from "../logger.js";
 import type { SystemModelConfig } from "../types.js";
 import type { AiService } from "./ai-service.js";
 import { AiService as OpenAiService } from "./ai-service.js";
+import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 
 export type RuntimeAiService = Pick<
@@ -21,7 +22,7 @@ export type RuntimeAiService = Pick<
   | "generateChatPeriodSummary"
 >;
 
-type RuntimeAiFactory = (model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey">) => RuntimeAiService;
+type RuntimeAiFactory = (model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol">) => RuntimeAiService;
 
 export class ConfiguredAiService implements RuntimeAiService {
   private cachedService?: {
@@ -33,7 +34,13 @@ export class ConfiguredAiService implements RuntimeAiService {
     private readonly fallback: RuntimeAiService,
     private readonly systemSettingsStore: SystemSettingsStore,
     private readonly purpose: SystemModelConfig["purpose"],
-    private readonly factory: RuntimeAiFactory = (model) => new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model),
+    private readonly factory: RuntimeAiFactory = (model) => {
+      if (model.apiProtocol === "anthropic") {
+        const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "");
+        return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, client as any);
+      }
+      return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model);
+    },
     private readonly selectedModelId?: string,
   ) {}
 

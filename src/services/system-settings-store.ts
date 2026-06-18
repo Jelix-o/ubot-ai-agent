@@ -93,6 +93,10 @@ export class SystemSettingsStore {
     return verifyConfiguredOrFallback(settings.groupAdminSecretHash, secret, fallback);
   }
 
+  invalidateCache(): void {
+    this.cachedData = undefined;
+  }
+
   private async readData(): Promise<SystemSettings> {
     if (this.cachedData) {
       return this.cachedData;
@@ -386,6 +390,7 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     return undefined;
   }
   const purpose = normalizeModelPurpose(value.purpose);
+  const apiProtocol = value.apiProtocol === "anthropic" ? "anthropic" : "openai";
   return {
     id,
     name,
@@ -396,6 +401,7 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     ...(typeof value.apiKey === "string" && value.apiKey.trim() ? { apiKey: value.apiKey.trim() } : {}),
     hasApiKey: value.hasApiKey === true || Boolean(value.apiKey),
     enabled: value.enabled !== false,
+    apiProtocol,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
   };

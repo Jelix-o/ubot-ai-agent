@@ -87,6 +87,7 @@ function modelTemplate(purpose = activePurpose.value): SystemModelConfig {
     purpose,
     hasApiKey: false,
     enabled: true,
+    apiProtocol: "openai",
     createdAt: now,
     updatedAt: now,
   };
@@ -564,6 +565,7 @@ onMounted(() => {
           <span>模型信息</span>
           <span>Base URL</span>
           <span>模型名</span>
+          <span>协议</span>
           <span>启用</span>
           <span>API Key</span>
           <span>操作</span>
@@ -583,6 +585,10 @@ onMounted(() => {
           </div>
           <input v-model="model.baseUrl" class="input" placeholder="https://api.example.com/v1" @input="markModelsDirty" />
           <input v-model="model.model" class="input" placeholder="model-name" @input="markModelsDirty" />
+          <select v-model="model.apiProtocol" class="input" @change="markModelsDirty">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
           <label class="mini-check"><input v-model="model.enabled" type="checkbox" @change="markModelsDirty" /> 启用</label>
           <input v-model="model.apiKey" class="input" type="password" :placeholder="model.hasApiKey ? '已保存，留空保留' : '未设置'" @input="markModelsDirty" />
           <div class="row-actions">
