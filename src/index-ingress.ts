@@ -120,13 +120,13 @@ export class IngressApp {
   private async handleGroupMessage(event: NapcatGroupMessageEvent): Promise<void> {
     const groupId = String(event.group_id);
     const userId = String(event.user_id);
-    // self_id 缺失时不能 fallback 到 botQq：那会让 `selfId === botQq` 恒真，
-    // 所有消息都被误判为 bot 自己而忽略（生产事故：@机器人无回复）。
     const selfId = event.self_id !== undefined ? String(event.self_id) : "";
     const msgId = String(event.message_id);
 
     // Bot's own messages must never trigger the bot (plan section 8.2).
-    if (userId === this.options.botQq || (selfId && selfId === this.options.botQq)) {
+    // 判断依据：userId 等于 bot 自己（self_id 是事件归属的 bot 账号，
+    // NapCat 单账号下对所有事件恒等于 botQq，不能用来判断"谁发的"）。
+    if (userId === this.options.botQq || (selfId && userId === selfId)) {
       this.metrics.inc("bot_self_trigger_blocked");
       logInfo("Ignored bot self message.", { groupId, userId, msgId, selfId });
       return;
