@@ -104,7 +104,10 @@ export class WorkerApp {
 
     this.runner = new ConsumerRunner(this.sharedDb, this.options.consumerKey, {
       keyOf: (message) => {
-        if (!message.has_at_bot) {
+        // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
+        // 等指令全部被当成自由发言跳过，指令不生效）。
+        const isCommand = message.text.trim().startsWith("#");
+        if (!message.has_at_bot && !isCommand) {
           // Free chat never produces a topic (plan 5.1.3); skip for now.
           return "";
         }
@@ -193,9 +196,10 @@ export class WorkerApp {
     this.metrics.inc("tasks_started");
     try {
       const event = this.buildEvent(message);
-      // The bot only replies to @bot messages.
+      // 只有 @bot 或指令（#开头）消息才处理；自由发言跳过（计划 §5.1.3）。
       const parsed = parseGroupMessage(event.message, this.options.botApp.getBotQq());
-      if (!parsed.hasAtBot) {
+      const isCommand = parsed.text.trim().startsWith("#");
+      if (!parsed.hasAtBot && !isCommand) {
         await done();
         return;
       }
