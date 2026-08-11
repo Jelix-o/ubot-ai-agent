@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import type { SystemCommandConfig, SystemModelConfig, SystemSettings } from "../types.js";
+import type { SystemCommandConfig, SystemModelConfig, SystemSettings, TokenCostControlSettings } from "../types.js";
 import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
 import {
   ENV_TTS_MODEL_ID,
@@ -165,6 +165,8 @@ function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { api
     memoryCandidateConfidenceThreshold: 60,
     memoryAutoApproveConfidenceThreshold: 80,
     memoryUnattendedModeEnabled: false,
+    onlineLookupEnabled: true,
+    tokenCostControl: defaultTokenCostControlSettings(),
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
     models: normalizeModels(defaultModels, []),
     removedDefaultModelIds: [],
@@ -208,6 +210,8 @@ function normalizeSettings(
     memoryCandidateConfidenceThreshold,
     memoryAutoApproveConfidenceThreshold,
     memoryUnattendedModeEnabled: value.memoryUnattendedModeEnabled === true,
+    onlineLookupEnabled: normalizeBoolean(value.onlineLookupEnabled, fallback.onlineLookupEnabled),
+    tokenCostControl: normalizeTokenCostControl(value.tokenCostControl),
     ...(normalizeSecretHash(value.adminSecretHash) ? { adminSecretHash: normalizeSecretHash(value.adminSecretHash) } : {}),
     ...(normalizeSecretHash(value.groupAdminSecretHash) ? { groupAdminSecretHash: normalizeSecretHash(value.groupAdminSecretHash) } : {}),
     defaultTriggerKeywords: normalizeTriggerKeywords(value.defaultTriggerKeywords),
@@ -243,6 +247,49 @@ function normalizeConfidenceThreshold(value: unknown, fallback: number): number 
     return fallback;
   }
   return Math.max(0, Math.min(100, numberValue));
+}
+
+export function defaultTokenCostControlSettings(): TokenCostControlSettings {
+  return {
+    memoryCandidateExtractionEnabled: false,
+    memoryCandidateNormalizationEnabled: false,
+    memorySemanticDedupEnabled: false,
+    dailyProfileReviewAiEnabled: false,
+    dailyReportAiQuipEnabled: false,
+    chatSummaryAiEnabled: false,
+    scheduledReminderAiRewriteEnabled: false,
+    modelHealthAutoProbeEnabled: false,
+  };
+}
+
+function normalizeTokenCostControl(value: unknown): TokenCostControlSettings {
+  const fallback = defaultTokenCostControlSettings();
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+  const record = value as Partial<Record<keyof TokenCostControlSettings, unknown>>;
+  return {
+    memoryCandidateExtractionEnabled: normalizeBoolean(record.memoryCandidateExtractionEnabled, fallback.memoryCandidateExtractionEnabled),
+    memoryCandidateNormalizationEnabled: normalizeBoolean(record.memoryCandidateNormalizationEnabled, fallback.memoryCandidateNormalizationEnabled),
+    memorySemanticDedupEnabled: normalizeBoolean(record.memorySemanticDedupEnabled, fallback.memorySemanticDedupEnabled),
+    dailyProfileReviewAiEnabled: normalizeBoolean(record.dailyProfileReviewAiEnabled, fallback.dailyProfileReviewAiEnabled),
+    dailyReportAiQuipEnabled: normalizeBoolean(record.dailyReportAiQuipEnabled, fallback.dailyReportAiQuipEnabled),
+    chatSummaryAiEnabled: normalizeBoolean(record.chatSummaryAiEnabled, fallback.chatSummaryAiEnabled),
+    scheduledReminderAiRewriteEnabled: normalizeBoolean(record.scheduledReminderAiRewriteEnabled, fallback.scheduledReminderAiRewriteEnabled),
+    modelHealthAutoProbeEnabled: normalizeBoolean(record.modelHealthAutoProbeEnabled, fallback.modelHealthAutoProbeEnabled),
+  };
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return fallback;
 }
 
 function normalizeTriggerKeywords(value: unknown): SystemSettings["defaultTriggerKeywords"] {
@@ -391,6 +438,10 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
   }
   const purpose = normalizeModelPurpose(value.purpose);
   const apiProtocol = value.apiProtocol === "anthropic" ? "anthropic" : "openai";
+  const isDefaultGptReply = id === "gpt" && purpose === "reply";
+  const reasoningEffort = normalizeReasoningEffort(value.reasoningEffort);
+  const maxCompletionTokens = normalizeOptionalInt(value.maxCompletionTokens, 64, 16_384);
+  const requestTimeoutMs = normalizeOptionalInt(value.requestTimeoutMs, 15_000, 300_000);
   return {
     id,
     name,
@@ -402,9 +453,25 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     hasApiKey: value.hasApiKey === true || Boolean(value.apiKey),
     enabled: value.enabled !== false,
     apiProtocol,
+    supportsVision: value.supportsVision === true || (value.supportsVision === undefined && isDefaultGptReply),
+    ...(reasoningEffort || isDefaultGptReply ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
+    ...(maxCompletionTokens || isDefaultGptReply ? { maxCompletionTokens: maxCompletionTokens ?? 8_192 } : {}),
+    ...(requestTimeoutMs || isDefaultGptReply ? { requestTimeoutMs: requestTimeoutMs ?? 180_000 } : {}),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
   };
+}
+
+function normalizeReasoningEffort(value: unknown): SystemModelConfig["reasoningEffort"] {
+  return value === "xhigh" || value === "high" ? value : undefined;
+}
+
+function normalizeOptionalInt(value: unknown, min: number, max: number): number | undefined {
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isInteger(numberValue)) {
+    return undefined;
+  }
+  return Math.max(min, Math.min(max, numberValue));
 }
 
 function normalizeBuiltInTtsBaseUrl(id: string, baseUrl: string): string {

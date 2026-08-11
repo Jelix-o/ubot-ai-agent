@@ -1,60 +1,62 @@
 # UBot V1.1.0 Release Notes
 
-发布状态：已完成全量测试、代码修复和生产部署。
+发布状态：本地实现完成，已纳入 V1.1.0 发布流。发布前需完成构建、全量测试、Windows 发布包、GitHub Release 和生产部署验证。
 
 ## 发布目标
 
-V1.1.0 专注于系统性能优化和资源消耗减少，通过定时器统一调度、对话存储延迟写入、缓存机制改进等手段，降低系统开销，提升运行效率。
+V1.1.0 聚焦非对话 Token 消耗削减、记忆压缩、系统性能优化和 Skill 扩展。对话回复链路保持不变，重点降低后台自动画像、总结、去重、日报、提醒润色和模型健康探测等非对话模型调用成本。
 
 ## 重点更新
 
-### 性能优化
+### Token 消耗控制
 
-- **定时器统一调度**：将 9 个独立 `setInterval` 合并为 1 个统一维护循环（10秒周期），减少系统资源开销。
-- **对话存储延迟批量写入**：从每次操作立即写盘改为脏标记 + 5秒批量刷新，减少磁盘 I/O。
-- **缓存 TTL 机制**：
-  - 群配置缓存增加 30 秒 TTL，避免缓存永不刷新。
-  - 系统设置新增 `invalidateCache()` 方法，支持手动失效。
+- 系统设置新增“Token 消耗控制”，集中管理非对话 AI 调用开关。
+- 默认只保留候选记忆提取，其余高耗自动能力默认关闭或可一键关闭。
+- 开关覆盖候选记忆中文化、语义去重、自动昨日画像、日报/倒计时 AI 文案、群聊总结 AI、定时提醒 AI 润色和模型健康自动探测。
+- 模型健康页在自动探测关闭时展示跳过状态，手动检测仍可用。
 
-### 可靠性提升
+### 画像压缩长期记忆
 
-- **优雅停机支持**：监听 `SIGINT`/`SIGTERM` 信号，停机前自动刷新待写入数据。
-- **对话存储 `flush()` 方法**：确保停机时数据落盘，防止数据丢失。
+- `/api/memories/summarize` 从“手动记忆汇总”升级为“压缩为长期画像记忆”。
+- 接口先生成成员群聊画像，成功后物理删除该成员旧 `member_profile` 长期记忆。
+- 新画像以 `source: "profile_compaction"`、`confidence: 1` 写入长期记忆。
+- 画像生成失败时不删除旧记忆，并返回原有错误语义。
 
-### 测试覆盖
+### Skill 扩展
 
-- 新增 7 个测试用例，覆盖 roast 模式与各种交互方式的组合。
-- 总测试数：377 个，全部通过。
+- 新增 `skills/youmi.json`：悠米·群聊人格操作系统。
+- 基于「职场咸鱼帮」悠米相关 QQ 聊天记录提炼，覆盖发图社交货币、外包/软通/工资、AI/豆包/页面生成、瑞幸/生椰、地域出游、保密、低俗玩笑边界、性别自证和群友关系网。
+- 明确悠米是女生，群友把她说成男生、兄弟、哥们时按群聊玩笑处理。
 
-## 验证结果
+### 性能与可靠性
 
-- `npm run build:admin`：通过。
-- `npm run build:server`：通过。
-- `npm test`：377/377 通过。
-- 生产部署：服务正常运行，HTTP 200 响应。
+- 定时器统一调度，减少多个独立 `setInterval` 带来的运行开销。
+- 对话存储支持延迟批量写入和 `flush()`，降低磁盘 I/O。
+- 群配置缓存增加 TTL，系统设置支持缓存失效。
+- 停机流程刷新待写入数据，降低异常退出时的数据丢失风险。
 
-## 已知限制
+## 验证计划
 
-- 对话存储延迟写入最多可能丢失 5 秒数据（进程崩溃场景），这是有意的性能权衡。
-- 定时器串行执行可能导致高频 tick（如 LiveChat 5秒周期）被低频但耗时的 tick 阻塞。
+- `JSON.parse("skills/youmi.json")`：通过。
+- `npm run build` / `scripts/build.cjs`：发布前执行。
+- `npm test` / `scripts/test.cjs`：期望 385/385 通过。
+- `git diff --check`：发布前执行。
+- `npm run package:win`：生成 `release/ubot-1.1.0-win.zip`。
+- `scripts/publish-github-release.ps1 -DryRun`：目标 tag/name/notes/asset 均应为 V1.1.0。
 
-## 文件变更
+## 发布信息
 
-| 文件 | 变更内容 |
-|------|---------|
-| `src/bot.ts` | 定时器统一调度，stop() 改为 async |
-| `src/index.ts` | 优雅停机支持，main() 返回 BotApplication |
-| `src/services/conversation-store.ts` | 延迟批量写入，新增 flush() 方法 |
-| `src/services/group-config-service.ts` | 缓存 TTL 机制 |
-| `src/services/system-settings-store.ts` | 新增 invalidateCache() 方法 |
-| `src/bot.test.ts` | 新增 7 个测试用例 |
-| `src/services/conversation-store.test.ts` | 测试适配 |
-| `src/services/group-memory-candidate-service.test.ts` | 移除过时的语义去重测试 |
+- npm 版本：`1.1.0`
+- Git tag：`v1.1.0`
+- Release 名称：`UBot V1.1.0`
+- Release 文档：`RELEASE-v1.1.0.md`
+- Windows 发布包：`release/ubot-1.1.0-win.zip`
 
 ## 生产部署后验证清单
 
-- [x] `ai-project.service` 为 `active`
-- [x] 生产 `.env`、`data/`、`config/groups.json` 被保留
-- [x] NapCat reverse WebSocket 正常重连
-- [x] 管理后台首页可访问（HTTP 200）
-- [x] 服务正常启动，无错误日志
+- [ ] `ai-project.service` 为 `active`
+- [ ] 生产 `.env`、`data/`、`config/groups.json` 被保留
+- [ ] NapCat reverse WebSocket 正常重连
+- [ ] 管理后台 `/login` 返回 HTTP 200
+- [ ] 未登录 `/api/session` 返回 401 或现有未登录语义
+- [ ] 服务启动日志无错误

@@ -14,12 +14,15 @@ export class SkillService {
 
   constructor(private readonly skillsDir: string) {}
 
-  async getSkill(skillId: string): Promise<SkillDefinition | undefined> {
-    const skills = await this.getAllSkills();
+  async getSkill(skillId: string, options: { refresh?: boolean } = {}): Promise<SkillDefinition | undefined> {
+    const skills = await this.getAllSkills(options);
     return skills.find((skill) => skill.id === skillId);
   }
 
-  async getAllSkills(): Promise<SkillDefinition[]> {
+  async getAllSkills(options: { refresh?: boolean } = {}): Promise<SkillDefinition[]> {
+    if (options.refresh) {
+      this.cachedSkills = undefined;
+    }
     if (this.cachedSkills) {
       return this.cachedSkills;
     }

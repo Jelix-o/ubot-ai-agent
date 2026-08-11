@@ -189,6 +189,50 @@ test("daily report layout is concise and includes model-generated after-work qui
   }
 });
 
+test("daily report and chat summary skip ai calls when disabled", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-token-control-test-"));
+  const storePath = path.join(tempDir, "daily-report-store.json");
+  let quipCalls = 0;
+  let summaryCalls = 0;
+
+  try {
+    const service = new DailyReportService(
+      new DailyReportStore(storePath),
+      {
+        async generateBroadcastQuip() {
+          quipCalls += 1;
+          return "unused ai quip";
+        },
+        async generateChatPeriodSummary() {
+          summaryCalls += 1;
+          return "unused ai summary";
+        },
+      } as never,
+    );
+
+    await service.recordMessage({
+      groupId: "67890",
+      userId: "u1",
+      userName: "Tester",
+      text: "hello",
+      timestamp: "2026-04-15T10:00:00",
+    });
+
+    await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), { useAiQuip: false });
+    await service.buildChatSummary({
+      groupId: "67890",
+      request: { mode: "custom_range", label: "today", startMinute: 0, endMinute: 23 * 60 + 59 },
+      now: new Date("2026-04-15T18:00:00"),
+      useAiSummary: false,
+    });
+
+    assert.equal(quipCalls, 0);
+    assert.equal(summaryCalls, 0);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("builds named-period chat summary from stored messages", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-chat-summary-test-"));
   const storePath = path.join(tempDir, "daily-report-store.json");

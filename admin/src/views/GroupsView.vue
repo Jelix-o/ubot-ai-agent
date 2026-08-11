@@ -84,6 +84,7 @@ function defaultGroupConfig(): GroupConfig {
     voiceReplyEnabled: true,
     defaultVoiceReplyEnabled: false,
     memoryDisabledUserIds: [],
+    onlineLookupEnabled: true,
   };
 }
 
@@ -484,6 +485,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           <label><input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" /> 运维告警</label>
           <label><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /> 机器人静音</label>
           <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
+          <label><input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" /> 自动查询实时资料</label>
           <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
             <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
           </label>

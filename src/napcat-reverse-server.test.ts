@@ -99,6 +99,41 @@ test("reverse server rejects query string token", async () => {
   server.close();
 });
 
+test("reverse server returns the message id from send_group_msg", async () => {
+  const server = new NapCatReverseServer({
+    host: "127.0.0.1",
+    port: 0,
+    path: "/onebot/ws",
+  });
+
+  server.start();
+  await wait(60);
+
+  const address = (server as any).httpServer.address() as AddressInfo;
+  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws`);
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", (error) => reject(error));
+  });
+
+  const actionPromise = new Promise<{ action?: string; echo?: string }>((resolve) => {
+    ws.once("message", (data) => resolve(JSON.parse(data.toString())));
+  });
+  const receiptPromise = server.sendGroupMessage("866209871", "hello");
+  const action = await actionPromise;
+  assert.equal(action.action, "send_group_msg");
+  ws.send(JSON.stringify({
+    status: "ok",
+    retcode: 0,
+    data: { message_id: 8899 },
+    echo: action.echo,
+  }));
+
+  assert.deepEqual(await receiptPromise, { messageId: "8899" });
+  ws.close();
+  server.close();
+});
+
 test("reverse server rejects pending actions when socket closes", async () => {
   const server = new NapCatReverseServer({
     host: "127.0.0.1",

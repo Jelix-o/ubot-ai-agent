@@ -3,6 +3,8 @@ import type { AiInteractionTarget, AiReplyContext } from "../types.js";
 export interface BufferedMessageContext {
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
+  sourceMessageId?: string;
+  replyMessageId?: string;
 }
 
 export interface BufferedMessage {
@@ -11,6 +13,8 @@ export interface BufferedMessage {
   timestamp: string;
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
+  sourceMessageId?: string;
+  replyMessageId?: string;
 }
 
 export interface LiveChatWindowCandidate {
@@ -18,6 +22,17 @@ export interface LiveChatWindowCandidate {
   userId: string;
   messages: BufferedMessage[];
   lastTimestamp: string;
+}
+
+export interface LiveChatRuntimeState {
+  enabled: boolean;
+  trackedUserCount: number;
+  delaySeconds: number;
+  pendingUsers: Array<{
+    userId: string;
+    messageCount: number;
+    state: "waiting" | "ready";
+  }>;
 }
 
 const MAX_BUFFER_WINDOW_MS = 30 * 60 * 1000;
@@ -48,6 +63,8 @@ export class LiveChatService {
       timestamp: new Date(now).toISOString(),
       interactionTargets: context.interactionTargets,
       replyContext: context.replyContext,
+      sourceMessageId: context.sourceMessageId,
+      replyMessageId: context.replyMessageId,
     });
 
     const cutoff = now - MAX_BUFFER_WINDOW_MS;
@@ -103,6 +120,29 @@ export class LiveChatService {
     }
 
     return bestCandidate;
+  }
+
+  getRuntimeState(
+    groupId: string,
+    trackedUserIds: string[],
+    delaySeconds: number,
+    now = Date.now(),
+  ): LiveChatRuntimeState {
+    const uniqueUserIds = [...new Set(trackedUserIds.filter(Boolean))];
+    const lastBotActivity = this.getLastBotActivity(groupId);
+    const ready = now >= lastBotActivity + delaySeconds * 1000;
+    const pendingUsers = uniqueUserIds.flatMap((userId) => {
+      const messageCount = this.getMessagesBetween(groupId, userId, lastBotActivity, now).length;
+      return messageCount > 0
+        ? [{ userId, messageCount, state: ready ? "ready" as const : "waiting" as const }]
+        : [];
+    });
+    return {
+      enabled: uniqueUserIds.length > 0,
+      trackedUserCount: uniqueUserIds.length,
+      delaySeconds,
+      pendingUsers,
+    };
   }
 
   discardMessagesBefore(groupId: string, userId: string, cutoffTime: number): void {

@@ -13,8 +13,11 @@ import type { GroupLock } from "./services/group-lock.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import { GroupMemoryDeduplicateService } from "./services/group-memory-deduplicate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
+import type { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
+import { ImagePipelineError, type ImagePipeline } from "./services/image-pipeline.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
 import type { ProfileRecordStore } from "./services/profile-record-store.js";
@@ -23,6 +26,8 @@ import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-rem
 import type { SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { RuntimeTtsService } from "./services/configured-tts-service.js";
+import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
+import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { TtsServiceError } from "./services/tts-service.js";
 import type {
   AiInteractionTarget,
@@ -34,20 +39,27 @@ import type {
   GroupMemberProfile,
   GroupMemberIdentity,
   GroupBotConfig,
+  GroupRuntimeContext,
   GroupMemory,
   MessageImageInput,
   NapcatGroupInfo,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
   ReplyModelMode,
+  RealtimeLookupResult,
+  RecentGroupMessage,
   ReferencedMessage,
+  SharedConversationTopic,
   SkillDefinition,
   SystemCommandConfig,
   SystemSettings,
+  TokenCostControlSettings,
 } from "./types.js";
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
-import { formatReplyMessages } from "./utils/reply-format.js";
+import { formatReplyMessages, type ReplyFormatBudget } from "./utils/reply-format.js";
+import { classifyUpstreamFailure } from "./utils/upstream-failure.js";
+import { withTimeout } from "./utils/with-timeout.js";
 import { parseVoiceCommand } from "./utils/voice-command.js";
 
 const SKILL_PREFIX = "#技能";
@@ -85,6 +97,7 @@ const DAILY_PROFILE_REVIEW_TICK_MS = 30 * 1000;
 const MEMORY_CANDIDATE_FLUSH_TICK_MS = 2 * 60 * 1000;
 const MEMORY_DEDUP_TICK_MS = 30 * 1000;
 const DAILY_REPORT_CLEANUP_TICK_MS = 60 * 1000;
+const MAINTENANCE_TICK_MS = 10_000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
@@ -95,6 +108,16 @@ const SEND_FAILURE_ALERT_THRESHOLD = 3;
 const MEMORY_PERCENT_ALERT_THRESHOLD = 85;
 const MEMORY_PERCENT_RECOVERY_THRESHOLD = 75;
 const PROCESS_RSS_ALERT_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_TOKEN_COST_CONTROL: TokenCostControlSettings = {
+  memoryCandidateExtractionEnabled: false,
+  memoryCandidateNormalizationEnabled: false,
+  memorySemanticDedupEnabled: false,
+  dailyProfileReviewAiEnabled: false,
+  dailyReportAiQuipEnabled: false,
+  chatSummaryAiEnabled: false,
+  scheduledReminderAiRewriteEnabled: false,
+  modelHealthAutoProbeEnabled: false,
+};
 
 const MSG_AI_FAIL = "我刚刚思考超时了，请稍后再试一次";
 const MSG_VOICE_FAIL = "语音发送失败，我先用文字回复你";
@@ -161,23 +184,34 @@ interface ReplyAiRoute {
   mode: ReplyModelMode;
   label: string;
   service: Pick<RuntimeAiService, "generateReply">;
-  fallback?: {
-    mode: ReplyModelMode;
-    label: string;
-    service: Pick<RuntimeAiService, "generateReply">;
-  };
+  supportsVision: boolean;
 }
 
 interface ReplyModelOption {
   mode: ReplyModelMode;
   label: string;
   service: Pick<RuntimeAiService, "generateReply">;
+  supportsVision: boolean;
 }
 
 interface ReplyAiResult {
   reply: AiReply;
   usedMode: ReplyModelMode;
   fallbackUsed: boolean;
+}
+
+class VisionUnsupportedModelError extends Error {
+  constructor(modelLabel: string) {
+    super(`The selected reply model does not support image input: ${modelLabel}`);
+    this.name = "VisionUnsupportedModelError";
+  }
+}
+
+class ImageInputUnavailableError extends Error {
+  constructor() {
+    super("The image could not be read into a model-ready format.");
+    this.name = "ImageInputUnavailableError";
+  }
 }
 
 interface ProfileTargetResolution {
@@ -193,9 +227,9 @@ export interface TransportHealthStatus {
 }
 
 export interface MessageTransport {
-  sendGroupMessage(groupId: string, text: string): Promise<void>;
-  sendGroupRecord(groupId: string, recordFile: string): Promise<void>;
-  sendGroupAiRecord(groupId: string, text: string): Promise<void>;
+  sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
+  sendGroupRecord(groupId: string, recordFile: string): Promise<void | MessageReceipt>;
+  sendGroupAiRecord(groupId: string, text: string): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
   listGroupMembers?(groupId: string): Promise<NapcatGroupMember[]>;
   listGroups?(): Promise<NapcatGroupInfo[]>;
@@ -205,9 +239,17 @@ export interface MessageTransport {
   getHealthStatus?(): Promise<TransportHealthStatus>;
 }
 
+export interface MessageReceipt {
+  messageId?: string;
+}
+
 interface MessageInteractionContext {
   interactionTargets: AiInteractionTarget[];
   replyContext?: AiReplyContext;
+  sourceMessageId?: string;
+  replyMessageId?: string;
+  senderCard?: string;
+  senderNickname?: string;
 }
 
 interface ConversationOptions {
@@ -230,24 +272,19 @@ interface OpsAlertRuntimeState {
 }
 
 export class BotApplication {
-  private liveChatTimer?: NodeJS.Timeout;
-  private dailyReportTimer?: NodeJS.Timeout;
-  private holidayCountdownTimer?: NodeJS.Timeout;
-  private scheduledReminderTimer?: NodeJS.Timeout;
-  private opsAlertTimer?: NodeJS.Timeout;
-  private dailyProfileReviewTimer?: NodeJS.Timeout;
-  private memoryCandidateFlushTimer?: NodeJS.Timeout;
-  private memoryDedupTimer?: NodeJS.Timeout;
-  private dailyReportCleanupTimer?: NodeJS.Timeout;
-  private liveChatTickRunning = false;
-  private dailyReportTickRunning = false;
-  private holidayCountdownTickRunning = false;
-  private scheduledReminderTickRunning = false;
-  private opsAlertTickRunning = false;
-  private dailyProfileReviewTickRunning = false;
-  private memoryCandidateFlushTickRunning = false;
-  private memoryDedupTickRunning = false;
-  private dailyReportCleanupTickRunning = false;
+  private maintenanceTimer?: NodeJS.Timeout;
+  private maintenanceTickRunning = false;
+
+  // 各个 tick 的上次执行时间（用于判断是否该执行）
+  private lastLiveChatTick = 0;
+  private lastDailyReportTick = 0;
+  private lastHolidayCountdownTick = 0;
+  private lastScheduledReminderTick = 0;
+  private lastOpsAlertTick = 0;
+  private lastDailyProfileReviewTick = 0;
+  private lastMemoryCandidateFlushTick = 0;
+  private lastMemoryDedupTick = 0;
+  private lastDailyReportCleanupTick = 0;
   private lastMemoryDedupDateKey?: string;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
@@ -282,115 +319,87 @@ export class BotApplication {
     private readonly replyModelLabels: Partial<Record<ReplyModelMode, string>> = {},
     private readonly systemSettingsStore?: SystemSettingsStore,
     private readonly profileRecordStore?: ProfileRecordStore,
+    private readonly realtimeLookupService?: Pick<RealtimeLookupService, "lookup">,
+    private readonly groupTranscriptService = new GroupTranscriptService(),
+    private readonly atmosphereSummarizer?: Pick<AtmosphereSummarizer, "getSummary" | "summarizeNow">,
+    private llmGate?: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>,
+    private readonly imagePipeline?: Pick<ImagePipeline, "resolveForVision">,
+    private cancelledReplyHook?: () => void,
   ) {}
 
   start(): void {
-    if (
-      this.liveChatTimer ||
-      this.dailyReportTimer ||
-      this.holidayCountdownTimer ||
-      this.scheduledReminderTimer ||
-      this.opsAlertTimer ||
-      this.dailyProfileReviewTimer ||
-      this.memoryCandidateFlushTimer ||
-      this.memoryDedupTimer ||
-      this.dailyReportCleanupTimer
-    ) {
+    if (this.maintenanceTimer) {
       return;
     }
 
-    this.liveChatTimer = setInterval(() => {
-      void this.runLiveChatTick();
-    }, LIVE_CHAT_TICK_MS);
-    this.liveChatTimer.unref();
-
-    this.dailyReportTimer = setInterval(() => {
-      void this.runDailyReportTick();
-    }, DAILY_REPORT_TICK_MS);
-    this.dailyReportTimer.unref();
-
-    this.holidayCountdownTimer = setInterval(() => {
-      void this.runHolidayCountdownTick();
-    }, HOLIDAY_COUNTDOWN_TICK_MS);
-    this.holidayCountdownTimer.unref();
-
-    this.scheduledReminderTimer = setInterval(() => {
-      void this.runScheduledReminderTick();
-    }, SCHEDULED_REMINDER_TICK_MS);
-    this.scheduledReminderTimer.unref();
-
-    this.opsAlertTimer = setInterval(() => {
-      void this.runOpsAlertTick();
-    }, OPS_ALERT_TICK_MS);
-    this.opsAlertTimer.unref();
-
-    this.dailyProfileReviewTimer = setInterval(() => {
-      void this.runDailyProfileReviewTick();
-    }, DAILY_PROFILE_REVIEW_TICK_MS);
-    this.dailyProfileReviewTimer.unref();
-
-    this.memoryCandidateFlushTimer = setInterval(() => {
-      void this.runMemoryCandidateFlushTick();
-    }, MEMORY_CANDIDATE_FLUSH_TICK_MS);
-    this.memoryCandidateFlushTimer.unref();
-
-    this.memoryDedupTimer = setInterval(() => {
-      void this.runMemoryDedupTick();
-    }, MEMORY_DEDUP_TICK_MS);
-    this.memoryDedupTimer.unref();
-
-    this.dailyReportCleanupTimer = setInterval(() => {
-      void this.runDailyReportCleanupTick();
-    }, DAILY_REPORT_CLEANUP_TICK_MS);
-    this.dailyReportCleanupTimer.unref();
+    this.maintenanceTimer = setInterval(() => {
+      void this.runMaintenanceTick();
+    }, MAINTENANCE_TICK_MS);
+    this.maintenanceTimer.unref();
 
     void this.runOpsAlertTick({ includeStartup: true });
   }
 
-  stop(): void {
-    if (this.liveChatTimer) {
-      clearInterval(this.liveChatTimer);
-      this.liveChatTimer = undefined;
+  async stop(): Promise<void> {
+    if (this.maintenanceTimer) {
+      clearInterval(this.maintenanceTimer);
+      this.maintenanceTimer = undefined;
     }
+    await this.conversationStore.flush();
+  }
 
-    if (this.dailyReportTimer) {
-      clearInterval(this.dailyReportTimer);
-      this.dailyReportTimer = undefined;
-    }
+  private async runMaintenanceTick(): Promise<void> {
+    if (this.maintenanceTickRunning) return;
+    this.maintenanceTickRunning = true;
+    try {
+      const now = Date.now();
 
-    if (this.holidayCountdownTimer) {
-      clearInterval(this.holidayCountdownTimer);
-      this.holidayCountdownTimer = undefined;
-    }
+      if (now - this.lastLiveChatTick >= LIVE_CHAT_TICK_MS) {
+        this.lastLiveChatTick = now;
+        await this.runLiveChatTick();
+      }
 
-    if (this.scheduledReminderTimer) {
-      clearInterval(this.scheduledReminderTimer);
-      this.scheduledReminderTimer = undefined;
-    }
+      if (now - this.lastDailyReportTick >= DAILY_REPORT_TICK_MS) {
+        this.lastDailyReportTick = now;
+        await this.runDailyReportTick();
+      }
 
-    if (this.opsAlertTimer) {
-      clearInterval(this.opsAlertTimer);
-      this.opsAlertTimer = undefined;
-    }
+      if (now - this.lastHolidayCountdownTick >= HOLIDAY_COUNTDOWN_TICK_MS) {
+        this.lastHolidayCountdownTick = now;
+        await this.runHolidayCountdownTick();
+      }
 
-    if (this.dailyProfileReviewTimer) {
-      clearInterval(this.dailyProfileReviewTimer);
-      this.dailyProfileReviewTimer = undefined;
-    }
+      if (now - this.lastScheduledReminderTick >= SCHEDULED_REMINDER_TICK_MS) {
+        this.lastScheduledReminderTick = now;
+        await this.runScheduledReminderTick();
+      }
 
-    if (this.memoryCandidateFlushTimer) {
-      clearInterval(this.memoryCandidateFlushTimer);
-      this.memoryCandidateFlushTimer = undefined;
-    }
+      if (now - this.lastOpsAlertTick >= OPS_ALERT_TICK_MS) {
+        this.lastOpsAlertTick = now;
+        await this.runOpsAlertTick();
+      }
 
-    if (this.memoryDedupTimer) {
-      clearInterval(this.memoryDedupTimer);
-      this.memoryDedupTimer = undefined;
-    }
+      if (now - this.lastDailyProfileReviewTick >= DAILY_PROFILE_REVIEW_TICK_MS) {
+        this.lastDailyProfileReviewTick = now;
+        await this.runDailyProfileReviewTick();
+      }
 
-    if (this.dailyReportCleanupTimer) {
-      clearInterval(this.dailyReportCleanupTimer);
-      this.dailyReportCleanupTimer = undefined;
+      if (now - this.lastMemoryCandidateFlushTick >= MEMORY_CANDIDATE_FLUSH_TICK_MS) {
+        this.lastMemoryCandidateFlushTick = now;
+        await this.runMemoryCandidateFlushTick();
+      }
+
+      if (now - this.lastMemoryDedupTick >= MEMORY_DEDUP_TICK_MS) {
+        this.lastMemoryDedupTick = now;
+        await this.runMemoryDedupTick();
+      }
+
+      if (now - this.lastDailyReportCleanupTick >= DAILY_REPORT_CLEANUP_TICK_MS) {
+        this.lastDailyReportCleanupTick = now;
+        await this.runDailyReportCleanupTick();
+      }
+    } finally {
+      this.maintenanceTickRunning = false;
     }
   }
 
@@ -398,7 +407,21 @@ export class BotApplication {
     return readRuntimeCommands(this.systemSettingsStore);
   }
 
-  async handleGroupMessage(event: NapcatGroupMessageEvent): Promise<void> {
+  private async getTokenCostControl(): Promise<TokenCostControlSettings> {
+    if (!this.systemSettingsStore) {
+      return DEFAULT_TOKEN_COST_CONTROL;
+    }
+    try {
+      return (await this.systemSettingsStore.get()).tokenCostControl;
+    } catch (error) {
+      logWarn("Failed to read token cost control settings; using conservative defaults.", {
+        error: (error as Error).message,
+      });
+      return DEFAULT_TOKEN_COST_CONTROL;
+    }
+  }
+
+  async handleGroupMessage(event: NapcatGroupMessageEvent, signal?: AbortSignal): Promise<void> {
     const groupId = String(event.group_id);
     const userId = String(event.user_id);
 
@@ -423,6 +446,7 @@ export class BotApplication {
       return;
     }
 
+    const parsedMessage = parseGroupMessage(event.message, this.botQq);
     const commandText = extractCommandText(event.message);
     const runtimeCommands = await this.getRuntimeCommands();
 
@@ -435,10 +459,11 @@ export class BotApplication {
     }
 
     if (this.isBlacklistedUser(groupConfig, userId)) {
-      const parsedMessage = parseGroupMessage(event.message, this.botQq);
       await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
       return;
     }
+
+    this.recordGroupTranscriptMessage(groupConfig, event, parsedMessage, commandText, runtimeCommands);
 
     const muteCommand = matchRuntimeCommand(commandText, runtimeCommands, "mute");
     if (muteCommand) {
@@ -525,17 +550,18 @@ export class BotApplication {
         return;
       }
 
-      const parsedMessage = parseGroupMessage(event.message, this.botQq);
       await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
       const chatSummaryRequest = parsedMessage.hasAtBot
         ? parseChatSummaryRequest(parsedMessage.text, new Date())
         : null;
       if (chatSummaryRequest) {
         await this.groupLock.run(groupId, async () => {
+          const tokenCostControl = await this.getTokenCostControl();
           const summary = await this.dailyReportService.buildChatSummary({
             groupId,
             request: chatSummaryRequest,
             now: new Date(),
+            useAiSummary: tokenCostControl.chatSummaryAiEnabled,
           });
           await this.sendText(groupId, summary);
         });
@@ -608,8 +634,13 @@ export class BotApplication {
       return;
     }
 
-    const parsedMessage = parseGroupMessage(event.message, this.botQq);
-    const messageContext = await this.buildMessageInteractionContext(groupConfig, parsedMessage);
+    const messageContext = await this.buildMessageInteractionContext(
+      groupConfig,
+      parsedMessage,
+      String(event.message_id),
+      event.sender?.card,
+      event.sender?.nickname,
+    );
     const singCommand = matchRuntimeCommand(commandText, runtimeCommands, "sing");
     if (singCommand) {
       if (groupConfig.voiceReplyEnabled === false) {
@@ -680,10 +711,12 @@ export class BotApplication {
 
     if (chatSummaryRequest) {
       await this.groupLock.run(groupId, async () => {
+        const tokenCostControl = await this.getTokenCostControl();
         const summary = await this.dailyReportService.buildChatSummary({
           groupId,
           request: chatSummaryRequest,
           now: new Date(),
+          useAiSummary: tokenCostControl.chatSummaryAiEnabled,
         });
         await this.sendText(groupId, summary);
       });
@@ -758,12 +791,23 @@ export class BotApplication {
         [],
         messageContext,
         true,
+        undefined,
+        signal,
       );
     });
   }
 
   async getPublicTransportHealthStatus(): Promise<TransportHealthStatus> {
     return this.getTransportHealthStatus();
+  }
+
+  getBotQq(): string {
+    return this.botQq;
+  }
+
+  /** Injects the LLM gate (semaphore + circuit breaker) into the reply path. */
+  setLlmGate(gate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>): void {
+    this.llmGate = gate;
   }
 
   private async shouldTriggerKeyword(
@@ -805,11 +849,6 @@ export class BotApplication {
   }
 
   private async runLiveChatTick(): Promise<void> {
-    if (this.liveChatTickRunning) {
-      return;
-    }
-
-    this.liveChatTickRunning = true;
     const now = Date.now();
 
     try {
@@ -898,20 +937,13 @@ export class BotApplication {
       logError("Live chat scheduler failed.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.liveChatTickRunning = false;
     }
   }
 
   private async runDailyReportTick(now = new Date()): Promise<void> {
-    if (this.dailyReportTickRunning) {
-      return;
-    }
-
-    this.dailyReportTickRunning = true;
-
     try {
       const groups = await this.getEnabledGroupConfigs();
+      const tokenCostControl = await this.getTokenCostControl();
 
       for (const groupConfig of groups) {
         if (!(await this.dailyReportService.shouldSendScheduledReport(groupConfig, now))) {
@@ -920,7 +952,9 @@ export class BotApplication {
 
         try {
           await this.groupLock.run(groupConfig.groupId, async () => {
-            const report = await this.dailyReportService.buildReport(groupConfig, now);
+            const report = await this.dailyReportService.buildReport(groupConfig, now, {
+              useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+            });
             await this.sendText(groupConfig.groupId, report);
             await this.dailyReportService.markSent(groupConfig.groupId, now);
           });
@@ -939,20 +973,13 @@ export class BotApplication {
       logError("Daily report scheduler failed.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.dailyReportTickRunning = false;
     }
   }
 
   private async runHolidayCountdownTick(now = new Date()): Promise<void> {
-    if (this.holidayCountdownTickRunning) {
-      return;
-    }
-
-    this.holidayCountdownTickRunning = true;
-
     try {
       const groups = await this.getEnabledGroupConfigs();
+      const tokenCostControl = await this.getTokenCostControl();
 
       for (const groupConfig of groups) {
         if (!(await this.holidayCountdownService.shouldSendScheduledMessage(groupConfig, now))) {
@@ -961,7 +988,9 @@ export class BotApplication {
 
         try {
           await this.groupLock.run(groupConfig.groupId, async () => {
-            const message = await this.holidayCountdownService.buildCountdownMessage(now);
+            const message = await this.holidayCountdownService.buildCountdownMessage(now, {
+              useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+            });
             await this.sendText(groupConfig.groupId, message);
             await this.holidayCountdownService.markSent(groupConfig.groupId, now);
           });
@@ -980,24 +1009,17 @@ export class BotApplication {
       logError("Holiday countdown scheduler failed.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.holidayCountdownTickRunning = false;
     }
   }
 
   private async runScheduledReminderTick(now = new Date()): Promise<void> {
-    if (this.scheduledReminderTickRunning) {
-      return;
-    }
-
     if (!isWithinWorkHours(now)) {
       return;
     }
 
-    this.scheduledReminderTickRunning = true;
-
     try {
       const groups = await this.getEnabledGroupConfigs();
+      const tokenCostControl = await this.getTokenCostControl();
       const groupsById = new Map(groups.map((group) => [group.groupId, group]));
       const dueTasks = await this.scheduledReminderService.getDueTasks(now);
       for (const task of dueTasks) {
@@ -1008,7 +1030,9 @@ export class BotApplication {
 
         try {
           await this.groupLock.run(task.groupId, async () => {
-            const message = await this.scheduledReminderService.buildReminderMessage(task);
+            const message = await this.scheduledReminderService.buildReminderMessage(task, {
+              useAiRewrite: tokenCostControl.scheduledReminderAiRewriteEnabled,
+            });
             await this.sendText(task.groupId, message);
             await this.scheduledReminderService.markSent(task.id, message, now);
           });
@@ -1029,17 +1053,16 @@ export class BotApplication {
       logError("Scheduled reminder scheduler failed.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.scheduledReminderTickRunning = false;
     }
   }
 
   private async runDailyProfileReviewTick(now = new Date()): Promise<void> {
-    if (this.dailyProfileReviewTickRunning || !this.dailyProfileReviewService) {
+    if (!this.dailyProfileReviewService) {
       return;
     }
 
     let dailyProfileReviewTime = "00:00";
+    let dailyProfileReviewAiEnabled = DEFAULT_TOKEN_COST_CONTROL.dailyProfileReviewAiEnabled;
     if (this.systemSettingsStore) {
       try {
         const settings = await this.systemSettingsStore.get();
@@ -1047,18 +1070,21 @@ export class BotApplication {
           return;
         }
         dailyProfileReviewTime = settings.dailyProfileReviewTime || dailyProfileReviewTime;
+        dailyProfileReviewAiEnabled = settings.tokenCostControl.dailyProfileReviewAiEnabled;
       } catch (error) {
         logWarn("Failed to read daily profile review settings; continuing with default schedule.", {
           error: (error as Error).message,
         });
       }
     }
+    if (!dailyProfileReviewAiEnabled) {
+      return;
+    }
 
     if (!isScheduledClockMinute(now, dailyProfileReviewTime)) {
       return;
     }
 
-    this.dailyProfileReviewTickRunning = true;
     const dateKey = getYesterdayDateKey(now);
 
     try {
@@ -1092,18 +1118,19 @@ export class BotApplication {
         dateKey,
         error: (error as Error).message,
       });
-    } finally {
-      this.dailyProfileReviewTickRunning = false;
     }
   }
 
   private async runMemoryCandidateFlushTick(): Promise<void> {
-    if (this.memoryCandidateFlushTickRunning || !this.groupMemoryCandidateService) {
+    if (!this.groupMemoryCandidateService) {
       return;
     }
 
-    this.memoryCandidateFlushTickRunning = true;
     try {
+      const tokenCostControl = await this.getTokenCostControl();
+      if (!tokenCostControl.memoryCandidateExtractionEnabled) {
+        return;
+      }
       if (this.profileReplyAiService) {
         const health = await this.profileReplyAiService.checkHealth();
         if (!health.ok) {
@@ -1118,7 +1145,9 @@ export class BotApplication {
         }
       }
       const enabledGroupIds = (await this.getEnabledGroupConfigs()).map((group) => group.groupId);
-      const results = await this.groupMemoryCandidateService.flushAll(enabledGroupIds);
+      const results = await this.groupMemoryCandidateService.flushAll(enabledGroupIds, {
+        normalizeNonChineseCandidates: tokenCostControl.memoryCandidateNormalizationEnabled,
+      });
       for (const result of results) {
         logInfo("Flushed buffered group memory messages.", { ...result });
       }
@@ -1126,8 +1155,6 @@ export class BotApplication {
       logWarn("Memory candidate flush tick failed.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.memoryCandidateFlushTickRunning = false;
     }
   }
 
@@ -1162,12 +1189,13 @@ export class BotApplication {
   }
 
   private async runMemoryDedupTick(now = new Date()): Promise<void> {
-    if (this.memoryDedupTickRunning || !this.groupMemoryStore) {
+    if (!this.groupMemoryStore) {
       return;
     }
 
     let memoryDedupTime = "23:00";
     let memoryDedupSemanticTimeoutMs = 10 * 60 * 1000;
+    let memorySemanticDedupEnabled = DEFAULT_TOKEN_COST_CONTROL.memorySemanticDedupEnabled;
     if (this.systemSettingsStore) {
       try {
         const settings = await this.systemSettingsStore.get();
@@ -1179,6 +1207,7 @@ export class BotApplication {
         }
         memoryDedupTime = settings.memoryDedupTime || memoryDedupTime;
         memoryDedupSemanticTimeoutMs = settings.memoryDedupSemanticTimeoutMinutes * 60 * 1000;
+        memorySemanticDedupEnabled = settings.tokenCostControl.memorySemanticDedupEnabled;
       } catch (error) {
         logWarn("Failed to read memory dedup settings; continuing with nightly dedup.", {
           error: (error as Error).message,
@@ -1195,20 +1224,19 @@ export class BotApplication {
       return;
     }
 
-    this.memoryDedupTickRunning = true;
     this.lastMemoryDedupDateKey = dateKey;
     try {
       const enabledGroups = await this.getEnabledGroupConfigs();
       const deduplicateService = new GroupMemoryDeduplicateService(
         this.groupMemoryStore,
-        this.profileReplyAiService
+        this.profileReplyAiService && memorySemanticDedupEnabled
           ? (args) => this.profileReplyAiService!.judgeMemorySemanticRelation(args)
           : undefined,
       );
       for (const group of enabledGroups) {
         try {
           const result = await deduplicateService.deduplicateMemberMemoriesForGroup(group.groupId, {
-            useSemanticJudge: true,
+            useSemanticJudge: memorySemanticDedupEnabled,
             semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
           });
           if (
@@ -1237,23 +1265,15 @@ export class BotApplication {
         dateKey,
         error: (error as Error).message,
       });
-    } finally {
-      this.memoryDedupTickRunning = false;
     }
   }
 
   private async runDailyReportCleanupTick(now = new Date()): Promise<void> {
-    if (this.dailyReportCleanupTickRunning) {
-      return;
-    }
-
     const hours = now.getHours();
     const minutes = now.getMinutes();
     if (hours !== 0 || minutes !== 0) {
       return;
     }
-
-    this.dailyReportCleanupTickRunning = true;
     try {
       await this.dailyReportService.clearStore();
       logInfo("Daily report store cleared at midnight.");
@@ -1261,17 +1281,10 @@ export class BotApplication {
       logWarn("Failed to clear daily report store.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.dailyReportCleanupTickRunning = false;
     }
   }
 
   private async runOpsAlertTick(options: { now?: Date; includeStartup?: boolean } = {}): Promise<void> {
-    if (this.opsAlertTickRunning) {
-      return;
-    }
-
-    this.opsAlertTickRunning = true;
     const now = options.now ?? new Date();
 
     try {
@@ -1323,8 +1336,6 @@ export class BotApplication {
       logError("Ops alert scheduler failed.", {
         error: (error as Error).message,
       });
-    } finally {
-      this.opsAlertTickRunning = false;
     }
   }
 
@@ -1862,7 +1873,10 @@ export class BotApplication {
       }
 
       await this.groupLock.run(groupId, async () => {
-        const report = await this.dailyReportService.buildReport(groupConfig, new Date());
+        const tokenCostControl = await this.getTokenCostControl();
+        const report = await this.dailyReportService.buildReport(groupConfig, new Date(), {
+          useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+        });
         await this.sendText(groupId, report);
       });
       return;
@@ -1925,7 +1939,10 @@ export class BotApplication {
       normalized === `${HOLIDAY_COUNTDOWN_PREFIX} 查看` ||
       normalized === `${HOLIDAY_COUNTDOWN_PREFIX} 状态`
     ) {
-      const preview = await this.holidayCountdownService.buildCountdownMessage(new Date());
+      const tokenCostControl = await this.getTokenCostControl();
+      const preview = await this.holidayCountdownService.buildCountdownMessage(new Date(), {
+        useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+      });
       const status = `节假日倒计时：${groupConfig.holidayCountdownEnabled === false ? "已关闭" : "已开启"}\n发送时间：${
         groupConfig.holidayCountdownTime ?? "09:00"
       }`;
@@ -1941,7 +1958,10 @@ export class BotApplication {
       }
 
       await this.groupLock.run(groupId, async () => {
-        const message = await this.holidayCountdownService.buildCountdownMessage(new Date());
+        const tokenCostControl = await this.getTokenCostControl();
+        const message = await this.holidayCountdownService.buildCountdownMessage(new Date(), {
+          useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+        });
         await this.sendText(groupId, message);
       });
       return;
@@ -2335,27 +2355,109 @@ export class BotApplication {
     prefixMentionUserIds: string[] = [],
     messageContext: MessageInteractionContext = { interactionTargets: [] },
     optionsOrAllowControlledMention: ConversationOptions | boolean = false,
+    topicId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    const conversationStartedAt = Date.now();
     const baseOptions: ConversationOptions = typeof optionsOrAllowControlledMention === "boolean"
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
     const skill = await this.resolveSkill(groupConfig);
-    const history = await this.conversationStore.getTurns(groupConfig.groupId, userId);
+    const sharedTopicStore = this.conversationStore as Partial<Pick<ConversationStore, "getSharedTopic">>;
+    const sharedTopic = sharedTopicStore.getSharedTopic
+      ? await sharedTopicStore.getSharedTopic(groupConfig.groupId, messageContext.replyMessageId)
+      : undefined;
+    const history = sharedTopic
+      ? toSharedTopicHistory(sharedTopic, groupConfig)
+      : await this.conversationStore.getTurns(groupConfig.groupId, userId);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
-    const [groupMemories, knowledgeHits, napcatMembers] = await Promise.all([
-      this.groupMemoryStore?.listEnabled(groupConfig.groupId, 20) ?? Promise.resolve([]),
-      this.knowledgeBaseStore?.search(
-        groupConfig.groupId,
-        [
-          normalizedUserInput,
-          messageContext.replyContext?.text ?? "",
-          ...messageContext.interactionTargets.flatMap((target) => target.names),
-        ].join(" "),
-        3,
-      ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
-      this.safeListGroupMembers(groupConfig.groupId),
+    const recentGroupMessages = skill.id === "huixian"
+      ? selectRecentGroupMessages(this.groupTranscriptService.getRecentMessages(groupConfig.groupId, {
+          excludeMessageId: messageContext.sourceMessageId,
+        }))
+      : [];
+    // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
+    const atmosphere = this.atmosphereSummarizer
+      ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
+          groupConfig.groupId,
+          this.groupTranscriptService.getRecentMessages(groupConfig.groupId, {
+            excludeMessageId: messageContext.sourceMessageId,
+          }),
+        ))
+      : undefined;
+    const recentGroupMessageChars = recentGroupMessages.reduce((total, message) => total + message.text.length, 0);
+    const replyFormatBudget = resolveHuixianReplyFormatBudget(skill, normalizedUserInput);
+    const replyLengthInstruction = replyFormatBudget
+      ? buildHuixianReplyLengthInstruction(replyFormatBudget)
+      : undefined;
+    const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction]
+      .filter((instruction): instruction is string => Boolean(instruction))
+      .join("\n\n");
+    const currentSpeaker = buildCurrentSpeaker(groupConfig, userId, messageContext);
+    const relatedUserIds = messageContext.interactionTargets
+      .map((target) => target.userId)
+      .filter((target): target is string => Boolean(target));
+    const memoryQueryText = [
+      normalizedUserInput,
+      messageContext.replyContext?.text ?? "",
+      ...messageContext.interactionTargets.flatMap((target) => target.names),
+    ].join(" ");
+    const memoryIdentityTerms = collectMemoryIdentityTerms(groupConfig, [userId, ...relatedUserIds]);
+    const realtimeLookupStartedAt = Date.now();
+    // 分级超时（计划 §2.4）：记忆检索 1.5s/2s、实时查询 8s/10s——超时跳过该层，
+    // 不阻塞回复生成。
+    const [groupMemories, knowledgeHits, realtimeLookup, groupRuntimeContext] = await Promise.all([
+      withTimeout(
+        this.groupMemoryStore?.listRelevantEnabled({
+          groupId: groupConfig.groupId,
+          currentUserId: userId,
+          relatedUserIds,
+          queryText: memoryQueryText,
+          identityTerms: memoryIdentityTerms,
+          limit: 8,
+          maxChars: 3_200,
+        }) ?? Promise.resolve([]),
+        1_500,
+      ).catch((error) => {
+        logWarn("Memory retrieval timed out; skipping L1 layer.", {
+          groupId: groupConfig.groupId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }),
+      withTimeout(
+        this.knowledgeBaseStore?.search(
+          groupConfig.groupId,
+          [
+            normalizedUserInput,
+            messageContext.replyContext?.text ?? "",
+            ...messageContext.interactionTargets.flatMap((target) => target.names),
+          ].join(" "),
+          3,
+        ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
+        1_500,
+      ).catch((error) => {
+        logWarn("Knowledge search timed out; skipping layer.", {
+          groupId: groupConfig.groupId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }),
+      this.resolveRealtimeLookup(groupConfig, normalizedUserInput),
+      skill.id === "huixian"
+        ? this.buildGroupRuntimeContext(groupConfig)
+        : Promise.resolve(undefined),
     ]);
+    const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
+    const memorySubjectUserIds = new Set(
+      groupMemories
+        .map((memory) => memory.subjectUserId)
+        .filter((memberId): memberId is string => Boolean(memberId)),
+    );
+    const napcatMembers = memorySubjectUserIds.size > 0
+      ? (await this.safeListGroupMembers(groupConfig.groupId)).filter((member) => memorySubjectUserIds.has(String(member.user_id)))
+      : [];
     const memberProfiles = groupMemories.length > 0
       ? buildGroupMemberProfiles({
           groupConfig,
@@ -2367,12 +2469,27 @@ export class BotApplication {
       ...images,
       ...(messageContext.replyContext?.images ?? []),
     ];
-    const resolvedImages = this.transport.resolveImageInputs
-      ? await this.transport.resolveImageInputs(allImages)
-      : allImages.filter((image) => Boolean(image.url));
+    // 图片两阶段（计划 §4）：Stage1 本地化（NapCat 缓存 → 内部代理）→ data URL；
+    // 失败进入分级话术（L1-L4），绝不说成"思考超时"。
+    const resolvedImages = await this.resolveImagesWithPipeline(groupConfig, allImages);
+    if (allImages.length > 0 && resolvedImages.length === 0) {
+      const error = new ImageInputUnavailableError();
+      logWarn("Skipped AI reply because attached images could not be materialized.", {
+        groupId: groupConfig.groupId,
+        imageCount: allImages.length,
+        tier: "image_unavailable",
+      });
+      await this.sendText(groupConfig.groupId, messageForAiFailure(error, "image_input"));
+      return;
+    }
+    const storedUserContent =
+      resolvedImages.length > 0 && normalizedUserInput !== "[图片消息]"
+        ? `${normalizedUserInput} [附带${resolvedImages.length}张图片]`
+        : normalizedUserInput;
     const identityContext = {
       groupId: groupConfig.groupId,
       currentUserId: userId,
+      ...(Object.keys(currentSpeaker).length > 0 ? { currentSpeaker } : {}),
       botUserId: this.botQq,
       manualIdentities: groupConfig.manualIdentities,
       ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
@@ -2382,6 +2499,10 @@ export class BotApplication {
         ? { interactionTargets: messageContext.interactionTargets }
         : {}),
       ...(messageContext.replyContext ? { replyContext: messageContext.replyContext } : {}),
+      ...(realtimeLookup ? { realtimeLookup } : {}),
+      ...(groupRuntimeContext ? { groupRuntimeContext } : {}),
+      ...(recentGroupMessages.length > 0 ? { recentGroupMessages } : {}),
+      ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
     const replyArgs = {
       skill,
@@ -2389,16 +2510,24 @@ export class BotApplication {
       userInput: normalizedUserInput,
       images: resolvedImages,
       identityContext,
-      ...(options.scenarioInstruction ? { scenarioInstruction: options.scenarioInstruction } : {}),
+      ...(scenarioInstruction ? { scenarioInstruction } : {}),
     };
+    const preparationMs = Date.now() - conversationStartedAt;
+    const modelStartedAt = Date.now();
 
     try {
-      const { reply, usedMode, fallbackUsed } = await this.generateReplyWithSelectedModel(groupConfig, replyArgs);
+      const { reply, usedMode, fallbackUsed } = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal });
+      const modelMs = Date.now() - modelStartedAt;
       const resolvedMentionUserIds = await this.resolveMentionUserIds(
         groupConfig.groupId,
         prefixMentionUserIds,
       );
-      const replyText = sanitizeMentionEcho(reply.text, buildSanitizeTargets(messageContext));
+      const replyText = appendRealtimeLookupFooterToReply(
+        sanitizeMentionEcho(reply.text, buildSanitizeTargets(messageContext)),
+        skill,
+        realtimeLookup,
+        replyFormatBudget?.maxTotalChars,
+      );
       const controlledMentionUserId =
         options.allowControlledMention === true && resolvedMentionUserIds.length === 0 && replyMode === "text"
           ? await this.resolveControlledMentionUserId({
@@ -2419,10 +2548,7 @@ export class BotApplication {
         {
           groupId: groupConfig.groupId,
           role: "user",
-          content:
-            resolvedImages.length > 0 && normalizedUserInput !== "[图片消息]"
-              ? `${normalizedUserInput} [附带${resolvedImages.length}张图片]`
-              : normalizedUserInput,
+          content: storedUserContent,
           userId,
           timestamp: now,
         },
@@ -2442,11 +2568,31 @@ export class BotApplication {
       );
 
       if (replyMode === "voice" || replyMode === "singing") {
-        await this.handleVoiceReply(groupConfig.groupId, skill, replyText, replyMode);
+        const botMessageIds = await this.handleVoiceReply(
+          groupConfig.groupId,
+          skill,
+          replyText,
+          replyMode,
+          replyFormatBudget,
+        );
+        await this.recordSharedTopicDialogue({
+          groupId: groupConfig.groupId,
+          topicId: sharedTopic?.id,
+          userId,
+          userContent: storedUserContent,
+          senderCard: messageContext.senderCard,
+          senderNickname: messageContext.senderNickname,
+          assistantContent: replyText,
+          sourceMessageId: messageContext.sourceMessageId,
+          botMessageIds,
+        });
         logInfo(replyMode === "singing" ? "Sent AI singing voice reply." : "Sent AI voice reply.", {
           groupId: groupConfig.groupId,
           skillId: skill.id,
           model: reply.model,
+          contextScope: sharedTopic ? "shared_topic" : "personal",
+          sharedTopicId: sharedTopic?.id,
+          sharedTopicTurnCount: sharedTopic?.turns.length ?? 0,
         });
         return;
       }
@@ -2456,7 +2602,18 @@ export class BotApplication {
         throw new Error("Formatted AI reply was empty.");
       }
 
-      await this.sendTextMessages(groupConfig.groupId, outgoingMessages, outgoingMentionUserIds);
+      const botMessageIds = await this.sendTextMessages(groupConfig.groupId, outgoingMessages, outgoingMentionUserIds);
+      await this.recordSharedTopicDialogue({
+        groupId: groupConfig.groupId,
+        topicId: sharedTopic?.id,
+        userId,
+        userContent: storedUserContent,
+        senderCard: messageContext.senderCard,
+        senderNickname: messageContext.senderNickname,
+        assistantContent: replyText,
+        sourceMessageId: messageContext.sourceMessageId,
+        botMessageIds,
+      });
 
       logInfo("Sent AI reply.", {
         groupId: groupConfig.groupId,
@@ -2465,14 +2622,109 @@ export class BotApplication {
         replyModelMode: usedMode,
         fallbackUsed,
         messageCount: outgoingMessages.length,
+        preparationMs,
+        modelMs,
+        totalMs: Date.now() - conversationStartedAt,
+        memoryCount: groupMemories.length,
+        recentGroupMessageCount: recentGroupMessages.length,
+        recentGroupMessageChars,
+        promptChars: reply.promptChars ?? 0,
+        realtimeLookupKind: realtimeLookup?.kind,
+        realtimeLookupStatus: realtimeLookup?.status,
+        realtimeLookupMs,
+        inputImageCount: resolvedImages.length,
+        imageInspectionUsed: reply.imageInspectionUsed === true,
+        reasoningEffort: reply.reasoningEffort,
+        contextScope: sharedTopic ? "shared_topic" : "personal",
+        sharedTopicId: sharedTopic?.id,
+        sharedTopicTurnCount: sharedTopic?.turns.length ?? 0,
       });
     } catch (error) {
+      // 已取消的任务不发任何回复（计划 §2.3）：用户重触发后旧任务被取消，
+      // 它的失败话术如果照发，就会和新消息的回复一起冒出来。
+      if (signal?.aborted) {
+        this.metricsAbortedReply();
+        logInfo("Skipped failure reply because the task was cancelled.", {
+          groupId: groupConfig.groupId,
+        });
+        return;
+      }
+      const failureKind = classifyUpstreamFailure({ error });
       logError("Failed to generate AI reply.", {
         groupId: groupConfig.groupId,
-        error: (error as Error).message,
+        failureKind,
+        preparationMs,
+        modelMs: Date.now() - modelStartedAt,
+        totalMs: Date.now() - conversationStartedAt,
+        memoryCount: groupMemories.length,
+        recentGroupMessageCount: recentGroupMessages.length,
+        recentGroupMessageChars,
+        realtimeLookupKind: realtimeLookup?.kind,
+        realtimeLookupStatus: realtimeLookup?.status,
+        realtimeLookupMs,
+        error: summarizeAiError(error),
       });
-      await this.sendText(groupConfig.groupId, MSG_AI_FAIL);
+      await this.sendText(groupConfig.groupId, messageForAiFailure(error, failureKind));
     }
+  }
+
+  private metricsAbortedReply(): void {
+    // Placeholder hook so the worker can count cancelled tasks (#11 cancelled_task_rate).
+    this.cancelledReplyHook?.();
+  }
+
+  private async resolveRealtimeLookup(
+    groupConfig: GroupBotConfig,
+    userInput: string,
+  ): Promise<RealtimeLookupResult | undefined> {
+    if (!this.realtimeLookupService || groupConfig.onlineLookupEnabled === false) {
+      return undefined;
+    }
+
+    try {
+      const settings = await this.systemSettingsStore?.getInternal();
+      if (settings?.onlineLookupEnabled === false) {
+        return undefined;
+      }
+      return await this.realtimeLookupService.lookup({ text: userInput });
+    } catch (error) {
+      logWarn("Realtime lookup failed before reply generation.", {
+        groupId: groupConfig.groupId,
+        error: summarizeAiError(error),
+      });
+      return undefined;
+    }
+  }
+
+  private async buildGroupRuntimeContext(groupConfig: GroupBotConfig): Promise<GroupRuntimeContext> {
+    const trackedUserIds = getActiveChatUserIds(groupConfig);
+    const delaySeconds = getLiveChatDelaySeconds(groupConfig);
+    const reminderService = this.scheduledReminderService as Partial<Pick<ScheduledReminderService, "listGroupTasks">>;
+    const tasks = reminderService.listGroupTasks
+      ? await reminderService.listGroupTasks(groupConfig.groupId, { includeDisabled: true })
+      : [];
+    const activeTasks = tasks
+      .filter((task) => task.enabled)
+      .sort((left, right) => left.nextRunAt.localeCompare(right.nextRunAt));
+    const nextTask = activeTasks[0];
+
+    return {
+      liveChat: this.liveChatService.getRuntimeState(
+        groupConfig.groupId,
+        trackedUserIds,
+        delaySeconds,
+      ),
+      scheduledReminders: {
+        enabled: groupConfig.scheduledRemindersEnabled !== false,
+        activeTaskCount: activeTasks.length,
+        ...(nextTask ? {
+          nextTask: {
+            topic: nextTask.topic,
+            nextRunAt: nextTask.nextRunAt,
+          },
+        } : {}),
+      },
+    };
   }
 
   private async resolveControlledMentionUserId(args: {
@@ -2519,47 +2771,28 @@ export class BotApplication {
       images?: MessageImageInput[];
       identityContext?: AiIdentityContext;
       scenarioInstruction?: string;
+      signal?: AbortSignal;
     },
   ): Promise<ReplyAiResult> {
     const route = await this.getReplyAiRoute(groupConfig);
 
-    try {
-      return {
-        reply: await route.service.generateReply(args),
-        usedMode: route.mode,
-        fallbackUsed: false,
-      };
-    } catch (error) {
-      if (!route.fallback || route.fallback.service === route.service) {
-        throw error;
-      }
-
-      logWarn("Primary reply model failed; trying fallback reply model.", {
-        groupId: groupConfig.groupId,
-        primaryMode: route.mode,
-        primaryLabel: route.label,
-        fallbackMode: route.fallback.mode,
-        fallbackLabel: route.fallback.label,
-        error: (error as Error).message,
-      });
-
-      return {
-        reply: await route.fallback.service.generateReply(args),
-        usedMode: route.fallback.mode,
-        fallbackUsed: true,
-      };
+    if ((args.images?.length ?? 0) > 0 && !route.supportsVision) {
+      throw new VisionUnsupportedModelError(route.label);
     }
+    const call = async () => route.service.generateReply(args);
+    const reply = this.llmGate ? await this.llmGate(call, args.signal) : await call();
+    return {
+      reply,
+      usedMode: route.mode,
+      fallbackUsed: false,
+    };
   }
 
   private async getReplyAiRoute(groupConfig: GroupBotConfig): Promise<ReplyAiRoute> {
     const mode = normalizeReplyModelMode(groupConfig.replyModelMode);
     const options = await this.getReplyModelOptions({ allowEnvironmentFallback: true });
     const primary = options.find((option) => option.mode === mode) ?? options.find((option) => option.mode === "gpt") ?? options[0]!;
-    const fallback = options.find((option) => option.mode !== primary.mode);
-    return {
-      ...primary,
-      ...(fallback ? { fallback } : {}),
-    };
+    return primary;
   }
 
   private async getReplyModelOptions(options: { allowEnvironmentFallback?: boolean } = {}): Promise<ReplyModelOption[]> {
@@ -2584,6 +2817,7 @@ export class BotApplication {
           mode: model.id,
           label: this.formatConfiguredReplyModelLabel(model.id, model.shortName || model.name),
           service: new ConfiguredAiService(this.aiService, this.systemSettingsStore, "reply", undefined, model.id),
+          supportsVision: model.supportsVision === true || (model.supportsVision === undefined && model.id === "gpt"),
         });
         existingModes.add(model.id);
       }
@@ -2607,6 +2841,7 @@ export class BotApplication {
       mode: "gpt",
       label: await this.formatReplyModelName("gpt"),
       service: this.aiService,
+      supportsVision: true,
     };
   }
 
@@ -2651,7 +2886,13 @@ export class BotApplication {
     skill: SkillDefinition,
     replyText: string,
     mode: Exclude<ReplyOutputMode, "text"> = "voice",
-  ): Promise<void> {
+    replyFormatBudget?: ReplyFormatBudget,
+  ): Promise<string[]> {
+    if (!(await this.hasEnabledTtsModel())) {
+      logInfo("Skipped voice synthesis because no TTS model is configured.", { groupId, skillId: skill.id });
+      return this.sendTextMessages(groupId, formatReplyMessages(skill, replyText, replyFormatBudget));
+    }
+
     let cleanup: (() => Promise<void>) | undefined;
 
     try {
@@ -2659,9 +2900,9 @@ export class BotApplication {
         mode: mode === "singing" ? "singing" : "speech",
       });
       cleanup = synthesis.cleanup;
-      await this.sendRecord(groupId, synthesis.recordFile);
+      const receipt = await this.sendRecord(groupId, synthesis.recordFile);
       scheduleCleanup(synthesis.cleanup);
-      return;
+      return receipt?.messageId ? [receipt.messageId] : [];
     } catch (error) {
       if (cleanup) {
         scheduleCleanup(cleanup);
@@ -2676,20 +2917,19 @@ export class BotApplication {
 
     if (mode === "singing") {
       await this.sendText(groupId, "当前 TTS 模型不支持唱歌，请切换到 mimo-v2.5-tts 后再试。");
-      const outgoingMessages = formatReplyMessages(skill, replyText);
-      await this.sendTextMessages(groupId, outgoingMessages);
-      return;
+      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
+      return this.sendTextMessages(groupId, outgoingMessages);
     }
 
     if (!this.allowNapCatAiVoiceFallback) {
       await this.sendText(groupId, MSG_VOICE_FAIL);
-      const outgoingMessages = formatReplyMessages(skill, replyText);
-      await this.sendTextMessages(groupId, outgoingMessages);
-      return;
+      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
+      return this.sendTextMessages(groupId, outgoingMessages);
     }
 
     try {
-      await this.sendAiRecord(groupId, replyText);
+      const receipt = await this.sendAiRecord(groupId, replyText);
+      return receipt?.messageId ? [receipt.messageId] : [];
     } catch (fallbackError) {
       logError("Voice fallback failed.", {
         groupId,
@@ -2697,8 +2937,21 @@ export class BotApplication {
         error: (fallbackError as Error).message,
       });
       await this.sendText(groupId, MSG_VOICE_FAIL);
-      const outgoingMessages = formatReplyMessages(skill, replyText);
-      await this.sendTextMessages(groupId, outgoingMessages);
+      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
+      return this.sendTextMessages(groupId, outgoingMessages);
+    }
+  }
+
+  private async hasEnabledTtsModel(): Promise<boolean> {
+    if (!this.systemSettingsStore) {
+      return false;
+    }
+    try {
+      const settings = await this.systemSettingsStore.getInternal();
+      return settings.models.some((model) => model.purpose === "tts" && model.enabled && Boolean(model.apiKey?.trim()));
+    } catch (error) {
+      logWarn("Failed to read TTS model configuration.", { error: (error as Error).message });
+      return false;
     }
   }
 
@@ -2995,6 +3248,32 @@ export class BotApplication {
       userId: String(event.user_id),
       userName: resolveSenderName(event),
       text: reportText,
+    });
+  }
+
+  private recordGroupTranscriptMessage(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    parsedMessage: ReturnType<typeof parseGroupMessage>,
+    commandText: string,
+    runtimeCommands: SystemCommandConfig[],
+  ): void {
+    if (isRecognizedRuntimeCommand(commandText, runtimeCommands)) {
+      return;
+    }
+
+    const text = buildGroupTranscriptText(parsedMessage);
+    if (!text) {
+      return;
+    }
+
+    this.groupTranscriptService.addMessage({
+      groupId: groupConfig.groupId,
+      userId: String(event.user_id),
+      messageId: String(event.message_id),
+      text,
+      senderCard: event.sender?.card,
+      senderNickname: event.sender?.nickname,
     });
   }
 
@@ -3337,11 +3616,12 @@ export class BotApplication {
     });
   }
 
-  private async sendText(groupId: string, text: string): Promise<void> {
+  private async sendText(groupId: string, text: string): Promise<MessageReceipt | undefined> {
     try {
-      await this.transport.sendGroupMessage(groupId, text);
+      const receipt = await this.transport.sendGroupMessage(groupId, text);
       this.liveChatService.recordBotActivity(groupId);
       await this.handleSendSuccessRecovery();
+      return receipt ?? undefined;
     } catch (error) {
       await this.handleSendFailure(error);
       throw error;
@@ -3352,17 +3632,48 @@ export class BotApplication {
     groupId: string,
     messages: string[],
     mentionUserIds: string[] = [],
-  ): Promise<void> {
+  ): Promise<string[]> {
+    const messageIds: string[] = [];
     for (const [index, message] of messages.entries()) {
       const outgoingText =
         index === 0 && mentionUserIds.length > 0
           ? prefixAtMentions(mentionUserIds, message)
           : message;
-      await this.sendText(groupId, outgoingText);
+      const receipt = await this.sendText(groupId, outgoingText);
+      if (receipt?.messageId) {
+        messageIds.push(receipt.messageId);
+      }
 
       if (index < messages.length - 1) {
         await sleep(MULTI_MESSAGE_DELAY_MS);
       }
+    }
+    return messageIds;
+  }
+
+  private async recordSharedTopicDialogue(args: {
+    groupId: string;
+    topicId?: string;
+    userId: string;
+    userContent: string;
+    senderCard?: string;
+    senderNickname?: string;
+    assistantContent: string;
+    sourceMessageId?: string;
+    botMessageIds?: string[];
+  }): Promise<void> {
+    const sharedTopicStore = this.conversationStore as Partial<Pick<ConversationStore, "appendSharedDialogue">>;
+    if (!sharedTopicStore.appendSharedDialogue) {
+      return;
+    }
+    try {
+      await sharedTopicStore.appendSharedDialogue(args);
+    } catch (error) {
+      logWarn("Failed to persist shared conversation topic.", {
+        groupId: args.groupId,
+        topicId: args.topicId,
+        error: (error as Error).message,
+      });
     }
   }
 
@@ -3393,6 +3704,9 @@ export class BotApplication {
   private async buildMessageInteractionContext(
     groupConfig: GroupBotConfig,
     parsedMessage: ReturnType<typeof parseGroupMessage>,
+    sourceMessageId?: string,
+    senderCard?: string,
+    senderNickname?: string,
   ): Promise<MessageInteractionContext> {
     const interactionTargets = await this.resolveInteractionTargets(
       groupConfig,
@@ -3410,6 +3724,10 @@ export class BotApplication {
     return {
       interactionTargets: dedupeInteractionTargets(interactionTargets),
       replyContext,
+      sourceMessageId,
+      replyMessageId: parsedMessage.replyMessageId,
+      ...(normalizeIdentityDisplayText(senderCard) ? { senderCard: normalizeIdentityDisplayText(senderCard) } : {}),
+      ...(normalizeIdentityDisplayText(senderNickname) ? { senderNickname: normalizeIdentityDisplayText(senderNickname) } : {}),
     };
   }
 
@@ -3478,6 +3796,34 @@ export class BotApplication {
     return [...byCandidate.values()];
   }
 
+  private async resolveImagesWithPipeline(
+    groupConfig: GroupBotConfig,
+    allImages: MessageImageInput[],
+  ): Promise<MessageImageInput[]> {
+    if (allImages.length === 0) {
+      return [];
+    }
+    // When a pipeline is injected (worker), run Stage1 localization; otherwise
+    // keep the legacy transport resolution.
+    if (this.imagePipeline) {
+      try {
+        const resolved = await this.imagePipeline.resolveForVision(allImages);
+        return resolved.map((image) => ({ ...image.input, url: image.dataUrl }));
+      } catch (error) {
+        const tier = error instanceof ImagePipelineError ? error.tier : "image_unavailable";
+        logWarn("Image stage1 failed; entering failure tier.", {
+          groupId: groupConfig.groupId,
+          tier,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }
+    }
+    return this.transport.resolveImageInputs
+      ? await this.transport.resolveImageInputs(allImages)
+      : allImages.filter((image) => Boolean(image.url));
+  }
+
   private async resolveReplyContext(
     groupConfig: GroupBotConfig,
     replyMessageId?: string,
@@ -3489,6 +3835,16 @@ export class BotApplication {
     try {
       const referenced = await this.transport.getMessage(replyMessageId);
       if (!referenced) {
+        return undefined;
+      }
+
+      // 引用链根部自引用过滤（计划 §8.2）：被引用消息是 bot 自己发的，
+      // 不注入其内容，避免"bot 引用自己 → 上下文越滚越长 → 自问自答"死循环。
+      if (referenced.userId && String(referenced.userId) === this.botQq) {
+        logInfo("Ignored referenced message from bot itself.", {
+          groupId: groupConfig.groupId,
+          replyMessageId,
+        });
         return undefined;
       }
 
@@ -3515,14 +3871,16 @@ export class BotApplication {
     }
   }
 
-  private async sendRecord(groupId: string, recordFile: string): Promise<void> {
-    await this.transport.sendGroupRecord(groupId, recordFile);
+  private async sendRecord(groupId: string, recordFile: string): Promise<MessageReceipt | undefined> {
+    const receipt = await this.transport.sendGroupRecord(groupId, recordFile);
     this.liveChatService.recordBotActivity(groupId);
+    return receipt ?? undefined;
   }
 
-  private async sendAiRecord(groupId: string, text: string): Promise<void> {
-    await this.transport.sendGroupAiRecord(groupId, text);
+  private async sendAiRecord(groupId: string, text: string): Promise<MessageReceipt | undefined> {
+    const receipt = await this.transport.sendGroupAiRecord(groupId, text);
     this.liveChatService.recordBotActivity(groupId);
+    return receipt ?? undefined;
   }
 }
 
@@ -3829,12 +4187,71 @@ function extractFirstAtUserId(message: NapcatGroupMessageEvent["message"], botQq
 
 function buildBufferedInteractionContext(messages: BufferedMessage[]): MessageInteractionContext {
   const interactionTargets = messages.flatMap((message) => message.interactionTargets ?? []);
-  const replyContext = [...messages].reverse().find((message) => message.replyContext)?.replyContext;
+  const latestContextMessage = [...messages].reverse().find((message) =>
+    message.replyContext || message.replyMessageId || message.sourceMessageId,
+  );
+  const replyContext = latestContextMessage?.replyContext;
 
   return {
     interactionTargets: dedupeInteractionTargets(interactionTargets),
     replyContext,
+    sourceMessageId: latestContextMessage?.sourceMessageId,
+    replyMessageId: latestContextMessage?.replyMessageId,
   };
+}
+
+function toSharedTopicHistory(
+  topic: SharedConversationTopic,
+  groupConfig: GroupBotConfig,
+): ConversationTurn[] {
+  return topic.turns.map((turn) => ({
+    groupId: topic.groupId,
+    role: turn.role,
+    content: turn.role === "user"
+      ? `${formatSharedTopicSpeaker(turn, groupConfig)} ${turn.content}`
+      : turn.content,
+    ...(turn.userId ? { userId: turn.userId } : {}),
+    timestamp: turn.timestamp,
+  }));
+}
+
+function formatSharedTopicSpeaker(
+  turn: SharedConversationTopic["turns"][number],
+  groupConfig: GroupBotConfig,
+): string {
+  const userId = turn.userId?.trim();
+  const manualName = userId ? findUniqueManualIdentity(groupConfig, userId)?.names[0] : undefined;
+  const senderCard = normalizeIdentityDisplayText(turn.senderCard);
+  const senderNickname = normalizeIdentityDisplayText(turn.senderNickname);
+  const displayName = manualName ?? senderCard ?? senderNickname ?? (userId ? `QQ ${userId}` : "未知成员");
+  const details = [
+    userId ? `QQ ${userId}` : "QQ 未知",
+    ...(senderCard && senderCard !== displayName ? [`群名片：${senderCard}`] : []),
+    ...(senderNickname && senderNickname !== displayName && senderNickname !== senderCard
+      ? [`昵称：${senderNickname}`]
+      : []),
+  ];
+  return `[发言者：${displayName}（${details.join("；")}）]`;
+}
+
+function buildCurrentSpeaker(
+  groupConfig: GroupBotConfig,
+  userId: string,
+  messageContext: MessageInteractionContext,
+): NonNullable<AiIdentityContext["currentSpeaker"]> {
+  const manualName = findUniqueManualIdentity(groupConfig, userId)?.names[0];
+  const senderCard = normalizeIdentityDisplayText(messageContext.senderCard);
+  const senderNickname = normalizeIdentityDisplayText(messageContext.senderNickname);
+  return {
+    ...(manualName ? { manualName } : {}),
+    ...(senderCard ? { senderCard } : {}),
+    ...(senderNickname ? { senderNickname } : {}),
+  };
+}
+
+function normalizeIdentityDisplayText(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized.slice(0, 80) : undefined;
 }
 
 function formatBufferedMessages(messages: BufferedMessage[]): string {
@@ -3922,11 +4339,12 @@ function resolveManualIdentityTarget(
     return undefined;
   }
 
-  const identity = groupConfig.manualIdentities?.find((item) => {
+  const identities = groupConfig.manualIdentities?.filter((item) => {
     const ids = item.userIds.map(normalizeIdentityCandidate);
     const names = item.names.map(normalizeIdentityCandidate);
     return ids.includes(normalizedCandidate) || names.includes(normalizedCandidate);
-  });
+  }) ?? [];
+  const identity = identities.length === 1 ? identities[0] : undefined;
 
   if (!identity) {
     return undefined;
@@ -3937,6 +4355,14 @@ function resolveManualIdentityTarget(
     names: normalizeNames(identity.names),
     source,
   };
+}
+
+function findUniqueManualIdentity(
+  groupConfig: GroupBotConfig,
+  userId: string,
+): NonNullable<GroupBotConfig["manualIdentities"]>[number] | undefined {
+  const matches = groupConfig.manualIdentities?.filter((identity) => identity.userIds.includes(userId)) ?? [];
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function resolveManualIdentityTargetFromDecision(
@@ -4396,6 +4822,53 @@ function getActiveChatUserIds(groupConfig: GroupBotConfig): string[] {
   ]));
 }
 
+function collectMemoryIdentityTerms(groupConfig: GroupBotConfig, userIds: string[]): string[] {
+  const wantedUserIds = new Set(userIds.filter(Boolean));
+  return (groupConfig.manualIdentities ?? [])
+    .filter((identity) => identity.userIds.some((userId) => wantedUserIds.has(userId)))
+    .flatMap((identity) => identity.names)
+    .map((name) => name.trim())
+    .filter((name) => name.length >= 2);
+}
+
+function resolveHuixianReplyFormatBudget(
+  skill: SkillDefinition,
+  userInput: string,
+): ReplyFormatBudget | undefined {
+  if (skill.id !== "huixian") {
+    return undefined;
+  }
+
+  const normalized = userInput.replace(/\s+/g, " ").trim();
+  if (/(?:一句话|一两句|简短|简单说|别展开|少废话)/.test(normalized)) {
+    return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
+  }
+  if (
+    /(?:分析|方案|计划|对比|区别|排查|实现|代码|日志|步骤|风险|复盘|详细|展开|全面|写一份|怎么做|如何做)/.test(normalized) ||
+    normalized.length > 180 ||
+    (normalized.match(/[？?]/g)?.length ?? 0) > 1
+  ) {
+    return { maxChars: 500, maxTotalChars: 3_000, maxMessages: 8, preferredMaxMessages: 6 };
+  }
+  if (/^(?:在吗|你好|嗨|早|晚安|几点了|什么情况|状态|天气|谢谢|好的)[？?!！。]?$/.test(normalized)) {
+    return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
+  }
+  return { maxChars: 180, maxTotalChars: 360, maxMessages: 2, preferredMaxMessages: 2 };
+}
+
+function buildHuixianReplyLengthInstruction(budget: ReplyFormatBudget): string {
+  if (budget.maxTotalChars >= 3_000) {
+    return "\u4f1a\u4ed9\u672c\u8f6e\u56de\u590d\u6a21\u5f0f\uff1a\u590d\u6742\u4efb\u52a1\u3002Think carefully before answering. Give the conclusion first, then the evidence, implementation steps, constraints, and risks needed to complete the task. Do not omit a necessary judgment just to be brief. \u6700\u591a\u516b\u6761\uff0c\u603b\u8ba1\u63a7\u5236\u5728 3000 \u5b57\u5185\u3002";
+  }
+  if (budget.maxTotalChars <= 160) {
+    return "会仙本轮回复模式：简单问题。只用一条直接回答，先给答案，不铺垫、不复述问题、不额外追问；控制在 160 字内。";
+  }
+  if (budget.maxTotalChars >= 1_200) {
+    return "会仙本轮回复模式：复杂任务。先给结论，再按需要给依据、步骤、约束或风险；信息足够时直接完成，不要为了简短省掉关键判断。最多四条、总计控制在 1200 字内。这条规则覆盖通用的短回复偏好。";
+  }
+  return "会仙本轮回复模式：普通交流。先答用户关心的点，保持自然，不要空泛铺垫；最多两条、总计控制在 360 字内。";
+}
+
 function shouldBufferActiveChatMessage(
   parsedMessage: ReturnType<typeof parseGroupMessage>,
   commandText: string,
@@ -4403,6 +4876,40 @@ function shouldBufferActiveChatMessage(
   return !parsedMessage.hasAtBot &&
     Boolean(parsedMessage.text.trim()) &&
     !commandText.trim().startsWith("#");
+}
+
+function isRecognizedRuntimeCommand(
+  commandText: string,
+  commands: SystemCommandConfig[],
+): boolean {
+  return (Object.keys(RUNTIME_COMMAND_SPECS) as RuntimeCommandId[])
+    .some((commandId) => Boolean(matchRuntimeCommand(commandText, commands, commandId)));
+}
+
+function buildGroupTranscriptText(
+  parsedMessage: ReturnType<typeof parseGroupMessage>,
+): string | undefined {
+  if (parsedMessage.text) {
+    return parsedMessage.text;
+  }
+  return parsedMessage.images.length > 0 ? "[图片消息]" : undefined;
+}
+
+function selectRecentGroupMessages(messages: RecentGroupMessage[]): RecentGroupMessage[] {
+  const candidates = messages.slice(-120);
+  const selected: RecentGroupMessage[] = [];
+  let totalChars = 0;
+
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const message = candidates[index]!;
+    if (totalChars + message.text.length > 48_000) {
+      break;
+    }
+    selected.unshift(message);
+    totalChars += message.text.length;
+  }
+
+  return selected;
 }
 
 function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
@@ -4448,6 +4955,63 @@ function buildPublicProfileShareUrl(adminPublicBaseUrl: string, shareToken: stri
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
   const text = typeof value === "string" ? value.trim() : "";
   return text || "gpt";
+}
+
+function messageForAiFailure(error: unknown, failureKind: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const errorName = error instanceof Error ? error.name : "";
+  if (errorName === "VisionUnsupportedModelError") {
+    return "当前选中的模型不支持图片理解。请先用 #模型 切换 gpt，再重新发送图片。";
+  }
+  if (errorName === "ImageInputUnavailableError" || errorName === "ImageInspectionError" || /provided URL|image_url|image input/i.test(message)) {
+    return "这张图片没有成功读取成可分析内容，请重新发送原图或直接贴出代码文本。";
+  }
+  if (errorName === "ReasoningEffortUnavailableError") {
+    return "当前 GPT 上游不支持会仙要求的高推理模式，已停止本次回答，避免用低推理结果敷衍。";
+  }
+  if (/content was flagged|content policy|safety(?: |-)?(?:rule|filter)|cybersecurity risk/i.test(message)) {
+    return "这条内容被上游安全规则拦截了，换一种更明确、非敏感的说法再试试。";
+  }
+  if (failureKind === "timeout") {
+    return "这次回复超过等待时间了，请稍后再试一次。";
+  }
+  if (failureKind === "rate_limit") {
+    return "回复服务现在有点忙，请稍后再试一次。";
+  }
+  if (failureKind === "auth") {
+    return "回复服务的上游配置异常，管理员需要检查模型连接。";
+  }
+  if (failureKind === "unavailable" || failureKind === "network") {
+    return "回复服务暂时不可用，请稍后再试一次。";
+  }
+  return MSG_AI_FAIL;
+}
+
+function summarizeAiError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 320);
+}
+
+function appendRealtimeLookupFooterToReply(
+  replyText: string,
+  skill: SkillDefinition,
+  lookup: RealtimeLookupResult | undefined,
+  maxTotalChars?: number,
+): string {
+  const footer = formatRealtimeLookupFooter(lookup);
+  if (!footer) {
+    return replyText;
+  }
+  const maximum = Math.max(160, maxTotalChars ?? skill.maxTotalReplyChars ?? 600);
+  const bodyLimit = Math.max(40, maximum - footer.length);
+  const body = replyText.length > bodyLimit
+    ? replyText.slice(0, bodyLimit).replace(/[\s,;:]+$/u, "").trim()
+    : replyText.trim();
+  return `${body}${footer}`;
 }
 
 function parseLiveChatDelay(raw: string): { unit: "seconds" | "minutes"; value: number } | undefined {

@@ -1216,18 +1216,14 @@ export class AdminHttpServer {
       groupId,
       type: "member_profile",
       subjectUserId,
-      title: `${subjectLabel.label}的综合画像`,
+      title: `${subjectLabel.label} profile compaction`,
       content: summary,
       confidence: 1,
-      source: "manual_summary",
+      source: "profile_compaction",
       enabled: true,
     });
 
-    for (const memory of userMemories) {
-      if (memory.id !== newMemory.id) {
-        await this.options.groupMemoryStore.update(memory.id, { enabled: false });
-      }
-    }
+    const deletedMemoryCount = await this.options.groupMemoryStore.removeMany(userMemories.map((memory) => memory.id));
 
     this.invalidateMemberProfileCache(groupId);
     await this.recordOperation({
@@ -1235,7 +1231,7 @@ export class AdminHttpServer {
       groupId,
       action: "memory_summarize",
       target: subjectUserId,
-      detail: `summarized ${userMemories.length} memories`,
+      detail: `compacted ${userMemories.length} memories; deleted=${deletedMemoryCount}`,
     });
 
     this.sendJson(res, {
@@ -1243,6 +1239,7 @@ export class AdminHttpServer {
       subjectUserId,
       summary,
       originalMemoryCount: userMemories.length,
+      deletedMemoryCount,
       newMemoryId: newMemory.id,
     });
   }
@@ -1593,7 +1590,7 @@ export class AdminHttpServer {
       this.sendJson(res, { skills: [] });
       return;
     }
-    const skills = await this.options.skillService.getAllSkills();
+    const skills = await this.options.skillService.getAllSkills({ refresh: true });
     this.sendJson(res, {
       skills: skills.map((skill) => ({ id: skill.id, name: skill.name })),
     });
@@ -2247,7 +2244,7 @@ export class AdminHttpServer {
 
     try {
       if (pathname === "/api/skills" && req.method === "GET") {
-        this.sendJson(res, { skills: await this.options.skillService.getAllSkills() });
+        this.sendJson(res, { skills: await this.options.skillService.getAllSkills({ refresh: true }) });
         return;
       }
       if (pathname === "/api/skills" && req.method === "POST") {
@@ -2449,6 +2446,10 @@ export class AdminHttpServer {
       return [];
     }
     const settings = await this.options.systemSettingsStore.getInternal();
+    const autoProbeEnabled = settings.tokenCostControl.modelHealthAutoProbeEnabled;
+    if (!options.refresh && !autoProbeEnabled) {
+      return settings.models.map((model) => this.buildModelHealthSkippedStatus(model, settings, "模型自动探测已关闭，请使用手动检测。"));
+    }
     const source = options.source ?? (options.refresh ? "health" : "overview");
     const statuses = await Promise.all(settings.models.map(async (model) => {
       const cached = this.modelHealthCache.get(model.id);
@@ -2513,11 +2514,12 @@ export class AdminHttpServer {
   private buildModelHealthSkippedStatus(
     model: SystemSettings["models"][number],
     settings: SystemSettings,
+    detail = "模型已停用，已跳过检测。",
   ): ModelHealthStatus {
     return {
       ...this.buildModelHealthBase(model, settings),
       ok: true,
-      detail: "模型已停用，已跳过检测。",
+      detail,
       model: model.model,
       baseUrl: model.baseUrl,
       checkedAt: new Date().toISOString(),

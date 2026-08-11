@@ -110,17 +110,22 @@ export class ScheduledReminderService {
     return (await this.store.getDueTasks(now)).filter((task) => task.executionStartTime || task.scheduledTime || isDateRuleMatched(task, now));
   }
 
-  async buildReminderMessage(task: ScheduledReminderTask): Promise<string> {
+  async buildReminderMessage(
+    task: ScheduledReminderTask,
+    options: { useAiRewrite?: boolean } = {},
+  ): Promise<string> {
     const prefix = buildReminderPrefix(task.topic);
     const recentBodies = (task.recentMessages ?? [])
       .map((message) => stripReminderPrefix(message, task.topic))
       .filter(Boolean);
-    const message = await this.aiService.generateScheduledReminderText?.({
-      topic: task.topic,
-      groupId: task.groupId,
-      intervalMinutes: task.intervalMinutes,
-      recentMessages: recentBodies,
-    });
+    const message = options.useAiRewrite === false
+      ? undefined
+      : await this.aiService.generateScheduledReminderText?.({
+          topic: task.topic,
+          groupId: task.groupId,
+          intervalMinutes: task.intervalMinutes,
+          recentMessages: recentBodies,
+        });
 
     const body = normalizeReminderMessage(message, task.topic) || buildFallbackReminderBody(task);
     return normalizeReminderMessageWithPrefix(`${prefix}${body}`, task.topic);

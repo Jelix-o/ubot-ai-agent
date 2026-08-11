@@ -211,12 +211,8 @@ test("admin model settings expose existing model id editing without returning ap
   assert.match(settingsView, /duplicate_model_id|模型 ID 重复/);
   assert.match(settingsView, /updateModelId\(model,\s*\$event\)/);
   assert.match(settingsView, /const modelPurposeOptions/);
-  assert.match(settingsView, /value:\s*"memory"/);
-  assert.match(settingsView, /value:\s*"profile"/);
-  assert.match(settingsView, /value:\s*"dedup"/);
-  assert.match(settingsView, /value:\s*"summary"/);
-  assert.match(settingsView, /value:\s*"knowledge"/);
-  assert.match(settingsView, /value:\s*"tts"/);
+  assert.match(settingsView, /value:\s*"reply"/);
+  assert.doesNotMatch(settingsView, /value:\s*"(?:memory|profile|dedup|summary|knowledge|tts|custom)"/);
   assert.match(settingsView, /type="password"/);
   assert.match(settingsView, /model\.hasApiKey/);
   assert.match(settingsView, /selectedModelIds/);
@@ -307,7 +303,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v1\.1\.0/);
+  assert.match(appShell, /UBot v2\.0\.0/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -377,7 +373,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(adminServer, /title:\s*`记忆去重/);
   assert.match(adminServer, /title:\s*`批量审核/);
   assert.match(adminServer, /title:\s*`画像生成/);
-  assert.match(adminServer, /title:\s*`模型检测/);
+  assert.match(adminServer, /title:\s*`模型检测|title:\s*"All model check"/);
   assert.match(adminServer, /isAdminAssetPath/);
   assert.match(adminServer, /asset_not_found/);
   assert.match(adminServer, /ADMIN_SPECULATION_RULES_PATH = "\/admin-speculation-rules\.json"/);
@@ -580,32 +576,35 @@ test("windows release package avoids local runtime group config", async () => {
 
   assert.doesNotMatch(packageScript, /"config",/);
   assert.match(packageScript, /"COMMANDS\.md"/);
-  assert.match(packageScript, /"RELEASE-v1\.0\.2\.md"/);
-  assert.match(packageScript, /"V1\.0\.2-LOCAL-AUDIT\.md"/);
+  assert.match(packageScript, /"RELEASE-v1\.1\.0\.md"/);
+  assert.doesNotMatch(packageScript, /"RELEASE-v1\.0\.2\.md"/);
+  assert.doesNotMatch(packageScript, /"V1\.0\.2-LOCAL-AUDIT\.md"/);
   assert.match(packageScript, /groups\.example\.json/);
   assert.match(packageScript, /"superAdminUserIds": \[\]/);
   assert.match(packageScript, /"groups": \[\]/);
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
-test("v1.1.0 docs and release metadata stay current", async () => {
+test("v2.0.0 docs and release metadata stay current", async () => {
   const [packageRaw, readmeDoc, commandsDoc, releaseNotes] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASE-v1.1.0.md"), "utf8"),
+    readFile(path.join(repoRoot, "RELEASE-v2.0.0.md"), "utf8"),
   ]);
   const packageJson = JSON.parse(packageRaw) as { version?: string };
 
-  assert.equal(packageJson.version, "1.1.0");
-  assert.match(readmeDoc, /^# UBot V1\.1\.0/m);
-  assert.match(readmeDoc, /v1\.1\.0/);
-  assert.match(readmeDoc, /RELEASE-v1\.1\.0\.md/);
+  assert.equal(packageJson.version, "2.0.0");
+  assert.match(readmeDoc, /^# UBot V2\.0\.0/m);
+  assert.match(readmeDoc, /v2\.0\.0/);
+  assert.match(readmeDoc, /RELEASE-v2\.0\.0\.md/);
   assert.doesNotMatch(readmeDoc, /^# UBot V1\.0\.[0-9]/m);
 
-  assert.match(releaseNotes, /^# UBot V1\.1\.0 Release Notes/m);
-  assert.match(releaseNotes, /性能优化/);
-  assert.match(releaseNotes, /定时器统一调度/);
+  assert.match(releaseNotes, /^# UBot V2\.0\.0 Release Notes/m);
+  assert.match(releaseNotes, /多进程/);
+  assert.match(releaseNotes, /真取消/);
+  assert.match(releaseNotes, /话题隔离/);
+  assert.match(releaseNotes, /熔断/);
 });
 
 test("local build and test scripts avoid nested npm update checks", async () => {
@@ -681,7 +680,7 @@ test("admin task center exposes task detail records", async () => {
 });
 
 test("runtime startup sweeps stale admin tasks before serving the admin center", async () => {
-  const indexFile = await readFile(path.join(process.cwd(), "src", "index.ts"), "utf8");
+  const indexFile = await readFile(path.join(process.cwd(), "src", "index-legacy.ts"), "utf8");
 
   assert.match(indexFile, /const adminTaskStore = new AdminTaskStore\(config\.adminTasksPath\)/);
   assert.match(indexFile, /await sweepAdminTasksOnStartup\(adminTaskStore\)/);

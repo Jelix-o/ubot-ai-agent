@@ -172,7 +172,8 @@ function findManualIdentity(
   identities: GroupManualIdentity[] | undefined,
   userId: string,
 ): GroupManualIdentity | undefined {
-  return identities?.find((identity) => identity.userIds.includes(userId));
+  const matches = identities?.filter((identity) => identity.userIds.includes(userId)) ?? [];
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string {

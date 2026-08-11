@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -277,6 +277,71 @@ test("SystemSettingsStore manages memory confidence thresholds", async () => {
   assert.equal(next.memoryCandidateConfidenceThreshold, 55);
   assert.equal(next.memoryAutoApproveConfidenceThreshold, 88);
   assert.equal(next.memoryUnattendedModeEnabled, true);
+});
+
+test("SystemSettingsStore backfills and persists token cost controls", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
+  const filePath = path.join(dir, "system-settings.json");
+  await writeFile(filePath, JSON.stringify({
+    profileSummaryMaxChars: 1800,
+    profileShortSummaryMaxChars: 140,
+    dailyProfileReviewEnabled: true,
+    dailyProfileReviewTime: "00:00",
+    memoryDedupEnabled: true,
+    memoryDedupTime: "23:00",
+    memoryDedupSemanticTimeoutMinutes: 10,
+    memoryCandidateConfidenceThreshold: 60,
+    memoryAutoApproveConfidenceThreshold: 80,
+    memoryUnattendedModeEnabled: false,
+    defaultTriggerKeywords: [],
+    models: [],
+    selectedModelIds: {},
+    commands: [],
+    updatedAt: "2026-06-07T16:48:04.112Z",
+  }), "utf8");
+
+  const store = new SystemSettingsStore(filePath);
+  const defaults = await store.get();
+  assert.deepEqual(defaults.tokenCostControl, {
+    memoryCandidateExtractionEnabled: false,
+    memoryCandidateNormalizationEnabled: false,
+    memorySemanticDedupEnabled: false,
+    dailyProfileReviewAiEnabled: false,
+    dailyReportAiQuipEnabled: false,
+    chatSummaryAiEnabled: false,
+    scheduledReminderAiRewriteEnabled: false,
+    modelHealthAutoProbeEnabled: false,
+  });
+
+  const updated = await store.update({
+    tokenCostControl: {
+      ...defaults.tokenCostControl,
+      memoryCandidateExtractionEnabled: false,
+      chatSummaryAiEnabled: true,
+      modelHealthAutoProbeEnabled: true,
+    },
+  });
+  assert.equal(updated.tokenCostControl.memoryCandidateExtractionEnabled, false);
+  assert.equal(updated.tokenCostControl.chatSummaryAiEnabled, true);
+  assert.equal(updated.tokenCostControl.modelHealthAutoProbeEnabled, true);
+
+  const reloaded = await new SystemSettingsStore(filePath).get();
+  assert.equal(reloaded.tokenCostControl.memoryCandidateExtractionEnabled, false);
+  assert.equal(reloaded.tokenCostControl.chatSummaryAiEnabled, true);
+  assert.equal(reloaded.tokenCostControl.dailyReportAiQuipEnabled, false);
+});
+
+test("SystemSettingsStore enables online lookup by default and persists its global switch", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-online-"));
+  const filePath = path.join(dir, "system-settings.json");
+  try {
+    const store = new SystemSettingsStore(filePath);
+    assert.equal((await store.get()).onlineLookupEnabled, true);
+    assert.equal((await store.update({ onlineLookupEnabled: false })).onlineLookupEnabled, false);
+    assert.equal((await new SystemSettingsStore(filePath).get()).onlineLookupEnabled, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("SystemSettingsStore rejects invalid memory confidence thresholds", async () => {

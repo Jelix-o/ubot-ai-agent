@@ -22,7 +22,10 @@ export type RuntimeAiService = Pick<
   | "generateChatPeriodSummary"
 >;
 
-type RuntimeAiFactory = (model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol">) => RuntimeAiService;
+type RuntimeAiFactory = (model: Pick<
+  SystemModelConfig,
+  "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
+>) => RuntimeAiService;
 
 export class ConfiguredAiService implements RuntimeAiService {
   private cachedService?: {
@@ -37,9 +40,17 @@ export class ConfiguredAiService implements RuntimeAiService {
     private readonly factory: RuntimeAiFactory = (model) => {
       if (model.apiProtocol === "anthropic") {
         const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "");
-        return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, client as any);
+        return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, client as any, {
+          reasoningEffort: model.reasoningEffort,
+          maxCompletionTokens: model.maxCompletionTokens,
+          timeoutMs: model.requestTimeoutMs,
+        });
       }
-      return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model);
+      return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
+        reasoningEffort: model.reasoningEffort,
+        maxCompletionTokens: model.maxCompletionTokens,
+        timeoutMs: model.requestTimeoutMs,
+      });
     },
     private readonly selectedModelId?: string,
   ) {}
@@ -56,8 +67,9 @@ export class ConfiguredAiService implements RuntimeAiService {
     skill: Parameters<AiService["evaluateReplyDesire"]>[0],
     history: Parameters<AiService["evaluateReplyDesire"]>[1],
     bufferedMessages: Parameters<AiService["evaluateReplyDesire"]>[2],
+    signal?: AbortSignal,
   ): ReturnType<AiService["evaluateReplyDesire"]> {
-    return (await this.resolveService()).evaluateReplyDesire(skill, history, bufferedMessages);
+    return (await this.resolveService()).evaluateReplyDesire(skill, history, bufferedMessages, signal);
   }
 
   async evaluateControlledMention(
@@ -126,7 +138,15 @@ export class ConfiguredAiService implements RuntimeAiService {
       return this.fallback;
     }
 
-    const key = `${model.id}|${model.baseUrl}|${model.model}|${model.apiKey}`;
+    const key = [
+      model.id,
+      model.baseUrl,
+      model.model,
+      model.apiKey,
+      model.reasoningEffort,
+      model.maxCompletionTokens,
+      model.requestTimeoutMs,
+    ].join("|");
     if (this.cachedService?.key === key) {
       return this.cachedService.service;
     }

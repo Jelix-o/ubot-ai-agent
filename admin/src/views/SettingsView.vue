@@ -28,6 +28,17 @@ const settings = reactive<SystemSettings>({
   memoryCandidateConfidenceThreshold: 60,
   memoryAutoApproveConfidenceThreshold: 80,
   memoryUnattendedModeEnabled: false,
+  onlineLookupEnabled: true,
+  tokenCostControl: {
+    memoryCandidateExtractionEnabled: false,
+    memoryCandidateNormalizationEnabled: false,
+    memorySemanticDedupEnabled: false,
+    dailyProfileReviewAiEnabled: false,
+    dailyReportAiQuipEnabled: false,
+    chatSummaryAiEnabled: false,
+    scheduledReminderAiRewriteEnabled: false,
+    modelHealthAutoProbeEnabled: false,
+  },
   adminSecretConfigured: false,
   groupAdminSecretConfigured: false,
   defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
@@ -39,13 +50,6 @@ const settings = reactive<SystemSettings>({
 
 const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; detail: string }> = [
   { value: "reply", label: "对话回复", detail: "普通群聊回复、实时对话和群内 #模型 切换列表" },
-  { value: "memory", label: "记忆提取", detail: "候选记忆提炼、入库前整理和候选中文化" },
-  { value: "profile", label: "画像总结", detail: "群聊画像、昨日画像和公开画像生成" },
-  { value: "dedup", label: "去重处理", detail: "长期记忆去重和语义合并判断" },
-  { value: "summary", label: "群聊总结", detail: "日报分析、群聊时段总结和定时文案" },
-  { value: "knowledge", label: "知识库处理", detail: "历史聊天清洗、FAQ 提炼和知识导入" },
-  { value: "tts", label: "语音", detail: "语音回复和 TTS 相关模型" },
-  { value: "custom", label: "自定义", detail: "预留模型，不自动接管系统能力" },
 ];
 
 const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
@@ -130,6 +134,22 @@ function modelPurposeLabel(purpose: SystemModelPurpose): string {
 
 function markModelsDirty(): void {
   modelSettingsDirty.value = true;
+}
+
+function applyLowTokenPreset(): void {
+  settings.tokenCostControl = {
+    memoryCandidateExtractionEnabled: false,
+    memoryCandidateNormalizationEnabled: false,
+    memorySemanticDedupEnabled: false,
+    dailyProfileReviewAiEnabled: false,
+    dailyReportAiQuipEnabled: false,
+    chatSummaryAiEnabled: false,
+    scheduledReminderAiRewriteEnabled: false,
+    modelHealthAutoProbeEnabled: false,
+  };
+  settings.dailyProfileReviewEnabled = false;
+  settings.memoryDedupEnabled = true;
+  app.showToast("已应用低 Token 配置，保存后生效");
 }
 
 function updateModelId(model: SystemModelConfig, event: Event): void {
@@ -497,8 +517,26 @@ onMounted(() => {
               <label>长期记忆阈值（%）<input v-model.number="settings.memoryAutoApproveConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
               <label class="policy-toggle"><span>无人值守候选入库</span><input v-model="settings.memoryUnattendedModeEnabled" type="checkbox" /></label>
             </div>
+            <div class="policy-row policy-wide token-control-row">
+              <div class="token-control-head">
+                <strong>Token 消耗控制</strong>
+                <button class="ghost-btn" type="button" @click="applyLowTokenPreset">一键省 Token</button>
+              </div>
+              <label class="policy-toggle"><span>自动提取候选记忆</span><input v-model="settings.tokenCostControl.memoryCandidateExtractionEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>候选记忆 AI 中文化</span><input v-model="settings.tokenCostControl.memoryCandidateNormalizationEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>记忆语义去重</span><input v-model="settings.tokenCostControl.memorySemanticDedupEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>自动生成昨日画像</span><input v-model="settings.tokenCostControl.dailyProfileReviewAiEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>日报/倒计时 AI 文案</span><input v-model="settings.tokenCostControl.dailyReportAiQuipEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>群聊总结调用 AI</span><input v-model="settings.tokenCostControl.chatSummaryAiEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>定时提醒 AI 润色</span><input v-model="settings.tokenCostControl.scheduledReminderAiRewriteEnabled" type="checkbox" /></label>
+              <label class="policy-toggle"><span>自动探测模型健康</span><input v-model="settings.tokenCostControl.modelHealthAutoProbeEnabled" type="checkbox" /></label>
+            </div>
+            <div class="policy-row policy-wide">
+              <label class="policy-toggle"><span>全局启用自动实时查询</span><input v-model="settings.onlineLookupEnabled" type="checkbox" /></label>
+              <p class="muted">已启用群会按需查询天气、A 股和时效信息；单群可单独关闭。</p>
+            </div>
             <div class="policy-row policy-wide memory-summary-row">
-              <label>手动记忆汇总
+              <label>压缩为长期画像记忆
                 <select v-model="summaryGroupId" class="input" @change="loadSummaryMembers">
                   <option value="">选择群</option>
                   <option v-for="group in allGroups" :key="group.groupId" :value="group.groupId">
@@ -515,8 +553,9 @@ onMounted(() => {
                 </select>
               </label>
               <button class="btn" type="button" :disabled="summarizing || !summaryGroupId || !summaryUserId" @click="triggerMemorySummary">
-                {{ summarizing ? "汇总中..." : "开始汇总" }}
+                {{ summarizing ? "压缩中..." : "生成画像并清理旧记忆" }}
               </button>
+              <p class="muted memory-summary-note">成功生成画像后，会物理删除该成员原有长期记忆，仅保留新的画像记忆。</p>
             </div>
           </div>
         </div>
@@ -679,9 +718,26 @@ onMounted(() => {
   grid-template-columns: repeat(3, minmax(150px, 1fr));
 }
 
+.token-control-row {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.token-control-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .memory-summary-row {
   grid-template-columns: 1fr 1fr auto;
   gap: 12px;
+}
+
+.memory-summary-note {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .memory-summary-row select {

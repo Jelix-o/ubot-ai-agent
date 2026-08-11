@@ -36,10 +36,12 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "voiceReplyEnabled"
   | "defaultVoiceReplyEnabled"
   | "memoryDisabledUserIds"
+  | "onlineLookupEnabled"
 >>;
 
 export class GroupConfigService {
-  private cachedConfig?: GroupsConfigFile;
+  private cachedConfig?: { data: GroupsConfigFile; loadedAt: number };
+  private readonly cacheTtlMs = 30_000;
 
   constructor(private readonly filePath: string) {}
 
@@ -428,7 +430,9 @@ export class GroupConfigService {
       });
     }
 
-    group.manualIdentities = normalizeManualIdentities(identities);
+    const normalizedIdentities = normalizeManualIdentities(identities);
+    assertUniqueManualIdentityUserIds(normalizedIdentities);
+    group.manualIdentities = normalizedIdentities;
     data.groups[index] = group;
     await this.writeConfig(data);
     return group;
@@ -449,18 +453,22 @@ export class GroupConfigService {
     return data.groups[index]!;
   }
 
+  invalidateCache(): void {
+    this.cachedConfig = undefined;
+  }
+
   private async readConfig(): Promise<GroupsConfigFile> {
-    if (this.cachedConfig) {
-      return this.cachedConfig;
+    if (this.cachedConfig && Date.now() - this.cachedConfig.loadedAt < this.cacheTtlMs) {
+      return this.cachedConfig.data;
     }
 
     const data = await readJsonFile<GroupsConfigFile>(this.filePath);
-    this.cachedConfig = normalizeGroupsConfigFile(data);
-    return this.cachedConfig;
+    this.cachedConfig = { data: normalizeGroupsConfigFile(data), loadedAt: Date.now() };
+    return this.cachedConfig.data;
   }
 
   private async writeConfig(data: GroupsConfigFile): Promise<void> {
-    this.cachedConfig = data;
+    this.cachedConfig = { data, loadedAt: Date.now() };
     await writeJsonFileAtomic(this.filePath, data);
   }
 }
@@ -504,6 +512,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     voiceReplyEnabled,
     defaultVoiceReplyEnabled: voiceReplyEnabled && group.defaultVoiceReplyEnabled === true,
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
+    onlineLookupEnabled: group.onlineLookupEnabled !== false,
   };
 }
 
@@ -601,6 +610,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("memoryDisabledUserIds" in input) {
     next.memoryDisabledUserIds = normalizeUserIdsStrict(input.memoryDisabledUserIds);
+  }
+  if ("onlineLookupEnabled" in input) {
+    next.onlineLookupEnabled = normalizeBoolean(input.onlineLookupEnabled, "invalid_group_config");
   }
 
   return normalizeGroupConfig(next);
@@ -765,7 +777,21 @@ function normalizeManualIdentitiesStrict(value: unknown): GroupManualIdentity[] 
     };
   });
 
-  return normalizeManualIdentities(identities) ?? [];
+  const normalized = normalizeManualIdentities(identities) ?? [];
+  assertUniqueManualIdentityUserIds(normalized);
+  return normalized;
+}
+
+function assertUniqueManualIdentityUserIds(identities: GroupManualIdentity[] | undefined): void {
+  const seen = new Set<string>();
+  for (const identity of identities ?? []) {
+    for (const userId of identity.userIds) {
+      if (seen.has(userId)) {
+        throw new GroupConfigValidationError("duplicate_manual_identity_user_id");
+      }
+      seen.add(userId);
+    }
+  }
 }
 
 function normalizeManualIdentityUserIds(value: unknown): string[] {

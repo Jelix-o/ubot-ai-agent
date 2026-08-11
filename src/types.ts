@@ -34,6 +34,8 @@ export interface NapcatGroupMessageEvent {
   group_id: number;
   user_id: number;
   message_id: number;
+  /** OneBot 规范所有事件都带 Unix 秒时间戳；NapCat 在消息事件上提供。 */
+  time?: number;
   raw_message: string;
   message: MessageSegment[] | string;
   sender?: NapcatSender;
@@ -173,6 +175,8 @@ export interface GroupMemory {
   updatedAt: string;
   enabled: boolean;
   evidence?: GroupMemoryEvidence;
+  /** 覆盖链：新事实到达时不删旧事实，打上 superseded_by 标记（计划 §3 L1）。 */
+  supersededBy?: string;
 }
 
 export type GroupMemoryCandidateStatus = "pending" | "approved" | "rejected";
@@ -237,9 +241,62 @@ export interface AiReplyContext {
   images?: MessageImageInput[];
 }
 
+export type RealtimeLookupKind = "weather" | "stock" | "web";
+export type RealtimeLookupStatus = "ok" | "needs_location" | "unavailable";
+
+export interface RealtimeLookupSource {
+  name: string;
+  url: string;
+}
+
+export interface RealtimeLookupResult {
+  kind: RealtimeLookupKind;
+  status: RealtimeLookupStatus;
+  queriedAt: string;
+  dataAt?: string;
+  sources: RealtimeLookupSource[];
+  failureReason?: string;
+  promptContext: string;
+}
+
+export interface RecentGroupMessage {
+  messageId: string;
+  userId: string;
+  text: string;
+  timestamp: string;
+  senderCard?: string;
+  senderNickname?: string;
+}
+
+export interface GroupRuntimeContext {
+  liveChat: {
+    enabled: boolean;
+    trackedUserCount: number;
+    delaySeconds: number;
+    pendingUsers: Array<{
+      userId: string;
+      messageCount: number;
+      state: "waiting" | "ready";
+    }>;
+  };
+  scheduledReminders: {
+    enabled: boolean;
+    activeTaskCount: number;
+    nextTask?: {
+      topic: string;
+      nextRunAt: string;
+    };
+  };
+}
+
 export interface AiIdentityContext {
   groupId: string;
   currentUserId: string;
+  currentSpeaker?: {
+    manualName?: string;
+    senderCard?: string;
+    senderNickname?: string;
+  };
   botUserId?: string;
   manualIdentities?: GroupManualIdentity[];
   memberProfiles?: GroupMemberProfile[];
@@ -247,6 +304,11 @@ export interface AiIdentityContext {
   knowledgeHits?: KnowledgeBaseEntry[];
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
+  realtimeLookup?: RealtimeLookupResult;
+  groupRuntimeContext?: GroupRuntimeContext;
+  recentGroupMessages?: RecentGroupMessage[];
+  /** L5 群氛围摘要（非原文，计划 §3/§5.2）。 */
+  atmosphereSummary?: string;
 }
 
 export type ReplyModelMode = string;
@@ -285,6 +347,7 @@ export interface GroupBotConfig {
   voiceReplyEnabled?: boolean;
   defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
+  onlineLookupEnabled?: boolean;
 }
 
 export interface GroupsConfigFile {
@@ -300,14 +363,36 @@ export interface ConversationTurn {
   timestamp: string;
 }
 
+export interface SharedConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+  userId?: string;
+  senderCard?: string;
+  senderNickname?: string;
+  timestamp: string;
+}
+
+export interface SharedConversationTopic {
+  id: string;
+  groupId: string;
+  createdAt: string;
+  updatedAt: string;
+  turns: SharedConversationTurn[];
+}
+
 export interface ConversationsFile {
   conversations: Record<string, ConversationTurn[]>;
+  sharedTopics?: Record<string, SharedConversationTopic>;
+  sharedTopicMessageIndex?: Record<string, string>;
 }
 
 export interface AiReply {
   text: string;
   model: string;
   skillId: string;
+  promptChars?: number;
+  reasoningEffort?: ReasoningEffort;
+  imageInspectionUsed?: boolean;
 }
 
 export interface ControlledMentionDecision {
@@ -351,6 +436,7 @@ export interface AdminSession {
 }
 
 export type SystemModelPurpose = "reply" | "profile" | "memory" | "dedup" | "summary" | "knowledge" | "tts" | "custom";
+export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {
   id: string;
@@ -363,6 +449,10 @@ export interface SystemModelConfig {
   hasApiKey: boolean;
   enabled: boolean;
   apiProtocol?: "openai" | "anthropic";
+  supportsVision?: boolean;
+  reasoningEffort?: ReasoningEffort;
+  maxCompletionTokens?: number;
+  requestTimeoutMs?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -378,6 +468,17 @@ export interface SystemCommandConfig {
   updatedAt: string;
 }
 
+export interface TokenCostControlSettings {
+  memoryCandidateExtractionEnabled: boolean;
+  memoryCandidateNormalizationEnabled: boolean;
+  memorySemanticDedupEnabled: boolean;
+  dailyProfileReviewAiEnabled: boolean;
+  dailyReportAiQuipEnabled: boolean;
+  chatSummaryAiEnabled: boolean;
+  scheduledReminderAiRewriteEnabled: boolean;
+  modelHealthAutoProbeEnabled: boolean;
+}
+
 export interface SystemSettings {
   profileSummaryMaxChars: number;
   profileShortSummaryMaxChars: number;
@@ -389,6 +490,8 @@ export interface SystemSettings {
   memoryCandidateConfidenceThreshold: number;
   memoryAutoApproveConfidenceThreshold: number;
   memoryUnattendedModeEnabled: boolean;
+  onlineLookupEnabled: boolean;
+  tokenCostControl: TokenCostControlSettings;
   adminSecretHash?: string;
   groupAdminSecretHash?: string;
   adminSecretConfigured?: boolean;
@@ -434,9 +537,11 @@ export interface AppConfig {
   napcatReverseWsHost: string;
   napcatReverseWsPort: number;
   napcatReverseWsPath: string;
+  ingressReadApiPort: number;
   openAiBaseUrl: string;
   openAiApiKey: string;
   openAiModel: string;
+  realtimeSearchUrl: string;
   profileAiBaseUrl: string;
   profileAiApiKey: string;
   profileAiModel: string;
@@ -448,6 +553,7 @@ export interface AppConfig {
   ttsStyleHint?: string;
   ttsAllowNapCatAiFallback: boolean;
   ttsCacheDir: string;
+  dataDir: string;
   botQq: string;
   groupsConfigPath: string;
   skillsDir: string;

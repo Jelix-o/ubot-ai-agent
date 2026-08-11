@@ -123,12 +123,12 @@ test("formatReplyMessages allows three messages when burst mode is triggered by 
   assert.equal(messages.length, 3);
 });
 
-test("formatReplyMessages clamps reply to at most 3 messages, 70 chars each, and 150 chars total", () => {
+test("formatReplyMessages clamps configured replies to at most 8 messages and 3000 chars total", () => {
   const messages = formatReplyMessages(
     {
       ...skill,
-      maxReplyCharsPerMessage: 300,
-      maxTotalReplyChars: 500,
+      maxReplyCharsPerMessage: 900,
+      maxTotalReplyChars: 900,
       maxReplyMessages: 9,
       preferredMaxReplyMessages: 9,
       respectLineBreaks: false,
@@ -141,9 +141,49 @@ test("formatReplyMessages clamps reply to at most 3 messages, 70 chars each, and
     ].join("。"),
   );
 
-  assert.equal(messages.length <= 3, true);
-  assert.equal(messages.every((message) => message.length <= 70), true);
-  assert.equal(messages.join(" ").length <= 150, true);
+  assert.equal(messages.length <= 8, true);
+  assert.equal(messages.every((message) => message.length <= 600), true);
+  assert.equal(messages.join(" ").length <= 900, true);
+});
+
+test("formatReplyMessages honors a per-reply short or detailed budget", () => {
+  const text = "x".repeat(1_500);
+  const short = formatReplyMessages(skill, text, {
+    maxChars: 160,
+    maxTotalChars: 160,
+    maxMessages: 1,
+    preferredMaxMessages: 1,
+  });
+  const detailed = formatReplyMessages(skill, text, {
+    maxChars: 420,
+    maxTotalChars: 1_200,
+    maxMessages: 4,
+    preferredMaxMessages: 4,
+  });
+
+  assert.equal(short.length, 1);
+  assert.equal(short[0]?.length, 160);
+  assert.equal(detailed.length <= 4, true);
+  assert.equal(detailed.every((message) => message.length <= 420), true);
+  assert.equal(detailed.join(" ").length <= 1_200, true);
+  assert.equal(detailed.join(" ").length > short.join(" ").length, true);
+});
+
+test("formatReplyMessages honors a skill's 600-character reply budget", () => {
+  const messages = formatReplyMessages(
+    {
+      ...skill,
+      maxReplyCharsPerMessage: 600,
+      maxTotalReplyChars: 600,
+      maxReplyMessages: 4,
+      preferredMaxReplyMessages: 4,
+      respectLineBreaks: false,
+    },
+    "x".repeat(500),
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.length, 500);
 });
 
 test("formatReplyMessages stops at complete thoughts instead of leaving a half sentence tail", () => {

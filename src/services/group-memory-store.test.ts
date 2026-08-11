@@ -72,6 +72,82 @@ test("group memory store initializes, persists, filters, updates and removes", a
   }
 });
 
+test("group memory reply selection prioritizes participants and stays within its prompt budget", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-relevant-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const create = (title: string, type: "member_profile" | "group_fact", subjectUserId: string | undefined, minute: number, size = 32) =>
+      store.create({
+        groupId: "67890",
+        type,
+        ...(subjectUserId ? { subjectUserId } : {}),
+        title,
+        content: title.repeat(Math.ceil(size / title.length)).slice(0, size),
+        createdAt: `2026-06-01T10:${String(minute).padStart(2, "0")}:00.000Z`,
+      });
+
+    await create("speaker-old", "member_profile", "20001", 1);
+    await create("speaker-new", "member_profile", "20001", 9);
+    await create("mentioned", "member_profile", "20002", 8);
+    await create("group-fact", "group_fact", undefined, 7);
+    for (let index = 0; index < 10; index += 1) {
+      await create(`general-${index}`, "member_profile", "30000", index + 10, 500);
+    }
+
+    const selected = await store.listRelevantEnabled({
+      groupId: "67890",
+      currentUserId: "20001",
+      relatedUserIds: ["20002"],
+    });
+
+    assert.deepEqual(selected.slice(0, 4).map((memory) => memory.title), [
+      "speaker-new",
+      "speaker-old",
+      "mentioned",
+      "group-fact",
+    ]);
+    assert.ok(selected.length <= 8);
+    assert.ok(selected.reduce((total, memory) => total + memory.title.length + memory.content.length, 0) <= 3_200);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("group memory reply selection ranks an older query match above newer unrelated memories", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-query-relevant-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "Recent preference",
+      content: "Tester usually chats late at night.",
+      createdAt: "2026-06-03T10:00:00.000Z",
+    });
+    await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20002",
+      title: "季博神的游戏偏好",
+      content: "季博神最近一直在玩艾尔登法环。",
+      createdAt: "2026-06-01T10:00:00.000Z",
+    });
+
+    const selected = await store.listRelevantEnabled({
+      groupId: "67890",
+      currentUserId: "20001",
+      relatedUserIds: ["20002"],
+      queryText: "季博神最近还在玩艾尔登法环吗",
+      identityTerms: ["季博神", "季博霸王"],
+    });
+
+    assert.equal(selected[0]?.title, "季博神的游戏偏好");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("group memory store pages filtered memories newest first without cloning full lists", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-page-"));
   try {

@@ -48,6 +48,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.deepEqual((await service.getGroup("67891"))?.roastModeUserIds, []);
       assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
       assert.equal((await service.getGroup("67890"))?.defaultVoiceReplyEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, true);
     },
   );
 });
@@ -112,6 +113,7 @@ test("group config updates full editable config with validation", async () => {
         defaultVoiceReplyEnabled: true,
         blacklistedUserIds: ["30001"],
         opsAlertsEnabled: false,
+        onlineLookupEnabled: false,
       });
 
       assert.equal(updated.currentSkillId, "zxp");
@@ -135,6 +137,7 @@ test("group config updates full editable config with validation", async () => {
       assert.equal(updated.defaultVoiceReplyEnabled, true);
       assert.deepEqual(updated.blacklistedUserIds, ["30001"]);
       assert.equal(updated.opsAlertsEnabled, false);
+      assert.equal(updated.onlineLookupEnabled, false);
       assert.deepEqual(updated.manualIdentities?.[0], { userIds: ["20001"], names: ["Tester"], note: "note" });
 
       await assert.rejects(
@@ -168,6 +171,15 @@ test("group config updates full editable config with validation", async () => {
       await assert.rejects(
         () => service.updateGroupConfig("67890", { manualIdentities: [{ userIds: ["bad"], names: ["Tester"] }] }),
         { code: "invalid_manual_identities" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", {
+          manualIdentities: [
+            { userIds: ["20001"], names: ["季博神"] },
+            { userIds: ["20001"], names: ["季博初"] },
+          ],
+        }),
+        { code: "duplicate_manual_identity_user_id" },
       );
     },
   );

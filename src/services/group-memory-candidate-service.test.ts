@@ -52,7 +52,7 @@ test("English memory candidates are normalized to Chinese before auto approval",
     };
 
     fixture.service.queueMessage(message("Tester 说自己不能吃太油。"));
-    const stats = await fixture.service.flushGroup("67890");
+    const stats = await fixture.service.flushGroup("67890", { normalizeNonChineseCandidates: true });
 
     assert.equal(stats?.autoApprovedCount, 1);
     assert.equal(fixture.ai.normalizeCalls.length, 1);

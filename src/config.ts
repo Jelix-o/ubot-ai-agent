@@ -20,9 +20,11 @@ function optionalEnv(name: string): string | undefined {
 
 export function loadConfig(): AppConfig {
   const cwd = process.cwd();
+  const dataDir = path.join(cwd, "data");
   const napcatMode = (process.env.NAPCAT_MODE ?? "forward").trim().toLowerCase();
   const reversePort = Number(process.env.NAPCAT_REVERSE_WS_PORT ?? "6199");
   const adminHttpPort = Number(process.env.ADMIN_HTTP_PORT ?? "6200");
+  const ingressReadApiPort = Number(process.env.INGRESS_READ_API_PORT ?? "6198");
   const openAiBaseUrl = requireEnv("OPENAI_BASE_URL");
   const openAiApiKey = requireEnv("OPENAI_API_KEY");
   const openAiModel = requireEnv("OPENAI_MODEL");
@@ -38,6 +40,9 @@ export function loadConfig(): AppConfig {
   }
   if (!Number.isFinite(reversePort) || reversePort <= 0 || reversePort > 65535) {
     throw new Error("NAPCAT_REVERSE_WS_PORT must be a valid TCP port (1-65535).");
+  }
+  if (!Number.isFinite(ingressReadApiPort) || ingressReadApiPort <= 0 || ingressReadApiPort > 65535) {
+    throw new Error("INGRESS_READ_API_PORT must be a valid TCP port (1-65535).");
   }
   if (!Number.isFinite(adminHttpPort) || adminHttpPort <= 0 || adminHttpPort > 65535) {
     throw new Error("ADMIN_HTTP_PORT must be a valid TCP port (1-65535).");
@@ -58,9 +63,11 @@ export function loadConfig(): AppConfig {
     napcatReverseWsHost: reverseHost,
     napcatReverseWsPort: reversePort,
     napcatReverseWsPath: optionalEnv("NAPCAT_REVERSE_WS_PATH") ?? "/onebot/ws",
+    ingressReadApiPort,
     openAiBaseUrl,
     openAiApiKey,
     openAiModel,
+    realtimeSearchUrl: optionalEnv("REALTIME_SEARCH_URL") ?? "http://127.0.0.1:8088",
     profileAiBaseUrl: optionalEnv("PROFILE_AI_BASE_URL") ?? openAiBaseUrl,
     profileAiApiKey: optionalEnv("PROFILE_AI_API_KEY") ?? openAiApiKey,
     profileAiModel: optionalEnv("PROFILE_AI_MODEL") ?? openAiModel,
@@ -71,7 +78,8 @@ export function loadConfig(): AppConfig {
     ttsAudioFormat: ttsAudioFormat as AppConfig["ttsAudioFormat"],
     ttsStyleHint: process.env.TTS_STYLE_HINT?.trim() || undefined,
     ttsAllowNapCatAiFallback,
-    ttsCacheDir: path.join(cwd, "data", "tts-cache"),
+    ttsCacheDir: path.join(dataDir, "tts-cache"),
+    dataDir,
     botQq: requireEnv("BOT_QQ"),
     groupsConfigPath: path.join(cwd, "config", "groups.json"),
     skillsDir: path.join(cwd, "skills"),

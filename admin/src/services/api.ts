@@ -38,6 +38,7 @@ export interface GroupConfig {
   voiceReplyEnabled?: boolean;
   defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
+  onlineLookupEnabled?: boolean;
 }
 
 export interface SubjectLabel {
@@ -253,6 +254,7 @@ export interface CandidateListResponse {
 }
 
 export type SystemModelPurpose = "reply" | "profile" | "memory" | "dedup" | "summary" | "knowledge" | "tts" | "custom";
+export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {
   id: string;
@@ -264,6 +266,10 @@ export interface SystemModelConfig {
   hasApiKey: boolean;
   enabled: boolean;
   apiProtocol?: "openai" | "anthropic";
+  supportsVision?: boolean;
+  reasoningEffort?: ReasoningEffort;
+  maxCompletionTokens?: number;
+  requestTimeoutMs?: number;
   createdAt: string;
   updatedAt: string;
   apiKey?: string;
@@ -303,6 +309,17 @@ export interface SystemSettings {
   memoryCandidateConfidenceThreshold: number;
   memoryAutoApproveConfidenceThreshold: number;
   memoryUnattendedModeEnabled: boolean;
+  onlineLookupEnabled: boolean;
+  tokenCostControl: {
+    memoryCandidateExtractionEnabled: boolean;
+    memoryCandidateNormalizationEnabled: boolean;
+    memorySemanticDedupEnabled: boolean;
+    dailyProfileReviewAiEnabled: boolean;
+    dailyReportAiQuipEnabled: boolean;
+    chatSummaryAiEnabled: boolean;
+    scheduledReminderAiRewriteEnabled: boolean;
+    modelHealthAutoProbeEnabled: boolean;
+  };
   adminSecretConfigured?: boolean;
   groupAdminSecretConfigured?: boolean;
   defaultTriggerKeywords: Array<{ keyword: string; enabled: boolean }>;

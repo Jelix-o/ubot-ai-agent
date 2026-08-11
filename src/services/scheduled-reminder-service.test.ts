@@ -79,6 +79,23 @@ test("ScheduledReminderService generates varied reminder text and falls back loc
   });
 });
 
+test("ScheduledReminderService skips ai rewrite when disabled", async () => {
+  const aiService = new FakeAiService("unused ai text");
+  await withService(aiService, async (service) => {
+    const task = await service.createTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      request: { intervalMinutes: 60, topic: "鍠濇按" },
+      now: new Date("2026-05-27T10:00:00.000Z"),
+    });
+
+    const text = await service.buildReminderMessage(task, { useAiRewrite: false });
+
+    assert.equal(aiService.calls.length, 0);
+    assert.match(text, /鍠濇按/);
+  });
+});
+
 test("ScheduledReminderService strips duplicated reminder prefixes from ai text", async () => {
   const cases = [
     {

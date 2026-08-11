@@ -40,8 +40,7 @@ $itemsToCopy = @(
   "package-lock.json",
   "README.md",
   "COMMANDS.md",
-  "RELEASE-v1.0.2.md",
-  "V1.0.2-LOCAL-AUDIT.md",
+  "RELEASE-v1.1.0.md",
   ".env.example",
   ".env.server-2022.example"
 )
@@ -83,7 +82,20 @@ $runCmd = @'
 setlocal
 cd /d %~dp0
 if not exist config\groups.json copy config\groups.example.json config\groups.json >nul
-node dist\index.js
+if not exist data\logs mkdir data\logs
+if "%BOT_ROLE%"=="legacy" (
+  node dist\index.js
+  exit /b %errorlevel%
+)
+set "ROLE=%BOT_ROLE%"
+if "%ROLE%"=="" set "ROLE=ingress,worker,admin"
+for %%r in (%ROLE%) do (
+  start "ubot-%%r" cmd /c "set BOT_ROLE=%%r&& node dist\index.js >> data\logs\%%r.log 2>&1"
+)
+echo UBot processes launched: %ROLE%
+echo Logs: data\logs\<role>.log
+echo Set BOT_ROLE=legacy to run the legacy single-process mode.
+endlocal
 '@
 Set-Content -Path (Join-Path $bundleDir "run.cmd") -Value $runCmd -Encoding ASCII
 

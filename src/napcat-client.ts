@@ -1,7 +1,5 @@
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 
 import { logError, logInfo, logWarn } from "./logger.js";
@@ -17,6 +15,12 @@ import type {
 } from "./types.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import { extractImagesFromMessage, extractTextFromMessage } from "./utils/message-parser.js";
+import {
+  downloadImageAsDataUrl,
+  isHttpUrl,
+  isImageDataUrl,
+  readImageFileAsDataUrl,
+} from "./utils/image-data-url.js";
 
 interface NapCatClientOptions {
   wsUrl: string;
@@ -47,6 +51,12 @@ interface NapCatGetMessageResponse {
   raw_message?: string;
 }
 
+interface NapCatSendMessageResponse {
+  message_id?: number | string;
+}
+
+const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
+
 export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessageEvent] }> {
   private socket?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
@@ -55,6 +65,15 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
   private readonly groupMemberCache = new Map<
     string,
     { expiresAt: number; members: NapcatGroupMember[] }
+  >();
+  private readonly groupMemberRequests = new Map<string, Promise<NapcatGroupMember[]>>();
+  private readonly pendingActions = new Map<
+    string,
+    {
+      resolve: (data: unknown) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
   >();
   private manuallyClosed = false;
 
@@ -82,6 +101,7 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     });
 
     this.socket.on("close", () => {
+      this.rejectPendingActions(new Error("NapCat WebSocket closed."));
       logWarn("NapCat WebSocket closed. Scheduling reconnect.");
       if (!this.manuallyClosed) {
         this.scheduleReconnect();
@@ -104,18 +124,20 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
+    this.rejectPendingActions(new Error("NapCat client stopped."));
     this.socket?.close();
   }
 
-  async sendGroupMessage(groupId: string, text: string): Promise<void> {
-    await this.dispatchAction("send_group_msg", {
+  async sendGroupMessage(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
+    const data = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
       group_id: Number(groupId),
       message: text,
     });
+    return toMessageReceipt(data);
   }
 
-  async sendGroupRecord(groupId: string, recordFile: string): Promise<void> {
-    await this.dispatchAction("send_group_msg", {
+  async sendGroupRecord(groupId: string, recordFile: string): Promise<{ messageId?: string } | undefined> {
+    const data = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
       group_id: Number(groupId),
       message: [
         {
@@ -126,15 +148,17 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
         },
       ],
     });
+    return toMessageReceipt(data);
   }
 
-  async sendGroupAiRecord(groupId: string, text: string): Promise<void> {
+  async sendGroupAiRecord(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
     const character = await this.getAiCharacter(groupId);
-    await this.dispatchAction("send_group_ai_record", {
+    const data = await this.callAction<NapCatSendMessageResponse>("send_group_ai_record", {
       group_id: Number(groupId),
       character,
       text,
     });
+    return toMessageReceipt(data);
   }
 
   async resolveMentionTargets(groupId: string, candidates: string[]): Promise<string[]> {
@@ -188,7 +212,21 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
 
   private handleMessage(raw: string): void {
     try {
-      const parsed = JSON.parse(raw) as Partial<NapcatGroupMessageEvent>;
+      const parsed = JSON.parse(raw) as Partial<NapcatGroupMessageEvent> & NapCatActionResponse<unknown>;
+      if (parsed.echo && this.pendingActions.has(parsed.echo)) {
+        const pending = this.pendingActions.get(parsed.echo);
+        if (!pending) {
+          return;
+        }
+        clearTimeout(pending.timer);
+        this.pendingActions.delete(parsed.echo);
+        if (parsed.retcode) {
+          pending.reject(new Error(`NapCat action failed with retcode ${parsed.retcode} (${parsed.status ?? "unknown"})`));
+        } else {
+          pending.resolve(parsed.data);
+        }
+        return;
+      }
       if (parsed.post_type !== "message" || parsed.message_type !== "group") {
         return;
       }
@@ -207,39 +245,59 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
   }
 
   private async resolveImageInput(image: MessageImageInput): Promise<MessageImageInput | undefined> {
-    if (image.url && isUsableImageUrl(image.url)) {
+    if (isImageDataUrl(image.url)) {
       return image;
     }
 
-    if (image.file && isUsableImageUrl(image.file)) {
-      return { ...image, url: image.file };
+    if (image.file && !isHttpUrl(image.file)) {
+      try {
+        const payload = await this.callHttpAction<{ file?: string; path?: string; url?: string }>(
+          "get_image",
+          {
+            file: image.file,
+          },
+        );
+        const localPath = payload.path ?? payload.file;
+        if (localPath) {
+          try {
+            return { ...image, url: await readImageFileAsDataUrl(localPath) };
+          } catch {
+            // The path can belong to a remote NapCat host. Fall through to its URL.
+          }
+        }
+        if (isHttpUrl(payload.url)) {
+          return { ...image, url: await downloadImageAsDataUrl(payload.url) };
+        }
+      } catch (error) {
+        logWarn("Failed to resolve image through NapCat get_image.", {
+          error: (error as Error).message,
+        });
+      }
     }
 
-    if (!image.file) {
-      return undefined;
+    if (isHttpUrl(image.url)) {
+      try {
+        return { ...image, url: await downloadImageAsDataUrl(image.url) };
+      } catch (error) {
+        logWarn("Failed to materialize image URL for AI context.", {
+          error: (error as Error).message,
+        });
+      }
     }
 
-    try {
-      const payload = await this.callHttpAction<{ file?: string; path?: string; url?: string }>(
-        "get_image",
-        {
-          file: image.file,
-        },
-      );
-
-      if (payload.url && isUsableImageUrl(payload.url)) {
-        return { ...image, url: payload.url };
+    if (isHttpUrl(image.file)) {
+      try {
+        return { ...image, url: await downloadImageAsDataUrl(image.file) };
+      } catch (error) {
+        logWarn("Failed to materialize image file URL for AI context.", {
+          error: (error as Error).message,
+        });
       }
+    }
 
-      const localPath = payload.path ?? payload.file;
-      if (localPath) {
-        const dataUrl = await toDataUrl(localPath);
-        return { ...image, url: dataUrl };
-      }
-    } catch (error) {
+    if (image.file) {
       logWarn("Failed to resolve image through NapCat get_image.", {
-        file: image.file,
-        error: (error as Error).message,
+        error: "No usable local image data or URL was returned.",
       });
     }
 
@@ -270,30 +328,61 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
       return cached.members;
     }
 
-    const members = await this.callHttpAction<NapcatGroupMember[]>("get_group_member_list", {
-      group_id: Number(groupId),
-      no_cache: false,
-    });
-
-    this.groupMemberCache.set(groupId, {
-      members,
-      expiresAt: Date.now() + 30_000,
-    });
-    return members;
-  }
-
-  private async dispatchAction(action: string, payload: Record<string, unknown>): Promise<void> {
-    if (this.isSocketOpen()) {
-      this.socket?.send(
-        JSON.stringify({
-          action,
-          params: payload,
-        } satisfies OutgoingAction<typeof payload>),
-      );
-      return;
+    const pending = this.groupMemberRequests.get(groupId);
+    if (pending) {
+      return pending;
     }
 
-    await this.callHttpAction(action, payload);
+    const request = this.callHttpAction<NapcatGroupMember[]>("get_group_member_list", {
+      group_id: Number(groupId),
+      no_cache: false,
+    }).then((members) => {
+      this.groupMemberCache.set(groupId, {
+        members,
+        expiresAt: Date.now() + GROUP_MEMBER_CACHE_TTL_MS,
+      });
+      return members;
+    });
+    this.groupMemberRequests.set(groupId, request);
+    try {
+      return await request;
+    } finally {
+      if (this.groupMemberRequests.get(groupId) === request) {
+        this.groupMemberRequests.delete(groupId);
+      }
+    }
+  }
+
+  private async callAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
+    if (this.isSocketOpen()) {
+      return this.callWebSocketAction<TData>(action, payload);
+    }
+
+    return this.callHttpAction<TData>(action, payload);
+  }
+
+  private async callWebSocketAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error("NapCat WebSocket is not connected.");
+    }
+    const echo = randomUUID();
+    return new Promise<TData>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingActions.delete(echo);
+        reject(new Error(`NapCat action ${action} timed out.`));
+      }, 10_000);
+      this.pendingActions.set(echo, {
+        resolve: (data) => resolve(data as TData),
+        reject,
+        timer,
+      });
+      socket.send(JSON.stringify({
+        action,
+        params: payload,
+        echo,
+      } satisfies OutgoingAction<typeof payload>));
+    });
   }
 
   private async callHttpAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
@@ -338,6 +427,14 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
       this.connect();
     }, 5000);
   }
+
+  private rejectPendingActions(error: Error): void {
+    for (const [echo, pending] of this.pendingActions.entries()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pendingActions.delete(echo);
+    }
+  }
 }
 
 function deriveHttpBaseUrl(wsUrl: string): string {
@@ -347,39 +444,6 @@ function deriveHttpBaseUrl(wsUrl: string): string {
   url.search = "";
   url.hash = "";
   return url.toString().replace(/\/$/, "");
-}
-
-function isUsableImageUrl(value: string): boolean {
-  return /^(https?:\/\/|data:image\/)/i.test(value);
-}
-
-async function toDataUrl(filePath: string): Promise<string> {
-  const normalizedPath = filePath.startsWith("file:///")
-    ? fileURLToPath(filePath)
-    : filePath.replace(/^file:\/\//i, "");
-  const buffer = await readFile(normalizedPath);
-  const mimeType = inferMimeType(normalizedPath);
-  return `data:${mimeType};base64,${buffer.toString("base64")}`;
-}
-
-function inferMimeType(filePath: string): string {
-  const extension = path.extname(filePath).toLowerCase();
-
-  switch (extension) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".bmp":
-      return "image/bmp";
-    default:
-      return "application/octet-stream";
-  }
 }
 
 function pickFirstAiCharacter(data: unknown): string | undefined {
@@ -440,4 +504,11 @@ function toReferencedMessage(
     text: extractTextFromMessage(message),
     images: extractImagesFromMessage(message),
   };
+}
+
+function toMessageReceipt(data: NapCatSendMessageResponse | undefined): { messageId?: string } | undefined {
+  if (data?.message_id === undefined || data.message_id === null) {
+    return undefined;
+  }
+  return { messageId: String(data.message_id) };
 }

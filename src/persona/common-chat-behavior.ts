@@ -18,6 +18,9 @@ const DEFAULT_MAX_REPLY_CHARS = 70;
 const DEFAULT_MAX_TOTAL_REPLY_CHARS = 150;
 const DEFAULT_MAX_REPLY_MESSAGES = 3;
 const DEFAULT_PREFERRED_MAX_REPLY_MESSAGES = 2;
+const MAX_REPLY_CHARS = 600;
+const MAX_TOTAL_REPLY_CHARS = 1200;
+const MAX_REPLY_MESSAGES = 4;
 const DEFAULT_STRIP_ASTERISKS = true;
 const DEFAULT_SINGLE_SENTENCE_PER_MESSAGE = false;
 const DEFAULT_STRIP_TERMINAL_PUNCTUATION = true;
@@ -41,15 +44,15 @@ export type ReplyBehaviorOptions = {
 export function getReplyBehaviorOptions(skill: SkillDefinition): ReplyBehaviorOptions {
   const maxChars = Math.min(
     skill.maxReplyCharsPerMessage ?? DEFAULT_MAX_REPLY_CHARS,
-    DEFAULT_MAX_REPLY_CHARS,
+    MAX_REPLY_CHARS,
   );
   const maxTotalChars = Math.min(
     skill.maxTotalReplyChars ?? DEFAULT_MAX_TOTAL_REPLY_CHARS,
-    DEFAULT_MAX_TOTAL_REPLY_CHARS,
+    MAX_TOTAL_REPLY_CHARS,
   );
   const maxMessages = Math.min(
     skill.maxReplyMessages ?? DEFAULT_MAX_REPLY_MESSAGES,
-    DEFAULT_MAX_REPLY_MESSAGES,
+    MAX_REPLY_MESSAGES,
   );
   const preferredMaxMessages = Math.min(
     skill.preferredMaxReplyMessages ?? DEFAULT_PREFERRED_MAX_REPLY_MESSAGES,

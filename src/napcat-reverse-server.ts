@@ -8,6 +8,7 @@ import { logInfo, logWarn } from "./logger.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type {
   GroupMemberIdentity,
+  MessageImageInput,
   MessageSegment,
   NapcatGroupInfo,
   NapcatGroupMember,
@@ -16,6 +17,12 @@ import type {
 } from "./types.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import { extractImagesFromMessage, extractTextFromMessage } from "./utils/message-parser.js";
+import {
+  downloadImageAsDataUrl,
+  isHttpUrl,
+  isImageDataUrl,
+  readImageFileAsDataUrl,
+} from "./utils/image-data-url.js";
 
 interface NapCatReverseServerOptions {
   host: string;
@@ -35,6 +42,9 @@ interface NapCatActionResponse<TData = unknown> {
   retcode?: number;
   data?: TData;
   echo?: string;
+  post_type?: string;
+  notice_type?: string;
+  message_type?: string;
 }
 
 interface NapCatGetMessageResponse {
@@ -48,7 +58,22 @@ interface NapCatGetMessageResponse {
   raw_message?: string;
 }
 
-export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGroupMessageEvent] }> {
+interface NapCatGetImageResponse {
+  file?: string;
+  path?: string;
+  url?: string;
+}
+
+interface NapCatSendMessageResponse {
+  message_id?: number | string;
+}
+
+const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
+
+export class NapCatReverseServer extends EventEmitter<{
+  groupMessage: [NapcatGroupMessageEvent];
+  groupRecall: [unknown];
+}> {
   private readonly httpServer = createServer((_req, res) => {
     res.statusCode = 200;
     res.end("NapCat reverse ws server is running.");
@@ -69,6 +94,7 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
     string,
     { expiresAt: number; members: NapcatGroupMember[] }
   >();
+  private readonly groupMemberRequests = new Map<string, Promise<NapcatGroupMember[]>>();
 
   constructor(private readonly options: NapCatReverseServerOptions) {
     super();
@@ -124,15 +150,16 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
     this.httpServer.close();
   }
 
-  async sendGroupMessage(groupId: string, text: string): Promise<void> {
-    await this.dispatchAction("send_group_msg", {
+  async sendGroupMessage(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
+    const response = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
       group_id: Number(groupId),
       message: text,
     });
+    return toMessageReceipt(response.data);
   }
 
-  async sendGroupRecord(groupId: string, recordFile: string): Promise<void> {
-    await this.dispatchAction("send_group_msg", {
+  async sendGroupRecord(groupId: string, recordFile: string): Promise<{ messageId?: string } | undefined> {
+    const response = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
       group_id: Number(groupId),
       message: [
         {
@@ -143,15 +170,17 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
         },
       ],
     });
+    return toMessageReceipt(response.data);
   }
 
-  async sendGroupAiRecord(groupId: string, text: string): Promise<void> {
+  async sendGroupAiRecord(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
     const character = await this.getAiCharacter(groupId);
-    await this.dispatchAction("send_group_ai_record", {
+    const response = await this.callAction<NapCatSendMessageResponse>("send_group_ai_record", {
       group_id: Number(groupId),
       character,
       text,
     });
+    return toMessageReceipt(response.data);
   }
 
   async resolveMentionTargets(groupId: string, candidates: string[]): Promise<string[]> {
@@ -191,6 +220,11 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
     return toReferencedMessage(messageId, response.data);
   }
 
+  async resolveImageInputs(images: MessageImageInput[]): Promise<MessageImageInput[]> {
+    const resolved = await Promise.all(images.map((image) => this.resolveImageInput(image)));
+    return resolved.filter((image): image is MessageImageInput => Boolean(image?.url));
+  }
+
   async getHealthStatus(): Promise<TransportHealthStatus> {
     const connected = this.activeSocket?.readyState === WebSocket.OPEN;
     return {
@@ -203,7 +237,7 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
 
   private handleIncomingMessage(raw: string): void {
     try {
-      const parsed = JSON.parse(raw) as Partial<NapcatGroupMessageEvent> & NapCatActionResponse<unknown>;
+      const parsed = JSON.parse(raw) as Record<string, unknown> & NapCatActionResponse<unknown>;
       if (parsed.echo && this.pendingActions.has(parsed.echo)) {
         const pending = this.pendingActions.get(parsed.echo);
         if (!pending) {
@@ -222,11 +256,16 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
         return;
       }
 
+      if (parsed.post_type === "notice" && parsed.notice_type === "group_recall" && parsed.message_type === "group") {
+        this.emit("groupRecall", parsed);
+        return;
+      }
+
       if (parsed.post_type !== "message" || parsed.message_type !== "group") {
         return;
       }
 
-      this.emit("groupMessage", parsed as NapcatGroupMessageEvent);
+      this.emit("groupMessage", parsed as unknown as NapcatGroupMessageEvent);
     } catch {
       logWarn("Failed to parse reverse WebSocket event.");
     }
@@ -267,33 +306,76 @@ export class NapCatReverseServer extends EventEmitter<{ groupMessage: [NapcatGro
     return character;
   }
 
+  private async resolveImageInput(image: MessageImageInput): Promise<MessageImageInput | undefined> {
+    if (isImageDataUrl(image.url)) {
+      return image;
+    }
+
+    if (image.file && !isHttpUrl(image.file)) {
+      try {
+        const response = await this.callAction<NapCatGetImageResponse>("get_image", { file: image.file });
+        const localPath = response.data?.path ?? response.data?.file;
+        if (localPath) {
+          try {
+            return { ...image, url: await readImageFileAsDataUrl(localPath) };
+          } catch {
+            // Reverse mode often returns a container path; use NapCat's URL below instead.
+          }
+        }
+        if (isHttpUrl(response.data?.url)) {
+          return { ...image, url: await downloadImageAsDataUrl(response.data.url) };
+        }
+      } catch (error) {
+        logWarn("Failed to resolve reverse-mode NapCat image.", {
+          error: (error as Error).message,
+        });
+      }
+    }
+
+    const sourceUrl = isHttpUrl(image.url) ? image.url : isHttpUrl(image.file) ? image.file : undefined;
+    if (sourceUrl) {
+      try {
+        return { ...image, url: await downloadImageAsDataUrl(sourceUrl) };
+      } catch (error) {
+        logWarn("Failed to materialize reverse-mode image URL.", {
+          error: (error as Error).message,
+        });
+      }
+    }
+
+    return undefined;
+  }
+
   private async getGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
     const cached = this.groupMemberCache.get(groupId);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.members;
     }
 
-    const response = await this.callAction<NapcatGroupMember[]>("get_group_member_list", {
+    const pending = this.groupMemberRequests.get(groupId);
+    if (pending) {
+      return pending;
+    }
+
+    const request = this.callAction<NapcatGroupMember[]>("get_group_member_list", {
       group_id: Number(groupId),
       no_cache: false,
+    }).then((response) => {
+      const members = Array.isArray(response.data) ? response.data : [];
+      this.groupMemberCache.set(groupId, {
+        members,
+        expiresAt: Date.now() + GROUP_MEMBER_CACHE_TTL_MS,
+      });
+      return members;
     });
-    const members = Array.isArray(response.data) ? response.data : [];
-
-    this.groupMemberCache.set(groupId, {
-      members,
-      expiresAt: Date.now() + 30_000,
-    });
-    return members;
-  }
-
-  private async dispatchAction(action: string, payload: Record<string, unknown>): Promise<void> {
-    const socket = this.ensureSocketOpen();
-    socket.send(
-      JSON.stringify({
-        action,
-        params: payload,
-      } satisfies OutgoingAction<typeof payload>),
-    );
+    this.groupMemberRequests.set(groupId, request);
+    try {
+      return await request;
+    } finally {
+      if (this.groupMemberRequests.get(groupId) === request) {
+        this.groupMemberRequests.delete(groupId);
+      }
+    }
   }
 
   private async callAction<TData>(
@@ -405,4 +487,11 @@ function toReferencedMessage(
     text: extractTextFromMessage(message),
     images: extractImagesFromMessage(message),
   };
+}
+
+function toMessageReceipt(data: NapCatSendMessageResponse | undefined): { messageId?: string } | undefined {
+  if (data?.message_id === undefined || data.message_id === null) {
+    return undefined;
+  }
+  return { messageId: String(data.message_id) };
 }

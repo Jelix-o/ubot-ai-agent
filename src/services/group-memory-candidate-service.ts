@@ -40,6 +40,10 @@ interface MemoryConfidencePolicy {
   unattendedModeEnabled: boolean;
 }
 
+interface GroupMemoryCandidateFlushOptions {
+  normalizeNonChineseCandidates?: boolean;
+}
+
 export class GroupMemoryCandidateService {
   private readonly buffers = new Map<string, BufferedMemoryMessage[]>();
   private readonly approveInflight = new Map<string, Promise<Awaited<ReturnType<GroupMemoryCandidateStore["approve"]>>>>();
@@ -203,19 +207,23 @@ export class GroupMemoryCandidateService {
     });
     this.buffers.set(message.groupId, buffer.slice(-this.batchSize * 2));
 
-    if (buffer.length >= this.batchSize) {
-      void this.flushGroup(message.groupId);
-    }
+    // Flushing is driven by BotApplication so system token-cost controls can gate AI calls.
   }
 
-  async flushAll(groupIds?: string[]): Promise<GroupMemoryCandidateFlushStats[]> {
+  async flushAll(
+    groupIds?: string[],
+    options: GroupMemoryCandidateFlushOptions = {},
+  ): Promise<GroupMemoryCandidateFlushStats[]> {
     const allowedGroupIds = groupIds ? new Set(groupIds) : undefined;
     const bufferedGroupIds = [...this.buffers.keys()].filter((groupId) => !allowedGroupIds || allowedGroupIds.has(groupId));
-    const results = await Promise.all(bufferedGroupIds.map((groupId) => this.flushGroup(groupId)));
+    const results = await Promise.all(bufferedGroupIds.map((groupId) => this.flushGroup(groupId, options)));
     return results.filter((result): result is GroupMemoryCandidateFlushStats => Boolean(result));
   }
 
-  async flushGroup(groupId: string): Promise<GroupMemoryCandidateFlushStats | undefined> {
+  async flushGroup(
+    groupId: string,
+    options: GroupMemoryCandidateFlushOptions = {},
+  ): Promise<GroupMemoryCandidateFlushStats | undefined> {
     const buffer = this.buffers.get(groupId) ?? [];
     if (buffer.length === 0) {
       return;
@@ -267,7 +275,9 @@ export class GroupMemoryCandidateService {
           });
           continue;
         }
-        const candidate = await this.normalizeCandidate(rawCandidate);
+        const candidate = await this.normalizeCandidate(rawCandidate, {
+          useAiNormalization: options.normalizeNonChineseCandidates === true,
+        });
         if (!candidate) {
           await this.addPendingLanguageReviewCandidate(groupId, rawCandidate, evidence);
           pendingCount += 1;
@@ -418,12 +428,17 @@ export class GroupMemoryCandidateService {
     }
   }
 
-  private async normalizeCandidate(candidate: ExtractedGroupMemoryCandidate): Promise<ExtractedGroupMemoryCandidate | undefined> {
+  private async normalizeCandidate(
+    candidate: ExtractedGroupMemoryCandidate,
+    options: { useAiNormalization?: boolean } = {},
+  ): Promise<ExtractedGroupMemoryCandidate | undefined> {
     if (isMostlyChinese(`${candidate.title} ${candidate.content}`)) {
       return candidate;
     }
 
-    const normalized = await this.aiService.normalizeMemoryCandidateLanguage?.(candidate);
+    const normalized = options.useAiNormalization === true
+      ? await this.aiService.normalizeMemoryCandidateLanguage?.(candidate)
+      : undefined;
     if (normalized && isMostlyChinese(`${normalized.title} ${normalized.content}`)) {
       return normalized;
     }

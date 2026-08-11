@@ -1,9 +1,9 @@
 param(
   [string]$Repo = "Jelix-o/ubot-ai-agent",
-  [string]$Tag = "v1.0.2",
-  [string]$Name = "UBot V1.0.2",
-  [string]$ReleaseNotesPath = "RELEASE-v1.0.2.md",
-  [string]$AssetPath = "release/ubot-1.0.2-win.zip",
+  [string]$Tag = "v2.0.0",
+  [string]$Name = "UBot V2.0.0",
+  [string]$ReleaseNotesPath = "RELEASE-v2.0.0.md",
+  [string]$AssetPath = "release/ubot-2.0.0-win.zip",
   [switch]$DryRun
 )
 

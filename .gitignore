@@ -20,3 +20,9 @@ config/groups.json
 coverage/
 .DS_Store
 NUL
+
+# 本地部署辅助文件（不进入仓库）
+.deploy-*.tar.gz
+.mimocode/
+deploy/
+交付文件/

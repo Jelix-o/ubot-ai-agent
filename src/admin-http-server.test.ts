@@ -91,6 +91,34 @@ async function rawGet(url: string, headers: Record<string, string> = {}): Promis
   });
 }
 
+async function rawPost(url: string, payload: unknown, headers: Record<string, string> = {}): Promise<{
+  statusCode: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+}> {
+  const body = Buffer.from(JSON.stringify(payload));
+  return await new Promise((resolve, reject) => {
+    const req = request(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(body.length),
+        ...headers,
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => resolve({
+        statusCode: res.statusCode ?? 0,
+        headers: res.headers,
+        body: Buffer.concat(chunks),
+      }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 test("admin http server protects APIs and serves authenticated dashboard data", async () => {
   activeCsrfToken = "";
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-http-"));
@@ -367,6 +395,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
         return { action: "duplicate", reason: "same preference in different wording" };
       }
       return { action: "new", reason: "different memory" };
+    },
+    async summarizeOverallMemberProfile(args) {
+      return `${args.userId} compacted profile from ${args.memories.length} memories.`;
     },
     async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
       listGroupMembersCalls += 1;
@@ -797,6 +828,28 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(skillsList.status, 200);
     assert.equal(((await skillsList.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "assistant"), true);
+
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(path.join(skillsDir, "youmi.json"), JSON.stringify({
+      id: "youmi",
+      name: "悠米·群聊人格操作系统",
+      systemPrompt: "Use Youmi persona.",
+      styleRules: ["固定为女生。"],
+      knowledge: ["QQ群聊导出来源。"],
+      temperature: 0.86,
+      maxContextTurns: 12,
+    }), "utf8"));
+
+    const refreshedSkillsList = await fetch(`${baseUrl}/api/skills`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(refreshedSkillsList.status, 200);
+    assert.equal(((await refreshedSkillsList.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "youmi"), true);
+
+    const refreshedSkillOptions = await fetch(`${baseUrl}/api/skill-options`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(refreshedSkillOptions.status, 200);
+    assert.equal(((await refreshedSkillOptions.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "youmi"), true);
 
     const createSkill = await fetch(`${baseUrl}/api/skills`, {
       method: "POST",
@@ -1967,6 +2020,60 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(invalidTargetDedupApplyBody.appliedCount, 0);
     assert.deepEqual(invalidTargetDedupApplyBody.skipped[0], { duplicateId: dedupBase.id, error: "target_disabled" });
 
+    const compactSourceOne = await groupMemoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "40001",
+      title: "Compaction source one",
+      content: "Member 40001 likes concise updates.",
+      createdAt: "2026-06-04T11:00:00.000Z",
+    });
+    const compactSourceTwo = await groupMemoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "40001",
+      title: "Compaction source two",
+      content: "Member 40001 prefers morning summaries.",
+      createdAt: "2026-06-04T11:01:00.000Z",
+    });
+    const compactUnrelated = await groupMemoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "40002",
+      title: "Unrelated profile",
+      content: "Member 40002 must not be removed.",
+      createdAt: "2026-06-04T11:02:00.000Z",
+    });
+    const summarizeMemories = await fetch(`${baseUrl}/api/memories/summarize`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ groupId: "67890", subjectUserId: "40001" }),
+    });
+    assert.equal(summarizeMemories.status, 200);
+    const summarizeMemoriesBody = await summarizeMemories.json() as {
+      deletedMemoryCount: number;
+      newMemoryId: string;
+      originalMemoryCount: number;
+      summary: string;
+    };
+    assert.equal(summarizeMemoriesBody.originalMemoryCount, 2);
+    assert.equal(summarizeMemoriesBody.deletedMemoryCount, 2);
+    assert.equal(summarizeMemoriesBody.summary, "40001 compacted profile from 2 memories.");
+    assert.equal(await groupMemoryStore.get(compactSourceOne.id), undefined);
+    assert.equal(await groupMemoryStore.get(compactSourceTwo.id), undefined);
+    assert.ok(await groupMemoryStore.get(compactUnrelated.id));
+    const compactedMemory = await groupMemoryStore.get(summarizeMemoriesBody.newMemoryId);
+    assert.equal(compactedMemory?.source, "profile_compaction");
+    assert.equal(compactedMemory?.subjectUserId, "40001");
+    assert.equal(compactedMemory?.enabled, true);
+    assert.equal(compactedMemory?.confidence, 1);
+    assert.deepEqual(
+      (await groupMemoryStore.list("67890")).filter((memory) =>
+        memory.type === "member_profile" && memory.subjectUserId === "40001",
+      ).map((memory) => memory.id),
+      [summarizeMemoriesBody.newMemoryId],
+    );
+
     const viewerLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2665,6 +2772,101 @@ test("overview global stats count all visible items beyond the recent page", asy
     assert.equal(body.recent.memories.length, 5);
     assert.equal(body.recent.candidates.length, 5);
     assert.equal(body.recent.knowledge.length, 5);
+  } finally {
+    service.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("memory profile compaction keeps old memories when summary generation fails", async () => {
+  activeCsrfToken = "";
+  const dir = await mkdtemp(path.join(os.tmpdir(), "admin-http-summary-fail-"));
+  const groupsPath = path.join(dir, "groups.json");
+  await import("node:fs/promises").then(({ writeFile }) =>
+    writeFile(
+      groupsPath,
+      JSON.stringify({
+        superAdminUserIds: ["99999"],
+        groups: [{
+          groupId: "67890",
+          currentSkillId: "assistant",
+          allowedSkillIds: ["assistant"],
+          switcherUserIds: ["99999"],
+          liveChatUserIds: [],
+        }],
+      }),
+      "utf8",
+    ),
+  );
+
+  const groupMemoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+  const firstMemory = await groupMemoryStore.create({
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "20001",
+    title: "Preference one",
+    content: "Tester likes concise updates.",
+  });
+  const secondMemory = await groupMemoryStore.create({
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "20001",
+    title: "Preference two",
+    content: "Tester prefers morning summaries.",
+  });
+  const candidateStore = new GroupMemoryCandidateStore(path.join(dir, "candidates.json"));
+  const service = new AdminHttpServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "http://127.0.0.1",
+    username: "admin",
+    password: "secret",
+    sessionSecret: "test-secret",
+    groupConfigService: new GroupConfigService(groupsPath),
+    groupMemoryStore,
+    groupMemoryCandidateService: new GroupMemoryCandidateService(
+      candidateStore,
+      groupMemoryStore,
+      { async extractGroupMemoryCandidates() { return []; } },
+    ),
+    knowledgeBaseStore: new KnowledgeBaseStore(path.join(dir, "knowledge.json")),
+    adminOperationLogService: new AdminOperationLogService(path.join(dir, "ops.jsonl")),
+    async summarizeOverallMemberProfile() {
+      return null;
+    },
+  });
+
+  try {
+    service.start();
+    const rawServer = (service as unknown as { server: { once(event: "listening", listener: () => void): void; address(): AddressInfo | null } }).server;
+    await new Promise<void>((resolve) => rawServer.once("listening", resolve));
+    const address = rawServer.address();
+    assert.ok(address);
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const login = await rawPost(`${baseUrl}/api/login`, { username: "admin", password: "secret" });
+    assert.equal(login.statusCode, 200);
+    activeCsrfToken = (JSON.parse(login.body.toString("utf8")) as { session: { csrfToken: string } }).session.csrfToken;
+    const cookie = Array.isArray(login.headers["set-cookie"])
+      ? login.headers["set-cookie"].join("; ")
+      : login.headers["set-cookie"] ?? null;
+
+    const summarize = await rawPost(
+      `${baseUrl}/api/memories/summarize`,
+      { groupId: "67890", subjectUserId: "20001" },
+      { Cookie: cookie ?? "", "X-CSRF-Token": activeCsrfToken },
+    );
+
+    assert.equal(summarize.statusCode, 500);
+    assert.deepEqual(JSON.parse(summarize.body.toString("utf8")), { error: "summarize_failed" });
+    assert.ok(await groupMemoryStore.get(firstMemory.id));
+    assert.ok(await groupMemoryStore.get(secondMemory.id));
+    assert.equal(
+      (await groupMemoryStore.list("67890")).filter((memory) =>
+        memory.type === "member_profile" && memory.subjectUserId === "20001",
+      ).length,
+      2,
+    );
   } finally {
     service.close();
     await rm(dir, { recursive: true, force: true });

@@ -6,8 +6,19 @@ type SentenceUnit = {
   hardBreakAfter: boolean;
 };
 
-export function formatReplyMessages(skill: SkillDefinition, replyText: string): string[] {
-  const behavior = getReplyBehaviorOptions(skill);
+export interface ReplyFormatBudget {
+  maxChars: number;
+  maxTotalChars: number;
+  maxMessages: number;
+  preferredMaxMessages: number;
+}
+
+export function formatReplyMessages(
+  skill: SkillDefinition,
+  replyText: string,
+  budget?: ReplyFormatBudget,
+): string[] {
+  const behavior = applyReplyFormatBudget(getReplyBehaviorOptions(skill), budget);
   const sanitized = sanitizeReply(
     replyText,
     behavior.stripAsterisks,
@@ -45,6 +56,23 @@ export function formatReplyMessages(skill: SkillDefinition, replyText: string): 
     maxChars,
     stripTerminalPunctuation,
   );
+}
+
+function applyReplyFormatBudget(
+  behavior: ReturnType<typeof getReplyBehaviorOptions>,
+  budget: ReplyFormatBudget | undefined,
+): ReturnType<typeof getReplyBehaviorOptions> {
+  if (!budget) {
+    return behavior;
+  }
+  const maxMessages = Math.max(1, Math.min(8, Math.floor(budget.maxMessages)));
+  return {
+    ...behavior,
+    maxChars: Math.max(20, Math.min(600, Math.floor(budget.maxChars))),
+    maxTotalChars: Math.max(20, Math.min(3_000, Math.floor(budget.maxTotalChars))),
+    maxMessages,
+    preferredMaxMessages: Math.max(1, Math.min(maxMessages, Math.floor(budget.preferredMaxMessages))),
+  };
 }
 
 function formatSingleSentenceMessages(

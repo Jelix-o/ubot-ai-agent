@@ -36,6 +36,16 @@ export interface SubjectCount {
   count: number;
 }
 
+export interface RelevantEnabledMemoryArgs {
+  groupId: string;
+  currentUserId: string;
+  relatedUserIds?: string[];
+  queryText?: string;
+  identityTerms?: string[];
+  limit?: number;
+  maxChars?: number;
+}
+
 export type GroupMemoryInput = {
   groupId: string;
   type: GroupMemoryType;
@@ -47,7 +57,12 @@ export type GroupMemoryInput = {
   enabled?: boolean;
   createdAt?: string;
   evidence?: GroupMemoryEvidence;
+  /** 覆盖链：新事实打上被覆盖旧记忆的 id（计划 §3 L1）。 */
+  supersedes?: string;
 };
+
+/** 覆盖链 + 时间衰减：检索时被 superseded 的旧记忆置信度降为 0.3（计划 §8-4）。 */
+const SUPERSEDED_CONFIDENCE_DECAY = 0.3;
 
 export class GroupMemoryStore {
   private cachedData?: GroupMemoryFile;
@@ -102,6 +117,58 @@ export class GroupMemoryStore {
       .map(cloneMemory);
   }
 
+  async listRelevantEnabled(args: RelevantEnabledMemoryArgs): Promise<GroupMemory[]> {
+    const data = await this.readData();
+    const limit = Math.max(1, Math.min(args.limit ?? 8, 20));
+    const maxChars = Math.max(200, Math.min(args.maxChars ?? 3_200, 12_000));
+    const relatedUserIds = new Set((args.relatedUserIds ?? []).filter(Boolean));
+    relatedUserIds.delete(args.currentUserId);
+    const terms = buildRelevanceTerms(args.queryText, args.identityTerms);
+    const supersededIds = new Set(
+      data.memories
+        .filter((memory) => memory.groupId === args.groupId && memory.supersededBy)
+        .map((memory) => memory.supersededBy),
+    );
+    const prioritized = data.memories
+      .filter((memory) => memory.groupId === args.groupId && memory.enabled)
+      .map((memory) => {
+        // 覆盖链 + 时间衰减（计划 §8-4）：被更新的记忆覆盖的旧记忆置信度降为 0.3。
+        const decayed = supersededIds.has(memory.id)
+          ? { ...memory, confidence: SUPERSEDED_CONFIDENCE_DECAY }
+          : memory;
+        return {
+          memory: decayed,
+          score: scoreRelevantMemory(decayed, args.currentUserId, relatedUserIds, terms),
+        };
+      })
+      .sort((left, right) =>
+        right.score - left.score || right.memory.updatedAt.localeCompare(left.memory.updatedAt),
+      )
+      .map((item) => item.memory);
+    const selected: GroupMemory[] = [];
+    const selectedIds = new Set<string>();
+    let usedChars = 0;
+
+    for (const memory of prioritized) {
+      if (selected.length >= limit || selectedIds.has(memory.id)) {
+        continue;
+      }
+      const remainingChars = maxChars - usedChars - memory.title.length;
+      if (remainingChars <= 0) {
+        continue;
+      }
+      const content = memory.content.slice(0, remainingChars);
+      if (!content) {
+        continue;
+      }
+      selected.push({ ...cloneMemory(memory), content });
+      selectedIds.add(memory.id);
+      usedChars += memory.title.length + content.length;
+    }
+
+    return selected;
+  }
+
   async countBySubject(groupId: string): Promise<SubjectCount[]> {
     const data = await this.readData();
     const counts = new Map<string, number>();
@@ -134,6 +201,16 @@ export class GroupMemoryStore {
     });
 
     data.memories.push(memory);
+
+    // 覆盖链：新事实入库时给被覆盖的旧记忆打 superseded_by 标记（不删除）。
+    if (input.supersedes) {
+      const superseded = data.memories.find((item) => item.id === input.supersedes);
+      if (superseded) {
+        superseded.supersededBy = memory.id;
+        superseded.updatedAt = now;
+      }
+    }
+
     await this.writeData(data);
     return cloneMemory(memory);
   }
@@ -170,6 +247,21 @@ export class GroupMemoryStore {
     return true;
   }
 
+  async removeMany(ids: string[]): Promise<number> {
+    const idSet = new Set(ids);
+    if (idSet.size === 0) {
+      return 0;
+    }
+    const data = await this.readData();
+    const beforeCount = data.memories.length;
+    data.memories = data.memories.filter((memory) => !idSet.has(memory.id));
+    const removedCount = beforeCount - data.memories.length;
+    if (removedCount > 0) {
+      await this.writeData(data);
+    }
+    return removedCount;
+  }
+
   private async readData(): Promise<GroupMemoryFile> {
     if (this.cachedData) {
       return this.cachedData;
@@ -192,6 +284,68 @@ export class GroupMemoryStore {
     this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
   }
+}
+
+function scoreRelevantMemory(
+  memory: GroupMemory,
+  currentUserId: string,
+  relatedUserIds: ReadonlySet<string>,
+  terms: string[],
+): number {
+  let score = 0;
+  if (memory.subjectUserId === currentUserId) {
+    score += 28;
+  } else if (memory.subjectUserId && relatedUserIds.has(memory.subjectUserId)) {
+    score += 24;
+  }
+  if (memory.type === "group_fact") {
+    score += 8;
+  }
+
+  const searchable = [memory.title, memory.content, memory.evidence?.summary]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  for (const term of terms) {
+    if (!searchable.includes(term)) {
+      continue;
+    }
+    score += Math.min(72, 12 + term.length * 4);
+  }
+  return score;
+}
+
+function buildRelevanceTerms(queryText: string | undefined, identityTerms: string[] | undefined): string[] {
+  const values = [queryText ?? "", ...(identityTerms ?? [])];
+  const terms = new Set<string>();
+  for (const value of values) {
+    const normalized = value.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      continue;
+    }
+    for (const token of normalized.match(/[\p{Script=Han}a-z0-9_]{2,32}/gu) ?? []) {
+      if (isMeaningfulMemoryTerm(token)) {
+        terms.add(token);
+      }
+      if (/^\p{Script=Han}+$/u.test(token)) {
+        for (let size = 2; size <= Math.min(8, token.length); size += 1) {
+          for (let start = 0; start <= token.length - size; start += 1) {
+            const fragment = token.slice(start, start + size);
+            if (isMeaningfulMemoryTerm(fragment)) {
+              terms.add(fragment);
+            }
+          }
+        }
+      }
+    }
+  }
+  return [...terms].sort((left, right) => right.length - left.length).slice(0, 80);
+}
+
+function isMeaningfulMemoryTerm(value: string): boolean {
+  return !new Set([
+    "什么", "怎么", "为啥", "为什么", "这个", "那个", "一下", "可以", "然后", "我们", "你们", "他们", "她们", "就是", "还是", "已经", "现在", "今天", "知道", "觉得", "帮我", "会仙",
+  ]).has(value);
 }
 
 function normalizeMemoryFile(data: Partial<GroupMemoryFile>): GroupMemoryFile {
@@ -224,6 +378,9 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,
     enabled: value.enabled !== false,
     ...(normalizeEvidence(value.evidence) ? { evidence: normalizeEvidence(value.evidence) } : {}),
+    ...(typeof value.supersededBy === "string" && value.supersededBy.trim()
+      ? { supersededBy: value.supersededBy.trim().slice(0, 80) }
+      : {}),
   };
 }
 

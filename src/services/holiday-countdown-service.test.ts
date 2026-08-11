@@ -81,6 +81,31 @@ test("holiday countdown uses compact workday format with model-generated quip", 
   }
 });
 
+test("holiday countdown skips ai quip when disabled", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "holiday-countdown-token-control-test-"));
+  const storePath = path.join(tempDir, "holiday-countdown-store.json");
+  let quipCalls = 0;
+
+  try {
+    const service = new HolidayCountdownService(
+      new HolidayCountdownStore(storePath),
+      {
+        async generateBroadcastQuip() {
+          quipCalls += 1;
+          return "unused ai quip";
+        },
+      } as never,
+    );
+
+    const message = await service.buildCountdownMessage(new Date("2026-04-15T09:00:00"), { useAiQuip: false });
+
+    assert.equal(quipCalls, 0);
+    assert.match(message, /2026/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("holiday countdown scheduler skips weekends", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "holiday-countdown-skip-weekend-test-"));
   const storePath = path.join(tempDir, "holiday-countdown-store.json");

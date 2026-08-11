@@ -60,12 +60,18 @@ export class DailyReportService {
     await this.store.clearAll();
   }
 
-  async buildReport(groupConfig: GroupBotConfig, now = new Date()): Promise<string> {
+  async buildReport(
+    groupConfig: GroupBotConfig,
+    now = new Date(),
+    options: { useAiQuip?: boolean } = {},
+  ): Promise<string> {
     const dayKey = toLocalDateKey(now);
     const messages = await this.store.getMessages(groupConfig.groupId, dayKey);
     const topUserCount = normalizeTopUserCount(groupConfig.dailyReportTopUserCount);
     const header = buildBroadcastHeader(now);
-    const quip = await this.aiService.generateBroadcastQuip("daily_report_evening");
+    const quip = options.useAiQuip === false
+      ? buildFallbackBroadcastQuip("daily_report_evening")
+      : await this.aiService.generateBroadcastQuip("daily_report_evening");
     const openingLine = `下班了，该回家了，别磨磨叽叽的，${quip}`;
 
     if (messages.length === 0) {
@@ -101,6 +107,7 @@ export class DailyReportService {
     groupId: string;
     request: ChatSummaryRequest;
     now?: Date;
+    useAiSummary?: boolean;
   }): Promise<string> {
     const now = args.now ?? new Date();
     const { dayKey, messages } = await this.loadMessagesForRequest(
@@ -114,18 +121,20 @@ export class DailyReportService {
     }
 
     const stats = buildChatSummaryStats(messages, args.request);
-    const aiSummary = await this.aiService.generateChatPeriodSummary({
-      dateLabel: dayKey,
-      periodLabel: args.request.label,
-      rangeLabel: stats.rangeLabel,
-      totalMessages: stats.totalMessages,
-      participantCount: stats.participantCount,
-      topUsers: stats.topUsers.map((user) => ({
-        userName: user.userName,
-        messageCount: user.messageCount,
-      })),
-      sampleMessages: pickSummarySamples(messages),
-    });
+    const aiSummary = args.useAiSummary === false
+      ? null
+      : await this.aiService.generateChatPeriodSummary({
+          dateLabel: dayKey,
+          periodLabel: args.request.label,
+          rangeLabel: stats.rangeLabel,
+          totalMessages: stats.totalMessages,
+          participantCount: stats.participantCount,
+          topUsers: stats.topUsers.map((user) => ({
+            userName: user.userName,
+            messageCount: user.messageCount,
+          })),
+          sampleMessages: pickSummarySamples(messages),
+        });
 
     if (aiSummary && isUsefulChatSummary(aiSummary)) {
       return aiSummary;
@@ -197,6 +206,12 @@ export class DailyReportService {
       messages,
     };
   }
+}
+
+function buildFallbackBroadcastQuip(context: string): string {
+  return context === "daily_report_evening"
+    ? "浠婂ぉ涔熻緵鑻︿簡"
+    : "璁板緱鐪嬩竴鐪?;"
 }
 
 type TopUserStat = {

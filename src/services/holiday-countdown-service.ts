@@ -53,9 +53,11 @@ export class HolidayCountdownService {
     await this.store.markSent(groupId, toLocalDateKey(now));
   }
 
-  async buildCountdownMessage(now = new Date()): Promise<string> {
+  async buildCountdownMessage(now = new Date(), options: { useAiQuip?: boolean } = {}): Promise<string> {
     const header = buildBroadcastHeader(now);
-    const quip = await this.aiService.generateBroadcastQuip("holiday_morning");
+    const quip = options.useAiQuip === false
+      ? "先看倒计时"
+      : await this.aiService.generateBroadcastQuip("holiday_morning");
     const countdownLines = buildHolidayCountdownLines(now);
 
     return [

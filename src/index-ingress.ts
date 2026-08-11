@@ -1,0 +1,298 @@
+import { loadConfig } from "./config.js";
+import { logError, logInfo, logWarn } from "./logger.js";
+import { NapCatReverseServer } from "./napcat-reverse-server.js";
+import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
+import { Metrics } from "./shared/metrics.js";
+import { IngressReadApi } from "./ingress-read-api.js";
+import { parseGroupMessage, extractTextFromMessage, extractImagesFromMessage } from "./utils/message-parser.js";
+import type { NapcatGroupMessageEvent } from "./types.js";
+import type { MessageReceipt, MessageTransport } from "./bot.js";
+
+/**
+ * Ingress process (plan section 1):
+ *   - Single process that owns the NapCat reverse WebSocket.
+ *   - Only does: validate → dedupe → deliver events (no business logic).
+ *   - Emits events into the shared `messages` table; workers poll per key.
+ *   - Also owns the Emitter half: polls the `outbox` table and sends replies
+ *     back through NapCat with idempotent reply_to (the worker cannot own the
+ *     reverse WS connection).
+ */
+
+const BACKLOG_MAX_AGE_MS = 60_000;
+const TOKEN_BUCKET_MAX_PER_WINDOW = 6;
+const TOKEN_BUCKET_WINDOW_MS = 10_000;
+const RETRACTED_TTL_MS = 24 * 60 * 60 * 1000;
+const BOT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const EMITTER_POLL_MS = 400;
+const EMITTER_BATCH_SIZE = 20;
+
+interface IngressOptions {
+  botQq: string;
+  dataDir: string;
+  metricsDir: string;
+}
+
+export class IngressApp {
+  private readonly sharedDb: SharedDb;
+  private readonly metrics: Metrics;
+  private readonly transport: MessageTransport;
+  private readonly emitterTimer: NodeJS.Timeout;
+  private readonly maintenanceTimer: NodeJS.Timeout;
+
+  constructor(
+    private readonly options: IngressOptions,
+    transport?: MessageTransport,
+  ) {
+    this.sharedDb = openSharedDb(this.options.dataDir);
+    this.metrics = new Metrics(this.options.metricsDir, {
+      processName: "ingress",
+      flushIntervalMs: 30_000,
+    });
+    this.transport = transport ?? new NapCatReverseServer({
+      host: loadConfig().napcatReverseWsHost,
+      port: loadConfig().napcatReverseWsPort,
+      path: loadConfig().napcatReverseWsPath,
+      accessToken: loadConfig().napcatAccessToken,
+    });
+
+    if (typeof this.transport.sendGroupMessage !== "function") {
+      throw new Error("Ingress requires a transport that can send group messages.");
+    }
+
+    // Subscribe to incoming group messages and recall notices.
+    const runtime = this.transport as MessageTransport & {
+      on?(event: string, listener: (payload: unknown) => void): unknown;
+    };
+    if (typeof runtime.on === "function") {
+      runtime.on("groupMessage", (event) => {
+        void this.handleGroupMessage(event as NapcatGroupMessageEvent);
+      });
+      runtime.on("groupRecall", (payload) => {
+        this.handleRecall(payload);
+      });
+    } else {
+      throw new Error("Ingress requires a transport that emits groupMessage events.");
+    }
+
+    this.emitterTimer = setInterval(() => {
+      void this.runEmitter();
+    }, EMITTER_POLL_MS);
+    this.emitterTimer.unref();
+
+    this.maintenanceTimer = setInterval(() => {
+      this.maintain();
+    }, 60_000);
+    this.maintenanceTimer.unref();
+
+    // Localhost read API so the worker can use NapCat read actions.
+    this.readApi = new IngressReadApi(this.transport, loadConfig().ingressReadApiPort);
+    this.readApi.start();
+  }
+
+  private readonly readApi: IngressReadApi;
+
+  async start(): Promise<void> {
+    const withStart = this.transport as MessageTransport & { start?: () => void };
+    if (typeof withStart.start === "function") {
+      withStart.start();
+    }
+    logInfo("Ingress started.", {
+      botQq: this.options.botQq,
+      dataDir: this.options.dataDir,
+    });
+  }
+
+  async stop(): Promise<void> {
+    clearInterval(this.emitterTimer);
+    clearInterval(this.maintenanceTimer);
+    this.metrics.stop();
+    this.readApi.close();
+    this.sharedDb.close();
+    const withClose = this.transport as MessageTransport & { close?: () => void };
+    if (typeof withClose.close === "function") {
+      withClose.close();
+    }
+    logInfo("Ingress stopped.");
+  }
+
+  // ---- message ingress ----
+
+  private async handleGroupMessage(event: NapcatGroupMessageEvent): Promise<void> {
+    const groupId = String(event.group_id);
+    const userId = String(event.user_id);
+    const selfId = String(event.self_id ?? this.options.botQq);
+    const msgId = String(event.message_id);
+
+    // Bot's own messages must never trigger the bot (plan section 8.2).
+    if (userId === this.options.botQq || selfId === this.options.botQq) {
+      this.metrics.inc("bot_self_trigger_blocked");
+      logInfo("Ignored bot self message.", { groupId, userId, msgId });
+      return;
+    }
+
+    // Empty messages.
+    const text = extractTextFromMessage(event.message);
+    const images = extractImagesFromMessage(event.message);
+    if (!text && images.length === 0) {
+      return;
+    }
+
+    // Backlog detection (plan section 8 Bonus): messages pushed after a
+    // reconnect that are older than 60s must not trigger replies.
+    const msgTimeMs = event.time ? event.time * 1000 : Date.now();
+    if (Date.now() - msgTimeMs > BACKLOG_MAX_AGE_MS) {
+      this.metrics.inc("backlog_detected");
+      logInfo("Ignored backlog message after reconnect.", {
+        groupId,
+        userId,
+        msgId,
+        ageMs: Date.now() - msgTimeMs,
+      });
+      return;
+    }
+
+    // Idempotent dedupe (plan section 2.1): (self_bot_id, group_id, msg_id).
+    const parsed = parseGroupMessage(event.message, this.options.botQq);
+    const createdAt = Date.now();
+    const rowId = this.sharedDb.insertMessage({
+      groupId,
+      userId,
+      selfId,
+      msgId,
+      msgTime: msgTimeMs,
+      text: parsed.text,
+      imagesJson: JSON.stringify(images),
+      replyTo: parsed.replyMessageId,
+      hasAtBot: parsed.hasAtBot,
+      isBotMsg: false,
+      createdAt,
+    });
+    if (rowId === 0) {
+      this.metrics.inc("dedup_hit");
+      logInfo("Dedup hit, skipping message.", { groupId, userId, msgId });
+      return;
+    }
+    this.metrics.inc("msg_ingress");
+
+    // Per-group token bucket (plan section 2.2): drop silently when a group
+    // exceeds 6 messages per 10s window.
+    const count = this.sharedDb.countMessagesSince(groupId, Date.now() - TOKEN_BUCKET_WINDOW_MS);
+    if (count > TOKEN_BUCKET_MAX_PER_WINDOW) {
+      this.metrics.inc("token_bucket_dropped");
+      logInfo("Token bucket exceeded, dropping message.", {
+        groupId,
+        userId,
+        msgId,
+        count,
+        windowMs: TOKEN_BUCKET_WINDOW_MS,
+      });
+      this.sharedDb.advanceWatermark(`token-bucket:${groupId}`, rowId);
+      return;
+    }
+
+    logInfo("Message ingested.", {
+      groupId,
+      userId,
+      msgId,
+      hasAtBot: parsed.hasAtBot,
+      textLength: parsed.text.length,
+      imageCount: images.length,
+      replyTo: parsed.replyMessageId,
+    });
+  }
+
+  /** Recall handling (plan section 8.1): mark (group_id, msg_id) so the worker never emits a reply for it. */
+  private handleRecall(payload: unknown): void {
+    const event = payload as { group_id?: number | string; message_id?: number | string };
+    const groupId = String(event.group_id ?? "");
+    const messageId = String(event.message_id ?? "");
+    if (!groupId || !messageId) {
+      return;
+    }
+    this.sharedDb.markRetracted(groupId, messageId, Date.now());
+    this.metrics.inc("recall_handled");
+    logInfo("Message recall registered.", { groupId, messageId });
+  }
+
+  // ---- emitter (sends worker replies through the reverse WS action channel) ----
+
+  private async runEmitter(): Promise<void> {
+    const rows = this.sharedDb.pollOutbox(EMITTER_BATCH_SIZE);
+    for (const row of rows) {
+      try {
+        const receipt = await this.deliver(row.kind, row.group_id, row.text);
+        this.sharedDb.markOutboxSent(row.id);
+        this.sharedDb.recordBotMessage(row.group_id, receipt?.messageId ?? row.reply_to ?? "", Date.now());
+        this.metrics.inc("outbox_sent");
+        logInfo("Outbox message sent.", {
+          outboxId: row.id,
+          kind: row.kind,
+          groupId: row.group_id,
+          replyTo: row.reply_to,
+          messageId: receipt?.messageId,
+        });
+      } catch (error) {
+        this.sharedDb.markOutboxFailed(row.id);
+        this.metrics.inc("outbox_failed");
+        logWarn("Outbox send failed.", {
+          outboxId: row.id,
+          kind: row.kind,
+          groupId: row.group_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  private async deliver(kind: string, groupId: string, text: string): Promise<MessageReceipt | undefined> {
+    let receipt: MessageReceipt | void;
+    if (kind === "record") {
+      receipt = await this.transport.sendGroupRecord(groupId, text);
+    } else if (kind === "airecord") {
+      receipt = await this.transport.sendGroupAiRecord(groupId, text);
+    } else {
+      receipt = await this.transport.sendGroupMessage(groupId, text);
+    }
+    return receipt ?? undefined;
+  }
+
+  private maintain(): void {
+    const now = Date.now();
+    this.sharedDb.pruneRetracted(now - RETRACTED_TTL_MS);
+    this.sharedDb.pruneBotMessages(now - BOT_MESSAGE_TTL_MS);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref();
+  });
+}
+
+export async function main(): Promise<void> {
+  const config = loadConfig();
+  const app = new IngressApp({
+    botQq: config.botQq,
+    dataDir: config.dataDir,
+    metricsDir: `${config.dataDir}${config.dataDir.endsWith("/") || config.dataDir.endsWith("\\") ? "" : "/"}shared/metrics`,
+  });
+  await app.start();
+
+  const shutdown = async () => {
+    logInfo("Ingress shutting down...");
+    await app.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+if (process.argv[1] && process.argv[1].endsWith("index-ingress")) {
+  void main().catch((error) => {
+    logError("Ingress startup failed.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exitCode = 1;
+  });
+}
