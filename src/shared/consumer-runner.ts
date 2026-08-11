@@ -108,9 +108,17 @@ export class ConsumerRunner {
           this.db.advanceWatermark(this.consumerKey, row.id);
           continue;
         }
+        // 拉取即推进水位：LLM 处理耗时 5-10s，若等 done() 才推进，
+        // 300ms 轮询会把同一条消息重复拉入队列 → 同消息处理 N 次 → 刷屏
+        // （生产事故："在吗"被回复 15 次）。失败降级由 LLM 层负责，
+        // 消息层绝不重投。
+        this.db.advanceWatermark(this.consumerKey, row.id);
         const state = this.keys.get(key) ?? (this.keys.set(key, { queue: [], backoffUntil: 0 }), this.keys.get(key)!);
-        state.queue.push(row);
-        queuedAny = true;
+        // 防重复入队（历史副本兜底）：同一消息已在队列中则跳过。
+        if (!state.queue.some((queued) => queued.id === row.id)) {
+          state.queue.push(row);
+          queuedAny = true;
+        }
       }
       if (queuedAny) {
         this.dispatchAll();
@@ -159,7 +167,12 @@ export class ConsumerRunner {
 
   private async runTask(key: string, message: IngressMessageRowLike): Promise<void> {
     const taskStartedAt = Date.now();
+    let finished = false;
     const done = async () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
       const state = this.keys.get(key);
       if (state && state.queue[0]?.id === message.id) {
         state.queue.shift();
@@ -175,12 +188,17 @@ export class ConsumerRunner {
         durationMs: Date.now() - taskStartedAt,
       });
     } catch (error) {
-      logError("Consumer task failed; will retry after backoff.", {
+      // 失败也必须推进水位：否则同一条消息每轮 poll 都会被重新拉入队列，
+      // 无限重投 → 同一消息被处理 N 次 → 刷屏（生产事故：LLM 失败时
+      // "在吗"被回复 15 次）。LLM 层的重试由 bot 内部处理（熔断/降级），
+      // 消息层不做无限重投。done() 幂等，handler 内部已调用过也无副作用。
+      logError("Consumer task failed; advancing watermark to avoid replay loop.", {
         consumer: this.consumerKey,
         key,
         messageId: message.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      await done();
       const state = this.keys.get(key);
       if (state) {
         state.backoffUntil = Date.now() + this.nextBackoff(state);

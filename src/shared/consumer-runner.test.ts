@@ -72,14 +72,14 @@ test("ConsumerRunner processes messages per key serially and advances watermarks
   db.close();
 });
 
-test("ConsumerRunner retries failed keys with backoff but keeps other keys moving", async (t) => {
+test("ConsumerRunner does not replay failed messages but keeps other keys moving", async (t) => {
   const db = new SharedDb(tempDb(t));
   const attempts: string[] = [];
   const runner = new ConsumerRunner(db, "test-worker", {
     keyOf: (message) => `${message.group_id}:${message.user_id}`,
     handler: async (message, done) => {
       attempts.push(message.msg_id);
-      if (message.msg_id === "fail" && attempts.filter((id) => id === "fail").length < 2) {
+      if (message.msg_id === "fail") {
         throw new Error("boom");
       }
       await done();
@@ -93,13 +93,14 @@ test("ConsumerRunner retries failed keys with backoff but keeps other keys movin
   insert(db, "10001", "20001", "fail", 1000);
   insert(db, "10001", "20002", "ok", 1500);
 
-  // The other key must complete while the failing key is backed off.
+  // The other key completes; the failing message is consumed exactly once
+  // (watermark advanced at poll time — no replay loop, production incident fix).
   await waitFor(() => attempts.includes("ok"));
-  // The failing message is retried after backoff and finally succeeds.
-  await waitFor(() => attempts.filter((id) => id === "fail").length >= 2);
   await waitFor(() => db.pollMessages("test-worker", 100).length === 0);
 
   runner.stop();
+  assert.equal(attempts.filter((id) => id === "fail").length, 1, "failed message must not be replayed");
+  assert.ok(attempts.includes("ok"), "other key must still be processed");
   db.close();
 });
 
