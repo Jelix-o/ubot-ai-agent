@@ -120,13 +120,15 @@ export class IngressApp {
   private async handleGroupMessage(event: NapcatGroupMessageEvent): Promise<void> {
     const groupId = String(event.group_id);
     const userId = String(event.user_id);
-    const selfId = String(event.self_id ?? this.options.botQq);
+    // self_id 缺失时不能 fallback 到 botQq：那会让 `selfId === botQq` 恒真，
+    // 所有消息都被误判为 bot 自己而忽略（生产事故：@机器人无回复）。
+    const selfId = event.self_id !== undefined ? String(event.self_id) : "";
     const msgId = String(event.message_id);
 
     // Bot's own messages must never trigger the bot (plan section 8.2).
-    if (userId === this.options.botQq || selfId === this.options.botQq) {
+    if (userId === this.options.botQq || (selfId && selfId === this.options.botQq)) {
       this.metrics.inc("bot_self_trigger_blocked");
-      logInfo("Ignored bot self message.", { groupId, userId, msgId });
+      logInfo("Ignored bot self message.", { groupId, userId, msgId, selfId });
       return;
     }
 
@@ -152,12 +154,13 @@ export class IngressApp {
     }
 
     // Idempotent dedupe (plan section 2.1): (self_bot_id, group_id, msg_id).
+    // self_id 缺失时用 botQq 作为 dedup key 的一部分（保证幂等键稳定）。
     const parsed = parseGroupMessage(event.message, this.options.botQq);
     const createdAt = Date.now();
     const rowId = this.sharedDb.insertMessage({
       groupId,
       userId,
-      selfId,
+      selfId: selfId || this.options.botQq,
       msgId,
       msgTime: msgTimeMs,
       text: parsed.text,
