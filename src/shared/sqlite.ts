@@ -127,6 +127,15 @@ export class SharedDb {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA synchronous = NORMAL");
     this.db.exec(SCHEMA);
+    this.migrateSchema();
+  }
+
+  /** 轻量 schema 迁移：旧库缺列时补齐（CREATE TABLE IF NOT EXISTS 不会改已有表）。 */
+  private migrateSchema(): void {
+    const outboxCols = this.db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+    if (!outboxCols.some((col) => col.name === "updated_at")) {
+      this.db.exec("ALTER TABLE outbox ADD COLUMN updated_at INTEGER");
+    }
   }
 
   close(): void {
