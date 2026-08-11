@@ -1800,7 +1800,7 @@ test("keeps personal context separate across users without a reply anchor", asyn
   assert.equal(conversationStore.turnsByKey["67890:20002"]?.length, 2);
 });
 
-test("puts successful real-time lookup data in the reply context and appends source metadata", async () => {
+test("puts successful real-time lookup data in the reply context without source footer", async () => {
   const realtimeLookupService = new FakeRealtimeLookupService({
     kind: "stock",
     status: "ok",
@@ -1820,8 +1820,8 @@ test("puts successful real-time lookup data in the reply context and appends sou
 
   assert.deepEqual(realtimeLookupService.calls, [{ text: "分析一下今天 A 股表现" }]);
   assert.equal(aiService.calls[0]?.identityContext?.realtimeLookup?.kind, "stock");
-  assert.match(transport.sent.map((item) => item.text).join("\n"), /实时数据/);
-  assert.match(transport.sent.map((item) => item.text).join("\n"), /Tencent Finance/);
+  assert.doesNotMatch(transport.sent.map((item) => item.text).join("\n"), /实时数据/);
+  assert.doesNotMatch(transport.sent.map((item) => item.text).join("\n"), /Tencent Finance/);
 });
 
 test("does not invoke real-time lookup when its group switch is disabled", async () => {

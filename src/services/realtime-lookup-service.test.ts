@@ -72,7 +72,7 @@ test("weather lookup resolves an explicit city, formats forecast context, and ca
   assert.equal(first?.sources[0]?.name, "Open-Meteo");
   assert.equal(second?.status, "ok");
   assert.equal(requestedUrls.length, 2);
-  assert.match(formatRealtimeLookupFooter(first), /Open-Meteo/);
+  assert.equal(formatRealtimeLookupFooter(first), "", "realtime footer is disabled per user request");
 });
 
 test("weather lookup falls back to Open-Meteo geocoding when Nominatim is unavailable", async () => {

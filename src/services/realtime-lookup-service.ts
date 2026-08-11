@@ -476,12 +476,10 @@ export function detectRealtimeIntent(text: string): RealtimeIntent | undefined {
 }
 
 export function formatRealtimeLookupFooter(result: RealtimeLookupResult | undefined): string {
-  if (!result || result.status !== "ok") {
-    return "";
-  }
-  const timestamp = formatShanghaiTime(result.dataAt ?? result.queriedAt);
-  const sources = result.sources.slice(0, 3).map((source) => source.name).join(" / ");
-  return `\n\n[实时数据：${timestamp}；来源：${sources}]`;
+  // 实时数据尾注已停用（用户要求不显示 "[实时数据：...；来源：...]"）。
+  // 实时查询结果仍会注入 prompt（L4 层），只是不在回复里追加来源行。
+  void result;
+  return "";
 }
 
 function cacheTtl(intent: RealtimeIntent): number {
