@@ -392,6 +392,7 @@ function buildBotApp(
       // The worker counts cancelled tasks via its own metrics instance; this
       // hook is invoked by the bot when a cancelled task suppresses its reply.
     },
+    false, // worker 不发送启动运维告警（多进程下由 ingress 感知连接状态）
   );
 }
 

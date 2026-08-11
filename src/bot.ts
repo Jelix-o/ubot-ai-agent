@@ -325,6 +325,7 @@ export class BotApplication {
     private llmGate?: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>,
     private readonly imagePipeline?: Pick<ImagePipeline, "resolveForVision">,
     private cancelledReplyHook?: () => void,
+    private startupAlertsEnabled = true,
   ) {}
 
   start(): void {
@@ -337,7 +338,9 @@ export class BotApplication {
     }, MAINTENANCE_TICK_MS);
     this.maintenanceTimer.unref();
 
-    void this.runOpsAlertTick({ includeStartup: true });
+    if (this.startupAlertsEnabled !== false) {
+      void this.runOpsAlertTick({ includeStartup: true });
+    }
   }
 
   async stop(): Promise<void> {
