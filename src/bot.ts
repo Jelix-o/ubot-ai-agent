@@ -858,6 +858,11 @@ export class BotApplication {
       const groups = await this.getEnabledGroupConfigs();
 
       for (const groupConfig of groups) {
+        // 闭嘴时实时对话/嘴臭模式不触发（生产事故：botMuted 只拦了 @ 消息，
+        // 实时对话 tick 绕过闭嘴导致乱回复）。
+        if (groupConfig.botMuted === true) {
+          continue;
+        }
         const trackedUserIds = getActiveChatUserIds(groupConfig);
         if (trackedUserIds.length === 0) {
           continue;

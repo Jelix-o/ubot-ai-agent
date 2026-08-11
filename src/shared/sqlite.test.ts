@@ -99,20 +99,33 @@ test("retracted registry marks and prunes", (t) => {
   db.close();
 });
 
-test("outbox enqueues, polls, and marks sent/failed", (t) => {
+test("outbox claims atomically to prevent double-send", (t) => {
   const db = new SharedDb(tempDb(t));
   const id = db.enqueueOutbox("10001", "m1", "reply text");
   assert.ok(id > 0);
-  const rows = db.pollOutbox(10);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.text, "reply text");
-  assert.equal(rows[0]!.reply_to, "m1");
-  db.markOutboxSent(rows[0]!.id);
-  assert.equal(db.pollOutbox(10).length, 0);
 
+  // First claim flips the row to 'sending' and returns it.
+  const claimed = db.claimOutbox(10);
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0]!.text, "reply text");
+  assert.equal(claimed[0]!.reply_to, "m1");
+
+  // A second claim must NOT return the same row (it is 'sending', not expired).
+  assert.equal(db.claimOutbox(10).length, 0, "sending row must not be re-claimed");
+
+  // After the sending timeout elapses, the row is reclaimed (sender may have died).
+  const reclaimed = db.claimOutbox(10, Date.now() + 11_000);
+  assert.equal(reclaimed.length, 1, "stale sending row must be reclaimed");
+
+  // Mark sent → never claimed again.
+  db.markOutboxSent(reclaimed[0]!.id);
+  assert.equal(db.claimOutbox(10, Date.now() + 60_000).length, 0);
+
+  // Failed with retry_after → reclaimed only after the backoff.
   const failed = db.enqueueOutbox("10001", null, "another");
-  db.markOutboxFailed(failed);
-  assert.equal(db.pollOutbox(10).length, 0);
+  db.markOutboxFailed(failed, 2_000);
+  assert.equal(db.claimOutbox(10).length, 0, "failed row waits for retry_after");
+  assert.equal(db.claimOutbox(10, Date.now() + 3_000).length, 1, "failed row retries after backoff");
   db.close();
 });
 

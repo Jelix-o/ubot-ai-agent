@@ -282,6 +282,8 @@ export class WorkerApp {
   }
 
   start(): void {
+    // 清表兜底：水位超过 messages 最大 id 时重置（生产事故根因之一）。
+    this.sharedDb.resetWatermarkIfStale(this.options.consumerKey);
     logInfo("Worker started.", {
       consumerKey: this.options.consumerKey,
       dataDir: this.options.dataDir,

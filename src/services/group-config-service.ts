@@ -41,7 +41,9 @@ export type GroupConfigUpdateInput = Partial<Pick<
 
 export class GroupConfigService {
   private cachedConfig?: { data: GroupsConfigFile; loadedAt: number };
-  private readonly cacheTtlMs = 30_000;
+  // 跨进程生效：admin/worker 各自缓存，TTL 3s 保证后台改动 3 秒内收敛
+  // （生产事故：30s 缓存导致后台"闭嘴"不生效）。
+  private readonly cacheTtlMs = 3_000;
 
   constructor(private readonly filePath: string) {}
 

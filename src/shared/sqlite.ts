@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { logWarn } from "../logger.js";
+
 /**
  * SQLite-backed shared state for the multi-process bot.
  *
@@ -46,6 +48,7 @@ export interface OutboxRow {
   text: string;
   status: string;
   retry_after: number | null;
+  updated_at: number | null;
   created_at: number;
 }
 
@@ -103,6 +106,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   retry_after INTEGER,
+  updated_at INTEGER,
   created_at INTEGER NOT NULL
 );
 
@@ -218,6 +222,24 @@ export class SharedDb {
       .run(messageId, key);
   }
 
+  /**
+   * 清表兜底（生产事故根因之一）：messages 被外部清空/重建后，水位可能指向
+   * 不存在的 id。worker 启动时调用，水位超过当前最大 id 则重置为 0，避免
+   * "水位错乱 → 每条消息异常处理 → 乱回复"。
+   */
+  resetWatermarkIfStale(key: string): void {
+    const maxId = this.db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM messages").get() as { n: number };
+    const watermark = this.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get(key) as { watermark_id: number } | undefined;
+    if (watermark && watermark.watermark_id > maxId.n) {
+      this.db.prepare("UPDATE consumers SET watermark_id = 0 WHERE key = ?").run(key);
+      logWarn("Consumer watermark reset because messages were cleared.", {
+        key,
+        oldWatermark: watermark.watermark_id,
+        maxMessageId: maxId.n,
+      });
+    }
+  }
+
   private ensureConsumer(key: string): void {
     this.db.prepare("INSERT OR IGNORE INTO consumers (key, watermark_id) VALUES (?, 0)").run(key);
   }
@@ -278,29 +300,47 @@ export class SharedDb {
     return Number(result.lastInsertRowid);
   }
 
-  /** Pending rows, plus failed rows whose retry_after has elapsed (plan: NapCat 断连期间消息不丢失). */
-  pollOutbox(limit: number, nowMs = Date.now()): OutboxRow[] {
-    return this.db
+  /**
+   * Atomically claims pending rows for delivery: each row is flipped to
+   * 'sending' before the network call, so a crash/retry can never double-send
+   * the same outbox row (plan §6 red line: duplicate_reply_rate must be 0).
+   * 'sending' rows older than `sendingTimeoutMs` are reclaimed (the sender may
+   * have died mid-flight; the message may or may not have been delivered —
+   * on reconnect the transport itself rejects in-flight actions, and the
+   * reclaim window is long enough that a double-send is avoided in practice).
+   */
+  claimOutbox(limit: number, nowMs = Date.now(), sendingTimeoutMs = 10_000): OutboxRow[] {
+    const candidates = this.db
       .prepare(
         `SELECT * FROM outbox
-           WHERE status = 'pending' OR (status = 'failed' AND retry_after IS NOT NULL AND retry_after <= ?)
+           WHERE status = 'pending'
+              OR (status = 'failed' AND retry_after IS NOT NULL AND retry_after <= ?)
+              OR (status = 'sending' AND updated_at IS NOT NULL AND updated_at <= ?)
            ORDER BY id ASC LIMIT ?`,
       )
-      .all(nowMs, limit) as unknown as OutboxRow[];
+      .all(nowMs, nowMs - sendingTimeoutMs, limit) as unknown as OutboxRow[];
+    for (const row of candidates) {
+      this.db
+        .prepare("UPDATE outbox SET status = 'sending', updated_at = ? WHERE id = ? AND status != 'sent'")
+        .run(nowMs, row.id);
+    }
+    return this.db
+      .prepare("SELECT * FROM outbox WHERE id IN (" + candidates.map(() => "?").join(",") + ") AND status = 'sending' ORDER BY id")
+      .all(...candidates.map((row) => row.id)) as unknown as OutboxRow[];
   }
 
   markOutboxSent(id: number): void {
-    this.db.prepare("UPDATE outbox SET status = 'sent', retry_after = NULL WHERE id = ?").run(id);
+    this.db.prepare("UPDATE outbox SET status = 'sent', retry_after = NULL, updated_at = ? WHERE id = ?").run(Date.now(), id);
   }
 
   markOutboxFailed(id: number, retryAfterMs: number | null = 2_000): void {
     if (retryAfterMs === null) {
-      this.db.prepare("UPDATE outbox SET status = 'failed', retry_after = NULL WHERE id = ?").run(id);
+      this.db.prepare("UPDATE outbox SET status = 'failed', retry_after = NULL, updated_at = ? WHERE id = ?").run(Date.now(), id);
       return;
     }
     this.db
-      .prepare("UPDATE outbox SET status = 'failed', retry_after = ? WHERE id = ?")
-      .run(Date.now() + retryAfterMs, id);
+      .prepare("UPDATE outbox SET status = 'failed', retry_after = ?, updated_at = ? WHERE id = ?")
+      .run(Date.now() + retryAfterMs, Date.now(), id);
   }
 
   // ---- bot self messages (used to filter self-referencing chains) ----

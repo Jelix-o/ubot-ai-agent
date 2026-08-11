@@ -217,7 +217,8 @@ export class IngressApp {
   // ---- emitter (sends worker replies through the reverse WS action channel) ----
 
   private async runEmitter(): Promise<void> {
-    const rows = this.sharedDb.pollOutbox(EMITTER_BATCH_SIZE);
+    // 原子领取：每行先标记 sending，杜绝同一 outbox 双投递（计划 §6 红线）。
+    const rows = this.sharedDb.claimOutbox(EMITTER_BATCH_SIZE);
     for (const row of rows) {
       try {
         const receipt = await this.deliver(row.kind, row.group_id, row.text);
