@@ -5,6 +5,12 @@ import type { AiService } from "./services/ai-service.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { ConversationStore } from "./services/conversation-store.js";
+import type {
+  ConversationContextTurn,
+  ConversationContextRepository,
+  ConversationRoute,
+} from "./services/conversation-context-repository.js";
+import type { ConversationContextRouter } from "./services/conversation-context-router.js";
 import type { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { getYesterdayDateKey } from "./services/daily-profile-review-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
@@ -47,7 +53,6 @@ import type {
   NapcatGroupMessageEvent,
   ReplyModelMode,
   RealtimeLookupResult,
-  RecentGroupMessage,
   ReferencedMessage,
   SharedConversationTopic,
   SkillDefinition,
@@ -214,6 +219,13 @@ class ImageInputUnavailableError extends Error {
   }
 }
 
+class CausalContextPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super("Failed to atomically persist the causal assistant reply", { cause });
+    this.name = "CausalContextPersistenceError";
+  }
+}
+
 interface ProfileTargetResolution {
   status: "ok" | "ambiguous" | "not_found";
   userId?: string;
@@ -240,6 +252,11 @@ export interface MessageTransport {
 }
 
 export interface MessageReceipt {
+  /** Durable internal delivery id, for example outbox:42. */
+  deliveryId?: string;
+  /** Real QQ/NapCat message id. */
+  platformMessageId?: string;
+  /** @deprecated Use platformMessageId. Kept for third-party transports during rollout. */
   messageId?: string;
 }
 
@@ -326,6 +343,8 @@ export class BotApplication {
     private readonly imagePipeline?: Pick<ImagePipeline, "resolveForVision">,
     private cancelledReplyHook?: () => void,
     private startupAlertsEnabled = true,
+    private readonly conversationContextRepository?: ConversationContextRepository,
+    private readonly conversationContextRouter?: ConversationContextRouter,
   ) {}
 
   start(): void {
@@ -424,7 +443,11 @@ export class BotApplication {
     }
   }
 
-  async handleGroupMessage(event: NapcatGroupMessageEvent, signal?: AbortSignal): Promise<void> {
+  async handleGroupMessage(
+    event: NapcatGroupMessageEvent,
+    signal?: AbortSignal,
+    conversationRoute?: ConversationRoute,
+  ): Promise<void> {
     const groupId = String(event.group_id);
     const userId = String(event.user_id);
 
@@ -664,6 +687,8 @@ export class BotApplication {
           "singing",
           [],
           messageContext,
+          false,
+          conversationRoute,
         );
       });
       return;
@@ -703,6 +728,8 @@ export class BotApplication {
           "voice",
           [],
           messageContext,
+          false,
+          conversationRoute,
         );
       });
       return;
@@ -764,6 +791,8 @@ export class BotApplication {
           resolveDefaultReplyMode(groupConfig),
           keywordMentionUserIds,
           messageContext,
+          false,
+          conversationRoute,
         );
       });
       return;
@@ -794,7 +823,7 @@ export class BotApplication {
         [],
         messageContext,
         true,
-        undefined,
+        conversationRoute,
         signal,
       );
     });
@@ -806,6 +835,18 @@ export class BotApplication {
 
   getBotQq(): string {
     return this.botQq;
+  }
+
+  /** Read-only trigger check used by the worker before it persists a route. */
+  async shouldRouteConversation(groupId: string, text: string, hasAtBot: boolean): Promise<boolean> {
+    if (hasAtBot || /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(text.trim())) {
+      return true;
+    }
+    const groupConfig = await this.groupConfigService.getGroup(groupId);
+    if (!groupConfig || groupConfig.enabled === false || groupConfig.botMuted === true) {
+      return false;
+    }
+    return this.shouldTriggerKeyword(groupConfig, text, false, text);
   }
 
   /** Injects the LLM gate (semaphore + circuit breaker) into the reply path. */
@@ -2309,7 +2350,7 @@ export class BotApplication {
 
     const targetInput = match[1]?.trim() || mentionedUserId;
     if (!targetInput) {
-      await this.conversationStore.clearUser(groupId, userId);
+      await this.clearUserConversationContext(groupId, userId);
       await this.sendText(groupId, "已清空你在当前群的对话上下文");
       return;
     }
@@ -2320,7 +2361,7 @@ export class BotApplication {
     }
 
     if (targetInput === "全部" || targetInput.toLowerCase() === "all") {
-      await this.conversationStore.clearGroup(groupId);
+      await this.clearGroupConversationContext(groupId);
       await this.logAdminOperation(groupId, userId, "清空对话", "全部");
       await this.sendText(groupId, "已清空当前群全部成员的对话上下文");
       return;
@@ -2332,7 +2373,7 @@ export class BotApplication {
       return;
     }
 
-    await this.conversationStore.clearUser(groupId, targetQq);
+    await this.clearUserConversationContext(groupId, targetQq);
     await this.logAdminOperation(groupId, userId, "清空对话", targetQq);
     await this.sendText(groupId, `已清空 ${targetQq} 在当前群的对话上下文`);
   }
@@ -2349,7 +2390,7 @@ export class BotApplication {
       return;
     }
 
-    await this.conversationStore.clearGroup(groupId);
+    await this.clearGroupConversationContext(groupId);
     await this.logAdminOperation(groupId, userId, "清空对话", "全部");
     await this.sendText(groupId, "已清空当前群全部成员的对话上下文");
   }
@@ -2363,28 +2404,69 @@ export class BotApplication {
     prefixMentionUserIds: string[] = [],
     messageContext: MessageInteractionContext = { interactionTargets: [] },
     optionsOrAllowControlledMention: ConversationOptions | boolean = false,
-    topicId?: string,
+    conversationRoute?: ConversationRoute,
     signal?: AbortSignal,
   ): Promise<void> {
     const conversationStartedAt = Date.now();
+    if (!conversationRoute && this.conversationContextRouter && messageContext.sourceMessageId) {
+      const sourceRowId = this.conversationContextRepository?.getSourceRowId(
+        groupConfig.groupId,
+        messageContext.sourceMessageId,
+      );
+      if (sourceRowId !== undefined) {
+        conversationRoute = this.conversationContextRouter.resolve({
+          sourceRowId,
+          groupId: groupConfig.groupId,
+          userId,
+          sourceMessageId: messageContext.sourceMessageId,
+          replyToMessageId: messageContext.replyMessageId,
+          text: userInput,
+          hasImages: images.length > 0,
+        });
+      } else {
+        logWarn("Conversation source row is missing; using isolated context.", {
+          groupId: groupConfig.groupId,
+          sourceMessageId: messageContext.sourceMessageId,
+        });
+      }
+    }
     const baseOptions: ConversationOptions = typeof optionsOrAllowControlledMention === "boolean"
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
     const skill = await this.resolveSkill(groupConfig);
-    const sharedTopicStore = this.conversationStore as Partial<Pick<ConversationStore, "getSharedTopic">>;
-    const sharedTopic = sharedTopicStore.getSharedTopic
-      ? await sharedTopicStore.getSharedTopic(groupConfig.groupId, messageContext.replyMessageId)
-      : undefined;
-    const history = sharedTopic
-      ? toSharedTopicHistory(sharedTopic, groupConfig)
-      : await this.conversationStore.getTurns(groupConfig.groupId, userId);
+    // Fail closed: routed production messages read only their causal branch. The
+    // legacy JSON store remains a compatibility path until the cutover command
+    // clears it, but is never used when a route was supplied.
+    let causalHistory: ConversationContextTurn[] = [];
+    if (conversationRoute && this.conversationContextRepository) {
+      try {
+        // Resolve the current parent from SQLite at execution time. The worker
+        // may have inserted an earlier assistant turn after this route object
+        // was queued, and the persisted causal chain is authoritative.
+        causalHistory = this.conversationContextRepository.getCausalTurnsBeforeTurn(
+          conversationRoute.branchId,
+          conversationRoute.turnId,
+        );
+      } catch (error) {
+        logWarn("Conversation history read failed closed; using current message only.", {
+          topicId: conversationRoute.topicId,
+          branchId: conversationRoute.branchId,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
+      }
+    }
+    const history = causalHistory
+      .map((turn): ConversationTurn => ({
+        groupId: groupConfig.groupId,
+        role: turn.role,
+        content: turn.role === "user"
+          ? formatCausalUserTurn(turn.userId, turn.content, groupConfig)
+          : turn.content,
+        ...(turn.userId ? { userId: turn.userId } : {}),
+        timestamp: new Date(turn.createdAt).toISOString(),
+      }));
     const normalizedUserInput = userInput.trim() || "[图片消息]";
-    const recentGroupMessages = skill.id === "huixian"
-      ? selectRecentGroupMessages(this.groupTranscriptService.getRecentMessages(groupConfig.groupId, {
-          excludeMessageId: messageContext.sourceMessageId,
-        }))
-      : [];
     // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
     const atmosphere = this.atmosphereSummarizer
       ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
@@ -2394,7 +2476,6 @@ export class BotApplication {
           }),
         ))
       : undefined;
-    const recentGroupMessageChars = recentGroupMessages.reduce((total, message) => total + message.text.length, 0);
     const replyFormatBudget = resolveHuixianReplyFormatBudget(skill, normalizedUserInput);
     const replyLengthInstruction = replyFormatBudget
       ? buildHuixianReplyLengthInstruction(replyFormatBudget)
@@ -2487,7 +2568,9 @@ export class BotApplication {
         imageCount: allImages.length,
         tier: "image_unavailable",
       });
-      await this.sendText(groupConfig.groupId, messageForAiFailure(error, "image_input"));
+      const failureText = messageForAiFailure(error, "image_input");
+      const failureReceipt = await this.sendTextWithContext(groupConfig.groupId, failureText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, failureText, failureReceipt ? [failureReceipt] : []);
       return;
     }
     const storedUserContent =
@@ -2509,7 +2592,6 @@ export class BotApplication {
       ...(messageContext.replyContext ? { replyContext: messageContext.replyContext } : {}),
       ...(realtimeLookup ? { realtimeLookup } : {}),
       ...(groupRuntimeContext ? { groupRuntimeContext } : {}),
-      ...(recentGroupMessages.length > 0 ? { recentGroupMessages } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
     const replyArgs = {
@@ -2568,39 +2650,23 @@ export class BotApplication {
         },
       ];
 
-      await this.conversationStore.appendDialogue(
-        groupConfig.groupId,
-        userId,
-        turns,
-        skill.maxContextTurns * 2,
-      );
-
       if (replyMode === "voice" || replyMode === "singing") {
-        const botMessageIds = await this.handleVoiceReply(
+        const receipts = await this.handleVoiceReply(
           groupConfig.groupId,
           skill,
           replyText,
           replyMode,
           replyFormatBudget,
+          conversationRoute,
         );
-        await this.recordSharedTopicDialogue({
-          groupId: groupConfig.groupId,
-          topicId: sharedTopic?.id,
-          userId,
-          userContent: storedUserContent,
-          senderCard: messageContext.senderCard,
-          senderNickname: messageContext.senderNickname,
-          assistantContent: replyText,
-          sourceMessageId: messageContext.sourceMessageId,
-          botMessageIds,
-        });
+        await this.persistAssistantContext(conversationRoute, replyText, receipts);
         logInfo(replyMode === "singing" ? "Sent AI singing voice reply." : "Sent AI voice reply.", {
           groupId: groupConfig.groupId,
           skillId: skill.id,
           model: reply.model,
-          contextScope: sharedTopic ? "shared_topic" : "personal",
-          sharedTopicId: sharedTopic?.id,
-          sharedTopicTurnCount: sharedTopic?.turns.length ?? 0,
+          contextScope: conversationRoute ? "causal_branch" : "isolated",
+          topicId: conversationRoute?.topicId,
+          branchId: conversationRoute?.branchId,
         });
         return;
       }
@@ -2610,18 +2676,24 @@ export class BotApplication {
         throw new Error("Formatted AI reply was empty.");
       }
 
-      const botMessageIds = await this.sendTextMessages(groupConfig.groupId, outgoingMessages, outgoingMentionUserIds);
-      await this.recordSharedTopicDialogue({
-        groupId: groupConfig.groupId,
-        topicId: sharedTopic?.id,
-        userId,
-        userContent: storedUserContent,
-        senderCard: messageContext.senderCard,
-        senderNickname: messageContext.senderNickname,
-        assistantContent: replyText,
-        sourceMessageId: messageContext.sourceMessageId,
-        botMessageIds,
-      });
+      const receipts = await this.sendTextMessages(
+        groupConfig.groupId,
+        outgoingMessages,
+        outgoingMentionUserIds,
+        conversationRoute,
+      );
+      await this.persistAssistantContext(conversationRoute, replyText, receipts);
+
+      const promptSources = {
+        causalHistory: history.map((turn) => turn.content).join("\n"),
+        explicitReference: messageContext.replyContext?.text ?? "",
+        longTermMemory: groupMemories.map((memory) => memory.content).join("\n"),
+        knowledge: knowledgeHits
+          .map((entry) => `${entry.title}\n${entry.question}\n${entry.answer}`)
+          .join("\n"),
+        atmosphere: atmosphere?.summary ?? "",
+        currentInput: normalizedUserInput,
+      };
 
       logInfo("Sent AI reply.", {
         groupId: groupConfig.groupId,
@@ -2634,20 +2706,26 @@ export class BotApplication {
         modelMs,
         totalMs: Date.now() - conversationStartedAt,
         memoryCount: groupMemories.length,
-        recentGroupMessageCount: recentGroupMessages.length,
-        recentGroupMessageChars,
         promptChars: reply.promptChars ?? 0,
+        promptSourceChars: mapTextMetrics(promptSources, (text) => text.length),
+        promptSourceTokensEstimated: mapTextMetrics(promptSources, estimateTextTokens),
         realtimeLookupKind: realtimeLookup?.kind,
         realtimeLookupStatus: realtimeLookup?.status,
         realtimeLookupMs,
         inputImageCount: resolvedImages.length,
         imageInspectionUsed: reply.imageInspectionUsed === true,
         reasoningEffort: reply.reasoningEffort,
-        contextScope: sharedTopic ? "shared_topic" : "personal",
-        sharedTopicId: sharedTopic?.id,
-        sharedTopicTurnCount: sharedTopic?.turns.length ?? 0,
+        contextScope: conversationRoute ? "causal_branch" : "isolated",
+        topicId: conversationRoute?.topicId,
+        branchId: conversationRoute?.branchId,
+        routeReason: conversationRoute?.routeReason,
       });
     } catch (error) {
+      // Worker outbox drafts have not reached QQ yet. Let ConsumerRunner retry
+      // the original message instead of publishing a misleading failure reply.
+      if (error instanceof CausalContextPersistenceError) {
+        throw error;
+      }
       // 已取消的任务不发任何回复（计划 §2.3）：用户重触发后旧任务被取消，
       // 它的失败话术如果照发，就会和新消息的回复一起冒出来。
       if (signal?.aborted) {
@@ -2665,14 +2743,14 @@ export class BotApplication {
         modelMs: Date.now() - modelStartedAt,
         totalMs: Date.now() - conversationStartedAt,
         memoryCount: groupMemories.length,
-        recentGroupMessageCount: recentGroupMessages.length,
-        recentGroupMessageChars,
         realtimeLookupKind: realtimeLookup?.kind,
         realtimeLookupStatus: realtimeLookup?.status,
         realtimeLookupMs,
         error: summarizeAiError(error),
       });
-      await this.sendText(groupConfig.groupId, messageForAiFailure(error, failureKind));
+      const failureText = messageForAiFailure(error, failureKind);
+      const failureReceipt = await this.sendTextWithContext(groupConfig.groupId, failureText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, failureText, failureReceipt ? [failureReceipt] : []);
     }
   }
 
@@ -2823,7 +2901,7 @@ export class BotApplication {
         }
         replyOptions.push({
           mode: model.id,
-          label: this.formatConfiguredReplyModelLabel(model.id, model.shortName || model.name),
+          label: this.formatConfiguredReplyModelLabel(model.id, model.model),
           service: new ConfiguredAiService(this.aiService, this.systemSettingsStore, "reply", undefined, model.id),
           supportsVision: model.supportsVision === true || (model.supportsVision === undefined && model.id === "gpt"),
         });
@@ -2877,9 +2955,9 @@ export class BotApplication {
         item.purpose === "reply" &&
         item.enabled &&
         item.id === mode &&
-        item.shortName.trim()
+        item.model.trim()
       );
-      return model?.shortName.trim();
+      return model?.model.trim();
     } catch (error) {
       logWarn("Failed to load runtime reply model label.", {
         mode,
@@ -2895,10 +2973,11 @@ export class BotApplication {
     replyText: string,
     mode: Exclude<ReplyOutputMode, "text"> = "voice",
     replyFormatBudget?: ReplyFormatBudget,
-  ): Promise<string[]> {
+    conversationRoute?: ConversationRoute,
+  ): Promise<MessageReceipt[]> {
     if (!(await this.hasEnabledTtsModel())) {
       logInfo("Skipped voice synthesis because no TTS model is configured.", { groupId, skillId: skill.id });
-      return this.sendTextMessages(groupId, formatReplyMessages(skill, replyText, replyFormatBudget));
+      return this.sendTextMessages(groupId, formatReplyMessages(skill, replyText, replyFormatBudget), [], conversationRoute);
     }
 
     let cleanup: (() => Promise<void>) | undefined;
@@ -2908,9 +2987,9 @@ export class BotApplication {
         mode: mode === "singing" ? "singing" : "speech",
       });
       cleanup = synthesis.cleanup;
-      const receipt = await this.sendRecord(groupId, synthesis.recordFile);
+      const receipt = await this.sendRecord(groupId, synthesis.recordFile, conversationRoute);
       scheduleCleanup(synthesis.cleanup);
-      return receipt?.messageId ? [receipt.messageId] : [];
+      return receipt ? [receipt] : [];
     } catch (error) {
       if (cleanup) {
         scheduleCleanup(cleanup);
@@ -2924,29 +3003,38 @@ export class BotApplication {
     }
 
     if (mode === "singing") {
-      await this.sendText(groupId, "当前 TTS 模型不支持唱歌，请切换到 mimo-v2.5-tts 后再试。");
+      const warning = await this.sendTextWithContext(groupId, "当前 TTS 模型不支持唱歌，请切换到 mimo-v2.5-tts 后再试。", conversationRoute);
       const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
-      return this.sendTextMessages(groupId, outgoingMessages);
+      return [
+        ...(warning ? [warning] : []),
+        ...await this.sendTextMessages(groupId, outgoingMessages, [], conversationRoute),
+      ];
     }
 
     if (!this.allowNapCatAiVoiceFallback) {
-      await this.sendText(groupId, MSG_VOICE_FAIL);
+      const warning = await this.sendTextWithContext(groupId, MSG_VOICE_FAIL, conversationRoute);
       const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
-      return this.sendTextMessages(groupId, outgoingMessages);
+      return [
+        ...(warning ? [warning] : []),
+        ...await this.sendTextMessages(groupId, outgoingMessages, [], conversationRoute),
+      ];
     }
 
     try {
-      const receipt = await this.sendAiRecord(groupId, replyText);
-      return receipt?.messageId ? [receipt.messageId] : [];
+      const receipt = await this.sendAiRecord(groupId, replyText, conversationRoute);
+      return receipt ? [receipt] : [];
     } catch (fallbackError) {
       logError("Voice fallback failed.", {
         groupId,
         skillId: skill.id,
         error: (fallbackError as Error).message,
       });
-      await this.sendText(groupId, MSG_VOICE_FAIL);
+      const warning = await this.sendTextWithContext(groupId, MSG_VOICE_FAIL, conversationRoute);
       const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
-      return this.sendTextMessages(groupId, outgoingMessages);
+      return [
+        ...(warning ? [warning] : []),
+        ...await this.sendTextMessages(groupId, outgoingMessages, [], conversationRoute),
+      ];
     }
   }
 
@@ -3006,7 +3094,7 @@ export class BotApplication {
     }
 
     await this.groupConfigService.updateCurrentSkill(groupConfig.groupId, targetSkillId);
-    await this.conversationStore.clearGroup(groupConfig.groupId);
+    await this.clearGroupConversationContext(groupConfig.groupId);
     await this.logAdminOperation(groupConfig.groupId, userId, "技能切换", targetSkillId, skill.name);
     await this.sendText(
       groupConfig.groupId,
@@ -3636,50 +3724,121 @@ export class BotApplication {
     }
   }
 
+  private async clearUserConversationContext(groupId: string, userId: string): Promise<void> {
+    this.conversationContextRepository?.clearUser(groupId, userId);
+    await this.conversationStore.clearUser(groupId, userId);
+  }
+
+  private async clearGroupConversationContext(groupId: string): Promise<void> {
+    this.conversationContextRepository?.clearGroup(groupId);
+    await this.conversationStore.clearGroup(groupId);
+  }
+
   private async sendTextMessages(
     groupId: string,
     messages: string[],
     mentionUserIds: string[] = [],
-  ): Promise<string[]> {
-    const messageIds: string[] = [];
+    conversationRoute?: ConversationRoute,
+  ): Promise<MessageReceipt[]> {
+    const receipts: MessageReceipt[] = [];
     for (const [index, message] of messages.entries()) {
       const outgoingText =
         index === 0 && mentionUserIds.length > 0
           ? prefixAtMentions(mentionUserIds, message)
           : message;
-      const receipt = await this.sendText(groupId, outgoingText);
-      if (receipt?.messageId) {
-        messageIds.push(receipt.messageId);
+      const receipt = await this.sendTextWithContext(groupId, outgoingText, conversationRoute);
+      if (receipt) {
+        receipts.push(receipt);
       }
 
       if (index < messages.length - 1) {
         await sleep(MULTI_MESSAGE_DELAY_MS);
       }
     }
-    return messageIds;
+    return receipts;
   }
 
-  private async recordSharedTopicDialogue(args: {
-    groupId: string;
-    topicId?: string;
-    userId: string;
-    userContent: string;
-    senderCard?: string;
-    senderNickname?: string;
-    assistantContent: string;
-    sourceMessageId?: string;
-    botMessageIds?: string[];
-  }): Promise<void> {
-    const sharedTopicStore = this.conversationStore as Partial<Pick<ConversationStore, "appendSharedDialogue">>;
-    if (!sharedTopicStore.appendSharedDialogue) {
+  private async sendTextWithContext(
+    groupId: string,
+    text: string,
+    route?: ConversationRoute,
+  ): Promise<MessageReceipt | undefined> {
+    if (!route) {
+      return this.sendText(groupId, text);
+    }
+    const contextualTransport = this.transport as MessageTransport & {
+      runWithConversationContext?<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T>;
+      setConversationContext?(route?: ConversationRoute): void;
+    };
+    if (contextualTransport.runWithConversationContext) {
+      return contextualTransport.runWithConversationContext(route, () => this.sendText(groupId, text));
+    }
+    if (!contextualTransport.setConversationContext) {
+      return this.sendText(groupId, text);
+    }
+    contextualTransport.setConversationContext(route);
+    try {
+      return await this.sendText(groupId, text);
+    } finally {
+      contextualTransport.setConversationContext(undefined);
+    }
+  }
+
+  private async persistAssistantContext(
+    route: ConversationRoute | undefined,
+    content: string,
+    receipts: MessageReceipt[],
+  ): Promise<void> {
+    if (!route || !this.conversationContextRepository) {
       return;
     }
     try {
-      await sharedTopicStore.appendSharedDialogue(args);
+      const firstReceipt = receipts[0];
+      const deliveryIds = receipts.flatMap((receipt) => receipt.deliveryId ? [receipt.deliveryId] : []);
+      const turn = this.conversationContextRepository.appendAssistantTurn({
+        topicId: route.topicId,
+        branchId: route.branchId,
+        parentTurnId: route.turnId,
+        content,
+        createdAt: Date.now(),
+        deliveryId: firstReceipt?.deliveryId,
+        platformMessageId: firstReceipt?.platformMessageId ?? firstReceipt?.messageId,
+        deliveryIds,
+      });
+      const contextualTransport = this.transport as MessageTransport & {
+        bindConversationTurn?(receipts: MessageReceipt[], route: ConversationRoute, turnId: number): void;
+      };
+      if (deliveryIds.length === 0) {
+        contextualTransport.bindConversationTurn?.(receipts, route, turn.id);
+      }
+      for (const receipt of receipts.slice(1)) {
+        const platformMessageId = receipt.platformMessageId ?? receipt.messageId;
+        if (platformMessageId) {
+          const branch = this.conversationContextRepository.getBranch(route.branchId);
+          if (branch) {
+            this.conversationContextRepository.bindPlatformMessage({
+              groupId: branch.groupId,
+              platformMessageId,
+              topicId: route.topicId,
+              branchId: route.branchId,
+              turnId: turn.id,
+              direction: "assistant",
+              createdAt: Date.now(),
+            });
+          }
+        }
+      }
     } catch (error) {
-      logWarn("Failed to persist shared conversation topic.", {
-        groupId: args.groupId,
-        topicId: args.topicId,
+      const contextualTransport = this.transport as MessageTransport & {
+        discardConversationDrafts?(receipts: MessageReceipt[]): void;
+      };
+      if (contextualTransport.discardConversationDrafts) {
+        contextualTransport.discardConversationDrafts(receipts);
+        throw new CausalContextPersistenceError(error);
+      }
+      logWarn("Failed to persist causal assistant turn.", {
+        topicId: route.topicId,
+        branchId: route.branchId,
         error: (error as Error).message,
       });
     }
@@ -3723,7 +3882,9 @@ export class BotApplication {
     );
     const replyContext = await this.resolveReplyContext(groupConfig, parsedMessage.replyMessageId);
 
-    if (replyContext) {
+    // Keep a quoted bot reply as evidence for the current turn, but do not
+    // treat the bot itself as a person the model should address.
+    if (replyContext && String(replyContext.userId ?? "") !== this.botQq) {
       interactionTargets.push(
         ...buildInteractionTargetsFromReply(groupConfig, replyContext),
       );
@@ -3846,16 +4007,6 @@ export class BotApplication {
         return undefined;
       }
 
-      // 引用链根部自引用过滤（计划 §8.2）：被引用消息是 bot 自己发的，
-      // 不注入其内容，避免"bot 引用自己 → 上下文越滚越长 → 自问自答"死循环。
-      if (referenced.userId && String(referenced.userId) === this.botQq) {
-        logInfo("Ignored referenced message from bot itself.", {
-          groupId: groupConfig.groupId,
-          replyMessageId,
-        });
-        return undefined;
-      }
-
       const manualTarget = referenced.userId
         ? resolveManualIdentityTarget(groupConfig, referenced.userId, "reply")
         : undefined;
@@ -3879,14 +4030,44 @@ export class BotApplication {
     }
   }
 
-  private async sendRecord(groupId: string, recordFile: string): Promise<MessageReceipt | undefined> {
-    const receipt = await this.transport.sendGroupRecord(groupId, recordFile);
+  private async sendRecord(
+    groupId: string,
+    recordFile: string,
+    route?: ConversationRoute,
+  ): Promise<MessageReceipt | undefined> {
+    const contextualTransport = this.transport as MessageTransport & {
+      runWithConversationContext?<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T>;
+      setConversationContext?(route?: ConversationRoute): void;
+    };
+    if (route && contextualTransport.runWithConversationContext) {
+      const receipt = await contextualTransport.runWithConversationContext(
+        route,
+        () => this.transport.sendGroupRecord(groupId, recordFile),
+      );
+      this.liveChatService.recordBotActivity(groupId);
+      return receipt ?? undefined;
+    }
+    contextualTransport.setConversationContext?.(route);
+    const receipt = await this.transport.sendGroupRecord(groupId, recordFile).finally(() => contextualTransport.setConversationContext?.(undefined));
     this.liveChatService.recordBotActivity(groupId);
     return receipt ?? undefined;
   }
 
-  private async sendAiRecord(groupId: string, text: string): Promise<MessageReceipt | undefined> {
-    const receipt = await this.transport.sendGroupAiRecord(groupId, text);
+  private async sendAiRecord(groupId: string, text: string, route?: ConversationRoute): Promise<MessageReceipt | undefined> {
+    const contextualTransport = this.transport as MessageTransport & {
+      runWithConversationContext?<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T>;
+      setConversationContext?(route?: ConversationRoute): void;
+    };
+    if (route && contextualTransport.runWithConversationContext) {
+      const receipt = await contextualTransport.runWithConversationContext(
+        route,
+        () => this.transport.sendGroupAiRecord(groupId, text),
+      );
+      this.liveChatService.recordBotActivity(groupId);
+      return receipt ?? undefined;
+    }
+    contextualTransport.setConversationContext?.(route);
+    const receipt = await this.transport.sendGroupAiRecord(groupId, text).finally(() => contextualTransport.setConversationContext?.(undefined));
     this.liveChatService.recordBotActivity(groupId);
     return receipt ?? undefined;
   }
@@ -4903,21 +5084,19 @@ function buildGroupTranscriptText(
   return parsedMessage.images.length > 0 ? "[图片消息]" : undefined;
 }
 
-function selectRecentGroupMessages(messages: RecentGroupMessage[]): RecentGroupMessage[] {
-  const candidates = messages.slice(-120);
-  const selected: RecentGroupMessage[] = [];
-  let totalChars = 0;
-
-  for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    const message = candidates[index]!;
-    if (totalChars + message.text.length > 48_000) {
-      break;
-    }
-    selected.unshift(message);
-    totalChars += message.text.length;
+function formatCausalUserTurn(
+  userId: string | undefined,
+  content: string,
+  groupConfig: GroupBotConfig,
+): string {
+  if (!userId) {
+    return content;
   }
-
-  return selected;
+  const manualName = groupConfig.manualIdentities
+    ?.find((identity) => identity.userIds.includes(userId))
+    ?.names[0]
+    ?.trim();
+  return `发言者：${manualName ?? `QQ ${userId}`}（QQ ${userId}）：${content}`;
 }
 
 function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
@@ -4963,6 +5142,28 @@ function buildPublicProfileShareUrl(adminPublicBaseUrl: string, shareToken: stri
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
   const text = typeof value === "string" ? value.trim() : "";
   return text || "gpt";
+}
+
+function mapTextMetrics<T extends Record<string, string>>(
+  sources: T,
+  measure: (text: string) => number,
+): { [K in keyof T]: number } {
+  return Object.fromEntries(
+    Object.entries(sources).map(([name, text]) => [name, measure(text)]),
+  ) as { [K in keyof T]: number };
+}
+
+/** Lightweight language-aware estimate for source-level prompt telemetry. */
+function estimateTextTokens(text: string): number {
+  const normalized = text.normalize("NFKC").trim();
+  if (!normalized) {
+    return 0;
+  }
+  const cjkCount = normalized.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length ?? 0;
+  const withoutCjk = normalized.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu, "");
+  const alphanumericCount = withoutCjk.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+  const symbolCount = withoutCjk.match(/[^\p{L}\p{N}\s]/gu)?.length ?? 0;
+  return cjkCount + Math.ceil(alphanumericCount / 4) + Math.ceil(symbolCount / 2);
 }
 
 function messageForAiFailure(error: unknown, failureKind: string): string {

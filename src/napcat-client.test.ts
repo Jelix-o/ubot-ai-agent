@@ -23,7 +23,7 @@ test("falls back to HTTP send_group_msg when websocket is not open", async () =>
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.url, "http://127.0.0.1:3001/send_group_msg");
     assert.match(String(calls[0]?.init?.body), /67890/);
-    assert.deepEqual(receipt, { messageId: "7788" });
+    assert.deepEqual(receipt, { messageId: "7788", platformMessageId: "7788" });
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -249,5 +249,5 @@ test("strips third-party mention echoes when explicit bot conversations do not a
   await app.handleGroupMessage(createEvent(" @一下 2236352543 ，让他今晚一起去洗脚 "));
 
   assert.equal(transport.sent[0]?.text, "2236352543 这B 晚上怎么说 一起洗脚去 别装死");
-  assert.equal(conversationStore.turns[1]?.content, "2236352543 这B 晚上怎么说 一起洗脚去 别装死");
+  assert.deepEqual(conversationStore.turns, []);
 });

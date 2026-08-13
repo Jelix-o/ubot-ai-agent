@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
 import type { SystemCommandConfig, SystemModelConfig, SystemSettings, TokenCostControlSettings } from "../types.js";
 import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
@@ -17,7 +17,9 @@ type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
 };
 
 export class SystemSettingsStore {
+  private static readonly unstableFileVersion = "<unstable>";
   private cachedData?: SystemSettings;
+  private cachedFileVersion?: string;
 
   constructor(
     private readonly filePath: string,
@@ -95,33 +97,71 @@ export class SystemSettingsStore {
 
   invalidateCache(): void {
     this.cachedData = undefined;
+    this.cachedFileVersion = undefined;
   }
 
   private async readData(): Promise<SystemSettings> {
-    if (this.cachedData) {
+    const fileVersion = await this.getFileVersion();
+    if (this.cachedData && fileVersion === this.cachedFileVersion) {
       return this.cachedData;
     }
     try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed = parseSettingsJson(raw);
+      const snapshot = await this.readStableSnapshot(fileVersion);
+      const parsed = parseSettingsJson(snapshot.raw);
       this.cachedData = normalizeSettings(parsed.value, this.defaultModels);
       if (parsed.recovered) {
         await this.writeData(this.cachedData);
+      } else {
+        this.cachedFileVersion = snapshot.stable ? snapshot.version : SystemSettingsStore.unstableFileVersion;
       }
       return this.cachedData;
     } catch (error) {
       const known = error as NodeJS.ErrnoException;
       if (known.code === "ENOENT") {
         this.cachedData = defaultSettings(this.defaultModels);
+        this.cachedFileVersion = undefined;
         return this.cachedData;
       }
       throw error;
     }
   }
 
+  private async readStableSnapshot(initialVersion: string | undefined): Promise<{
+    raw: string;
+    version: string | undefined;
+    stable: boolean;
+  }> {
+    let versionBefore = initialVersion;
+    let lastRaw = "";
+    let versionAfter = initialVersion;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      lastRaw = await readFile(this.filePath, "utf8");
+      versionAfter = await this.getFileVersion();
+      if (versionBefore !== undefined && versionBefore === versionAfter) {
+        return { raw: lastRaw, version: versionAfter, stable: true };
+      }
+      versionBefore = versionAfter;
+    }
+    return { raw: lastRaw, version: versionAfter, stable: false };
+  }
+
   private async writeData(data: SystemSettings): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedFileVersion = await this.getFileVersion();
+  }
+
+  private async getFileVersion(): Promise<string | undefined> {
+    try {
+      const file = await stat(this.filePath);
+      return `${file.mtimeMs}:${file.ctimeMs}:${file.size}`;
+    } catch (error) {
+      const known = error as NodeJS.ErrnoException;
+      if (known.code === "ENOENT") {
+        return undefined;
+      }
+      throw error;
+    }
   }
 }
 

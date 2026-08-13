@@ -1,5 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import { logInfo } from "./logger.js";
 import type { SharedDb } from "./shared/sqlite.js";
+import type { OutboxContext } from "./shared/sqlite.js";
+import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import type { MessageReceipt, MessageTransport, TransportHealthStatus } from "./bot.js";
 import type {
   GroupMemberIdentity,
@@ -26,29 +30,80 @@ import type {
  * the worker falls back to read-only modes returning empty results.
  */
 export class WorkerTransport implements MessageTransport {
+  private readonly routeStorage = new AsyncLocalStorage<ConversationRoute>();
+  private conversationRoute?: ConversationRoute;
+
   constructor(
     private readonly db: SharedDb,
     private readonly readTransport?: Partial<MessageTransport>,
   ) {}
 
+  /** Sets the route used by the next outbox send in the current worker task. */
+  setConversationContext(route?: ConversationRoute): void {
+    this.conversationRoute = route;
+  }
+
+  /** Keeps route metadata scoped to one async send chain under worker concurrency. */
+  runWithConversationContext<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T> {
+    return this.routeStorage.run(route, task);
+  }
+
+  /** Completes the outbox -> assistant-turn link after the model reply exists. */
+  bindConversationTurn(
+    receipts: MessageReceipt[],
+    route: ConversationRoute,
+    turnId: number,
+  ): void {
+    const context: OutboxContext = {
+      topicId: route.topicId,
+      branchId: route.branchId,
+      turnId,
+    };
+    this.db.attachOutboxContexts(
+      receipts.flatMap((receipt) => receipt.deliveryId ? [receipt.deliveryId] : []),
+      context,
+    );
+  }
+
+  /** Rolls back unpublished drafts when assistant-turn persistence fails. */
+  discardConversationDrafts(receipts: MessageReceipt[]): void {
+    this.db.discardPreparingOutbox(
+      receipts.flatMap((receipt) => receipt.deliveryId ? [receipt.deliveryId] : []),
+    );
+  }
+
   // ---- outbox-based sending ----
 
   async sendGroupMessage(groupId: string, text: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, text, "text");
+    const id = this.db.enqueueOutbox(groupId, null, text, "text", this.outboxContext());
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
-    return { messageId: `outbox:${id}` };
+    return { deliveryId: `outbox:${id}` };
   }
 
   async sendGroupRecord(groupId: string, recordFile: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, recordFile, "record");
+    const id = this.db.enqueueOutbox(groupId, null, recordFile, "record", this.outboxContext());
     logInfo("Worker enqueued record to outbox.", { outboxId: id, groupId });
-    return { messageId: `outbox:${id}` };
+    return { deliveryId: `outbox:${id}` };
   }
 
   async sendGroupAiRecord(groupId: string, text: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, text, "airecord");
+    const id = this.db.enqueueOutbox(groupId, null, text, "airecord", this.outboxContext());
     logInfo("Worker enqueued AI record to outbox.", { outboxId: id, groupId });
-    return { messageId: `outbox:${id}` };
+    return { deliveryId: `outbox:${id}` };
+  }
+
+  private outboxContext(): OutboxContext | undefined {
+    const route = this.routeStorage.getStore() ?? this.conversationRoute;
+    if (!route) {
+      return undefined;
+    }
+    // The assistant turn is created after enqueue; attach its id in
+    // bindConversationTurn once all response segments are known.
+    return {
+      topicId: route.topicId,
+      branchId: route.branchId,
+      sourceTurnId: route.turnId,
+    };
   }
 
   // ---- read APIs delegated to the read transport (optional) ----

@@ -8,8 +8,9 @@ import { IngressReadApiClient } from "./ingress-read-api.js";
 import { InflightManager } from "./services/inflight-manager.js";
 import { LlmSemaphore } from "./services/llm-semaphore.js";
 import { CircuitOpenError, degradedMessage, GatewayProxy } from "./services/gateway-proxy.js";
-import { TopicRouter } from "./services/topic-router.js";
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
+import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
+import { ConversationContextRouter } from "./services/conversation-context-router.js";
 import { BotApplication, type MessageTransport } from "./bot.js";
 import { GroupLock } from "./services/group-lock.js";
 import { GroupConfigService } from "./services/group-config-service.js";
@@ -53,7 +54,8 @@ export class WorkerApp {
   private readonly metrics: Metrics;
   private readonly inflight: InflightManager;
   private readonly semaphore = new LlmSemaphore(8, 2_000);
-  private readonly topicRouter: TopicRouter;
+  private readonly contextRepository: ConversationContextRepository;
+  private readonly contextRouter: ConversationContextRouter;
   private readonly atmosphere: AtmosphereSummarizer;
   private readonly runner: ConsumerRunner;
   private readonly gateway: GatewayProxy;
@@ -74,7 +76,8 @@ export class WorkerApp {
       flushIntervalMs: 30_000,
     });
     this.inflight = new InflightManager(this.sharedDb);
-    this.topicRouter = new TopicRouter(this.options.dataDir);
+    this.contextRepository = new ConversationContextRepository(this.sharedDb);
+    this.contextRouter = new ConversationContextRouter(this.contextRepository);
     this.atmosphere = new AtmosphereSummarizer(this.options.dataDir);
     this.gateway = new GatewayProxy(undefined, this.metrics, {
       tripAfterFailures: 5,
@@ -103,28 +106,25 @@ export class WorkerApp {
     };
 
     this.runner = new ConsumerRunner(this.sharedDb, this.options.consumerKey, {
-      keyOf: (message) => {
+      keyOf: async (message) => {
+        this.updateAtmosphere(message.group_id, message.msg_time);
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
         // 等指令全部被当成自由发言跳过，指令不生效）。
         const isCommand = message.text.trim().startsWith("#");
-        if (!message.has_at_bot && !isCommand) {
-          // Free chat never produces a topic (plan 5.1.3); skip for now.
-          return "";
+        if (isCommand && !isAiConversationCommand(message.text)) {
+          // Commands mutate pointers/configuration and must not create a
+          // conversation branch merely by being observed by the worker.
+          return `${message.group_id}:command`;
         }
-        // Topic assignment must be stable for the same conversation; compute it
-        // here so both the key and the handler agree on one topic.
-        const replyTopicId = message.reply_to ? this.replyTopicIndex.get(message.reply_to) : undefined;
-        const assignment = this.topicRouter.assignTopic({
-          groupId: message.group_id,
-          userId: message.user_id,
-          text: message.text,
-          replyToMessageId: message.reply_to ?? undefined,
-          replyToTopicId: replyTopicId,
-        });
-        if (message.reply_to) {
-          this.replyTopicIndex.set(message.reply_to, assignment.topicId);
+        if (!(await this.options.botApp.shouldRouteConversation(
+          message.group_id,
+          message.text,
+          Boolean(message.has_at_bot),
+        ))) {
+          return `${message.group_id}:passive`;
         }
-        return `${message.group_id}:${message.user_id}:${assignment.topicId}`;
+        const route = this.resolveRoute(message);
+        return `${message.group_id}:${route.branchId}`;
       },
       handler: async (message, done) => {
         await this.handleMessage(message, done);
@@ -134,9 +134,6 @@ export class WorkerApp {
       maxConcurrentKeys: 8,
     });
   }
-
-  /** msg_id → topic_id for reply-chain inheritance (plan 5.1.1). */
-  private readonly replyTopicIndex = new Map<string, string>();
 
   private async handleMessage(
     message: {
@@ -152,22 +149,53 @@ export class WorkerApp {
     },
     done: () => Promise<void>,
   ): Promise<void> {
-    const replyTopicId = message.reply_to ? this.replyTopicIndex.get(message.reply_to) : undefined;
-    const assignment = this.topicRouter.assignTopic({
-      groupId: message.group_id,
-      userId: message.user_id,
-      text: message.text,
-      replyToMessageId: message.reply_to ?? undefined,
-      replyToTopicId: replyTopicId,
-    });
-    if (message.reply_to) {
-      this.replyTopicIndex.set(message.reply_to, assignment.topicId);
-    }
-    const key = `${message.group_id}:${message.user_id}:${assignment.topicId}`;
+    // keyOf already persisted this route. Reading by source row makes retries
+    // and duplicate delivery reuse the exact same result without rerouting.
+    const isCommand = message.text.trim().startsWith("#") && !isAiConversationCommand(message.text);
+    const isRoutedConversation = !isCommand && await this.options.botApp.shouldRouteConversation(
+      message.group_id,
+      message.text,
+      Boolean(message.has_at_bot),
+    );
+    // Commands deliberately have no conversation route.
+    const route = !isRoutedConversation
+      ? undefined
+      : this.contextRepository.getRouteBySourceRowId(message.id) ?? this.resolveRoute(message);
+    const key = isCommand
+      ? `${message.group_id}:command`
+      : route
+        ? `${message.group_id}:${route.branchId}`
+        : `${message.group_id}:passive`;
 
     // Withdraw if the message was retracted (plan 8.1).
     if (this.sharedDb.isRetracted(message.group_id, message.msg_id)) {
       logInfo("Skipped retracted message.", { groupId: message.group_id, msgId: message.msg_id });
+      await done();
+      return;
+    }
+
+    if (route) {
+      const discardedDrafts = this.sharedDb.discardPreparingOutboxForSource(
+        route.topicId,
+        route.branchId,
+        route.turnId,
+      );
+      if (discardedDrafts > 0) {
+        logInfo("Discarded unpublished outbox drafts before retry.", {
+          groupId: message.group_id,
+          sourceRowId: message.id,
+          branchId: route.branchId,
+          discardedDrafts,
+        });
+      }
+    }
+
+    if (route && this.contextRepository.hasAssistantReplyForTurn(route.branchId, route.turnId)) {
+      logInfo("Skipped already-persisted conversation reply after worker recovery.", {
+        groupId: message.group_id,
+        sourceRowId: message.id,
+        branchId: route.branchId,
+      });
       await done();
       return;
     }
@@ -194,16 +222,9 @@ export class WorkerApp {
     const taskStartedAt = Date.now();
     const task = this.inflight.begin(key);
     this.metrics.inc("tasks_started");
+    let completed = false;
     try {
       const event = this.buildEvent(message);
-      // 只有 @bot 或指令（#开头）消息才处理；自由发言跳过（计划 §5.1.3）。
-      const parsed = parseGroupMessage(event.message, this.options.botApp.getBotQq());
-      const isCommand = parsed.text.trim().startsWith("#");
-      if (!parsed.hasAtBot && !isCommand) {
-        await done();
-        return;
-      }
-
       const controller = new AbortController();
       const cancelPoll = setInterval(() => {
         const row = this.sharedDb.getInflight(key);
@@ -214,8 +235,9 @@ export class WorkerApp {
       cancelPoll.unref();
 
       try {
-        await this.options.botApp.handleGroupMessage(event, controller.signal);
+        await this.options.botApp.handleGroupMessage(event, controller.signal, route);
         this.metrics.inc("tasks_completed");
+        completed = true;
         // 指标 #4：端到端回复延迟 p95（计划 §6）。
         this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
       } finally {
@@ -228,13 +250,61 @@ export class WorkerApp {
         error: error instanceof Error ? error.message : String(error),
       });
       this.metrics.inc("tasks_failed");
+      throw error;
     } finally {
-      this.inflight.end(key);
+      this.inflight.end(key, task.taskId);
       // 指标 #5：per-key 队列深度峰值（计划 §6）。
       const queueDepth = this.runner.queueDepth;
       this.maxQueueDepthSeen = Math.max(this.maxQueueDepthSeen, queueDepth);
       this.metrics.setGauge("per_key_queue_depth_max", this.maxQueueDepthSeen);
-      await done();
+      if (completed) {
+        await done();
+      }
+    }
+  }
+
+  private resolveRoute(message: {
+    id: number;
+    group_id: string;
+    user_id: string;
+    msg_id: string;
+    msg_time: number;
+    text: string;
+    images_json?: string;
+    reply_to?: string | null;
+  }): ConversationRoute {
+    const images = parseImages(message.images_json);
+    return this.contextRouter.resolve({
+      sourceRowId: message.id,
+      groupId: message.group_id,
+      userId: message.user_id,
+      sourceMessageId: message.msg_id,
+      replyToMessageId: message.reply_to ?? undefined,
+      text: message.text,
+      hasImages: images.length > 0,
+      nowMs: message.msg_time,
+    });
+  }
+
+  private updateAtmosphere(groupId: string, nowMs: number): void {
+    try {
+      const rows = this.sharedDb.listRecentGroupMessages(groupId, nowMs - 60 * 60 * 1_000);
+      this.atmosphere.update(
+        groupId,
+        rows.map((row) => ({
+          groupId: row.group_id,
+          userId: row.user_id,
+          messageId: row.msg_id,
+          text: row.text || (parseImages(row.images_json).length > 0 ? "[图片消息]" : ""),
+          timestamp: new Date(row.msg_time).toISOString(),
+        })).filter((message) => Boolean(message.text)),
+        nowMs,
+      );
+    } catch (error) {
+      logError("Failed to update sanitized group atmosphere.", {
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -312,6 +382,7 @@ function buildBotApp(
 ): BotApplication {
   const dataDir = config.dataDir;
   const sharedDb = openSharedDb(dataDir);
+  const contextRepository = new ConversationContextRepository(sharedDb);
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
   const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
   const groupConfigService = new GroupConfigService(config.groupsConfigPath);
@@ -399,6 +470,8 @@ function buildBotApp(
       // hook is invoked by the bot when a cancelled task suppresses its reply.
     },
     false, // worker 不发送启动运维告警（多进程下由 ingress 感知连接状态）
+    contextRepository,
+    new ConversationContextRouter(contextRepository),
   );
 }
 
@@ -473,4 +546,17 @@ function degradedReply(tier: string, botQq: string): AiReply {
     skillId: "degraded",
     promptChars: 0,
   };
+}
+
+function isAiConversationCommand(text: string): boolean {
+  return /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(text.trim());
+}
+
+function parseImages(imagesJson?: string): Array<{ url?: string; file?: string; summary?: string }> {
+  try {
+    const value = JSON.parse(imagesJson ?? "[]") as unknown;
+    return Array.isArray(value) ? value as Array<{ url?: string; file?: string; summary?: string }> : [];
+  } catch {
+    return [];
+  }
 }

@@ -129,7 +129,7 @@ test("reverse server returns the message id from send_group_msg", async () => {
     echo: action.echo,
   }));
 
-  assert.deepEqual(await receiptPromise, { messageId: "8899" });
+  assert.deepEqual(await receiptPromise, { messageId: "8899", platformMessageId: "8899" });
   ws.close();
   server.close();
 });

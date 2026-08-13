@@ -15,7 +15,7 @@ import type { SharedDb } from "./sqlite.js";
  */
 
 export interface ConsumerRunnerOptions {
-  keyOf: (message: IngressMessageRowLike) => string;
+  keyOf: (message: IngressMessageRowLike) => string | Promise<string>;
   handler: (message: IngressMessageRowLike, done: () => Promise<void>) => Promise<void>;
   pollIntervalMs?: number;
   batchSize?: number;
@@ -102,17 +102,16 @@ export class ConsumerRunner {
       const rows = this.db.pollMessages(this.consumerKey, this.batchSize);
       let queuedAny = false;
       for (const row of rows) {
-        const key = this.options.keyOf(row);
-        if (!key) {
-          // Unroutable message: advance the watermark so it is never retried.
-          this.db.advanceWatermark(this.consumerKey, row.id);
+        const key = await this.options.keyOf(row);
+        if (this.db.isConsumerMessageCompleted(this.consumerKey, row.id)) {
           continue;
         }
-        // 拉取即推进水位：LLM 处理耗时 5-10s，若等 done() 才推进，
-        // 300ms 轮询会把同一条消息重复拉入队列 → 同消息处理 N 次 → 刷屏
-        // （生产事故："在吗"被回复 15 次）。失败降级由 LLM 层负责，
-        // 消息层绝不重投。
-        this.db.advanceWatermark(this.consumerKey, row.id);
+        if (!key) {
+          // Unroutable messages are terminally complete, but still participate
+          // in contiguous watermark advancement.
+          this.db.completeConsumerMessage(this.consumerKey, row.id);
+          continue;
+        }
         const state = this.keys.get(key) ?? (this.keys.set(key, { queue: [], backoffUntil: 0 }), this.keys.get(key)!);
         // 防重复入队（历史副本兜底）：同一消息已在队列中则跳过。
         if (!state.queue.some((queued) => queued.id === row.id)) {
@@ -143,7 +142,7 @@ export class ConsumerRunner {
   }
 
   private dispatch(key: string): void {
-    if (this.busyKeys.has(key) || this.busyKeys.size >= this.maxConcurrentKeys) {
+    if (this.stopped || this.busyKeys.has(key) || this.busyKeys.size >= this.maxConcurrentKeys) {
       return;
     }
     const state = this.keys.get(key);
@@ -177,7 +176,7 @@ export class ConsumerRunner {
       if (state && state.queue[0]?.id === message.id) {
         state.queue.shift();
       }
-      this.db.advanceWatermark(this.consumerKey, message.id);
+      this.db.completeConsumerMessage(this.consumerKey, message.id);
     };
     try {
       await this.options.handler(message, done);
@@ -188,19 +187,16 @@ export class ConsumerRunner {
         durationMs: Date.now() - taskStartedAt,
       });
     } catch (error) {
-      // 失败也必须推进水位：否则同一条消息每轮 poll 都会被重新拉入队列，
-      // 无限重投 → 同一消息被处理 N 次 → 刷屏（生产事故：LLM 失败时
-      // "在吗"被回复 15 次）。LLM 层的重试由 bot 内部处理（熔断/降级），
-      // 消息层不做无限重投。done() 幂等，handler 内部已调用过也无副作用。
-      logError("Consumer task failed; advancing watermark to avoid replay loop.", {
+      logError("Consumer task failed; retaining message for retry.", {
         consumer: this.consumerKey,
         key,
         messageId: message.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      await done();
       const state = this.keys.get(key);
       if (state) {
+        // Keep the message at the head. It is neither re-polled into the queue
+        // nor acknowledged, and a process restart will recover it from SQLite.
         state.backoffUntil = Date.now() + this.nextBackoff(state);
       }
     }

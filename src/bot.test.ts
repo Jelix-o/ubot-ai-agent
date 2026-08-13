@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
-import { rm } from "node:fs/promises";
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import test from "node:test";
 
 import { BotApplication, type MessageTransport } from "./bot.js";
@@ -10,6 +11,8 @@ import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { ProfileRecordStore } from "./services/profile-record-store.js";
+import { SystemSettingsStore } from "./services/system-settings-store.js";
+import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
   AiReply,
@@ -110,6 +113,19 @@ class FakeTransport implements MessageTransport {
 
   async getHealthStatus(): Promise<{ ok: boolean; detail: string }> {
     return this.healthStatus;
+  }
+}
+
+class DraftWorkerTransport extends FakeTransport {
+  discardCalls = 0;
+
+  override async sendGroupMessage(groupId: string, text: string): Promise<{ messageId: string; deliveryId: string }> {
+    const receipt = await super.sendGroupMessage(groupId, text);
+    return { ...receipt, deliveryId: "outbox:1" };
+  }
+
+  discardConversationDrafts(): void {
+    this.discardCalls += 1;
   }
 }
 
@@ -953,8 +969,12 @@ function createApp(options?: {
   profileRecordStore?: ProfileRecordStore;
   allowNapCatAiVoiceFallback?: boolean;
   skills?: SkillDefinition[];
-  systemSettingsStore?: FakeSystemSettingsStore;
+  systemSettingsStore?: FakeSystemSettingsStore | SystemSettingsStore;
   realtimeLookupService?: FakeRealtimeLookupService;
+  conversationContextRepository?: {
+    getCausalTurnsBeforeTurn(branchId: string, turnId: number): ConversationTurn[];
+    appendAssistantTurn(input: unknown): never;
+  };
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1055,6 +1075,13 @@ function createApp(options?: {
     options?.systemSettingsStore as never,
     profileRecordStore,
     options?.realtimeLookupService as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    true,
+    options?.conversationContextRepository as never,
   );
 
   return {
@@ -1077,7 +1104,7 @@ function createApp(options?: {
   };
 }
 
-test("responds to mentioned group message and stores dialogue", async () => {
+test("responds to mentioned group message without writing legacy personal history", async () => {
   const { app, transport, aiService, conversationStore } = createApp();
 
   await app.handleGroupMessage(
@@ -1090,10 +1117,10 @@ test("responds to mentioned group message and stores dialogue", async () => {
   assert.equal(aiService.calls.length, 1);
   assert.equal(aiService.calls[0]?.userInput, "summarize this");
   assert.equal(transport.sent[0]?.text, "AI reply");
-  assert.equal(conversationStore.turnsByKey["67890:20001"]?.length, 2);
+  assert.equal(conversationStore.turnsByKey["67890:20001"], undefined);
 });
 
-test("Huixian reads recent group discussion from every member without duplicating the current question", async () => {
+test("Huixian never exposes the recent raw group transcript to ordinary AI calls", async () => {
   const huixianSkill: SkillDefinition = { ...assistantSkill, id: "huixian", maxContextTurns: 16 };
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
@@ -1135,20 +1162,43 @@ test("Huixian reads recent group discussion from every member without duplicatin
   ], 30003, 67890, 106));
 
   assert.equal(aiService.calls.length, 1);
-  const recent = aiService.calls[0]?.identityContext?.recentGroupMessages ?? [];
-  assert.deepEqual(recent.map((message) => message.text), [
-    "后端设计表逻辑还得考虑。",
-    "前端也得看审美。",
-    "[图片消息]",
-  ]);
-  assert.equal(recent[0]?.userId, "1569671790");
-  assert.equal(recent[0]?.senderCard, "空白名");
-  assert.equal(recent[0]?.senderNickname, "季博初");
-  assert.equal(recent.some((message) => message.text.includes("群里在聊啥")), false);
-  assert.equal(recent.some((message) => message.text.includes("不应进入")), false);
+  const identityContext = aiService.calls[0]?.identityContext as Record<string, unknown> | undefined;
+  assert.equal(Object.hasOwn(identityContext ?? {}, "recentGroupMessages"), false);
+  assert.equal(aiService.calls[0]?.userInput, "群里在聊啥");
 });
 
-test("Huixian bounds recent group transcript injection by message count and text budget", async () => {
+test("worker persistence failure discards unpublished drafts and leaves the source message retryable", async () => {
+  const transport = new DraftWorkerTransport();
+  const route: ConversationRoute = {
+    sourceRowId: 1,
+    sourceMessageId: "source-1",
+    topicId: "topic-1",
+    branchId: "branch-1",
+    routeReason: "new-topic",
+    turnId: 1,
+  };
+  const { app } = createApp({
+    transport,
+    conversationContextRepository: {
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => {
+        throw new Error("sqlite busy");
+      },
+    },
+  });
+
+  await assert.rejects(
+    app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " retry me " } },
+    ]), undefined, route),
+    /atomically persist the causal assistant reply/,
+  );
+  assert.equal(transport.discardCalls, 1);
+  assert.equal(transport.sent.length, 1);
+});
+
+test("Huixian does not reintroduce raw group transcript under heavy group traffic", async () => {
   const huixianSkill: SkillDefinition = { ...assistantSkill, id: "huixian", maxContextTurns: 16 };
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
@@ -1169,10 +1219,9 @@ test("Huixian bounds recent group transcript injection by message count and text
     { type: "text", data: { text: "总结当前话题" } },
   ], 30003, 67890, 100));
 
-  const recent = aiService.calls[0]?.identityContext?.recentGroupMessages ?? [];
-  assert.ok(recent.length <= 120);
-  assert.ok(recent.reduce((total, message) => total + message.text.length, 0) <= 48_000);
-  assert.equal(recent.at(-1)?.messageId, "31");
+  const identityContext = aiService.calls[0]?.identityContext as Record<string, unknown> | undefined;
+  assert.equal(Object.hasOwn(identityContext ?? {}, "recentGroupMessages"), false);
+  assert.equal(aiService.calls[0]?.userInput, "总结当前话题");
 });
 
 test("Huixian receives runtime task context and an adaptive detailed reply instruction", async () => {
@@ -1769,7 +1818,7 @@ test("passes group manual identity memory to ai replies", async () => {
   });
 });
 
-test("keeps personal context separate across users without a reply anchor", async () => {
+test("unrouted calls fail closed instead of reading legacy personal context", async () => {
   const conversationStore = new FakeConversationStore();
   const { app, aiService } = createApp({ conversationStore });
 
@@ -1793,11 +1842,10 @@ test("keeps personal context separate across users without a reply anchor", asyn
   );
 
   assert.equal(aiService.calls[0]?.history.length, 0);
-  assert.equal(aiService.calls[1]?.history.length, 2);
-  assert.equal(aiService.calls[1]?.history[0]?.content, "A 第一轮");
+  assert.equal(aiService.calls[1]?.history.length, 0);
   assert.equal(aiService.calls[2]?.history.length, 0);
-  assert.equal(conversationStore.turnsByKey["67890:20001"]?.length, 4);
-  assert.equal(conversationStore.turnsByKey["67890:20002"]?.length, 2);
+  assert.equal(conversationStore.turnsByKey["67890:20001"], undefined);
+  assert.equal(conversationStore.turnsByKey["67890:20002"], undefined);
 });
 
 test("puts successful real-time lookup data in the reply context without source footer", async () => {
@@ -1893,7 +1941,7 @@ test("keeps shared-topic speakers separate from mentioned targets", async () => 
   await app.handleGroupMessage(jiBoShenReply);
 
   assert.equal(aiService.calls[1]?.history.length, 0);
-  assert.equal(aiService.calls[2]?.history.length, 2);
+  assert.equal(aiService.calls[2]?.history.length, 0);
   assert.equal(aiService.calls[2]?.history.some((turn) => turn.content.includes("季博初")), false);
   assert.deepEqual(aiService.calls[2]?.identityContext?.currentSpeaker, { manualName: "季博神" });
   assert.deepEqual(aiService.calls[2]?.identityContext?.interactionTargets, [
@@ -1952,11 +2000,11 @@ test("does not join an unrelated shared topic without an explicit reply anchor",
 
   assert.equal(aiService.calls[0]?.history.length, 0);
   assert.equal(aiService.calls[1]?.history.length, 0);
-  assert.equal(conversationStore.turnsByKey["67890:20001"]?.length, 2);
-  assert.equal(conversationStore.turnsByKey["67890:20002"]?.length, 2);
+  assert.equal(conversationStore.turnsByKey["67890:20001"], undefined);
+  assert.equal(conversationStore.turnsByKey["67890:20002"], undefined);
 });
 
-test("uses a reply anchor to resume a topic after automatic joining has expired", async () => {
+test("does not use legacy shared-topic anchors when no persistent route is supplied", async () => {
   const conversationStore = new FakeConversationStore();
   const { app, aiService } = createApp({ conversationStore });
   const startedAt = Date.parse("2026-07-27T00:00:00.000Z");
@@ -1987,8 +2035,7 @@ test("uses a reply anchor to resume a topic after automatic joining has expired"
     );
   });
 
-  assert.equal(aiService.calls[1]?.history.length, 2);
-  assert.equal(aiService.calls[1]?.history[0]?.content, "[发言者：Tester（QQ 20001）] original question");
+  assert.equal(aiService.calls[1]?.history.length, 0);
   assert.equal(aiService.calls[2]?.history.length, 0);
 });
 
@@ -2035,8 +2082,8 @@ test("keeps conversation history isolated for the same user across groups", asyn
 
   assert.equal(aiService.calls[0]?.history.length, 0);
   assert.equal(aiService.calls[1]?.history.length, 0);
-  assert.equal(conversationStore.turnsByKey["67890:20001"]?.length, 2);
-  assert.equal(conversationStore.turnsByKey["67891:20001"]?.length, 2);
+  assert.equal(conversationStore.turnsByKey["67890:20001"], undefined);
+  assert.equal(conversationStore.turnsByKey["67891:20001"], undefined);
 });
 
 test("responds to mentioned image message and passes image urls to ai service", async () => {
@@ -2565,15 +2612,15 @@ test("falls back to environment reply model when legacy group reply model is not
   assert.equal(transport.sent[0]?.text, "GPT reply");
 });
 
-test("shows configured reply model in model status list", async () => {
+test("shows the actual configured model name instead of a stale short name", async () => {
   const { app, transport } = createApp({
     systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [
       {
-        id: "reply-runtime",
-        name: "自定义回复模型",
-        shortName: "reply-pro",
+        id: "ds",
+        name: "DeepSeek",
+        shortName: "deepseek-v4-flash",
         baseUrl: "https://reply.example/v1",
-        model: "reply-runtime-model",
+        model: "deepseek-v4-pro",
         purpose: "reply",
         hasApiKey: true,
         enabled: true,
@@ -2585,7 +2632,66 @@ test("shows configured reply model in model status list", async () => {
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型状态" } }], 99999));
 
-  assert.match(transport.sent.at(-1)?.text ?? "", /reply-pro（reply-runtime）/);
+  assert.match(transport.sent.at(-1)?.text ?? "", /deepseek-v4-pro（ds）/);
+  assert.doesNotMatch(transport.sent.at(-1)?.text ?? "", /deepseek-v4-flash/);
+});
+
+test("model commands hot-reload an externally updated model through their configured alias", async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "bot-model-command-shared-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "system-settings.json");
+  const adminStore = new SystemSettingsStore(filePath);
+  const workerStore = new SystemSettingsStore(filePath);
+  const updatedAt = "2026-08-13T03:40:00.000Z";
+  const model = {
+    id: "ds",
+    name: "DeepSeek",
+    shortName: "deepseek-v4-flash",
+    baseUrl: "https://deepseek.example/v1",
+    purpose: "reply" as const,
+    apiKey: "deepseek-key",
+    enabled: true,
+  };
+
+  await adminStore.update({
+    models: [{ ...model, model: "deepseek-v4-flash" }],
+    commands: [{
+      id: "model",
+      title: "模型",
+      primary: "#模型",
+      aliases: ["#ds"],
+      permission: "group_admin",
+      enabled: true,
+      help: "查看或切换当前群回复模型",
+      updatedAt,
+    }],
+  });
+  assert.equal((await workerStore.getInternal()).models[0]?.model, "deepseek-v4-flash");
+
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    replyModelMode: "ds",
+    allowedSkillIds: ["assistant", "teacher"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+    liveChatDelayMinutes: 5,
+    dailyReportEnabled: true,
+    dailyReportTime: "18:00",
+    dailyReportTopUserCount: 3,
+  }]);
+  const { app, transport } = createApp({ groupConfigService, systemSettingsStore: workerStore });
+
+  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-pro" }] });
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#ds" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#模型" } }], 99999));
+
+  assert.equal(transport.sent.length, 2);
+  for (const sent of transport.sent) {
+    assert.match(sent.text, /当前群聊回复模型：deepseek-v4-pro（ds）/);
+    assert.match(sent.text, /- ds: deepseek-v4-pro（ds） \[当前\]/);
+    assert.doesNotMatch(sent.text, /deepseek-v4-flash/);
+  }
 });
 
 test("allows enabled configured reply model in switch list", async () => {
@@ -3862,7 +3968,7 @@ test("controlled mention does not prefix when ai refuses", async () => {
   assert.equal(transport.sent[0]?.text, "不叫，别折腾人家");
 });
 
-test("controlled mention can use conversation history after persuasion", async () => {
+test("controlled mention ignores legacy personal history after cutover", async () => {
   const conversationStore = new FakeConversationStore();
   conversationStore.turnsByKey["67890:20001"] = [
     {
@@ -3920,7 +4026,7 @@ test("controlled mention can use conversation history after persuasion", async (
     ]),
   );
 
-  assert.equal(aiService.controlledMentionCalls[0]?.history.length, 2);
+  assert.equal(aiService.controlledMentionCalls[0]?.history.length, 0);
   assert.equal(transport.sent[0]?.text, "[CQ:at,qq=429462108] 行，被你说服了，我叫悠米");
 });
 
@@ -4147,7 +4253,7 @@ test("passes referenced message context to explicit bot conversations", async ()
   ]);
 });
 
-test("ignores referenced messages sent by the bot itself (self-referencing chain guard)", async () => {
+test("keeps referenced bot text as evidence without treating the bot as an interaction target", async () => {
   const transport = new FakeTransport();
   transport.messagesById["9001"] = {
     messageId: "9001",
@@ -4167,11 +4273,13 @@ test("ignores referenced messages sent by the bot itself (self-referencing chain
   );
 
   assert.equal(aiService.calls.length, 1);
-  assert.equal(
-    aiService.calls[0]?.identityContext?.replyContext,
-    undefined,
-    "bot's own referenced message must not be injected as context",
-  );
+  assert.deepEqual(aiService.calls[0]?.identityContext?.replyContext, {
+    messageId: "9001",
+    userId: "12345",
+    userName: "bot",
+    text: "bot 自己发的话",
+    images: [],
+  });
   const targets = aiService.calls[0]?.identityContext?.interactionTargets ?? [];
   assert.equal(
     targets.some((target) => target.source === "reply"),

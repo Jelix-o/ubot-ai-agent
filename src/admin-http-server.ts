@@ -1749,7 +1749,7 @@ export class AdminHttpServer {
     const settings = await this.options.systemSettingsStore.get();
     const models = settings.models.map((model) => ({
       id: model.id,
-      label: formatModelOptionLabel(model.id, model.shortName || model.name),
+      label: formatModelOptionLabel(model.id, model.model),
       name: model.name,
       shortName: model.shortName,
       purpose: model.purpose,

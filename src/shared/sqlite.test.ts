@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { SharedDb } from "./sqlite.js";
 
@@ -40,7 +41,7 @@ test("insertMessage dedupes by (self, group, msg) and returns 0 on duplicates", 
   db.close();
 });
 
-test("pollMessages advances watermark per consumer key and never backwards", (t) => {
+test("pollMessages uses the same monotonic id order as its watermark", (t) => {
   const db = new SharedDb(tempDb(t));
   db.insertMessage({
     groupId: "10001", userId: "20001", selfId: "30001", msgId: "a",
@@ -55,20 +56,141 @@ test("pollMessages advances watermark per consumer key and never backwards", (t)
     msgTime: 2000, text: "second", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: 3,
   });
 
-  // Poll order is QQ-side msg_time (plan §2.1), tie-broken by id.
+  // Poll order is the SQLite autoincrement id used by the watermark.
   const batch = db.pollMessages("worker:main", 10);
-  assert.deepEqual(batch.map((row) => row.text), ["first", "second", "third"]);
+  assert.deepEqual(batch.map((row) => row.text), ["first", "third", "second"]);
 
   // Advancing to the first id only reveals the rest (watermark stays on id).
   db.advanceWatermark("worker:main", batch[0]!.id);
-  assert.deepEqual(db.pollMessages("worker:main", 10).map((row) => row.text), ["second", "third"]);
+  assert.deepEqual(db.pollMessages("worker:main", 10).map((row) => row.text), ["third", "second"]);
 
   // Watermark never moves backwards: re-advancing an old id is a no-op.
   db.advanceWatermark("worker:main", 1);
-  assert.deepEqual(db.pollMessages("worker:main", 10).map((row) => row.text), ["second", "third"]);
+  assert.deepEqual(db.pollMessages("worker:main", 10).map((row) => row.text), ["third", "second"]);
 
   // Separate consumer key starts from the beginning.
   assert.equal(db.pollMessages("worker:other", 10).length, 3);
+  db.close();
+});
+
+test("pollMessages does not skip rows when a batch contains out-of-order timestamps", (t) => {
+  const db = new SharedDb(tempDb(t));
+  for (let index = 0; index < 65; index += 1) {
+    db.insertMessage({
+      groupId: "10001",
+      userId: "20001",
+      selfId: "30001",
+      msgId: `batch-${index}`,
+      msgTime: 10_000 - index,
+      text: String(index),
+      imagesJson: "[]",
+      hasAtBot: false,
+      isBotMsg: false,
+      createdAt: index,
+    });
+  }
+  const seen: number[] = [];
+  while (true) {
+    const batch = db.pollMessages("worker:batch", 20);
+    if (batch.length === 0) {
+      break;
+    }
+    for (const row of batch) {
+      seen.push(row.id);
+      db.completeConsumerMessage("worker:batch", row.id);
+    }
+  }
+  assert.deepEqual(seen, Array.from({ length: 65 }, (_, index) => index + 1));
+  db.close();
+});
+
+test("completed rows behind a failed gap do not starve later polling batches", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const ids: number[] = [];
+  for (let index = 0; index < 65; index += 1) {
+    ids.push(db.insertMessage({
+      groupId: "10001",
+      userId: "20001",
+      selfId: "30001",
+      msgId: `gap-${index}`,
+      msgTime: 20_000 - index,
+      text: String(index),
+      imagesJson: "[]",
+      hasAtBot: false,
+      isBotMsg: false,
+      createdAt: index,
+    }));
+  }
+
+  const firstBatch = db.pollMessages("worker:gap", 50);
+  assert.deepEqual(firstBatch.map((row) => row.id), ids.slice(0, 50));
+  for (const row of firstBatch.slice(1)) {
+    db.completeConsumerMessage("worker:gap", row.id);
+  }
+
+  const nextBatch = db.pollMessages("worker:gap", 50);
+  assert.deepEqual(
+    nextBatch.map((row) => row.id),
+    [ids[0]!, ...ids.slice(50)],
+    "the failed head remains retryable while completed rows stop occupying the batch",
+  );
+  db.close();
+});
+
+test("completed watermark crosses the context cutover and consumes later batches exactly once", (t) => {
+  const db = new SharedDb(tempDb(t));
+  for (let index = 0; index < 7; index += 1) {
+    db.insertMessage({
+      groupId: "10001",
+      userId: "20001",
+      selfId: "30001",
+      msgId: `audit-${index}`,
+      msgTime: index,
+      text: `audit ${index}`,
+      imagesJson: "[]",
+      hasAtBot: false,
+      isBotMsg: false,
+      createdAt: index,
+    });
+  }
+  db.db.prepare(
+    `INSERT INTO conversation_context_meta (key, value)
+     VALUES ('cutover_message_id', '7')`,
+  ).run();
+  for (let index = 0; index < 45; index += 1) {
+    db.insertMessage({
+      groupId: "10001",
+      userId: "20001",
+      selfId: "30001",
+      msgId: `post-cutover-${index}`,
+      msgTime: 10_000 - index,
+      text: String(index),
+      imagesJson: "[]",
+      hasAtBot: true,
+      isBotMsg: false,
+      createdAt: 100 + index,
+    });
+  }
+
+  const seen: number[] = [];
+  for (let cycle = 0; cycle < 10; cycle += 1) {
+    const batch = db.pollMessages("worker:cutover", 10);
+    if (batch.length === 0) {
+      break;
+    }
+    const pending = batch.filter((row) => !db.isConsumerMessageCompleted("worker:cutover", row.id));
+    if (pending.length === 0) {
+      break;
+    }
+    for (const row of pending) {
+      seen.push(row.id);
+      db.completeConsumerMessage("worker:cutover", row.id);
+    }
+  }
+
+  assert.deepEqual(seen, Array.from({ length: 45 }, (_, index) => index + 8));
+  assert.equal(new Set(seen).size, seen.length);
+  assert.deepEqual(db.pollMessages("worker:cutover", 10), []);
   db.close();
 });
 
@@ -113,12 +235,12 @@ test("outbox claims atomically to prevent double-send", (t) => {
   // A second claim must NOT return the same row (it is 'sending', not expired).
   assert.equal(db.claimOutbox(10).length, 0, "sending row must not be re-claimed");
 
-  // After the sending timeout elapses, the row is reclaimed (sender may have died).
-  const reclaimed = db.claimOutbox(10, Date.now() + 11_000);
-  assert.equal(reclaimed.length, 1, "stale sending row must be reclaimed");
+  // Ambiguous in-flight rows are quarantined. Reclaiming them would duplicate
+  // a QQ send when delivery succeeded but the acknowledgement was lost.
+  assert.equal(db.claimOutbox(10, Date.now() + 60_000).length, 0);
 
   // Mark sent → never claimed again.
-  db.markOutboxSent(reclaimed[0]!.id);
+  db.markOutboxSent(claimed[0]!.id);
   assert.equal(db.claimOutbox(10, Date.now() + 60_000).length, 0);
 
   // Failed with retry_after → reclaimed only after the backoff.
@@ -126,6 +248,200 @@ test("outbox claims atomically to prevent double-send", (t) => {
   db.markOutboxFailed(failed, 2_000);
   assert.equal(db.claimOutbox(10).length, 0, "failed row waits for retry_after");
   assert.equal(db.claimOutbox(10, Date.now() + 3_000).length, 1, "failed row retries after backoff");
+  db.close();
+});
+
+test("two database connections cannot claim the same outbox row", (t) => {
+  const dbPath = tempDb(t);
+  const first = new SharedDb(dbPath);
+  const second = new SharedDb(dbPath);
+  const id = first.enqueueOutbox("10001", null, "once");
+  assert.equal(first.claimOutbox(1)[0]?.id, id);
+  assert.deepEqual(second.claimOutbox(1), []);
+  first.close();
+  second.close();
+});
+
+test("routed outbox remains hidden until its assistant turn is attached", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const id = db.enqueueOutbox("10001", null, "reply", "text", {
+    topicId: "topic-1",
+    branchId: "branch-1",
+  });
+  assert.deepEqual(db.claimOutbox(10), []);
+  const row = db.db.prepare("SELECT status FROM outbox WHERE id = ?").get(id) as { status: string };
+  assert.equal(row.status, "preparing");
+  db.close();
+});
+
+test("outbox stores context and atomically acknowledges the real platform id", (t) => {
+  const db = new SharedDb(tempDb(t));
+  db.db.prepare(
+    `INSERT INTO conversation_topics
+       (topic_id, group_id, owner_user_id, title, keywords_json, created_at, updated_at)
+     VALUES ('topic-1', '10001', '20001', '', '[]', 1, 1)`,
+  ).run();
+  db.db.prepare(
+    `INSERT INTO conversation_branches
+       (branch_id, topic_id, group_id, owner_user_id, created_at, updated_at)
+     VALUES ('branch-1', 'topic-1', '10001', '20001', 1, 1)`,
+  ).run();
+  const turn = db.db.prepare(
+    `INSERT INTO conversation_turns
+       (topic_id, branch_id, role, content, created_at)
+     VALUES ('topic-1', 'branch-1', 'assistant', 'reply', 2)`,
+  ).run();
+  const turnId = Number(turn.lastInsertRowid);
+  const outboxId = db.enqueueOutbox("10001", null, "reply", "text", {
+    topicId: "topic-1",
+    branchId: "branch-1",
+    turnId,
+  });
+  const queued = db.claimOutbox(1)[0]!;
+  assert.equal(queued.delivery_id, `outbox:${outboxId}`);
+  assert.equal(queued.topic_id, "topic-1");
+  assert.equal(queued.branch_id, "branch-1");
+
+  db.ackOutboxDelivery(outboxId, "qq-message-900", 5_000);
+  db.ackOutboxDelivery(outboxId, "qq-message-900", 5_001);
+
+  const sent = db.db.prepare("SELECT status, platform_message_id FROM outbox WHERE id = ?").get(outboxId) as {
+    status: string;
+    platform_message_id: string;
+  };
+  assert.equal(sent.status, "sent");
+  assert.equal(sent.platform_message_id, "qq-message-900");
+  const binding = db.db.prepare(
+    `SELECT topic_id, branch_id, turn_id
+       FROM conversation_message_context
+      WHERE group_id = '10001' AND platform_message_id = 'qq-message-900'`,
+  ).get() as { topic_id: string; branch_id: string; turn_id: number };
+  assert.equal(binding.topic_id, "topic-1");
+  assert.equal(binding.branch_id, "branch-1");
+  assert.equal(binding.turn_id, turnId);
+  assert.throws(() => db.ackOutboxDelivery(outboxId, "different-id"), /different platform message id/);
+  db.close();
+});
+
+test("outbox context can be attached after the platform acknowledgement", (t) => {
+  const db = new SharedDb(tempDb(t));
+  db.db.prepare(
+    `INSERT INTO conversation_topics
+       (topic_id, group_id, owner_user_id, title, keywords_json, created_at, updated_at)
+     VALUES ('late-topic', '10001', '20001', '', '[]', 1, 1)`,
+  ).run();
+  db.db.prepare(
+    `INSERT INTO conversation_branches
+       (branch_id, topic_id, group_id, owner_user_id, created_at, updated_at)
+     VALUES ('late-branch', 'late-topic', '10001', '20001', 1, 1)`,
+  ).run();
+  const turnId = Number(db.db.prepare(
+    `INSERT INTO conversation_turns
+       (topic_id, branch_id, role, content, created_at)
+     VALUES ('late-topic', 'late-branch', 'assistant', 'reply', 2)`,
+  ).run().lastInsertRowid);
+  const id = db.enqueueOutbox("10001", null, "reply");
+  db.ackOutboxDelivery(id, "qq-before-context", 4_000);
+  const beforeAttach = db.db
+    .prepare("SELECT COUNT(*) AS count FROM conversation_message_context")
+    .get() as { count: number };
+  assert.equal(beforeAttach.count, 0);
+
+  db.attachOutboxContext(`outbox:${id}`, {
+    topicId: "late-topic",
+    branchId: "late-branch",
+    turnId,
+  });
+  const binding = db.db.prepare(
+    `SELECT topic_id, branch_id, turn_id
+       FROM conversation_message_context
+      WHERE group_id = '10001' AND platform_message_id = 'qq-before-context'`,
+  ).get() as { topic_id: string; branch_id: string; turn_id: number };
+  assert.equal(binding.topic_id, "late-topic");
+  assert.equal(binding.branch_id, "late-branch");
+  assert.equal(binding.turn_id, turnId);
+  const turn = db.db.prepare("SELECT delivery_id, platform_message_id FROM conversation_turns WHERE id = ?").get(turnId) as {
+    delivery_id: string;
+    platform_message_id: string;
+  };
+  assert.equal(turn.delivery_id, `outbox:${id}`);
+  assert.equal(turn.platform_message_id, "qq-before-context");
+  assert.throws(
+    () => db.attachOutboxContext(`outbox:${id}`, { topicId: "wrong", branchId: "late-branch", turnId }),
+    /different conversation route/,
+  );
+  db.close();
+});
+
+test("discardPreparingOutbox removes only unpublished worker drafts", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const preparing = db.enqueueOutbox("10001", null, "draft", "text", {
+    topicId: "topic-draft",
+    branchId: "branch-draft",
+  });
+  const pending = db.enqueueOutbox("10001", null, "ready");
+
+  assert.equal(db.discardPreparingOutbox([
+    `outbox:${preparing}`,
+    `outbox:${pending}`,
+    "not-an-outbox-id",
+  ]), 1);
+  const rows = db.db.prepare("SELECT id, status FROM outbox ORDER BY id").all() as Array<{ id: number; status: string }>;
+  assert.deepEqual(rows.map((row) => ({ ...row })), [{ id: pending, status: "pending" }]);
+  db.close();
+});
+
+test("retry cleanup removes only drafts for the exact routed source turn", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const stale = db.enqueueOutbox("10001", null, "stale", "text", {
+    topicId: "topic-draft",
+    branchId: "branch-draft",
+    sourceTurnId: 11,
+  });
+  const sibling = db.enqueueOutbox("10001", null, "sibling", "text", {
+    topicId: "topic-draft",
+    branchId: "branch-draft",
+    sourceTurnId: 12,
+  });
+  const otherBranch = db.enqueueOutbox("10001", null, "other", "text", {
+    topicId: "topic-draft",
+    branchId: "branch-other",
+    sourceTurnId: 11,
+  });
+
+  assert.equal(db.discardPreparingOutboxForSource("topic-draft", "branch-draft", 11), 1);
+  const rows = db.db.prepare("SELECT id FROM outbox ORDER BY id").all() as Array<{ id: number }>;
+  assert.deepEqual(rows.map((row) => row.id), [sibling, otherBranch]);
+  assert.equal(rows.some((row) => row.id === stale), false);
+  db.close();
+});
+
+test("old outbox schema without retry_after is migrated without losing rows", (t) => {
+  const dbPath = tempDb(t);
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id TEXT NOT NULL,
+      reply_to TEXT,
+      kind TEXT NOT NULL DEFAULT 'text',
+      text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL
+    );
+    INSERT INTO outbox (group_id, text, created_at) VALUES ('g', 'legacy', 1);
+  `);
+  legacy.close();
+
+  const db = new SharedDb(dbPath);
+  const columns = db.db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  assert.equal(columns.some((column) => column.name === "retry_after"), true);
+  const row = db.claimOutbox(1)[0]!;
+  assert.equal(row.text, "legacy");
+  assert.equal(row.retry_after, null);
+  assert.equal(row.topic_id, null);
+  assert.equal(row.source_turn_id, null);
+  assert.equal(row.platform_message_id, null);
   db.close();
 });
 

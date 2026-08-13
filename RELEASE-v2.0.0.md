@@ -17,7 +17,7 @@ NapCat (反向 WS) → [ingress] 幂等去重/backlog/撤回/令牌桶 → SQLit
 ```
 
 - Ingress 独占反向 WS：幂等去重 `(self, group, msg)`、backlog 60s 检测、撤回订阅、每群令牌桶 6 条/10s。
-- Worker 按 `(群, 用户, 话题)` 三元组串行消费，跨 key 并行；in-flight registry + 可取消 token。
+- Worker 按持久化的 `(群, 因果分支)` 串行消费，跨分支并行；in-flight registry + 可取消 token。
 - Admin 独立进程承载管理后台；共享状态走 `data/shared/bot-shared.db`（SQLite WAL，Node 22 内置）。
 - 回滚：`BOT_ROLE=legacy` 一行切换回单进程模式，数据路径不变。
 
@@ -29,7 +29,8 @@ NapCat (反向 WS) → [ingress] 幂等去重/backlog/撤回/令牌桶 → SQLit
 
 ### 话题隔离（直击风险 3）
 
-- reply_to 引用继承话题；无引用时字符 Jaccard + 关键词重叠归入活跃话题（30min 窗口），无关提问（如问天气）绝不串味。
+- 1 小时内 reply_to 精确恢复因果父链，引用非末端消息自动创建独立分支；无引用只允许同群同用户在 10 分钟内按追问或相似度规则续聊。
+- 不同用户没有明确引用时不共享上下文；路由异常只使用当前消息创建隔离分支，不回退旧个人历史。
 - 群氛围只以**脱敏摘要**（L5，去人名/情绪极性/敏感词模糊化）进入上下文，原文不进 prompt。
 - 长期记忆覆盖链：新事实打 `superseded_by` 标记，检索时旧事实置信度 ×0.3，防止过时记忆污染新话题。
 

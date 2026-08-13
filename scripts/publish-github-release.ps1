@@ -1,9 +1,9 @@
 param(
   [string]$Repo = "Jelix-o/ubot-ai-agent",
-  [string]$Tag = "v2.0.0",
-  [string]$Name = "UBot V2.0.0",
-  [string]$ReleaseNotesPath = "RELEASE-v2.0.0.md",
-  [string]$AssetPath = "release/ubot-2.0.0-win.zip",
+  [string]$Tag = "",
+  [string]$Name = "",
+  [string]$ReleaseNotesPath = "",
+  [string]$AssetPath = "",
   [switch]$DryRun
 )
 
@@ -14,6 +14,23 @@ if ([string]::IsNullOrWhiteSpace($Repo) -or $Repo -notmatch "^[^/]+/[^/]+$") {
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$packageJson = Get-Content -LiteralPath (Join-Path $projectRoot "package.json") -Raw | ConvertFrom-Json
+$version = [string]$packageJson.version
+if ([string]::IsNullOrWhiteSpace($version)) {
+  throw "package.json is missing a version."
+}
+if ([string]::IsNullOrWhiteSpace($Tag)) {
+  $Tag = "v$version"
+}
+if ([string]::IsNullOrWhiteSpace($Name)) {
+  $Name = "UBot V$version"
+}
+if ([string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
+  $ReleaseNotesPath = "RELEASE-v$version.md"
+}
+if ([string]::IsNullOrWhiteSpace($AssetPath)) {
+  $AssetPath = "release/ubot-$version-win.zip"
+}
 $notesFullPath = Join-Path $projectRoot $ReleaseNotesPath
 $assetFullPath = Join-Path $projectRoot $AssetPath
 

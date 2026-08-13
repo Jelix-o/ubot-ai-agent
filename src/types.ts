@@ -306,8 +306,7 @@ export interface AiIdentityContext {
   replyContext?: AiReplyContext;
   realtimeLookup?: RealtimeLookupResult;
   groupRuntimeContext?: GroupRuntimeContext;
-  recentGroupMessages?: RecentGroupMessage[];
-  /** L5 群氛围摘要（非原文，计划 §3/§5.2）。 */
+  /** 脱敏后的群氛围摘要；不得包含聊天原文或成员身份。 */
   atmosphereSummary?: string;
 }
 

@@ -303,7 +303,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v2\.0\.0/);
+  assert.match(appShell, /UBot v2\.0\.1/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -576,7 +576,7 @@ test("windows release package avoids local runtime group config", async () => {
 
   assert.doesNotMatch(packageScript, /"config",/);
   assert.match(packageScript, /"COMMANDS\.md"/);
-  assert.match(packageScript, /"RELEASE-v1\.1\.0\.md"/);
+  assert.match(packageScript, /"RELEASE-v2\.0\.1\.md"/);
   assert.doesNotMatch(packageScript, /"RELEASE-v1\.0\.2\.md"/);
   assert.doesNotMatch(packageScript, /"V1\.0\.2-LOCAL-AUDIT\.md"/);
   assert.match(packageScript, /groups\.example\.json/);
@@ -585,26 +585,26 @@ test("windows release package avoids local runtime group config", async () => {
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
-test("v2.0.0 docs and release metadata stay current", async () => {
+test("v2.0.1 docs and release metadata stay current", async () => {
   const [packageRaw, readmeDoc, commandsDoc, releaseNotes] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASE-v2.0.0.md"), "utf8"),
+    readFile(path.join(repoRoot, "RELEASE-v2.0.1.md"), "utf8"),
   ]);
   const packageJson = JSON.parse(packageRaw) as { version?: string };
 
-  assert.equal(packageJson.version, "2.0.0");
-  assert.match(readmeDoc, /^# UBot V2\.0\.0/m);
-  assert.match(readmeDoc, /v2\.0\.0/);
-  assert.match(readmeDoc, /RELEASE-v2\.0\.0\.md/);
+  assert.equal(packageJson.version, "2.0.1");
+  assert.match(readmeDoc, /^# UBot V2\.0\.1/m);
+  assert.match(readmeDoc, /v2\.0\.1/);
+  assert.match(readmeDoc, /RELEASE-v2\.0\.1\.md/);
   assert.doesNotMatch(readmeDoc, /^# UBot V1\.0\.[0-9]/m);
 
-  assert.match(releaseNotes, /^# UBot V2\.0\.0 Release Notes/m);
-  assert.match(releaseNotes, /多进程/);
-  assert.match(releaseNotes, /真取消/);
-  assert.match(releaseNotes, /话题隔离/);
-  assert.match(releaseNotes, /熔断/);
+  assert.match(releaseNotes, /^# UBot V2\.0\.1 Release Notes/m);
+  assert.match(releaseNotes, /上下文隔离/);
+  assert.match(releaseNotes, /因果链/);
+  assert.match(releaseNotes, /模型配置热刷新/);
+  assert.match(releaseNotes, /真实 QQ 回执/);
 });
 
 test("local build and test scripts avoid nested npm update checks", async () => {

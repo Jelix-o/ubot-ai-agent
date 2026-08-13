@@ -187,6 +187,30 @@ test("SystemSettingsStore preserves an existing model api key when editing with 
   assert.equal(model?.hasApiKey, true);
 });
 
+test("SystemSettingsStore reloads model changes written by another process instance", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-shared-"));
+  const filePath = path.join(dir, "system-settings.json");
+  const adminStore = new SystemSettingsStore(filePath);
+  const workerStore = new SystemSettingsStore(filePath);
+  const model = {
+    id: "ds",
+    name: "DeepSeek",
+    shortName: "deepseek",
+    baseUrl: "https://deepseek.example/v1",
+    purpose: "reply" as const,
+    apiKey: "deepseek-key",
+    enabled: true,
+  };
+
+  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-flash" }] });
+  assert.equal((await workerStore.getInternal()).models[0]?.model, "deepseek-v4-flash");
+
+  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-pro" }] });
+  assert.equal((await workerStore.getInternal()).models[0]?.model, "deepseek-v4-pro");
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("SystemSettingsStore rejects incomplete and duplicate model updates", async () => {
   const store = await createStore();
 

@@ -2,8 +2,15 @@ const { readdirSync, statSync } = require("node:fs");
 const { join } = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const fallbackWindowsNode = "D:\\environment\\nvm\\v22.17.0\\node.exe";
-const node = process.env.UBOT_NODE || (require("node:fs").existsSync(fallbackWindowsNode) ? fallbackWindowsNode : "node");
+if (Number.parseInt(process.versions.node, 10) < 22) {
+  const result = spawnSync(process.execPath, ["scripts/run-node22.cjs", __filename], {
+    stdio: "inherit",
+    shell: false,
+  });
+  process.exit(result.status ?? 1);
+}
+
+const node = process.execPath;
 
 function findTests(dir) {
   const entries = readdirSync(dir, { withFileTypes: true });

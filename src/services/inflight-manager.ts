@@ -53,8 +53,8 @@ export class InflightManager {
   }
 
   /** Clears the registry entry for the key. */
-  end(key: string): void {
-    this.db.clearInflight(key);
+  end(key: string, taskId?: string): void {
+    this.db.clearInflight(key, taskId);
   }
 
   /**

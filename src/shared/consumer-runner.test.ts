@@ -72,14 +72,14 @@ test("ConsumerRunner processes messages per key serially and advances watermarks
   db.close();
 });
 
-test("ConsumerRunner does not replay failed messages but keeps other keys moving", async (t) => {
+test("ConsumerRunner retries failed messages without blocking other keys", async (t) => {
   const db = new SharedDb(tempDb(t));
   const attempts: string[] = [];
   const runner = new ConsumerRunner(db, "test-worker", {
     keyOf: (message) => `${message.group_id}:${message.user_id}`,
     handler: async (message, done) => {
       attempts.push(message.msg_id);
-      if (message.msg_id === "fail") {
+      if (message.msg_id === "fail" && attempts.filter((id) => id === "fail").length === 1) {
         throw new Error("boom");
       }
       await done();
@@ -93,15 +93,57 @@ test("ConsumerRunner does not replay failed messages but keeps other keys moving
   insert(db, "10001", "20001", "fail", 1000);
   insert(db, "10001", "20002", "ok", 1500);
 
-  // The other key completes; the failing message is consumed exactly once
-  // (watermark advanced at poll time — no replay loop, production incident fix).
+  // The other key completes while the failed row stays recoverable and retries
+  // once after its per-key backoff.
   await waitFor(() => attempts.includes("ok"));
   await waitFor(() => db.pollMessages("test-worker", 100).length === 0);
 
   runner.stop();
-  assert.equal(attempts.filter((id) => id === "fail").length, 1, "failed message must not be replayed");
+  assert.equal(attempts.filter((id) => id === "fail").length, 2, "failed message must be retried");
   assert.ok(attempts.includes("ok"), "other key must still be processed");
   db.close();
+});
+
+test("ConsumerRunner restart recovers a queued message that was never completed", async (t) => {
+  const dbPath = tempDb(t);
+  const firstDb = new SharedDb(dbPath);
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let markFirstFinished!: () => void;
+  const firstFinished = new Promise<void>((resolve) => {
+    markFirstFinished = resolve;
+  });
+  const firstRunner = new ConsumerRunner(firstDb, "test-worker", {
+    keyOf: (message) => `${message.group_id}:${message.user_id}`,
+    handler: async () => {
+      await firstBlocked;
+      markFirstFinished();
+    },
+    pollIntervalMs: 20,
+  });
+  const rowId = insert(firstDb, "10001", "20001", "recover", 1000);
+  await waitFor(() => firstRunner.queueDepth === 1);
+  firstRunner.stop();
+
+  const secondDb = new SharedDb(dbPath);
+  const recovered: number[] = [];
+  const secondRunner = new ConsumerRunner(secondDb, "test-worker", {
+    keyOf: (message) => `${message.group_id}:${message.user_id}`,
+    handler: async (message, done) => {
+      recovered.push(message.id);
+      await done();
+    },
+    pollIntervalMs: 20,
+  });
+  await waitFor(() => recovered.length === 1);
+  secondRunner.stop();
+  releaseFirst();
+  await firstFinished;
+  assert.deepEqual(recovered, [rowId]);
+  firstDb.close();
+  secondDb.close();
 });
 
 test("ConsumerRunner ignores messages with empty key", async (t) => {

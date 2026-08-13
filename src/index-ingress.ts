@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 import { NapCatReverseServer } from "./napcat-reverse-server.js";
-import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
+import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
 import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
 import { parseGroupMessage, extractTextFromMessage, extractImagesFromMessage } from "./utils/message-parser.js";
@@ -25,6 +25,52 @@ const RETRACTED_TTL_MS = 24 * 60 * 60 * 1000;
 const BOT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EMITTER_POLL_MS = 400;
 const EMITTER_BATCH_SIZE = 20;
+
+/**
+ * Delivers one already-claimed outbox row and commits the real platform id.
+ * Keeping this boundary outside IngressApp makes the cross-process receipt
+ * handoff testable without opening a second NapCat server or timer loop.
+ */
+export async function deliverOutboxRow(
+  sharedDb: SharedDb,
+  transport: MessageTransport,
+  row: OutboxRow,
+  sentAtMs = Date.now(),
+  onAckFailure?: (error: unknown) => void,
+): Promise<string> {
+  let receipt: MessageReceipt | void;
+  if (row.kind === "record") {
+    receipt = await transport.sendGroupRecord(row.group_id, row.text);
+  } else if (row.kind === "airecord") {
+    receipt = await transport.sendGroupAiRecord(row.group_id, row.text);
+  } else {
+    receipt = await transport.sendGroupMessage(row.group_id, row.text);
+  }
+  const platformMessageId = receipt?.platformMessageId ?? receipt?.messageId;
+  if (!platformMessageId) {
+    throw new Error("NapCat send succeeded without a real platform message id");
+  }
+  try {
+    sharedDb.ackOutboxDelivery(row.id, platformMessageId, sentAtMs);
+  } catch (error) {
+    onAckFailure?.(error);
+    // Never return this row to the send retry queue: the QQ action succeeded,
+    // so retrying would create a duplicate. The row remains `sending` for
+    // reconciliation/alerting with its causal turn still intact.
+    throw new OutboxAcknowledgementError(platformMessageId, error);
+  }
+  return platformMessageId;
+}
+
+export class OutboxAcknowledgementError extends Error {
+  constructor(
+    readonly platformMessageId: string,
+    readonly cause: unknown,
+  ) {
+    super("QQ send succeeded but the outbox acknowledgement could not be persisted");
+    this.name = "OutboxAcknowledgementError";
+  }
+}
 
 interface IngressOptions {
   botQq: string;
@@ -224,19 +270,27 @@ export class IngressApp {
     const rows = this.sharedDb.claimOutbox(EMITTER_BATCH_SIZE);
     for (const row of rows) {
       try {
-        const receipt = await this.deliver(row.kind, row.group_id, row.text);
-        this.sharedDb.markOutboxSent(row.id);
-        this.sharedDb.recordBotMessage(row.group_id, receipt?.messageId ?? row.reply_to ?? "", Date.now());
+        // The acknowledgement transaction marks the outbox row sent, stores
+        // the real QQ id, and binds that id to the causal branch.
+        const platformMessageId = await deliverOutboxRow(
+          this.sharedDb,
+          this.transport,
+          row,
+          Date.now(),
+          () => this.metrics.inc("outbox_ack_backfill_failed"),
+        );
         this.metrics.inc("outbox_sent");
         logInfo("Outbox message sent.", {
           outboxId: row.id,
           kind: row.kind,
           groupId: row.group_id,
           replyTo: row.reply_to,
-          messageId: receipt?.messageId,
+          platformMessageId,
         });
       } catch (error) {
-        this.sharedDb.markOutboxFailed(row.id);
+        if (!(error instanceof OutboxAcknowledgementError)) {
+          this.sharedDb.markOutboxFailed(row.id);
+        }
         this.metrics.inc("outbox_failed");
         logWarn("Outbox send failed.", {
           outboxId: row.id,
@@ -246,18 +300,6 @@ export class IngressApp {
         });
       }
     }
-  }
-
-  private async deliver(kind: string, groupId: string, text: string): Promise<MessageReceipt | undefined> {
-    let receipt: MessageReceipt | void;
-    if (kind === "record") {
-      receipt = await this.transport.sendGroupRecord(groupId, text);
-    } else if (kind === "airecord") {
-      receipt = await this.transport.sendGroupAiRecord(groupId, text);
-    } else {
-      receipt = await this.transport.sendGroupMessage(groupId, text);
-    }
-    return receipt ?? undefined;
   }
 
   private maintain(): void {

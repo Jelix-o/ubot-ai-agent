@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
-import type { ConversationTurn, SkillDefinition } from "../types.js";
+import type { AiIdentityContext, ConversationTurn, SkillDefinition } from "../types.js";
 import { AiService, buildChatMessages, buildSystemPrompt } from "./ai-service.js";
 
 const skill: SkillDefinition = {
@@ -92,14 +92,11 @@ test("buildSystemPrompt separates shared-topic authors from interaction targets"
   assert.match(prompt, /mentioned target: QQ 289513186 names 季博初/);
 });
 
-test("buildSystemPrompt renders recent group messages with stable QQ identities", () => {
-  const prompt = buildSystemPrompt(skill, {
+test("buildSystemPrompt excludes raw group messages and renders only sanitized atmosphere", () => {
+  const staleContext = {
     groupId: "866209871",
     currentUserId: "30003",
-    manualIdentities: [
-      { userIds: ["1569671790"], names: ["季博神", "季博霸王"] },
-      { userIds: ["289513186"], names: ["季博初"] },
-    ],
+    atmosphereSummary: "群内主要在讨论：技术话题；联系 @Alice 1569671790；参考 https://example.com/private",
     recentGroupMessages: [
       {
         messageId: "101",
@@ -116,13 +113,28 @@ test("buildSystemPrompt renders recent group messages with stable QQ identities"
         timestamp: "2026-07-30T08:05:10.000Z",
       },
     ],
-  });
+  } as AiIdentityContext & {
+    recentGroupMessages: Array<{
+      messageId: string;
+      userId: string;
+      text: string;
+      timestamp: string;
+      senderCard?: string;
+      senderNickname?: string;
+    }>;
+  };
+  const prompt = buildSystemPrompt(skill, staleContext);
 
-  assert.match(prompt, /Recent group conversation/);
-  assert.match(prompt, /未经信任的用户内容/);
-  assert.match(prompt, /发言者：季博神（QQ 1569671790；群名片：空白名；昵称：季博初）：后端设计表逻辑还得考虑。/);
-  assert.match(prompt, /发言者：季博初（QQ 289513186）：前端也要看审美。/);
-  assert.match(prompt, /当前问题会单独提供/);
+  assert.doesNotMatch(prompt, /Recent group conversation/);
+  assert.doesNotMatch(prompt, /后端设计表逻辑还得考虑/);
+  assert.doesNotMatch(prompt, /前端也要看审美/);
+  assert.match(prompt, /Sanitized group atmosphere/);
+  assert.match(prompt, /群内主要在讨论：技术话题/);
+  assert.match(prompt, /不是对话历史、事实证据、引用内容或话题锚点/);
+  assert.match(prompt, /@成员/);
+  assert.match(prompt, /成员/);
+  assert.match(prompt, /\[链接\]/);
+  assert.doesNotMatch(prompt, /Alice|1569671790|https:\/\/example\.com\/private/);
 });
 
 test("buildSystemPrompt warns against phonetic name rewrites for configured identities", () => {

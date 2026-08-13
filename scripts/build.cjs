@@ -1,8 +1,14 @@
 const { spawnSync } = require("node:child_process");
-const { existsSync } = require("node:fs");
 
-const fallbackWindowsNode = "D:\\environment\\nvm\\v22.17.0\\node.exe";
-const node = process.env.UBOT_NODE || (existsSync(fallbackWindowsNode) ? fallbackWindowsNode : "node");
+if (Number.parseInt(process.versions.node, 10) < 22) {
+  const result = spawnSync(process.execPath, ["scripts/run-node22.cjs", __filename], {
+    stdio: "inherit",
+    shell: false,
+  });
+  process.exit(result.status ?? 1);
+}
+
+const node = process.execPath;
 
 function run(label, args) {
   console.log(`\n> ${label}`);

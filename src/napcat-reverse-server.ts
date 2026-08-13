@@ -489,9 +489,10 @@ function toReferencedMessage(
   };
 }
 
-function toMessageReceipt(data: NapCatSendMessageResponse | undefined): { messageId?: string } | undefined {
+function toMessageReceipt(data: NapCatSendMessageResponse | undefined): { messageId?: string; platformMessageId?: string } | undefined {
   if (data?.message_id === undefined || data.message_id === null) {
     return undefined;
   }
-  return { messageId: String(data.message_id) };
+  const platformMessageId = String(data.message_id);
+  return { messageId: platformMessageId, platformMessageId };
 }

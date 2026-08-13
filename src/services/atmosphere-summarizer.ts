@@ -192,6 +192,9 @@ export class AtmosphereSummarizer {
   }
 
   getSummary(groupId: string): AtmosphereSummary | undefined {
+    // In split-process mode ingress/worker may update the summary file through
+    // another instance. Reload on read so BotApplication sees that update.
+    this.store = this.loadStore();
     return this.store.summaries[groupId];
   }
 

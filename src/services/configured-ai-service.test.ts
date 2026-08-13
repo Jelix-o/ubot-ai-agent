@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -355,6 +355,44 @@ test("ConfiguredAiService delegates replies to enabled reply model only", async 
   assert.equal(created[0]?.baseUrl, "https://reply.example/v1");
   assert.equal(created[0]?.model, "configured-reply");
   assert.equal(created[0]?.apiKey, "reply-key");
+});
+
+test("ConfiguredAiService hot-reloads an externally updated reply model with the same id", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "configured-ai-shared-"));
+  const filePath = path.join(dir, "system-settings.json");
+  const adminStore = new SystemSettingsStore(filePath);
+  const workerStore = new SystemSettingsStore(filePath);
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"), {
+    text: "fallback",
+    model: "fallback",
+    skillId: "assistant",
+  });
+  const created: string[] = [];
+  const model = {
+    id: "ds",
+    name: "DeepSeek",
+    shortName: "deepseek",
+    baseUrl: "https://deepseek.example/v1",
+    purpose: "reply" as const,
+    apiKey: "deepseek-key",
+    enabled: true,
+  };
+  const service = new ConfiguredAiService(fallback, workerStore, "reply", (configured) => {
+    created.push(configured.model);
+    return new FakeRuntimeAiService(makeHealth(configured.model, configured.baseUrl), {
+      text: configured.model,
+      model: configured.model,
+      skillId: "assistant",
+    });
+  }, "ds");
+
+  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-flash" }] });
+  assert.equal((await service.generateReply({ skill: testSkill, history: [], userInput: "first" })).model, "deepseek-v4-flash");
+
+  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-pro" }] });
+  assert.equal((await service.generateReply({ skill: testSkill, history: [], userInput: "second" })).model, "deepseek-v4-pro");
+  assert.deepEqual(created, ["deepseek-v4-flash", "deepseek-v4-pro"]);
+  await rm(dir, { recursive: true, force: true });
 });
 
 test("ConfiguredAiService routes memory, dedup, and summary calls to their dedicated model purposes", async () => {

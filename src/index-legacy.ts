@@ -9,6 +9,9 @@ import { AdminTaskStore } from "./services/admin-task-store.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import { ConfiguredTtsService } from "./services/configured-tts-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
+import { ConversationContextRepository } from "./services/conversation-context-repository.js";
+import { ConversationContextRouter } from "./services/conversation-context-router.js";
+import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
@@ -34,6 +37,8 @@ import { logError, logInfo } from "./logger.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageTransport } from "./bot.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
+import { openSharedDb } from "./shared/sqlite.js";
+import { extractImagesFromMessage, parseGroupMessage } from "./utils/message-parser.js";
 
 type NapCatRuntime = MessageTransport & {
   start(): void;
@@ -99,6 +104,10 @@ export async function main(): Promise<BotApplication> {
   await sweepAdminTasksOnStartup(adminTaskStore);
   const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath);
   const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath);
+  const sharedDb = openSharedDb(config.dataDir);
+  const contextRepository = new ConversationContextRepository(sharedDb);
+  const contextRouter = new ConversationContextRouter(contextRepository);
+  const atmosphere = new AtmosphereSummarizer(config.dataDir);
   const napcatRuntime: NapCatRuntime =
     config.napcatMode === "reverse"
       ? new NapCatReverseServer({
@@ -129,7 +138,9 @@ export async function main(): Promise<BotApplication> {
     ),
     scheduledReminderService,
     adminOperationLogService,
-    new GroupLock(),
+    // Legacy has no ConsumerRunner, so serialize the group while the route is
+    // resolved and executed. This prevents same-branch LLM overlap.
+    new GroupLock(1),
     new LiveChatService(),
     config.botQq,
     config.ttsAllowNapCatAiFallback,
@@ -147,6 +158,13 @@ export async function main(): Promise<BotApplication> {
     profileRecordStore,
     new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl }),
     new GroupTranscriptService(),
+    atmosphere,
+    undefined,
+    undefined,
+    undefined,
+    true,
+    contextRepository,
+    contextRouter,
   );
 
   const adminHttpServer = config.adminHttpEnabled
@@ -172,7 +190,60 @@ export async function main(): Promise<BotApplication> {
 
   napcatRuntime.on("groupMessage", async (event) => {
     try {
-      await app.handleGroupMessage(event);
+      const parsed = parseGroupMessage(event.message, config.botQq);
+      const images = extractImagesFromMessage(event.message);
+      const groupId = String(event.group_id);
+      const userId = String(event.user_id);
+      const selfId = event.self_id === undefined ? config.botQq : String(event.self_id);
+      if (userId === config.botQq || userId === selfId) {
+        return;
+      }
+      const messageId = String(event.message_id);
+      const messageTime = event.time ? event.time * 1_000 : Date.now();
+      const rowId = sharedDb.insertMessage({
+        groupId,
+        userId,
+        selfId,
+        msgId: messageId,
+        msgTime: messageTime,
+        text: parsed.text,
+        imagesJson: JSON.stringify(images),
+        replyTo: parsed.replyMessageId,
+        hasAtBot: parsed.hasAtBot,
+        isBotMsg: false,
+        createdAt: Date.now(),
+      });
+      if (rowId === 0) {
+        return;
+      }
+      const recent = sharedDb.listRecentGroupMessages(groupId, messageTime - 60 * 60 * 1_000);
+      atmosphere.update(groupId, recent.map((row) => ({
+        groupId: row.group_id,
+        userId: row.user_id,
+        messageId: row.msg_id,
+        text: row.text || (safeImageCount(row.images_json) > 0 ? "[图片消息]" : ""),
+        timestamp: new Date(row.msg_time).toISOString(),
+      })).filter((message) => Boolean(message.text)), messageTime);
+      const isAdministrativeCommand = parsed.text.trim().startsWith("#") &&
+        !/^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(parsed.text.trim());
+      const shouldRoute = !isAdministrativeCommand && await app.shouldRouteConversation(
+        groupId,
+        parsed.text,
+        parsed.hasAtBot,
+      );
+      const route = !shouldRoute
+        ? undefined
+        : contextRouter.resolve({
+            sourceRowId: rowId,
+            groupId,
+            userId,
+            sourceMessageId: messageId,
+            replyToMessageId: parsed.replyMessageId,
+            text: parsed.text,
+            hasImages: images.length > 0,
+            nowMs: messageTime,
+          });
+      await app.handleGroupMessage(event, undefined, route);
     } catch (error) {
       logError("Unhandled group message error.", {
         error: (error as Error).message,
@@ -190,6 +261,15 @@ export async function main(): Promise<BotApplication> {
   });
 
   return app;
+}
+
+function safeImageCount(imagesJson: string): number {
+  try {
+    const value = JSON.parse(imagesJson) as unknown;
+    return Array.isArray(value) ? value.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function sweepAdminTasksOnStartup(adminTaskStore: AdminTaskStore): Promise<void> {
