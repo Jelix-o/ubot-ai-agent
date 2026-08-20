@@ -65,11 +65,11 @@ function applyReplyFormatBudget(
   if (!budget) {
     return behavior;
   }
-  const maxMessages = Math.max(1, Math.min(8, Math.floor(budget.maxMessages)));
+  const maxMessages = Math.max(1, Math.min(20, Math.floor(budget.maxMessages)));
   return {
     ...behavior,
-    maxChars: Math.max(20, Math.min(600, Math.floor(budget.maxChars))),
-    maxTotalChars: Math.max(20, Math.min(3_000, Math.floor(budget.maxTotalChars))),
+    maxChars: Math.max(20, Math.min(4_000, Math.floor(budget.maxChars))),
+    maxTotalChars: Math.max(20, Math.min(8_000, Math.floor(budget.maxTotalChars))),
     maxMessages,
     preferredMaxMessages: Math.max(1, Math.min(maxMessages, Math.floor(budget.preferredMaxMessages))),
   };
@@ -239,15 +239,14 @@ function fitMessagesWithinBudget(
       continue;
     }
 
-    const separatorCost = fitted.length > 0 ? 1 : 0;
-    const candidateCost = separatorCost + cleanMessage.length;
+    const candidateCost = cleanMessage.length;
     if (usedChars + candidateCost <= maxTotalChars) {
       fitted.push(cleanMessage);
       usedChars += candidateCost;
       continue;
     }
 
-    const remaining = maxTotalChars - usedChars - separatorCost;
+    const remaining = maxTotalChars - usedChars;
     if (remaining <= 0) {
       break;
     }

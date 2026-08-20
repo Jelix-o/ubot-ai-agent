@@ -170,6 +170,8 @@ test("admin skills and command lists use the simplified table surfaces", async (
   assert.match(skillsView, /\{\{\s*skill\.maxContextTurns\s*\}\}\s*轮/);
   assert.match(skillsView, /恢复备份/);
   assert.match(skillsView, /复制 Skill/);
+  assert.match(skillsView, /用户明确要求长文时可使用“最多消息数”/);
+  assert.match(skillsView, /单条和总字符始终是硬上限/);
   assert.match(skillsView, /\/api\/skills\/backups/);
 
   const commandTable = commandsView.slice(
@@ -303,7 +305,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v2\.0\.2/);
+  assert.match(appShell, /UBot v2\.0\.3/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -576,7 +578,7 @@ test("windows release package avoids local runtime group config", async () => {
 
   assert.doesNotMatch(packageScript, /"config",/);
   assert.match(packageScript, /"COMMANDS\.md"/);
-  assert.match(packageScript, /"RELEASE-v2\.0\.2\.md"/);
+  assert.match(packageScript, /"RELEASE-v2\.0\.3\.md"/);
   assert.doesNotMatch(packageScript, /"RELEASE-v1\.0\.2\.md"/);
   assert.doesNotMatch(packageScript, /"V1\.0\.2-LOCAL-AUDIT\.md"/);
   assert.match(packageScript, /groups\.example\.json/);
@@ -585,26 +587,26 @@ test("windows release package avoids local runtime group config", async () => {
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
-test("v2.0.2 docs and release metadata stay current", async () => {
+test("v2.0.3 docs and release metadata stay current", async () => {
   const [packageRaw, readmeDoc, commandsDoc, releaseNotes] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASE-v2.0.2.md"), "utf8"),
+    readFile(path.join(repoRoot, "RELEASE-v2.0.3.md"), "utf8"),
   ]);
   const packageJson = JSON.parse(packageRaw) as { version?: string };
 
-  assert.equal(packageJson.version, "2.0.2");
-  assert.match(readmeDoc, /^# UBot V2\.0\.2/m);
-  assert.match(readmeDoc, /v2\.0\.2/);
-  assert.match(readmeDoc, /RELEASE-v2\.0\.2\.md/);
+  assert.equal(packageJson.version, "2.0.3");
+  assert.match(readmeDoc, /^# UBot V2\.0\.3/m);
+  assert.match(readmeDoc, /v2\.0\.3/);
+  assert.match(readmeDoc, /RELEASE-v2\.0\.3\.md/);
   assert.doesNotMatch(readmeDoc, /^# UBot V1\.0\.[0-9]/m);
 
-  assert.match(releaseNotes, /^# UBot V2\.0\.2 Release Notes/m);
-  assert.match(releaseNotes, /群名片/);
-  assert.match(releaseNotes, /QQ 昵称/);
-  assert.match(releaseNotes, /乱码/);
-  assert.match(releaseNotes, /sender_card/);
+  assert.match(releaseNotes, /^# UBot V2\.0\.3 Release Notes/m);
+  assert.match(releaseNotes, /显式长文本/);
+  assert.match(releaseNotes, /3000 字/);
+  assert.match(releaseNotes, /maxReplyCharsPerMessage/);
+  assert.match(releaseNotes, /单次模型调用/);
 });
 
 test("local build and test scripts avoid nested npm update checks", async () => {

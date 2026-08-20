@@ -63,6 +63,11 @@ import type {
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import { formatReplyMessages, type ReplyFormatBudget } from "./utils/reply-format.js";
+import {
+  buildExplicitReplyLengthInstruction,
+  buildExplicitReplyLengthPlan,
+  resolveReplyLengthIntent,
+} from "./utils/reply-length.js";
 import { classifyUpstreamFailure } from "./utils/upstream-failure.js";
 import { withTimeout } from "./utils/with-timeout.js";
 import { parseVoiceCommand } from "./utils/voice-command.js";
@@ -2480,10 +2485,18 @@ export class BotApplication {
           }),
         ))
       : undefined;
-    const replyFormatBudget = resolveHuixianReplyFormatBudget(skill, normalizedUserInput);
-    const replyLengthInstruction = replyFormatBudget
-      ? buildHuixianReplyLengthInstruction(replyFormatBudget)
-      : undefined;
+    const explicitReplyLengthPlan = (() => {
+      if (replyMode !== "text") return undefined;
+      const intent = resolveReplyLengthIntent(normalizedUserInput, causalHistory, userId);
+      return intent ? buildExplicitReplyLengthPlan(skill, intent) : undefined;
+    })();
+    const replyFormatBudget = explicitReplyLengthPlan?.budget
+      ?? resolveHuixianReplyFormatBudget(skill, normalizedUserInput);
+    const replyLengthInstruction = explicitReplyLengthPlan
+      ? buildExplicitReplyLengthInstruction(explicitReplyLengthPlan)
+      : replyFormatBudget
+        ? buildHuixianReplyLengthInstruction(replyFormatBudget)
+        : undefined;
     const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction]
       .filter((instruction): instruction is string => Boolean(instruction))
       .join("\n\n");
@@ -2675,7 +2688,7 @@ export class BotApplication {
         return;
       }
 
-      const outgoingMessages = formatReplyMessages(skill, replyText);
+      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
       if (outgoingMessages.length === 0) {
         throw new Error("Formatted AI reply was empty.");
       }

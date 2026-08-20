@@ -250,7 +250,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span /> 系统运行中</strong>
-          <small>UBot v2.0.2</small>
+          <small>UBot v2.0.3</small>
         </div>
       </div>
     </aside>

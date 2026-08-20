@@ -399,7 +399,7 @@ onMounted(() => {
       <div class="form-block">
         <div class="block-title">
           <h3>回复控制</h3>
-          <small>留空表示不写入该可选字段，继续使用系统默认策略</small>
+          <small>留空表示继续使用系统默认策略。普通回复使用“偏好消息数”；用户明确要求长文时可使用“最多消息数”，单条和总字符始终是硬上限</small>
         </div>
         <div class="form-grid">
           <label>单条最长字符<input class="input" type="number" min="20" max="4000" :value="optionalNumberValue(form.maxReplyCharsPerMessage)" @input="updateOptionalNumber('maxReplyCharsPerMessage', ($event.target as HTMLInputElement).value)" /></label>

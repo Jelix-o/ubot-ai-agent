@@ -165,8 +165,28 @@ test("formatReplyMessages honors a per-reply short or detailed budget", () => {
   assert.equal(short[0]?.length, 160);
   assert.equal(detailed.length <= 4, true);
   assert.equal(detailed.every((message) => message.length <= 420), true);
-  assert.equal(detailed.join(" ").length <= 1_200, true);
-  assert.equal(detailed.join(" ").length > short.join(" ").length, true);
+  assert.equal(detailed.reduce((total, message) => total + message.length, 0) <= 1_200, true);
+  assert.equal(
+    detailed.reduce((total, message) => total + message.length, 0) > short[0]!.length,
+    true,
+  );
+});
+
+test("formatReplyMessages preserves a 3000-character explicit reply across QQ-sized chunks", () => {
+  const messages = formatReplyMessages(
+    skill,
+    "长".repeat(3_000),
+    {
+      maxChars: 500,
+      maxTotalChars: 3_000,
+      maxMessages: 8,
+      preferredMaxMessages: 8,
+    },
+  );
+
+  assert.equal(messages.length, 6);
+  assert.equal(messages.every((message) => message.length <= 500), true);
+  assert.equal(messages.reduce((total, message) => total + message.length, 0), 3_000);
 });
 
 test("formatReplyMessages honors a skill's 600-character reply budget", () => {

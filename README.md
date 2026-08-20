@@ -1,10 +1,10 @@
-# UBot V2.0.2
+# UBot V2.0.3
 
 UBot 是基于 `NapCat + OneBot + Node.js 22+ + TypeScript + Vue 3` 的 QQ 群机器人和管理后台。它以三进程服务运行，并将群消息、上下文路由、回执和管理配置持久化到 SQLite。
 
 项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)
 
-当前版本：`v2.0.2`。本次重点修复群聊日报的中文乱码和成员名称识别：日报优先显示当前群名片，其次显示 QQ 昵称，并在三进程链路中保留发送者名称快照。完整变更见 [RELEASE-v2.0.2.md](RELEASE-v2.0.2.md)。
+当前版本：`v2.0.3`。本次新增显式长文本支持：用户要求“3000 字”“写成长文”或继续未完成长文时，机器人会在当前轮直接生成正文，并按 Skill 的单条、总字符和最多消息数拆成 QQ 消息。完整变更见 [RELEASE-v2.0.3.md](RELEASE-v2.0.3.md)。
 
 ## 核心特性
 
@@ -14,6 +14,7 @@ UBot 是基于 `NapCat + OneBot + Node.js 22+ + TypeScript + Vue 3` 的 QQ 群�
 - **真实 QQ 回执**：Worker outbox 使用内部 `deliveryId`，Ingress 成功发送后回填真实 QQ `platformMessageId`，后续引用机器人回复可稳定恢复上下文。
 - **模型热刷新**：后台更新 `system-settings.json` 后，Ingress、Worker 和 Legacy 进程会自动刷新；`#模型` 展示实际调用的上游模型名。
 - **可读群聊日报**：日报按“当前群名片 → 当前 QQ 昵称 → 消息快照 → QQ 号”显示成员；成员接口暂时失败时仍可使用已保存快照生成。
+- **按需长文本**：普通聊天保持短回复；用户明确指定篇幅时，一次生成正文并按 Skill 回复控制自动分段，不再先承诺或要求用户重复确认。
 - **可靠消费**：消息按 SQLite 自增 ID 消费并记录完成状态；失败可重试，时间戳乱序不会跳过消息。
 - **运维能力**：幂等去重、撤回处理、熔断与降级、限流、日志、指标、管理后台、长期记忆和知识库。
 
@@ -100,6 +101,8 @@ npm run migrate:context -- --execute
 
 从 V2.0.1 升级到 V2.0.2 不需要再次执行上述迁移。V2.0.2 启动时只会为 SQLite `messages` 表自动增加可空的 `sender_card` 和 `sender_nickname` 列，不清空上下文、日报统计或历史审计消息。部署前仍建议备份 `data/shared/bot-shared.db` 和 `data/daily-report-store.json`。
 
+V2.0.2 升级到 V2.0.3 没有数据库迁移，也不会清理上下文。生产部署会保留后台编辑过的 Skill JSON；建议将它们放在持久化 `skills/` 目录并由版本目录链接使用。
+
 ## Linux 部署
 
 生产环境推荐 `/opt/ai-project`，由 `ai-project.service` 管理。部署时只替换代码与依赖，不覆盖 `.env`、`data/` 或 `config/groups.json`。
@@ -164,4 +167,4 @@ powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1
 
 ## 验证状态
 
-V2.0.2 已通过完整测试套件、前后端生产构建，以及带群名片和 QQ 昵称的 Ingress -> SQLite -> Worker 发送者恢复链路测试。实际测试数量见 [V2.0.2 发布说明](RELEASE-v2.0.2.md)。
+V2.0.3 已通过完整测试套件、前后端生产构建，以及显式长文本解析、QQ 分段和多段回执链路测试。实际测试数量见 [V2.0.3 发布说明](RELEASE-v2.0.3.md)。

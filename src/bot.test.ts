@@ -1284,6 +1284,36 @@ test("Huixian receives runtime task context and an adaptive detailed reply instr
   assert.match(call?.scenarioInstruction ?? "", /3000 字内/);
 });
 
+test("explicit 3000-character requests use any text skill's configured long-reply budget immediately", async () => {
+  const longReplySkill: SkillDefinition = {
+    ...assistantSkill,
+    maxReplyCharsPerMessage: 500,
+    maxTotalReplyChars: 3_000,
+    maxReplyMessages: 8,
+    preferredMaxReplyMessages: 4,
+  };
+  const aiService = new FakeAiService(async () => ({
+    text: "长".repeat(1_200),
+    model: "test-model",
+    skillId: "assistant",
+  }));
+  const { app, transport } = createApp({ aiService, skills: [longReplySkill, teacherSkill] });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "来个3000字的疯狂星期四文案" } },
+  ]));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /显式长文本模式/);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /直接输出正文/);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /每条最多 500 字/);
+  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /总正文最多 3000 字/);
+  assert.equal(transport.sent.length, 3);
+  assert.equal(transport.sent.every((message) => message.text.length <= 500), true);
+  assert.equal(transport.sent.reduce((total, message) => total + message.text.length, 0), 1_200);
+});
+
 test("admin mute suppresses normal replies until unmuted", async () => {
   const { app, transport, aiService, groupConfigService } = createApp();
 
