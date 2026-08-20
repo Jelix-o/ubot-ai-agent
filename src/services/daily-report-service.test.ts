@@ -189,6 +189,75 @@ test("daily report layout is concise and includes model-generated after-work qui
   }
 });
 
+test("daily report resolves numeric stored names from current group card then nickname", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-member-name-test-"));
+  const storePath = path.join(tempDir, "daily-report-store.json");
+
+  try {
+    const service = new DailyReportService(
+      new DailyReportStore(storePath),
+      {
+        async generateBroadcastQuip() {
+          return "收工";
+        },
+      } as never,
+    );
+    await service.recordMessage({
+      groupId: "67890",
+      userId: "10001",
+      userName: "10001",
+      text: "first",
+      timestamp: "2026-04-15T10:00:00",
+    });
+    await service.recordMessage({
+      groupId: "67890",
+      userId: "10002",
+      userName: "消息时昵称",
+      text: "second",
+      timestamp: "2026-04-15T11:00:00",
+    });
+
+    const report = await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), {
+      members: [
+        { user_id: 10001, card: "当前群名片", nickname: "当前昵称" },
+        { user_id: 10002, card: "", nickname: "当前QQ昵称" },
+      ],
+    });
+
+    assert.match(report, /当前群名片 1 条/);
+    assert.match(report, /当前QQ昵称 1 条/);
+    assert.doesNotMatch(report, /1\. 10001 1 条|2\. 10001 1 条/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("daily report keeps stored sender snapshot when member lookup is unavailable", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-member-fallback-test-"));
+  const storePath = path.join(tempDir, "daily-report-store.json");
+
+  try {
+    const service = new DailyReportService(
+      new DailyReportStore(storePath),
+      { async generateBroadcastQuip() { return "收工"; } } as never,
+    );
+    await service.recordMessage({
+      groupId: "67890",
+      userId: "10001",
+      userName: "消息时群名片",
+      text: "first",
+      timestamp: "2026-04-15T10:00:00",
+    });
+
+    const report = await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), {
+      members: [],
+    });
+    assert.match(report, /消息时群名片 1 条/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("daily report and chat summary skip ai calls when disabled", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-token-control-test-"));
   const storePath = path.join(tempDir, "daily-report-store.json");
@@ -218,7 +287,7 @@ test("daily report and chat summary skip ai calls when disabled", async () => {
       timestamp: "2026-04-15T10:00:00",
     });
 
-    await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), { useAiQuip: false });
+    const report = await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), { useAiQuip: false });
     await service.buildChatSummary({
       groupId: "67890",
       request: { mode: "custom_range", label: "today", startMinute: 0, endMinute: 23 * 60 + 59 },
@@ -228,6 +297,8 @@ test("daily report and chat summary skip ai calls when disabled", async () => {
 
     assert.equal(quipCalls, 0);
     assert.equal(summaryCalls, 0);
+    assert.match(report, /今天也辛苦了/);
+    assert.doesNotMatch(report, /[�浠璁绠缁锛銆]/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -248,7 +319,7 @@ test("builds named-period chat summary from stored messages", async () => {
           totalMessages: number;
           participantCount: number;
           periodLabel: string;
-          sampleMessages: Array<{ text: string }>;
+          sampleMessages: Array<{ text: string; userName: string }>;
         }) {
           assert.equal(args.periodLabel, "上午");
           assert.equal(args.totalMessages, 2);
@@ -256,6 +327,8 @@ test("builds named-period chat summary from stored messages", async () => {
           assert.equal(args.sampleMessages.length, 2);
           assert.equal(args.sampleMessages[0]?.text, "早会先过一下需求");
           assert.equal(args.sampleMessages[1]?.text, "行，我补一下接口文档");
+          assert.equal(args.sampleMessages[0]?.userName, "当前群名片");
+          assert.equal(args.sampleMessages[1]?.userName, "当前QQ昵称");
           return "上午聊天总结\n主要在聊：需求和接口文档\n比较活跃：小王、老张\n整体感觉：推进项目为主";
         },
       } as never,
@@ -263,15 +336,15 @@ test("builds named-period chat summary from stored messages", async () => {
 
     await service.recordMessage({
       groupId: "67890",
-      userId: "u1",
-      userName: "小王",
+      userId: "10001",
+      userName: "10001",
       text: "早会先过一下需求",
       timestamp: "2026-04-15T09:12:00",
     });
     await service.recordMessage({
       groupId: "67890",
-      userId: "u2",
-      userName: "老张",
+      userId: "10002",
+      userName: "10002",
       text: "行，我补一下接口文档",
       timestamp: "2026-04-15T10:03:00",
     });
@@ -292,6 +365,10 @@ test("builds named-period chat summary from stored messages", async () => {
         mode: "named_period",
       },
       now: new Date("2026-04-15T20:00:00"),
+      members: [
+        { user_id: 10001, card: "当前群名片", nickname: "旧昵称" },
+        { user_id: 10002, card: "", nickname: "当前QQ昵称" },
+      ],
     });
 
     assert.match(summary, /上午聊天总结/);

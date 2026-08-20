@@ -211,6 +211,8 @@ export class IngressApp {
       msgTime: msgTimeMs,
       text: parsed.text,
       imagesJson: JSON.stringify(images),
+      senderCard: event.sender?.card,
+      senderNickname: event.sender?.nickname,
       replyTo: parsed.replyMessageId,
       hasAtBot: parsed.hasAtBot,
       isBotMsg: false,

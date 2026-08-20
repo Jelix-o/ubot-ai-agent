@@ -74,15 +74,17 @@ class GatedWorkerTransport extends WorkerTransport {
 }
 
 class CapturingAiService {
-  readonly calls: Array<{ history: ConversationTurn[]; userInput: string }> = [];
+  readonly calls: Array<{ history: ConversationTurn[]; userInput: string; identityContext?: unknown }> = [];
 
   async generateReply(args: {
     history: ConversationTurn[];
     userInput: string;
+    identityContext?: unknown;
   }): Promise<AiReply> {
     this.calls.push({
       history: args.history.map((turn) => ({ ...turn })),
       userInput: args.userInput,
+      identityContext: args.identityContext,
     });
     return {
       text: this.calls.length === 1 ? "first answer" : "follow-up answer",
@@ -171,6 +173,14 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
   };
   const preparingRoute = routeForMessage(observerDb, "101");
   assert.ok(preparingRoute);
+  const sourceMessage = observerDb.db.prepare(
+    "SELECT sender_card, sender_nickname FROM messages WHERE group_id = ? AND msg_id = ?",
+  ).get(GROUP_ID, "101") as { sender_card: string | null; sender_nickname: string | null };
+  assert.deepEqual({ ...sourceMessage }, { sender_card: "测试群名片", sender_nickname: "Tester" });
+  assert.deepEqual(
+    (aiService.calls[0]?.identityContext as { currentSpeaker?: unknown } | undefined)?.currentSpeaker,
+    { senderCard: "测试群名片", senderNickname: "Tester" },
+  );
   assert.deepEqual(
     { ...preparing },
     {
@@ -326,6 +336,7 @@ function inboundEvent(input: {
     sender: {
       user_id: Number(USER_ID),
       nickname: "Tester",
+      card: "测试群名片",
       role: "member",
     },
   };

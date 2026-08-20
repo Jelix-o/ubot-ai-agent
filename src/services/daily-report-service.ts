@@ -1,4 +1,4 @@
-import type { GroupBotConfig } from "../types.js";
+import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 import type { ChatSummaryRequest } from "../utils/chat-summary-request.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 import type { AiService } from "./ai-service.js";
@@ -6,6 +6,11 @@ import type { DailyReportMessageRecord } from "./daily-report-store.js";
 import { DailyReportStore } from "./daily-report-store.js";
 
 type DailyReportAiService = Pick<AiService, "generateBroadcastQuip" | "generateChatPeriodSummary">;
+
+export interface DailyReportBuildOptions {
+  useAiQuip?: boolean;
+  members?: readonly NapcatGroupMember[];
+}
 
 export class DailyReportService {
   constructor(
@@ -63,7 +68,7 @@ export class DailyReportService {
   async buildReport(
     groupConfig: GroupBotConfig,
     now = new Date(),
-    options: { useAiQuip?: boolean } = {},
+    options: DailyReportBuildOptions = {},
   ): Promise<string> {
     const dayKey = toLocalDateKey(now);
     const messages = await this.store.getMessages(groupConfig.groupId, dayKey);
@@ -86,7 +91,7 @@ export class DailyReportService {
       ].join("\n");
     }
 
-    const stats = buildDailyStats(messages, topUserCount);
+    const stats = buildDailyStats(messages, topUserCount, buildMemberNameDirectory(options.members));
 
     const lines = [
       header,
@@ -108,6 +113,7 @@ export class DailyReportService {
     request: ChatSummaryRequest;
     now?: Date;
     useAiSummary?: boolean;
+    members?: readonly NapcatGroupMember[];
   }): Promise<string> {
     const now = args.now ?? new Date();
     const { dayKey, messages } = await this.loadMessagesForRequest(
@@ -120,7 +126,8 @@ export class DailyReportService {
       return `${args.request.label}这段时间没有可总结的聊天记录`;
     }
 
-    const stats = buildChatSummaryStats(messages, args.request);
+    const resolvedMessages = applyMemberNames(messages, buildMemberNameDirectory(args.members));
+    const stats = buildChatSummaryStats(resolvedMessages, args.request);
     const aiSummary = args.useAiSummary === false
       ? null
       : await this.aiService.generateChatPeriodSummary({
@@ -133,14 +140,14 @@ export class DailyReportService {
             userName: user.userName,
             messageCount: user.messageCount,
           })),
-          sampleMessages: pickSummarySamples(messages),
+          sampleMessages: pickSummarySamples(resolvedMessages),
         });
 
     if (aiSummary && isUsefulChatSummary(aiSummary)) {
       return aiSummary;
     }
 
-    return buildFallbackChatSummary(args.request, stats, messages);
+    return buildFallbackChatSummary(args.request, stats, resolvedMessages);
   }
 
   private async loadMessagesForRequest(
@@ -210,8 +217,8 @@ export class DailyReportService {
 
 function buildFallbackBroadcastQuip(context: string): string {
   return context === "daily_report_evening"
-    ? "浠婂ぉ涔熻緵鑻︿簡"
-    : "璁板緱鐪嬩竴鐪?;"
+    ? "今天也辛苦了"
+    : "记得看一看";
 }
 
 type TopUserStat = {
@@ -242,7 +249,11 @@ type SummarySample = {
   timestamp: string;
 };
 
-function buildDailyStats(messages: DailyReportMessageRecord[], topUserCount: number): DailyStats {
+function buildDailyStats(
+  messages: DailyReportMessageRecord[],
+  topUserCount: number,
+  memberNames = new Map<string, string>(),
+): DailyStats {
   const messageCountByUser = new Map<string, TopUserStat>();
   const participantIds = new Set<string>();
   const hourCounter = new Map<number, number>();
@@ -280,7 +291,11 @@ function buildDailyStats(messages: DailyReportMessageRecord[], topUserCount: num
         right.messageCount - left.messageCount ||
         right.latestTimestamp.localeCompare(left.latestTimestamp),
     )
-    .slice(0, topUserCount);
+    .slice(0, topUserCount)
+    .map((user) => ({
+      ...user,
+      userName: memberNames.get(user.userId) ?? user.userName,
+    }));
 
   return {
     totalMessages: messages.length,
@@ -708,6 +723,34 @@ function pickBetterUserName(current: string, incoming: string, fallback: string)
   }
 
   return currentName;
+}
+
+function buildMemberNameDirectory(
+  members: readonly NapcatGroupMember[] | undefined,
+): Map<string, string> {
+  const directory = new Map<string, string>();
+  for (const member of members ?? []) {
+    const card = member.card?.trim();
+    const nickname = member.nickname?.trim();
+    const displayName = card || nickname;
+    if (displayName) {
+      directory.set(String(member.user_id), displayName);
+    }
+  }
+  return directory;
+}
+
+function applyMemberNames(
+  messages: DailyReportMessageRecord[],
+  memberNames: ReadonlyMap<string, string>,
+): DailyReportMessageRecord[] {
+  if (memberNames.size === 0) {
+    return messages;
+  }
+  return messages.map((message) => ({
+    ...message,
+    userName: memberNames.get(message.userId) ?? message.userName,
+  }));
 }
 
 function formatClockTime(date: Date): string {

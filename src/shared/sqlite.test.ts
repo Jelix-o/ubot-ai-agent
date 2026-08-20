@@ -41,6 +41,58 @@ test("insertMessage dedupes by (self, group, msg) and returns 0 on duplicates", 
   db.close();
 });
 
+test("message sender card and nickname survive SQLite polling", (t) => {
+  const db = new SharedDb(tempDb(t));
+  db.insertMessage({
+    groupId: "10001",
+    userId: "20001",
+    selfId: "30001",
+    msgId: "sender-1",
+    msgTime: 1_700_000_000_000,
+    text: "hello",
+    imagesJson: "[]",
+    senderCard: "  群名片  ",
+    senderNickname: "  QQ昵称  ",
+    hasAtBot: false,
+    isBotMsg: false,
+    createdAt: 1_700_000_000_000,
+  });
+
+  const [row] = db.pollMessages("worker:sender", 10);
+  assert.equal(row?.sender_card, "群名片");
+  assert.equal(row?.sender_nickname, "QQ昵称");
+  db.close();
+});
+
+test("old messages schema is upgraded with nullable sender identity columns", (t) => {
+  const dbPath = tempDb(t);
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      self_id TEXT NOT NULL,
+      msg_id TEXT NOT NULL,
+      msg_time INTEGER NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      images_json TEXT NOT NULL DEFAULT '[]',
+      reply_to TEXT,
+      has_at_bot INTEGER NOT NULL DEFAULT 0,
+      is_bot_msg INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      dedup_key TEXT NOT NULL UNIQUE
+    );
+  `);
+  legacy.close();
+
+  const db = new SharedDb(dbPath);
+  const columns = db.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+  assert.equal(columns.some((column) => column.name === "sender_card"), true);
+  assert.equal(columns.some((column) => column.name === "sender_nickname"), true);
+  db.close();
+});
+
 test("pollMessages uses the same monotonic id order as its watermark", (t) => {
   const db = new SharedDb(tempDb(t));
   db.insertMessage({

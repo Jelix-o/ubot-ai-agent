@@ -588,6 +588,7 @@ export class BotApplication {
             request: chatSummaryRequest,
             now: new Date(),
             useAiSummary: tokenCostControl.chatSummaryAiEnabled,
+            members: await this.safeListGroupMembers(groupId),
           });
           await this.sendText(groupId, summary);
         });
@@ -747,6 +748,7 @@ export class BotApplication {
           request: chatSummaryRequest,
           now: new Date(),
           useAiSummary: tokenCostControl.chatSummaryAiEnabled,
+          members: await this.safeListGroupMembers(groupId),
         });
         await this.sendText(groupId, summary);
       });
@@ -1003,6 +1005,7 @@ export class BotApplication {
           await this.groupLock.run(groupConfig.groupId, async () => {
             const report = await this.dailyReportService.buildReport(groupConfig, now, {
               useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+              members: await this.safeListGroupMembers(groupConfig.groupId),
             });
             await this.sendText(groupConfig.groupId, report);
             await this.dailyReportService.markSent(groupConfig.groupId, now);
@@ -1925,6 +1928,7 @@ export class BotApplication {
         const tokenCostControl = await this.getTokenCostControl();
         const report = await this.dailyReportService.buildReport(groupConfig, new Date(), {
           useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
+          members: await this.safeListGroupMembers(groupId),
         });
         await this.sendText(groupId, report);
       });

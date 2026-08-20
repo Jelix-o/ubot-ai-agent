@@ -144,6 +144,8 @@ export class WorkerApp {
       msg_time: number;
       text: string;
       images_json?: string;
+      sender_card?: string | null;
+      sender_nickname?: string | null;
       reply_to?: string | null;
       has_at_bot?: number;
     },
@@ -271,6 +273,8 @@ export class WorkerApp {
     msg_time: number;
     text: string;
     images_json?: string;
+    sender_card?: string | null;
+    sender_nickname?: string | null;
     reply_to?: string | null;
   }): ConversationRoute {
     const images = parseImages(message.images_json);
@@ -315,6 +319,8 @@ export class WorkerApp {
     msg_time: number;
     text: string;
     images_json?: string;
+    sender_card?: string | null;
+    sender_nickname?: string | null;
     reply_to?: string | null;
     has_at_bot?: number;
   }): NapcatGroupMessageEvent {
@@ -352,6 +358,11 @@ export class WorkerApp {
       time: Math.floor(message.msg_time / 1000),
       raw_message: message.text,
       message: segments,
+      sender: {
+        user_id: Number(message.user_id),
+        ...(message.sender_card ? { card: message.sender_card } : {}),
+        ...(message.sender_nickname ? { nickname: message.sender_nickname } : {}),
+      },
     };
   }
 

@@ -114,6 +114,10 @@ class FakeTransport implements MessageTransport {
   async getHealthStatus(): Promise<{ ok: boolean; detail: string }> {
     return this.healthStatus;
   }
+
+  async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+    return this.memberDirectoryByGroup[groupId] ?? [];
+  }
 }
 
 class DraftWorkerTransport extends FakeTransport {
@@ -562,7 +566,7 @@ class FakeTtsService {
 
 class FakeDailyReportService {
   recorded: Array<{ groupId: string; userId: string; userName: string; text: string }> = [];
-  reports: Array<{ groupId: string; now: string; useAiQuip?: boolean }> = [];
+  reports: Array<{ groupId: string; now: string; useAiQuip?: boolean; members?: readonly NapcatGroupMember[] }> = [];
   marked: Array<{ groupId: string; now: string }> = [];
   summaries: Array<{ groupId: string; label: string; now: string; useAiSummary?: boolean }> = [];
 
@@ -584,8 +588,17 @@ class FakeDailyReportService {
     return this.shouldSend(groupConfig, now);
   }
 
-  async buildReport(groupConfig: GroupBotConfig, now = new Date(), options: { useAiQuip?: boolean } = {}): Promise<string> {
-    this.reports.push({ groupId: groupConfig.groupId, now: now.toISOString(), useAiQuip: options.useAiQuip });
+  async buildReport(
+    groupConfig: GroupBotConfig,
+    now = new Date(),
+    options: { useAiQuip?: boolean; members?: readonly NapcatGroupMember[] } = {},
+  ): Promise<string> {
+    this.reports.push({
+      groupId: groupConfig.groupId,
+      now: now.toISOString(),
+      useAiQuip: options.useAiQuip,
+      members: options.members,
+    });
     return this.reportText(groupConfig, now);
   }
 
@@ -594,6 +607,7 @@ class FakeDailyReportService {
     request: { label: string };
     now?: Date;
     useAiSummary?: boolean;
+    members?: readonly NapcatGroupMember[];
   }): Promise<string> {
     this.summaries.push({
       groupId: args.groupId,
@@ -2118,6 +2132,20 @@ test("ignores non-mentioned messages for ai reply but still records daily stats"
   assert.equal(transport.sent.length, 0);
   assert.equal(dailyReportService.recorded.length, 1);
   assert.equal(dailyReportService.recorded[0]?.text, "normal message");
+});
+
+test("daily report recording prefers group card and falls back to nickname", async () => {
+  const { app, dailyReportService } = createApp();
+  const withCard = createEvent([{ type: "text", data: { text: "card message" } }], 20001, 67890, 101);
+  withCard.sender = { user_id: 20001, card: "群备注", nickname: "QQ昵称" };
+  const nicknameOnly = createEvent([{ type: "text", data: { text: "nickname message" } }], 20002, 67890, 102);
+  nicknameOnly.sender = { user_id: 20002, card: "", nickname: "备用昵称" };
+
+  await app.handleGroupMessage(withCard);
+  await app.handleGroupMessage(nicknameOnly);
+
+  assert.equal(dailyReportService.recorded[0]?.userName, "群备注");
+  assert.equal(dailyReportService.recorded[1]?.userName, "备用昵称");
 });
 
 test("repeats the same plain group text on the fourth consecutive occurrence", async () => {
@@ -4681,6 +4709,19 @@ test("sends scheduled daily report once tick condition is met", async () => {
   assert.equal(transport.sent.at(-1)?.text, "18:00 群聊日报\n今日消息 12 条");
   assert.equal(dailyReportService.marked.length, 1);
   assert.equal(dailyReportService.reports[0]?.useAiQuip, false);
+  assert.deepEqual(dailyReportService.reports[0]?.members, transport.memberDirectoryByGroup["67890"]);
+});
+
+test("manual daily report preview resolves the current group member directory", async () => {
+  const dailyReportService = new FakeDailyReportService();
+  const { app, transport } = createApp({ dailyReportService });
+
+  await app.handleGroupMessage(
+    createEvent([{ type: "text", data: { text: "#日报 预览" } }], 99999),
+  );
+
+  assert.equal(dailyReportService.reports.length, 1);
+  assert.deepEqual(dailyReportService.reports[0]?.members, transport.memberDirectoryByGroup["67890"]);
 });
 
 test("creates scheduled reminder through natural bot mention and sends due reminders", async () => {

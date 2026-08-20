@@ -1,10 +1,10 @@
-# UBot V2.0.1
+# UBot V2.0.2
 
 UBot 是基于 `NapCat + OneBot + Node.js 22+ + TypeScript + Vue 3` 的 QQ 群机器人和管理后台。它以三进程服务运行，并将群消息、上下文路由、回执和管理配置持久化到 SQLite。
 
 项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)
 
-当前版本：`v2.0.1`。本次重点修复会仙上下文串线、机器人消息引用断链，以及后台修改模型后 Worker 仍使用旧模型的问题。完整变更见 [RELEASE-v2.0.1.md](RELEASE-v2.0.1.md)。
+当前版本：`v2.0.2`。本次重点修复群聊日报的中文乱码和成员名称识别：日报优先显示当前群名片，其次显示 QQ 昵称，并在三进程链路中保留发送者名称快照。完整变更见 [RELEASE-v2.0.2.md](RELEASE-v2.0.2.md)。
 
 ## 核心特性
 
@@ -13,6 +13,7 @@ UBot 是基于 `NapCat + OneBot + Node.js 22+ + TypeScript + Vue 3` 的 QQ 群�
 - **不注入群聊原文**：普通会仙问答只使用当前因果链、显式引用、长期记忆和脱敏群氛围摘要，其他群消息不会进入 prompt。
 - **真实 QQ 回执**：Worker outbox 使用内部 `deliveryId`，Ingress 成功发送后回填真实 QQ `platformMessageId`，后续引用机器人回复可稳定恢复上下文。
 - **模型热刷新**：后台更新 `system-settings.json` 后，Ingress、Worker 和 Legacy 进程会自动刷新；`#模型` 展示实际调用的上游模型名。
+- **可读群聊日报**：日报按“当前群名片 → 当前 QQ 昵称 → 消息快照 → QQ 号”显示成员；成员接口暂时失败时仍可使用已保存快照生成。
 - **可靠消费**：消息按 SQLite 自增 ID 消费并记录完成状态；失败可重试，时间戳乱序不会跳过消息。
 - **运维能力**：幂等去重、撤回处理、熔断与降级、限流、日志、指标、管理后台、长期记忆和知识库。
 
@@ -97,6 +98,8 @@ npm run migrate:context -- --execute
 
 不会清理长期记忆、画像、知识库、群配置、系统设置、日报或原始消息审计表。
 
+从 V2.0.1 升级到 V2.0.2 不需要再次执行上述迁移。V2.0.2 启动时只会为 SQLite `messages` 表自动增加可空的 `sender_card` 和 `sender_nickname` 列，不清空上下文、日报统计或历史审计消息。部署前仍建议备份 `data/shared/bot-shared.db` 和 `data/daily-report-store.json`。
+
 ## Linux 部署
 
 生产环境推荐 `/opt/ai-project`，由 `ai-project.service` 管理。部署时只替换代码与依赖，不覆盖 `.env`、`data/` 或 `config/groups.json`。
@@ -108,12 +111,12 @@ sudo systemctl stop ai-project.service
 npm ci
 npm run build
 npm test
-npm run migrate:context
-npm run migrate:context -- --execute
 
 sudo systemctl start ai-project.service
 sudo systemctl status ai-project.service --no-pager
 ```
+
+只有从 V2.0.0 或更早版本首次升级、且尚未执行过 V2.0.1 上下文迁移时，才需要运行上一节的 `migrate:context` 两条命令。V2.0.1 → V2.0.2 不运行它们。
 
 服务启动脚本为 `scripts/start-prod.sh`，默认拉起 `ingress,worker,admin` 三个进程。若需要临时回退单进程模式，可设置 `BOT_ROLE=legacy` 后重启服务。
 
@@ -157,8 +160,8 @@ powershell -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1
 
 ## 回滚
 
-停止服务后将 systemd 的工作目录或代码目录切回上一版本，再启动服务。若需要恢复旧短期上下文，使用迁移前 `data/context-backups/` 中对应时间戳的备份；不要将旧短期会话表与 V2.0.1 的新路由表混合使用。
+停止服务后将 systemd 的工作目录或代码目录切回上一版本，再启动服务。V2.0.2 的两列 SQLite 变更是向后兼容的，回切 V2.0.1 时不要求删除新列。若需要恢复旧短期上下文，使用迁移前 `data/context-backups/` 中对应时间戳的备份；不要将旧短期会话表与 V2.0.1 的新路由表混合使用。
 
 ## 验证状态
 
-V2.0.1 已通过 `npm test` 512 项测试、前后端生产构建，以及 Ingress -> Worker -> Outbox -> QQ 回执 -> 引用恢复的组件级链路测试。
+V2.0.2 已通过完整测试套件、前后端生产构建，以及带群名片和 QQ 昵称的 Ingress -> SQLite -> Worker 发送者恢复链路测试。实际测试数量见 [V2.0.2 发布说明](RELEASE-v2.0.2.md)。

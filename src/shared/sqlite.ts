@@ -25,6 +25,8 @@ export interface IngressMessageRow {
   msg_time: number;
   text: string;
   images_json: string;
+  sender_card: string | null;
+  sender_nickname: string | null;
   reply_to: string | null;
   has_at_bot: number;
   is_bot_msg: number;
@@ -88,6 +90,8 @@ CREATE TABLE IF NOT EXISTS messages (
   msg_time INTEGER NOT NULL,
   text TEXT NOT NULL DEFAULT '',
   images_json TEXT NOT NULL DEFAULT '[]',
+  sender_card TEXT,
+  sender_nickname TEXT,
   reply_to TEXT,
   has_at_bot INTEGER NOT NULL DEFAULT 0,
   is_bot_msg INTEGER NOT NULL DEFAULT 0,
@@ -262,6 +266,16 @@ export class SharedDb {
 
   /** 轻量 schema 迁移：旧库缺列时补齐（CREATE TABLE IF NOT EXISTS 不会改已有表）。 */
   private migrateSchema(): void {
+    const messageCols = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+    for (const [name, sqlType] of [
+      ["sender_card", "TEXT"],
+      ["sender_nickname", "TEXT"],
+    ] as const) {
+      if (!messageCols.some((col) => col.name === name)) {
+        this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${sqlType}`);
+      }
+    }
+
     const outboxCols = this.db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
     const additions: Array<[string, string]> = [
       ["updated_at", "INTEGER"],
@@ -300,6 +314,8 @@ export class SharedDb {
     msgTime: number;
     text: string;
     imagesJson: string;
+    senderCard?: string;
+    senderNickname?: string;
     replyTo?: string;
     hasAtBot: boolean;
     isBotMsg: boolean;
@@ -310,8 +326,8 @@ export class SharedDb {
         .prepare(
           `INSERT INTO messages
              (group_id, user_id, self_id, msg_id, msg_time, text, images_json,
-              reply_to, has_at_bot, is_bot_msg, created_at, dedup_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              sender_card, sender_nickname, reply_to, has_at_bot, is_bot_msg, created_at, dedup_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.groupId,
@@ -321,6 +337,8 @@ export class SharedDb {
           row.msgTime,
           row.text,
           row.imagesJson,
+          normalizeOptionalText(row.senderCard),
+          normalizeOptionalText(row.senderNickname),
           row.replyTo ?? null,
           row.hasAtBot ? 1 : 0,
           row.isBotMsg ? 1 : 0,
@@ -368,7 +386,8 @@ export class SharedDb {
     const rows = this.db
       .prepare(
         `SELECT m.id, m.group_id, m.user_id, m.self_id, m.msg_id, m.msg_time, m.text,
-                m.images_json, m.reply_to, m.has_at_bot, m.is_bot_msg, m.created_at,
+                m.images_json, m.sender_card, m.sender_nickname, m.reply_to,
+                m.has_at_bot, m.is_bot_msg, m.created_at,
                 r.topic_id AS context_topic_id,
                 r.branch_id AS context_branch_id,
                 r.route_reason AS context_route_reason
@@ -847,6 +866,11 @@ function parseOutboxDeliveryId(value: string): number | undefined {
   }
   const id = Number(match[1]);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+function normalizeOptionalText(value: string | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {
