@@ -215,3 +215,45 @@ test("scheduled member memory dedup can explicitly opt into semantic judge timeo
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("scheduled member memory dedup excludes opted-out subjects before semantic evaluation or writes", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-dedup-opt-out-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const first = await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "movie taste",
+      content: "Collects quiet science fiction films and prefers short recommendations.",
+      source: "test",
+    });
+    const second = await store.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "running habit",
+      content: "Usually records evening running routes and weekly distance goals.",
+      source: "test",
+    });
+    let called = 0;
+    const service = new GroupMemoryDeduplicateService(store, async () => {
+      called += 1;
+      return { action: "duplicate", reason: "should not be called" };
+    });
+
+    const result = await service.deduplicateMemberMemoriesForGroup("67890", {
+      useSemanticJudge: true,
+      excludedSubjectUserIds: ["20001"],
+    });
+
+    assert.equal(called, 0);
+    assert.equal(result.subjectCount, 0);
+    assert.equal(result.decisionCount, 0);
+    assert.equal(result.appliedCount, 0);
+    assert.equal((await store.get(first.id))?.enabled, true);
+    assert.equal((await store.get(second.id))?.enabled, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

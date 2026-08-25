@@ -21,7 +21,8 @@ import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SkillService } from "./services/skill-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
-import type { AdminTaskRecord, GroupBotConfig, GroupMemberProfile, NapcatGroupMember } from "./types.js";
+import { SharedDb } from "./shared/sqlite.js";
+import type { AdminSession, AdminTaskRecord, GroupBotConfig, GroupMemberProfile, NapcatGroupMember } from "./types.js";
 
 let activeCsrfToken = "";
 
@@ -119,7 +120,7 @@ async function rawPost(url: string, payload: unknown, headers: Record<string, st
   });
 }
 
-test("admin http server protects APIs and serves authenticated dashboard data", async () => {
+test("admin http server protects APIs and serves authenticated dashboard data", async (t) => {
   activeCsrfToken = "";
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-http-"));
   const groupsPath = path.join(dir, "groups.json");
@@ -270,6 +271,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     },
   ]);
   const profileRecordStore = new ProfileRecordStore(path.join(dir, "profile-records.json"));
+  const sharedDb = new SharedDb(path.join(dir, "shared", "bot-shared.db"));
   const hiddenGroupProfileRecord = await profileRecordStore.create({
     groupId: "100200300",
     userId: "20001",
@@ -319,6 +321,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
   let listGroupMembersCalls = 0;
   let profileHealthCalls = 0;
   let lastProfileHealthRefresh = false;
+  let lastProfileHealthCacheOnly = false;
   let semanticJudgeCalls = 0;
   let napcatMembersByGroup: Record<string, NapcatGroupMember[]> = {
     "67890": [
@@ -333,7 +336,6 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     publicBaseUrl: "http://127.0.0.1",
     username: "admin",
     password: "secret",
-    groupPassword: "group-secret",
     sessionSecret: "test-secret",
     groupConfigService: new GroupConfigService(groupsPath),
     groupMemoryStore,
@@ -378,6 +380,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     async getProfileAiHealthStatus(options) {
       profileHealthCalls += 1;
       lastProfileHealthRefresh = options?.refresh === true;
+      lastProfileHealthCacheOnly = options?.cacheOnly === true;
       return {
         ok: true,
         detail: options?.refresh ? "profile refreshed" : "profile ok",
@@ -403,6 +406,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       listGroupMembersCalls += 1;
       return napcatMembersByGroup[groupId] ?? [];
     },
+    sharedDb,
   });
 
   try {
@@ -500,6 +504,36 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.match(activeCsrfToken, /^[A-Za-z0-9_-]{32,}$/);
     const cookie = login.headers.get("set-cookie");
     assert.ok(cookie?.includes("HttpOnly"));
+
+    sharedDb.recordParticipationDecision({
+      sourceRowId: 901,
+      groupId: "67890",
+      userId: "20001",
+      action: "observe",
+      reason: "ambient_observation",
+      score: 0,
+      policyVersion: "v1-conservative",
+      signals: { hasAtBot: false },
+      createdAt: Date.parse("2026-06-03T12:00:00.000Z"),
+    });
+    const participationDiagnostics = await fetch(`${baseUrl}/api/participation-decisions?groupId=67890`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(participationDiagnostics.status, 200);
+    assert.deepEqual(await participationDiagnostics.json(), {
+      decisions: [{
+        id: 1,
+        sourceRowId: 901,
+        groupId: "67890",
+        userId: "20001",
+        action: "observe",
+        reason: "ambient_observation",
+        score: 0,
+        policyVersion: "v1-conservative",
+        signals: { hasAtBot: false },
+        createdAt: "2026-06-03T12:00:00.000Z",
+      }],
+    });
 
     const unauthenticatedLogout = await globalThis.fetch(`${baseUrl}/api/logout`, { method: "POST" });
     assert.equal(unauthenticatedLogout.status, 401);
@@ -844,13 +878,65 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(refreshedSkillsList.status, 200);
-    assert.equal(((await refreshedSkillsList.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "youmi"), true);
+    assert.equal(((await refreshedSkillsList.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "youmi"), false);
 
     const refreshedSkillOptions = await fetch(`${baseUrl}/api/skill-options`, {
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(refreshedSkillOptions.status, 200);
-    assert.equal(((await refreshedSkillOptions.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "youmi"), true);
+    assert.equal(((await refreshedSkillOptions.json()) as { skills: Array<{ id: string }> }).skills.some((item) => item.id === "youmi"), false);
+
+    const retiredSkillRead = await fetch(`${baseUrl}/api/skills/youmi`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(retiredSkillRead.status, 404);
+
+    const retiredSkillExport = await fetch(`${baseUrl}/api/skills/export?id=youmi`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(retiredSkillExport.status, 404);
+
+    const retiredSkillCreate = await fetch(`${baseUrl}/api/skills`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "leijun",
+        name: "Retired persona",
+        systemPrompt: "Do not create this persona.",
+        styleRules: [],
+        knowledge: [],
+        temperature: 0.7,
+        maxContextTurns: 12,
+      }),
+    });
+    assert.equal(retiredSkillCreate.status, 400);
+    assert.equal(((await retiredSkillCreate.json()) as { error: string }).error, "invalid_skill_id");
+
+    const retiredSkillUpdate = await fetch(`${baseUrl}/api/skills/youmi`, {
+      method: "PUT",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Do not update this persona." }),
+    });
+    assert.equal(retiredSkillUpdate.status, 400);
+    assert.equal(((await retiredSkillUpdate.json()) as { error: string }).error, "invalid_skill_id");
+
+    const retiredSkillImport = await fetch(`${baseUrl}/api/skills/import`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        raw: JSON.stringify({
+          id: "jackma",
+          name: "Retired persona",
+          systemPrompt: "Do not import this persona.",
+          styleRules: [],
+          knowledge: [],
+          temperature: 0.7,
+          maxContextTurns: 12,
+        }),
+      }),
+    });
+    assert.equal(retiredSkillImport.status, 400);
+    assert.equal(((await retiredSkillImport.json()) as { error: string }).error, "invalid_skill_id");
 
     const createSkill = await fetch(`${baseUrl}/api/skills`, {
       method: "POST",
@@ -971,6 +1057,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(typeof backupSkillsBody.backupDir, "string");
     assert.equal(backupSkillsBody.files.includes("assistant.json"), true);
     assert.equal(backupSkillsBody.files.includes("memory_helper.json"), true);
+    assert.equal(backupSkillsBody.files.includes("youmi.json"), false);
 
     const deleteImportedSkill = await fetch(`${baseUrl}/api/skills/imported_skill`, {
       method: "DELETE",
@@ -1151,6 +1238,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       latencyMs: 12,
       cached: false,
     });
+    assert.equal(lastProfileHealthRefresh, false);
+    assert.equal(lastProfileHealthCacheOnly, true);
     assert.equal(overviewBody.recent?.candidates.some((candidate) => candidate.id === orphanCandidate.id), true);
     assert.equal(overviewBody.recent?.candidates.some((candidate) => candidate.id === batchFactCandidate.id), true);
     assert.equal(overviewBody.recent?.memories[0]?.title, "Another fact");
@@ -1172,7 +1261,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     const groupConfigBody = await groupConfig.json() as { groupId: string; replyModelMode: string; dailyReportEnabled: boolean };
     assert.equal(groupConfigBody.groupId, "67890");
     assert.equal(groupConfigBody.replyModelMode, "gpt");
-    assert.equal(groupConfigBody.dailyReportEnabled, true);
+    assert.equal(groupConfigBody.dailyReportEnabled, false);
 
     const invalidGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`, {
       method: "PUT",
@@ -1188,6 +1277,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       body: JSON.stringify({
         currentSkillId: "assistant",
         replyModelMode: "mimo",
+        participationMode: "mentions_only",
         allowedSkillIds: ["assistant", "assistant", "zxp"],
         switcherUserIds: ["99999"],
         liveChatUserIds: ["20001"],
@@ -1208,6 +1298,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(updateGroupConfig.status, 200);
     const updateGroupConfigBody = await updateGroupConfig.json() as {
       replyModelMode: string;
+      participationMode: string;
       allowedSkillIds: string[];
       roastModeUserIds?: string[];
       liveChatDelaySeconds: number;
@@ -1216,12 +1307,20 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       manualIdentities?: Array<{ userIds: string[]; names: string[]; note?: string }>;
     };
     assert.equal(updateGroupConfigBody.replyModelMode, "mimo");
+    assert.equal(updateGroupConfigBody.participationMode, "mentions_only");
     assert.deepEqual(updateGroupConfigBody.allowedSkillIds, ["assistant", "zxp"]);
     assert.deepEqual(updateGroupConfigBody.roastModeUserIds, ["20002"]);
     assert.equal(updateGroupConfigBody.liveChatDelaySeconds, 45);
     assert.equal(updateGroupConfigBody.dailyReportEnabled, true);
     assert.equal(updateGroupConfigBody.botMuted, false);
     assert.deepEqual(updateGroupConfigBody.manualIdentities ?? [], []);
+    const groupConfigAudit = await fetch(`${baseUrl}/api/logs?groupId=67890`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(groupConfigAudit.status, 200);
+    assert.equal((await groupConfigAudit.json() as { entries: Array<{ action: string; detail?: string }> }).entries.some((entry) =>
+      entry.action === "group_config_update" && entry.detail?.includes("participationMode"),
+    ), true);
 
     const schedulePreview = await fetch(`${baseUrl}/api/groups/67890/schedule-preview?days=2`, {
       headers: { Cookie: cookie ?? "" },
@@ -1250,10 +1349,30 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       }
       return new Response("api_key=secret-key Authorization: Bearer sk-testsecret", { status: 401 });
     };
+    const healthHistoryBeforeRead = await modelHealthHistoryStore.list();
+    lastProfileHealthRefresh = false;
+    lastProfileHealthCacheOnly = false;
+    const cachedHealth = await fetch(`${baseUrl}/api/health`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(cachedHealth.status, 200);
+    assert.equal(lastProfileHealthRefresh, false);
+    assert.equal(lastProfileHealthCacheOnly, true);
+    assert.deepEqual(await modelHealthHistoryStore.list(), healthHistoryBeforeRead);
+
+    const refreshViaGet = await fetch(`${baseUrl}/api/health?refresh=1`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(refreshViaGet.status, 405);
+    assert.deepEqual(await refreshViaGet.json(), { error: "health_probe_requires_post" });
+    assert.deepEqual(await modelHealthHistoryStore.list(), healthHistoryBeforeRead);
+
     let health: Response | undefined;
     try {
-      health = await fetch(`${baseUrl}/api/health?refresh=1`, {
+      health = await fetch(`${baseUrl}/api/health/probe`, {
+        method: "POST",
         headers: { Cookie: cookie ?? "" },
+        body: "{}",
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -1285,9 +1404,9 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { Cookie: cookie ?? "" },
     });
     assert.equal(members.status, 200);
-    const memberBody = await members.json() as { members: Array<{ userId: string; displayName: string; memoryCount: number; pendingCandidateCount: number }>; pagination: { page: number; pageSize: number; total: number; totalPages: number } };
-    assert.equal(memberBody.members.some((member) => member.userId === "20001" && member.memoryCount === 1), true);
-    assert.equal(memberBody.pagination.total, 1);
+    const memberBody = await members.json() as { members: Array<{ userId: string; displayName: string; memoryCount: number; pendingCandidateCount: number }>; cacheStatus?: string; pagination: { page: number; pageSize: number; total: number; totalPages: number } };
+    assert.equal(memberBody.cacheStatus, "unloaded");
+    assert.equal(memberBody.pagination.total, 0);
     assert.equal(listGroupMembersCalls, 0);
 
     const pagedMembers = await fetch(`${baseUrl}/api/groups/67890/members?page=1&pageSize=1`, {
@@ -1295,8 +1414,8 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(pagedMembers.status, 200);
     const pagedMemberBody = await pagedMembers.json() as typeof memberBody;
-    assert.equal(pagedMemberBody.members.length, 1);
-    assert.equal(pagedMemberBody.pagination.total, 1);
+    assert.equal(pagedMemberBody.members.length, 0);
+    assert.equal(pagedMemberBody.pagination.total, 0);
     assert.equal(listGroupMembersCalls, 0);
 
     const searchedMembers = await fetch(`${baseUrl}/api/groups/67890/members?q=Newbie&page=1&pageSize=10`, {
@@ -1307,11 +1426,42 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(searchedMemberBody.pagination.total, 0);
     assert.equal(listGroupMembersCalls, 0);
 
-    const refreshedMembers = await fetch(`${baseUrl}/api/groups/67890/members?refresh=1`, {
+    const legacyRefreshGet = await fetch(`${baseUrl}/api/groups/67890/members?refresh=1&includeNapcat=1`, {
       headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(legacyRefreshGet.status, 200);
+    const legacyRefreshGetBody = await legacyRefreshGet.json() as typeof memberBody;
+    assert.equal(legacyRefreshGetBody.cacheStatus, "unloaded");
+    assert.equal(legacyRefreshGetBody.pagination.total, 0);
+    assert.equal(listGroupMembersCalls, 0);
+
+    const globalSearchBeforeMemberRefresh = await fetch(`${baseUrl}/api/search?q=Newbie&groupId=67890`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(globalSearchBeforeMemberRefresh.status, 200);
+    const globalSearchBeforeMemberRefreshBody = await globalSearchBeforeMemberRefresh.json() as {
+      results: Array<{ type: string; title: string }>;
+    };
+    assert.equal(globalSearchBeforeMemberRefreshBody.results.some((item) => item.type === "member"), false);
+    assert.equal(listGroupMembersCalls, 0);
+
+    const missingCsrfMemberRefresh = await globalThis.fetch(`${baseUrl}/api/groups/67890/members/refresh`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(missingCsrfMemberRefresh.status, 403);
+    assert.deepEqual(await missingCsrfMemberRefresh.json(), { error: "csrf_required" });
+    assert.equal(listGroupMembersCalls, 0);
+
+    const refreshedMembers = await fetch(`${baseUrl}/api/groups/67890/members/refresh`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: "{}",
     });
     assert.equal(refreshedMembers.status, 200);
     const refreshedMemberBody = await refreshedMembers.json() as typeof memberBody;
+    assert.equal(refreshedMemberBody.cacheStatus, "refreshed");
     assert.equal(refreshedMemberBody.pagination.total, 2);
     assert.equal(refreshedMemberBody.members.some((member) => member.userId === "20001" && member.displayName === "TesterCard" && member.memoryCount === 1), true);
     assert.ok(listGroupMembersCalls >= 1);
@@ -1342,10 +1492,24 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal(listGroupMembersCalls, callsAfterFirstMemberLoad);
 
     const memoryCountBeforeProfileRecords = (await groupMemoryStore.list("67890")).length;
-    const overallProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall&refresh=1`, {
+    const rejectedProfileRefresh = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall&refresh=1`, {
       headers: { Cookie: cookie ?? "" },
     });
-    assert.equal(overallProfileSummary.status, 200);
+    assert.equal(rejectedProfileRefresh.status, 405);
+    assert.deepEqual(await rejectedProfileRefresh.json(), { error: "profile_refresh_requires_post" });
+
+    const missingProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall`, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    assert.equal(missingProfileSummary.status, 404);
+    assert.deepEqual(await missingProfileSummary.json(), { error: "profile_not_generated" });
+
+    const overallProfileSummary = await fetch(`${baseUrl}/api/profile-records`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ groupId: "67890", userId: "20001", type: "overall" }),
+    });
+    assert.equal(overallProfileSummary.status, 201);
     const overallProfileSummaryBody = await overallProfileSummary.json() as { groupId: string; userId: string; type: string; summary: string; generatedAt: string; memoryCount: number; cached: boolean; subjectLabel?: { label: string } };
     assert.equal(overallProfileSummaryBody.groupId, "67890");
     assert.equal(overallProfileSummaryBody.userId, "20001");
@@ -1379,10 +1543,12 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(((await profileRecordsAfterCachedRead.json()) as { records: unknown[] }).records.length, 1);
 
-    const refreshedOverallProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall&refresh=1`, {
-      headers: { Cookie: cookie ?? "" },
+    const refreshedOverallProfileSummary = await fetch(`${baseUrl}/api/profile-records`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ groupId: "67890", userId: "20001", type: "overall" }),
     });
-    assert.equal(refreshedOverallProfileSummary.status, 200);
+    assert.equal(refreshedOverallProfileSummary.status, 201);
     assert.equal(((await refreshedOverallProfileSummary.json()) as { cached: boolean }).cached, false);
     const profileRecordsAfterRefresh = await fetch(`${baseUrl}/api/profile-records?groupId=67890&userId=20001&type=overall`, {
       headers: { Cookie: cookie ?? "" },
@@ -1395,29 +1561,17 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       body: JSON.stringify({ groupId: "67890", userId: "20001", type: "overall" }),
     });
     assert.equal(createdProfileRecord.status, 201);
-    const createdProfileRecordBody = await createdProfileRecord.json() as { record?: { id: string; type: string; createdBy: string; shareToken?: string }; summary: string; cached: boolean };
+    const createdProfileRecordBody = await createdProfileRecord.json() as { record?: { id: string; type: string; createdBy: string; shareToken?: string; publicEnabled?: boolean }; summary: string; cached: boolean };
     assert.equal(createdProfileRecordBody.summary, "20001 完整群聊画像。");
     assert.equal(createdProfileRecordBody.cached, false);
     assert.equal(createdProfileRecordBody.record?.type, "overall");
     assert.equal(createdProfileRecordBody.record?.createdBy, "admin");
     assert.ok(createdProfileRecordBody.record?.id);
-    assert.match(createdProfileRecordBody.record?.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
+    assert.equal(createdProfileRecordBody.record?.shareToken, undefined);
+    assert.equal(createdProfileRecordBody.record?.publicEnabled, undefined);
 
-    assert.equal((await profileRecordStore.get(createdProfileRecordBody.record.id))?.accessCount, 0);
-    const publicProfile = await fetch(`${baseUrl}/profile/${createdProfileRecordBody.record.shareToken}`);
-    assert.equal(publicProfile.status, 200);
-    const publicProfileText = await publicProfile.text();
-    assert.equal(publicProfileText.includes("20001 完整群聊画像。"), true);
-    assert.equal(publicProfileText.includes("noindex,nofollow"), true);
-    assert.equal(publicProfileText.includes("groupId"), false);
-    assert.equal(publicProfileText.includes("后台"), false);
-    assert.equal((await profileRecordStore.get(createdProfileRecordBody.record.id))?.accessCount, 1);
-
-    const adminPreviewPublicProfile = await fetch(`${baseUrl}/profile/${createdProfileRecordBody.record.shareToken}`, {
-      headers: { Cookie: cookie ?? "" },
-    });
-    assert.equal(adminPreviewPublicProfile.status, 200);
-    assert.equal((await profileRecordStore.get(createdProfileRecordBody.record.id))?.accessCount, 1);
+    const publicProfile = await fetch(`${baseUrl}/profile/${"x".repeat(32)}`);
+    assert.equal(publicProfile.status, 404);
 
     const regeneratedProfileRecord = await fetch(`${baseUrl}/api/profile-records/${createdProfileRecordBody.record.id}`, {
       method: "PUT",
@@ -1426,14 +1580,16 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(regeneratedProfileRecord.status, 200);
     const regeneratedProfileRecordBody = await regeneratedProfileRecord.json() as { record?: { id: string; shareToken?: string }; cached: boolean };
-    assert.equal(regeneratedProfileRecordBody.record?.id, createdProfileRecordBody.record.id);
-    assert.equal(regeneratedProfileRecordBody.record?.shareToken, createdProfileRecordBody.record.shareToken);
+    assert.equal(regeneratedProfileRecordBody.record?.id, createdProfileRecordBody.record?.id);
+    assert.equal(regeneratedProfileRecordBody.record?.shareToken, undefined);
     assert.equal(regeneratedProfileRecordBody.cached, false);
 
-    const yesterdayProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=yesterday&refresh=1`, {
-      headers: { Cookie: cookie ?? "" },
+    const yesterdayProfileSummary = await fetch(`${baseUrl}/api/profile-records`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
+      body: JSON.stringify({ groupId: "67890", userId: "20001", type: "yesterday" }),
     });
-    assert.equal(yesterdayProfileSummary.status, 200);
+    assert.equal(yesterdayProfileSummary.status, 201);
     const yesterdayProfileSummaryBody = await yesterdayProfileSummary.json() as { type: string; summary: string; memoryCount: number; cached: boolean };
     assert.equal(yesterdayProfileSummaryBody.type, "yesterday");
     assert.equal(yesterdayProfileSummaryBody.summary, "20001 完整昨日画像。");
@@ -1450,24 +1606,14 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
 
     const invalidPublicProfile = await fetch(`${baseUrl}/profile/not-a-real-share-token-1234567890`);
     assert.equal(invalidPublicProfile.status, 404);
-    assert.equal((await invalidPublicProfile.text()).includes("画像不存在或已失效"), true);
 
-    const disposableProfileRecord = await fetch(`${baseUrl}/api/profile-records`, {
-      method: "POST",
+    const disabledShareRoute = await fetch(`${baseUrl}/api/profile-records/${createdProfileRecordBody.record?.id}/share`, {
+      method: "PUT",
       headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
-      body: JSON.stringify({ groupId: "67890", userId: "20001", type: "overall" }),
+      body: JSON.stringify({ publicEnabled: true }),
     });
-    assert.equal(disposableProfileRecord.status, 201);
-    const disposableProfileRecordBody = await disposableProfileRecord.json() as { record?: { id: string; shareToken?: string } };
-    assert.ok(disposableProfileRecordBody.record?.id);
-    assert.ok(disposableProfileRecordBody.record?.shareToken);
-    const deletePublicProfileRecord = await fetch(`${baseUrl}/api/profile-records/${disposableProfileRecordBody.record.id}`, {
-      method: "DELETE",
-      headers: { Cookie: cookie ?? "" },
-    });
-    assert.equal(deletePublicProfileRecord.status, 200);
-    const deletedPublicProfile = await fetch(`${baseUrl}/profile/${disposableProfileRecordBody.record.shareToken}`);
-    assert.equal(deletedPublicProfile.status, 404);
+    assert.equal(disabledShareRoute.status, 410);
+    assert.deepEqual(await disabledShareRoute.json(), { error: "profile_sharing_disabled" });
 
     const updateIdentity = await fetch(`${baseUrl}/api/groups/67890/members/30002/identity`, {
       method: "PUT",
@@ -2080,293 +2226,41 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "viewer", username: "20001" }),
     });
-    assert.equal(viewerLogin.status, 200);
-    const viewerLoginBody = await viewerLogin.json() as { session: { csrfToken: string } };
-    activeCsrfToken = viewerLoginBody.session.csrfToken;
-    assert.match(activeCsrfToken, /^[A-Za-z0-9_-]{32,}$/);
-    const viewerCookie = viewerLogin.headers.get("set-cookie");
-    assert.ok(viewerCookie?.includes("HttpOnly"));
-
-    const viewerSession = await fetch(`${baseUrl}/api/session`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerSession.status, 200);
-    const viewerSessionBody = await viewerSession.json() as {
-      role: string;
-      username: string;
-      userId?: string;
-      allowedGroupIds: string[];
-      csrfToken: string;
-    };
-    activeCsrfToken = viewerSessionBody.csrfToken;
-    const viewerCsrfToken = activeCsrfToken;
-    assert.equal(viewerSessionBody.role, "viewer");
-    assert.equal(viewerSessionBody.username, "20001");
-    assert.equal(viewerSessionBody.userId, "20001");
-    assert.deepEqual(viewerSessionBody.allowedGroupIds, ["67890"]);
-
-    const viewerGroups = await fetch(`${baseUrl}/api/groups`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerGroups.status, 200);
-    const viewerGroupsBody = await viewerGroups.json() as { groups: Array<{ groupId: string }> };
-    assert.deepEqual(viewerGroupsBody.groups.map((group) => group.groupId), ["67890"]);
-
-    for (const readableUrl of [
-      `${baseUrl}/api/groups/67890/config`,
-      `${baseUrl}/api/groups/67890/members?page=1&pageSize=10`,
-      `${baseUrl}/api/memories?groupId=67890&page=1&pageSize=5`,
-      `${baseUrl}/api/memory-candidates?groupId=67890&page=1&pageSize=5`,
-      `${baseUrl}/api/knowledge?groupId=67890&page=1&pageSize=5`,
-      `${baseUrl}/api/profile-records?groupId=67890&userId=20001`,
-      `${baseUrl}/api/tasks?groupId=67890&page=1&pageSize=20`,
-      `${baseUrl}/api/model-options`,
-      `${baseUrl}/api/groups/67890/schedule-preview?days=2`,
-      `${baseUrl}/api/overview?groupId=67890`,
-      `${baseUrl}/api/logs?groupId=67890`,
-      `${baseUrl}/api/notifications`,
-    ]) {
-      const response = await fetch(readableUrl, { headers: { Cookie: viewerCookie ?? "" } });
-      assert.equal(response.status, 200, readableUrl);
-    }
-
-    const viewerModelOptions = await fetch(`${baseUrl}/api/model-options`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerModelOptions.status, 200);
-    const viewerModelOptionsBody = await viewerModelOptions.json() as {
-      models?: unknown[];
-      replyModels: Array<Record<string, unknown>>;
-    };
-    assert.equal(viewerModelOptionsBody.models, undefined);
-    assert.equal(viewerModelOptionsBody.replyModels.some((item) => item.id === "reply-pro"), true);
-    assertPublicReplyModelOptions(viewerModelOptionsBody.replyModels, "viewer");
-
-    const viewerForbiddenGroup = await fetch(`${baseUrl}/api/groups/99999/config`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerForbiddenGroup.status, 403);
-    for (const forbiddenDetailUrl of [
-      `${baseUrl}/api/memories/${hiddenGroupMemory.id}`,
-      `${baseUrl}/api/memory-candidates/${hiddenGroupCandidateForViewer.id}`,
-      `${baseUrl}/api/profile-records/${hiddenGroupProfileRecord.id}`,
-      `${baseUrl}/api/tasks/${otherGroupTask.id}`,
-    ]) {
-      const response = await fetch(forbiddenDetailUrl, { headers: { Cookie: viewerCookie ?? "" } });
-      assert.equal(response.status, 403, forbiddenDetailUrl);
-      assert.deepEqual(await response.json(), { error: "forbidden" }, forbiddenDetailUrl);
-    }
-
-    const viewerCachedProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerCachedProfileSummary.status, 200);
-    const viewerCachedProfileSummaryBody = await viewerCachedProfileSummary.json() as { cached: boolean; record?: { id: string } };
-    assert.equal(viewerCachedProfileSummaryBody.cached, true);
-
-    const viewerProfileRecordsBeforeCacheMiss = await profileRecordStore.listPage({
-      groupId: "67890",
-      userId: "30002",
-      type: "overall",
-      page: 1,
-      pageSize: 10,
-    });
-    assert.equal(viewerProfileRecordsBeforeCacheMiss.pagination.total, 0);
-    const viewerUncachedProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/30002/profile-summary?type=overall`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerUncachedProfileSummary.status, 403);
-    assert.deepEqual(await viewerUncachedProfileSummary.json(), { error: "readonly_session" });
-    const viewerProfileRecordsAfterCacheMiss = await profileRecordStore.listPage({
-      groupId: "67890",
-      userId: "30002",
-      type: "overall",
-      page: 1,
-      pageSize: 10,
-    });
-    assert.equal(viewerProfileRecordsAfterCacheMiss.pagination.total, 0);
-
-    const viewerRefreshProfileSummary = await fetch(`${baseUrl}/api/groups/67890/members/20001/profile-summary?type=overall&refresh=1`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerRefreshProfileSummary.status, 403);
-    assert.deepEqual(await viewerRefreshProfileSummary.json(), { error: "readonly_session" });
-
-    const viewerPendingCandidate = await candidateStore.addCandidate({
-      groupId: "67890",
-      type: "group_fact",
-      title: "Viewer readonly candidate",
-      content: "Viewer sessions must not mutate candidates.",
-    });
-    const viewerReadonlyWrites: Array<[string, RequestInit]> = [
-      [`${baseUrl}/api/groups/67890/config`, {
-        method: "PUT",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ botMuted: true }),
-      }],
-      [`${baseUrl}/api/groups/67890/members/30002/identity`, {
-        method: "PUT",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ names: ["Newbie"], note: "viewer should not edit" }),
-      }],
-      [`${baseUrl}/api/profile-records`, {
-        method: "POST",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ groupId: "67890", userId: "20001", type: "overall" }),
-      }],
-      [`${baseUrl}/api/profile-records/${profileRecordIdForPermission}`, {
-        method: "PUT",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: "{}",
-      }],
-      [`${baseUrl}/api/profile-records/${profileRecordIdForPermission}/share`, {
-        method: "PUT",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ publicEnabled: false }),
-      }],
-      [`${baseUrl}/api/memories/bulk`, {
-        method: "POST",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "disable", ids: [dedupBase.id] }),
-      }],
-      [`${baseUrl}/api/memory-candidates/${viewerPendingCandidate.id}/reject`, {
-        method: "POST",
-        headers: { Cookie: viewerCookie ?? "" },
-      }],
-      [`${baseUrl}/api/knowledge/import/preview`, {
-        method: "POST",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ groupId: "67890", text: "Q: viewer import\nA: readonly" }),
-      }],
-      [`${baseUrl}/api/knowledge/${knowledgeEntry.id}`, {
-        method: "PUT",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "viewer should not edit knowledge" }),
-      }],
-      [`${baseUrl}/api/groups/67890/reminders`, {
-        method: "POST",
-        headers: { Cookie: viewerCookie ?? "", "Content-Type": "application/json" },
-        body: JSON.stringify({ topic: "viewer reminder", intervalMinutes: 30 }),
-      }],
-    ];
-    for (const [url, init] of viewerReadonlyWrites) {
-      const response = await fetch(url, init);
-      assert.equal(response.status, 403, url);
-      assert.deepEqual(await response.json(), { error: "readonly_session" }, url);
-    }
-    assert.equal((await candidateStore.get(viewerPendingCandidate.id))?.status, "pending");
-    assert.equal((await knowledgeBaseStore.get(knowledgeEntry.id))?.title, updatedKnowledge.title);
-
-    napcatMembersByGroup = {
-      ...napcatMembersByGroup,
-      "67890": napcatMembersByGroup["67890"].filter((member) => String(member.user_id) !== "20001"),
-    };
-    const viewerSessionAfterMemberRemoval = await fetch(`${baseUrl}/api/session`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerSessionAfterMemberRemoval.status, 200);
-    assert.deepEqual((await viewerSessionAfterMemberRemoval.json() as { allowedGroupIds: string[] }).allowedGroupIds, []);
-
-    const viewerGroupsAfterMemberRemoval = await fetch(`${baseUrl}/api/groups`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerGroupsAfterMemberRemoval.status, 200);
-    assert.deepEqual((await viewerGroupsAfterMemberRemoval.json() as { groups: unknown[] }).groups, []);
-
-    const viewerOverviewAfterMemberRemoval = await fetch(`${baseUrl}/api/overview`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerOverviewAfterMemberRemoval.status, 200);
-    const viewerOverviewAfterMemberRemovalBody = await viewerOverviewAfterMemberRemoval.json() as {
-      groups: unknown[];
-      stats: { groupCount: number; memoryCount: number; pendingCandidateCount: number; knowledgeCount: number };
-      recent: { candidates: unknown[]; memories: unknown[]; knowledge: unknown[] };
-    };
-    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.groups, []);
-    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.stats, {
-      groupCount: 0,
-      memoryCount: 0,
-      pendingCandidateCount: 0,
-      knowledgeCount: 0,
-    });
-    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.recent.candidates, []);
-    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.recent.memories, []);
-    assert.deepEqual(viewerOverviewAfterMemberRemovalBody.recent.knowledge, []);
-
-    const staleViewerGroupConfig = await fetch(`${baseUrl}/api/groups/67890/config`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(staleViewerGroupConfig.status, 403);
+    assert.equal(viewerLogin.status, 403);
+    assert.deepEqual(await viewerLogin.json(), { error: "viewer_login_disabled" });
     activeCsrfToken = superAdminCsrfToken;
-    await fetch(`${baseUrl}/api/groups/100200300/config`, {
-      method: "PUT",
-      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: true }),
-    });
-    napcatMembersByGroup = {
-      ...napcatMembersByGroup,
-      "100200300": [
-        { user_id: 20001, card: "LaterCard", nickname: "LaterNick", role: "member" },
-      ],
-    };
-    activeCsrfToken = viewerCsrfToken;
-    const viewerSessionAfterNewMembership = await fetch(`${baseUrl}/api/session`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerSessionAfterNewMembership.status, 200);
-    assert.deepEqual((await viewerSessionAfterNewMembership.json() as { allowedGroupIds: string[] }).allowedGroupIds, ["100200300"]);
-    const viewerGroupsAfterNewMembership = await fetch(`${baseUrl}/api/groups`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerGroupsAfterNewMembership.status, 200);
-    assert.deepEqual((await viewerGroupsAfterNewMembership.json() as { groups: Array<{ groupId: string }> }).groups.map((group) => group.groupId), ["100200300"]);
-    const viewerNewGroupConfig = await fetch(`${baseUrl}/api/groups/100200300/config`, {
-      headers: { Cookie: viewerCookie ?? "" },
-    });
-    assert.equal(viewerNewGroupConfig.status, 200);
-    napcatMembersByGroup = {
-      ...napcatMembersByGroup,
-      "67890": [
-        { user_id: 20001, card: "TesterCard", nickname: "TesterNick", role: "member" },
-        { user_id: 30002, nickname: "Newbie", role: "member" },
-      ],
-      "100200300": [],
-    };
-    activeCsrfToken = superAdminCsrfToken;
-    await fetch(`${baseUrl}/api/groups/100200300/config`, {
-      method: "PUT",
-      headers: { Cookie: cookie ?? "", "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: false }),
-    });
-
-    const viewerNonMemberLogin = await fetch(`${baseUrl}/api/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "viewer", username: "44444" }),
-    });
-    assert.equal(viewerNonMemberLogin.status, 401);
-    activeCsrfToken = superAdminCsrfToken;
-    assert.notEqual(viewerCsrfToken, superAdminCsrfToken);
 
     const groupAdminLogin = await fetch(`${baseUrl}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: "99999", password: "group-secret" }),
     });
-    assert.equal(groupAdminLogin.status, 200);
-    const groupAdminLoginBody = await groupAdminLogin.json() as { session: { csrfToken: string } };
-    activeCsrfToken = groupAdminLoginBody.session.csrfToken;
-    assert.match(activeCsrfToken, /^[A-Za-z0-9_-]{32,}$/);
-    const groupAdminCookie = groupAdminLogin.headers.get("set-cookie");
-    assert.ok(groupAdminCookie?.includes("HttpOnly"));
+    assert.equal(groupAdminLogin.status, 401);
+    assert.deepEqual(await groupAdminLogin.json(), { error: "invalid_credentials" });
+
+    // Group-admin authorization remains covered with a session issued by a
+    // trusted server-side identity flow. The public password endpoint must
+    // never mint this role from a caller-supplied QQ number.
+    const groupAdminCsrfToken = "g".repeat(32);
+    const groupAdminSessionPayload: AdminSession = {
+      role: "group_admin",
+      username: "99999",
+      userId: "99999",
+      allowedGroupIds: ["67890"],
+      csrfToken: groupAdminCsrfToken,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    };
+    const groupAdminCookie = `admin_session=${(
+      service as unknown as { signSession(session: AdminSession): string }
+    ).signSession(groupAdminSessionPayload)}`;
+    activeCsrfToken = groupAdminCsrfToken;
 
     const groupAdminSession = await fetch(`${baseUrl}/api/session`, {
-      headers: { Cookie: groupAdminCookie ?? "" },
+      headers: { Cookie: groupAdminCookie },
     });
     assert.equal(groupAdminSession.status, 200);
     const groupAdminSessionBody = await groupAdminSession.json() as { role: string; allowedGroupIds: string[]; csrfToken: string };
     activeCsrfToken = groupAdminSessionBody.csrfToken;
-    const groupAdminCsrfToken = activeCsrfToken;
     assert.equal(groupAdminSessionBody.role, "group_admin");
     assert.deepEqual(groupAdminSessionBody.allowedGroupIds, ["67890"]);
 
@@ -2385,7 +2279,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     });
     assert.equal(groupAdminCommands.status, 403);
 
-    for (const sharedReadableUrl of [
+    for (const groupAdminReadableUrl of [
       `${baseUrl}/api/groups/67890/config`,
       `${baseUrl}/api/groups/67890/members?page=1&pageSize=10`,
       `${baseUrl}/api/memories?groupId=67890&page=1&pageSize=5`,
@@ -2399,27 +2293,18 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
       `${baseUrl}/api/logs?groupId=67890`,
       `${baseUrl}/api/notifications`,
     ]) {
-      const [viewerReadable, groupAdminReadable] = await Promise.all([
-        fetch(sharedReadableUrl, { headers: { Cookie: viewerCookie ?? "" } }),
-        fetch(sharedReadableUrl, { headers: { Cookie: groupAdminCookie ?? "" } }),
-      ]);
-      assert.equal(viewerReadable.status, 200, `viewer readable parity ${sharedReadableUrl}`);
-      assert.equal(groupAdminReadable.status, 200, `group admin readable parity ${sharedReadableUrl}`);
-      await viewerReadable.arrayBuffer();
-      await groupAdminReadable.arrayBuffer();
+      const response = await fetch(groupAdminReadableUrl, { headers: { Cookie: groupAdminCookie ?? "" } });
+      assert.equal(response.status, 200, groupAdminReadableUrl);
+      await response.arrayBuffer();
     }
 
-    for (const sharedForbiddenUrl of [
+    for (const groupAdminForbiddenUrl of [
       `${baseUrl}/api/system-settings`,
       `${baseUrl}/api/skills`,
       `${baseUrl}/api/commands`,
     ]) {
-      const [viewerForbidden, groupAdminForbidden] = await Promise.all([
-        fetch(sharedForbiddenUrl, { headers: { Cookie: viewerCookie ?? "" } }),
-        fetch(sharedForbiddenUrl, { headers: { Cookie: groupAdminCookie ?? "" } }),
-      ]);
-      assert.equal(viewerForbidden.status, 403, `viewer forbidden parity ${sharedForbiddenUrl}`);
-      assert.equal(groupAdminForbidden.status, 403, `group admin forbidden parity ${sharedForbiddenUrl}`);
+      const response = await fetch(groupAdminForbiddenUrl, { headers: { Cookie: groupAdminCookie ?? "" } });
+      assert.equal(response.status, 403, groupAdminForbiddenUrl);
     }
 
     const groupAdminModelOptions = await fetch(`${baseUrl}/api/model-options`, {
@@ -2455,7 +2340,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.match(groupAdminOverviewBody.modelStatusSummary?.checkedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
 
     const profileHealthCallsBeforeGroupAdminHealth = profileHealthCalls;
-    const groupAdminHealth = await fetch(`${baseUrl}/api/health?refresh=1`, {
+    const groupAdminHealth = await fetch(`${baseUrl}/api/health`, {
       headers: { Cookie: groupAdminCookie ?? "" },
     });
     assert.equal(groupAdminHealth.status, 200);
@@ -2654,6 +2539,7 @@ test("admin http server protects APIs and serves authenticated dashboard data", 
     assert.equal((await candidateStore.get(hiddenGroupCandidate.id))?.status, "pending");
   } finally {
     service.close();
+    sharedDb.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

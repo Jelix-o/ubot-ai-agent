@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 
 import type {
   GroupMemory,
@@ -59,6 +60,7 @@ export interface SubjectCount {
 
 export class GroupMemoryCandidateStore {
   private cachedData?: GroupMemoryCandidateFile;
+  private cachedVersion?: string;
 
   constructor(private readonly filePath: string) {}
 
@@ -240,17 +242,20 @@ export class GroupMemoryCandidateStore {
   }
 
   private async readData(): Promise<GroupMemoryCandidateFile> {
-    if (this.cachedData) {
+    const version = await fileVersion(this.filePath);
+    if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
     }
 
     try {
       this.cachedData = normalizeCandidateFile(await readJsonFile<GroupMemoryCandidateFile>(this.filePath));
+      this.cachedVersion = version;
       return this.cachedData;
     } catch (error) {
       const knownError = error as NodeJS.ErrnoException;
       if (knownError.code === "ENOENT") {
         this.cachedData = { candidates: [] };
+        this.cachedVersion = "missing";
         return this.cachedData;
       }
       throw error;
@@ -258,8 +263,20 @@ export class GroupMemoryCandidateStore {
   }
 
   private async writeData(data: GroupMemoryCandidateFile): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedVersion = await fileVersion(this.filePath);
+  }
+}
+
+async function fileVersion(filePath: string): Promise<string> {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch (error) {
+    const known = error as NodeJS.ErrnoException;
+    if (known.code === "ENOENT") return "missing";
+    throw error;
   }
 }
 

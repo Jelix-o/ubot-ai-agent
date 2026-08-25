@@ -26,16 +26,8 @@ const isLogin = computed(() => route.name === "login");
 const navItems = computed(() => routes.filter((item) => item.name !== "login" && (!item.meta?.superOnly || app.role === "super_admin")));
 const title = computed(() => String(route.meta.title || "UBot"));
 const subtitle = computed(() => String(route.meta.subtitle || ""));
-const roleLabel = computed(() => {
-  if (app.role === "super_admin") return "超级管理员";
-  if (app.role === "group_admin") return "群管理员";
-  return "普通用户只读";
-});
-const userInitials = computed(() => {
-  if (app.role === "super_admin") return "SA";
-  if (app.role === "group_admin") return "GA";
-  return "RO";
-});
+const roleLabel = computed(() => app.role === "super_admin" ? "超级管理员" : "群管理员");
+const userInitials = computed(() => app.role === "super_admin" ? "SA" : "GA");
 const pageCommandItems = computed(() => {
   const q = commandQuery.value.trim().toLowerCase();
   return navItems.value.filter((item) => {
@@ -250,7 +242,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span /> 系统运行中</strong>
-          <small>UBot v2.0.3</small>
+          <small>UBot v3.0.0-rc.1</small>
         </div>
       </div>
     </aside>
@@ -326,7 +318,6 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
               <strong>{{ app.username }}</strong>
               <p>{{ roleLabel }}</p>
               <p v-if="app.role === 'group_admin'">可管理 {{ app.allowedGroupIds.length }} 个群</p>
-              <p v-else-if="app.readonly">可查看 {{ app.allowedGroupIds.length }} 个群</p>
               <button class="ghost-btn logout" type="button" data-smoke="logout" @click.stop="logout">退出登录</button>
             </div>
           </div>
@@ -336,9 +327,6 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <button v-if="notificationsOpen || themeOpen || userOpen || mobileNavOpen" class="popover-backdrop" type="button" aria-label="Close popover" @click="closeFloating(); mobileNavOpen = false" />
 
       <section class="content-scroll">
-        <div v-if="app.readonly" class="readonly-banner">
-          普通用户只读模式：可以查看所在群聊配置和数据，不能修改任何系统设置或内容。
-        </div>
         <RouterView />
       </section>
       <div v-if="app.toast.visible" class="toast" :class="app.toast.type">{{ app.toast.message }}</div>

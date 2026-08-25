@@ -62,6 +62,7 @@ function actionLabel(action: string): string {
     candidate_bulk_approve: "批量审核",
     profile_generate: "画像生成",
     profile_refresh: "画像刷新",
+    group_config_update: "群行为设置",
     profile_share_revoke: "撤销公开",
     profile_share_update: "公开链接",
     model_check: "模型检测",

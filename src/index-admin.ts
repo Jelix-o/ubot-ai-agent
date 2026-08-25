@@ -3,6 +3,7 @@ import { logError, logInfo } from "./logger.js";
 import { AdminHttpServer } from "./admin-http-server.js";
 import { IngressReadApiClient } from "./ingress-read-api.js";
 import { GroupConfigService } from "./services/group-config-service.js";
+import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
@@ -11,6 +12,7 @@ import { ScheduledReminderService } from "./services/scheduled-reminder-service.
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SkillService } from "./services/skill-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
+import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { AdminTaskStore } from "./services/admin-task-store.js";
 import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
@@ -19,6 +21,7 @@ import { AiService } from "./services/ai-service.js";
 import { ConfiguredAiService } from "./services/configured-ai-service.js";
 import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
+import { openSharedDb } from "./shared/sqlite.js";
 
 /**
  * Admin process:
@@ -39,9 +42,19 @@ export async function main(): Promise<void> {
   }
 
   const readClient = new IngressReadApiClient(`http://127.0.0.1:${config.ingressReadApiPort}`);
-  const groupConfigService = new GroupConfigService(config.groupsConfigPath);
+  const sharedDb = openSharedDb(config.dataDir);
+  const groupConfigService = new GroupConfigService(
+    config.groupsConfigPath,
+    new GroupConfigSqliteShadowRepository(sharedDb),
+  );
+  await groupConfigService.syncShadowFromAuthoritative();
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
-  const systemSettingsStore = new SystemSettingsStore(config.systemSettingsPath, buildDefaultSystemModels(config));
+  const systemSettingsStore = new SystemSettingsStore(
+    config.systemSettingsPath,
+    buildDefaultSystemModels(config),
+    new SystemSettingsSqliteShadowRepository(sharedDb),
+  );
+  await systemSettingsStore.syncShadowFromAuthoritative();
   const profileAiService = new ConfiguredAiService(
     new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel),
     systemSettingsStore,
@@ -80,7 +93,6 @@ export async function main(): Promise<void> {
     publicBaseUrl: config.adminPublicBaseUrl,
     username: config.adminUsername,
     password: config.adminPassword,
-    groupPassword: config.adminGroupPassword ?? config.adminPassword,
     sessionSecret: config.adminSessionSecret,
     groupConfigService,
     groupMemoryStore,
@@ -100,6 +112,7 @@ export async function main(): Promise<void> {
     summarizeOverallMemberProfile: (args) => profileAiService.summarizeOverallMemberProfile(args),
     listGroupMembers: (groupId) => readClient.listGroupMembers(groupId),
     listGroups: () => readClient.listGroups(),
+    sharedDb,
   });
 
   server.start();
@@ -111,6 +124,7 @@ export async function main(): Promise<void> {
   const shutdown = () => {
     logInfo("Admin shutting down...");
     server.close();
+    sharedDb.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

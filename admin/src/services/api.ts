@@ -8,6 +8,7 @@ export interface Pagination {
 export type MemoryType = "member_profile" | "group_fact";
 export type CandidateStatus = "pending" | "approved" | "rejected";
 export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
+export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "selected_members";
 
 export interface GroupConfig {
   groupId: string;
@@ -15,6 +16,7 @@ export interface GroupConfig {
   enabled?: boolean;
   currentSkillId: string;
   replyModelMode?: string;
+  participationMode?: ParticipationMode;
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
@@ -39,6 +41,7 @@ export interface GroupConfig {
   defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
+  visionEnabled?: boolean;
 }
 
 export interface SubjectLabel {
@@ -228,7 +231,7 @@ export interface SystemHealthData {
 }
 
 export interface AdminSession {
-  role: "super_admin" | "group_admin" | "viewer";
+  role: "super_admin" | "group_admin";
   username: string;
   userId?: string;
   allowedGroupIds: string[];
@@ -336,7 +339,6 @@ export interface SkillDefinition {
   systemPrompt: string;
   styleRules: string[];
   knowledge: string[];
-  sourceSkillLines?: string[];
   temperature: number;
   maxContextTurns: number;
   maxReplyCharsPerMessage?: number;
@@ -366,12 +368,6 @@ export interface ProfileRecord {
   userId: string;
   type: "overall" | "yesterday";
   summary: string;
-  shareToken?: string;
-  shareUrl?: string;
-  publicEnabled?: boolean;
-  expiresAt?: string;
-  accessCount?: number;
-  revokedAt?: string;
   sourceMemoryCount: number;
   generatedAt: string;
   createdAt: string;
@@ -474,8 +470,8 @@ export function setCsrfToken(token: string | undefined): void {
   csrfToken = token || "";
 }
 
-function setReadonlySession(session: AdminSession | undefined): void {
-  readonlySession = session?.role === "viewer";
+function setReadonlySession(_session: AdminSession | undefined): void {
+  readonlySession = false;
 }
 
 function shouldSendCsrf(method: string | undefined): boolean {
@@ -562,4 +558,3 @@ export async function summarizeMemories(groupId: string, subjectUserId?: string)
     body: JSON.stringify({ groupId, subjectUserId }),
   });
 }
-

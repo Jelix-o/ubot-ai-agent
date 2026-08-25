@@ -218,6 +218,7 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
     messageId: 102,
     text: "why?",
     replyToMessageId: "9001",
+    hasAtBot: false,
     // QQ timestamps have one-second precision. Moving to the next second keeps
     // the quoted assistant receipt causally older than this inbound message.
     eventTimeSeconds: Math.floor(Date.now() / 1_000) + 1,
@@ -244,6 +245,115 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
     false,
   );
   assert.equal(napcat.sent[1]?.platformMessageId, "9002");
+
+  const quotedBotDecision = participationDecisionForMessage(observerDb, "102");
+  assert.deepEqual(quotedBotDecision && {
+    action: quotedBotDecision.action,
+    reason: quotedBotDecision.reason,
+    signals: JSON.parse(quotedBotDecision.signals_json),
+  }, {
+    action: "reply",
+    reason: "explicit_reply",
+    signals: {
+      hasAtBot: false,
+      hasReply: true,
+      hasImages: false,
+      isCommand: false,
+      isConversationCommand: false,
+      groupMuted: false,
+      keywordTriggered: false,
+    },
+  });
+
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 103,
+    text: "this is for another member",
+    replyToMessageId: "ordinary-member-message",
+    hasAtBot: false,
+    eventTimeSeconds: Math.floor(Date.now() / 1_000) + 2,
+  }));
+  await waitFor(() => participationDecisionForMessage(observerDb, "103") !== undefined);
+  assert.equal(aiService.calls.length, 2, "quoting a non-bot message must not create an AI reply");
+  assert.equal(napcat.sent.length, 2, "quoting a non-bot message must not enter the outbox");
+  const quotedMemberDecision = participationDecisionForMessage(observerDb, "103");
+  assert.deepEqual(quotedMemberDecision && {
+    action: quotedMemberDecision.action,
+    reason: quotedMemberDecision.reason,
+    signals: JSON.parse(quotedMemberDecision.signals_json),
+  }, {
+    action: "observe",
+    reason: "ambient_observation",
+    signals: {
+      hasAtBot: false,
+      hasReply: false,
+      hasImages: false,
+      isCommand: false,
+      isConversationCommand: false,
+      groupMuted: false,
+      keywordTriggered: false,
+    },
+  });
+});
+
+test("Ingress records rate-limited messages but Worker skips them without an AI reply", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-ingress-rate-limit-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const napcat = new FakeNapCatTransport();
+  const workerTransportDb = openSharedDb(dataDir);
+  const botContextDb = openSharedDb(dataDir);
+  const observerDb = openSharedDb(dataDir);
+  const workerTransport = new WorkerTransport(workerTransportDb);
+  const repository = new ConversationContextRepository(botContextDb);
+  const aiService = new CapturingAiService();
+  const bot = createBot(workerTransport, repository, aiService);
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, napcat);
+  const worker = new WorkerApp({
+    dataDir,
+    botApp: bot,
+    consumerKey: "worker:rate-limit-integration",
+  }, workerTransport);
+
+  t.after(async () => {
+    await worker.stop();
+    await bot.stop();
+    await ingress.stop();
+    observerDb.close();
+    botContextDb.close();
+    workerTransportDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await ingress.start();
+  worker.start();
+  const now = Math.floor(Date.now() / 1_000);
+  for (let messageId = 201; messageId <= 207; messageId += 1) {
+    napcat.emit("groupMessage", inboundEvent({
+      messageId,
+      text: `burst ${messageId}`,
+      eventTimeSeconds: now,
+    }));
+    await waitFor(() => (
+      (observerDb.db.prepare("SELECT COUNT(*) AS n FROM messages").get() as { n: number }).n === messageId - 200
+    ));
+  }
+
+  await waitFor(() => (
+    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 7
+  ));
+
+  const dropped = observerDb.db.prepare(
+    "SELECT processable, drop_reason FROM messages WHERE msg_id = ?",
+  ).get("207") as { processable: number; drop_reason: string | null };
+  assert.deepEqual({ ...dropped }, { processable: 0, drop_reason: "rate_limited" });
+  assert.equal(aiService.calls.length, 6);
+  await waitFor(() => napcat.sent.length === 6);
+  assert.equal(napcat.sent.length, 6);
 });
 
 function createBot(
@@ -316,6 +426,7 @@ function inboundEvent(input: {
   text: string;
   eventTimeSeconds: number;
   replyToMessageId?: string;
+  hasAtBot?: boolean;
 }): NapcatGroupMessageEvent {
   return {
     post_type: "message",
@@ -330,7 +441,7 @@ function inboundEvent(input: {
       ...(input.replyToMessageId
         ? [{ type: "reply", data: { id: input.replyToMessageId } }]
         : []),
-      { type: "at", data: { qq: BOT_QQ } },
+      ...(input.hasAtBot === false ? [] : [{ type: "at", data: { qq: BOT_QQ } }]),
       { type: "text", data: { text: input.text } },
     ],
     sender: {
@@ -340,6 +451,23 @@ function inboundEvent(input: {
       role: "member",
     },
   };
+}
+
+function participationDecisionForMessage(db: SharedDb, messageId: string): {
+  action: string;
+  reason: string;
+  signals_json: string;
+} | undefined {
+  return db.db.prepare(
+    `SELECT d.action, d.reason, d.signals_json
+       FROM participation_decisions d
+       JOIN messages m ON m.id = d.source_row_id
+      WHERE m.group_id = ? AND m.msg_id = ?`,
+  ).get(GROUP_ID, messageId) as {
+    action: string;
+    reason: string;
+    signals_json: string;
+  } | undefined;
 }
 
 function routeForMessage(db: SharedDb, messageId: string): {

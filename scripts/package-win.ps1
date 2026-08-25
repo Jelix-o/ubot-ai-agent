@@ -34,13 +34,12 @@ try {
 
 $itemsToCopy = @(
   "dist",
-  "skills",
   "scripts",
   "package.json",
   "package-lock.json",
   "README.md",
   "COMMANDS.md",
-  "RELEASE-v2.0.3.md",
+  "RELEASE-v$packageVersion.md",
   ".env.example",
   ".env.server-2022.example"
 )
@@ -50,6 +49,17 @@ foreach ($item in $itemsToCopy) {
   if (Test-Path $source) {
     Copy-Item -LiteralPath $source -Destination $bundleDir -Recurse -Force
   }
+}
+
+$skillsDir = Join-Path $bundleDir "skills"
+New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
+
+foreach ($skillFile in @("huixian.json", "itexpert.json")) {
+  $source = Join-Path $projectRoot (Join-Path "skills" $skillFile)
+  if (-not (Test-Path -LiteralPath $source)) {
+    throw "Required release skill not found: $source"
+  }
+  Copy-Item -LiteralPath $source -Destination $skillsDir -Force
 }
 
 $configDir = Join-Path $bundleDir "config"

@@ -16,6 +16,7 @@ import { DailyProfileReviewService } from "./services/daily-profile-review-servi
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { GroupConfigService } from "./services/group-config-service.js";
+import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
 import { GroupLock } from "./services/group-lock.js";
 import { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
@@ -29,6 +30,7 @@ import { ScheduledReminderService } from "./services/scheduled-reminder-service.
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SkillService } from "./services/skill-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
+import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
@@ -45,12 +47,16 @@ type NapCatRuntime = MessageTransport & {
   on(event: "groupMessage", listener: (event: NapcatGroupMessageEvent) => void): unknown;
 };
 
+let activeLegacyBot: BotApplication | undefined;
+let legacyStartup: Promise<BotApplication> | undefined;
+let shuttingDown = false;
+
 /**
  * Legacy single-process entry (rollback path for the service-split rollout).
  * `BOT_ROLE` unset → this module runs the whole bot + admin in one process,
  * exactly like UBot V1.x.
  */
-export async function main(): Promise<BotApplication> {
+async function startLegacyBot(): Promise<BotApplication> {
   const config = loadConfig();
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
   const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
@@ -61,9 +67,14 @@ export async function main(): Promise<BotApplication> {
     profileModel: config.profileAiModel,
     profileAiConfigured: config.profileAiBaseUrl !== config.openAiBaseUrl || config.profileAiModel !== config.openAiModel,
   });
-  const groupConfigService = new GroupConfigService(config.groupsConfigPath);
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
-  const systemSettingsStore = new SystemSettingsStore(config.systemSettingsPath, buildDefaultSystemModels(config));
+  const sharedDb = openSharedDb(config.dataDir);
+  const systemSettingsStore = new SystemSettingsStore(
+    config.systemSettingsPath,
+    buildDefaultSystemModels(config),
+    new SystemSettingsSqliteShadowRepository(sharedDb),
+  );
+  await systemSettingsStore.syncShadowFromAuthoritative();
   const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
   const runtimeProfileAiService = new ConfiguredAiService(profileAiService, systemSettingsStore, "profile");
   const defaultTtsService = new TtsService(
@@ -104,7 +115,11 @@ export async function main(): Promise<BotApplication> {
   await sweepAdminTasksOnStartup(adminTaskStore);
   const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath);
   const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath);
-  const sharedDb = openSharedDb(config.dataDir);
+  const groupConfigService = new GroupConfigService(
+    config.groupsConfigPath,
+    new GroupConfigSqliteShadowRepository(sharedDb),
+  );
+  await groupConfigService.syncShadowFromAuthoritative();
   const contextRepository = new ConversationContextRepository(sharedDb);
   const contextRouter = new ConversationContextRouter(contextRepository);
   const atmosphere = new AtmosphereSummarizer(config.dataDir);
@@ -228,10 +243,18 @@ export async function main(): Promise<BotApplication> {
       })).filter((message) => Boolean(message.text)), messageTime);
       const isAdministrativeCommand = parsed.text.trim().startsWith("#") &&
         !/^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(parsed.text.trim());
+      // A OneBot reply segment alone is not an authorization to speak. Match
+      // the worker path: only a same-group, acknowledged bot message may
+      // continue without an explicit @.
+      const replyToBot = sharedDb.isKnownBotMessage(groupId, parsed.replyMessageId);
       const shouldRoute = !isAdministrativeCommand && await app.shouldRouteConversation(
         groupId,
         parsed.text,
         parsed.hasAtBot,
+        {
+          hasImages: images.length > 0,
+          replyToBot,
+        },
       );
       const route = !shouldRoute
         ? undefined
@@ -245,7 +268,9 @@ export async function main(): Promise<BotApplication> {
             hasImages: images.length > 0,
             nowMs: messageTime,
           });
-      await app.handleGroupMessage(event, undefined, route);
+      await app.handleGroupMessage(event, undefined, route, {
+        allowReplyWithoutMention: replyToBot,
+      });
     } catch (error) {
       logError("Unhandled group message error.", {
         error: (error as Error).message,
@@ -263,6 +288,18 @@ export async function main(): Promise<BotApplication> {
   });
 
   return app;
+}
+
+/** Starts the legacy process once so shutdown never creates a second runtime. */
+export async function main(): Promise<BotApplication> {
+  if (activeLegacyBot) {
+    return activeLegacyBot;
+  }
+  legacyStartup ??= startLegacyBot().then((bot) => {
+    activeLegacyBot = bot;
+    return bot;
+  });
+  return legacyStartup;
 }
 
 function safeImageCount(imagesJson: string): number {
@@ -312,7 +349,6 @@ function createAdminHttpServer(
     publicBaseUrl: config.adminPublicBaseUrl,
     username: config.adminUsername,
     password: config.adminPassword,
-    groupPassword: config.adminGroupPassword ?? config.adminPassword,
     sessionSecret: config.adminSessionSecret,
     groupConfigService,
     groupMemoryStore,
@@ -350,15 +386,26 @@ if (isDirectRun) {
   });
 }
 
-// Graceful shutdown: flush pending data before exit.
+// Graceful shutdown: stop the already-running legacy app. Do not call main()
+// here: constructing another app during SIGTERM can rebind ports and corrupt
+// the rollback path exactly when it must remain dependable.
 const shutdown = async () => {
-  logInfo("Shutting down, flushing pending data...");
-  const bot = await main();
-  if (bot) {
-    await bot.stop();
+  if (shuttingDown) {
+    return;
   }
-  logInfo("Shutdown complete.");
-  process.exit(0);
+  shuttingDown = true;
+  logInfo("Shutting down legacy runtime...");
+  try {
+    const bot = activeLegacyBot ?? await legacyStartup;
+    await bot?.stop();
+    logInfo("Legacy shutdown complete.");
+    process.exit(0);
+  } catch (error) {
+    logError("Legacy shutdown failed.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  }
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

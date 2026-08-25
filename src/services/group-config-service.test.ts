@@ -6,18 +6,80 @@ import test from "node:test";
 
 import type { GroupsConfigFile } from "../types.js";
 import { GroupConfigService } from "./group-config-service.js";
+import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 
-async function withService<T>(data: GroupsConfigFile, run: (service: GroupConfigService) => Promise<T>): Promise<T> {
+async function withService<T>(
+  data: GroupsConfigFile,
+  run: (service: GroupConfigService) => Promise<T>,
+  shadowWriter?: GroupConfigShadowWriter,
+): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-config-service-"));
   const filePath = path.join(dir, "groups.json");
 
   try {
     await writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-    return await run(new GroupConfigService(filePath));
+    return await run(new GroupConfigService(filePath, shadowWriter));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("group config mirrors only after an explicit sync or a successful JSON write", async () => {
+  const snapshots: GroupsConfigFile[] = [];
+  const shadowWriter: GroupConfigShadowWriter = {
+    syncFromAuthoritative(config) {
+      snapshots.push(JSON.parse(JSON.stringify(config)) as GroupsConfigFile);
+      return { status: "created", snapshotHash: "test", groupCount: config.groups.length };
+    },
+  };
+  await withService(
+    {
+      groups: [{
+        groupId: "67890",
+        currentSkillId: "assistant",
+        allowedSkillIds: ["assistant"],
+        switcherUserIds: [],
+        liveChatUserIds: [],
+      }],
+    },
+    async (service) => {
+      await service.getAll();
+      assert.equal(snapshots.length, 0, "ordinary configuration reads must not write the shadow");
+
+      assert.equal(await service.syncShadowFromAuthoritative(), true);
+      assert.equal(snapshots.length, 1);
+
+      await service.updateBotMuted("67890", true);
+      assert.equal(snapshots.length, 2);
+      assert.equal(snapshots[1]?.groups[0]?.botMuted, true);
+    },
+    shadowWriter,
+  );
+});
+
+test("SQLite shadow failure cannot prevent a JSON group configuration update", async () => {
+  const failingShadowWriter: GroupConfigShadowWriter = {
+    syncFromAuthoritative() {
+      throw new Error("sqlite_unavailable");
+    },
+  };
+  await withService(
+    {
+      groups: [{
+        groupId: "67890",
+        currentSkillId: "assistant",
+        allowedSkillIds: ["assistant"],
+        switcherUserIds: [],
+        liveChatUserIds: [],
+      }],
+    },
+    async (service) => {
+      assert.equal((await service.updateBotMuted("67890", true)).botMuted, true);
+      assert.equal((await service.getGroup("67890"))?.botMuted, true);
+    },
+    failingShadowWriter,
+  );
+});
 
 test("group config defaults and normalizes blacklisted user ids", async () => {
   await withService(
@@ -47,8 +109,48 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.deepEqual((await service.getGroup("67891"))?.blacklistedUserIds, []);
       assert.deepEqual((await service.getGroup("67891"))?.roastModeUserIds, []);
       assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
+      assert.equal((await service.getGroup("67890"))?.dailyReportEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.holidayCountdownEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.scheduledRemindersEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.voiceReplyEnabled, false);
       assert.equal((await service.getGroup("67890"))?.defaultVoiceReplyEnabled, false);
-      assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, true);
+      assert.equal((await service.getGroup("67890"))?.opsAlertsEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.visionEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.participationMode, "mentions_only");
+
+      const enabled = await service.updateGroupConfig("67891", {
+        dailyReportEnabled: true,
+        holidayCountdownEnabled: true,
+        scheduledRemindersEnabled: true,
+        voiceReplyEnabled: true,
+        defaultVoiceReplyEnabled: true,
+        opsAlertsEnabled: true,
+        onlineLookupEnabled: true,
+        visionEnabled: true,
+      });
+      assert.equal(enabled.dailyReportEnabled, true);
+      assert.equal(enabled.holidayCountdownEnabled, true);
+      assert.equal(enabled.scheduledRemindersEnabled, true);
+      assert.equal(enabled.voiceReplyEnabled, true);
+      assert.equal(enabled.defaultVoiceReplyEnabled, true);
+      assert.equal(enabled.opsAlertsEnabled, true);
+      assert.equal(enabled.onlineLookupEnabled, true);
+      assert.equal(enabled.visionEnabled, true);
+    },
+  );
+});
+
+test("NapCat bootstrap uses the packaged huixian skill and inactive broadcasts", async () => {
+  await withService(
+    { groups: [] },
+    async (service) => {
+      const groups = await service.upsertGroupsFromNapcat([{ groupId: "67890", groupName: "New group" }]);
+      assert.equal(groups.length, 1);
+      assert.deepEqual(groups[0]?.allowedSkillIds, ["huixian"]);
+      assert.equal(groups[0]?.currentSkillId, "huixian");
+      assert.equal(groups[0]?.enabled, false);
+      assert.equal(groups[0]?.opsAlertsEnabled, false);
     },
   );
 });
@@ -93,6 +195,7 @@ test("group config updates full editable config with validation", async () => {
       const updated = await service.updateGroupConfig("67890", {
         currentSkillId: "zxp",
         replyModelMode: "mimo",
+        participationMode: "mentions_only",
         allowedSkillIds: ["zxp", "zxp", "assistant"],
         switcherUserIds: ["10001", "10001"],
         liveChatUserIds: ["20001"],
@@ -110,14 +213,17 @@ test("group config updates full editable config with validation", async () => {
         holidayCountdownWeekdays: [6],
         botMuted: true,
         scheduledRemindersEnabled: false,
+        voiceReplyEnabled: true,
         defaultVoiceReplyEnabled: true,
         blacklistedUserIds: ["30001"],
         opsAlertsEnabled: false,
         onlineLookupEnabled: false,
+        visionEnabled: true,
       });
 
       assert.equal(updated.currentSkillId, "zxp");
       assert.equal(updated.replyModelMode, "mimo");
+      assert.equal(updated.participationMode, "mentions_only");
       assert.deepEqual(updated.allowedSkillIds, ["zxp", "assistant"]);
       assert.deepEqual(updated.switcherUserIds, ["10001"]);
       assert.deepEqual(updated.liveChatUserIds, ["20001"]);
@@ -134,10 +240,12 @@ test("group config updates full editable config with validation", async () => {
       assert.deepEqual(updated.holidayCountdownWeekdays, [6]);
       assert.equal(updated.botMuted, true);
       assert.equal(updated.scheduledRemindersEnabled, false);
+      assert.equal(updated.voiceReplyEnabled, true);
       assert.equal(updated.defaultVoiceReplyEnabled, true);
       assert.deepEqual(updated.blacklistedUserIds, ["30001"]);
       assert.equal(updated.opsAlertsEnabled, false);
       assert.equal(updated.onlineLookupEnabled, false);
+      assert.equal(updated.visionEnabled, true);
       assert.deepEqual(updated.manualIdentities?.[0], { userIds: ["20001"], names: ["Tester"], note: "note" });
 
       await assert.rejects(
@@ -163,6 +271,10 @@ test("group config updates full editable config with validation", async () => {
       await assert.rejects(
         () => service.updateGroupConfig("67890", { replyModelMode: "../bad" }),
         { code: "invalid_group_config" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { participationMode: "noisy" as never }),
+        /invalid_group_config/,
       );
       await assert.rejects(
         () => service.updateGroupConfig("67890", { manualIdentities: [{ userIds: ["20001"], names: [] }] }),

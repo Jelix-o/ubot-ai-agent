@@ -7,11 +7,35 @@ import { api, type HealthStatus, type ModelHealthHistoryEntry, type SystemHealth
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
+interface ParticipationDecision {
+  id: number;
+  sourceRowId: number;
+  groupId: string;
+  userId: string;
+  action: "ignore" | "observe" | "reply" | "react" | "task" | "admin_command";
+  reason: string;
+  score: number;
+  policyVersion: string;
+  signals: Record<string, boolean>;
+  createdAt: string;
+}
+
 const app = useAppStore();
 const data = shallowRef<SystemHealthData>();
 const modelHistory = shallowRef<ModelHealthHistoryEntry[]>([]);
+const participation = shallowRef<ParticipationDecision[]>([]);
 const activeModel = shallowRef<ModelHealthHistoryEntry | null>(null);
 const loading = shallowRef(false);
+const participationSummary = computed(() => {
+  const counts = { reply: 0, observe: 0, ignore: 0, other: 0 };
+  for (const decision of participation.value) {
+    if (decision.action === "reply") counts.reply += 1;
+    else if (decision.action === "observe") counts.observe += 1;
+    else if (decision.action === "ignore") counts.ignore += 1;
+    else counts.other += 1;
+  }
+  return counts;
+});
 
 const activeModelMeta = computed(() => {
   const model = activeModel.value;
@@ -35,10 +59,18 @@ const activeModelMeta = computed(() => {
 async function load(refresh = false): Promise<void> {
   loading.value = true;
   try {
-    data.value = await api<SystemHealthData>(`/api/health${refresh ? "?refresh=1" : ""}`);
+    data.value = refresh
+      ? await api<SystemHealthData>("/api/health/probe", { method: "POST", body: "{}" })
+      : await api<SystemHealthData>("/api/health");
     if (app.role === "super_admin") {
       const history = await api<{ models: ModelHealthHistoryEntry[] }>("/api/model-health-history");
       modelHistory.value = history.models;
+    }
+    if (app.groupId) {
+      const decisions = await api<{ decisions: ParticipationDecision[] }>(`/api/participation-decisions?groupId=${encodeURIComponent(app.groupId)}&limit=20`);
+      participation.value = decisions.decisions;
+    } else {
+      participation.value = [];
     }
     if (refresh) app.showToast("系统状态检测已完成");
   } finally {
@@ -154,6 +186,38 @@ function sourceLabel(source: ModelHealthHistoryEntry["source"]): string {
   } as Record<ModelHealthHistoryEntry["source"], string>)[source] || source;
 }
 
+function participationActionLabel(action: ParticipationDecision["action"]): string {
+  return ({
+    ignore: "忽略",
+    observe: "观察",
+    reply: "回复",
+    react: "轻互动",
+    task: "任务",
+    admin_command: "管理命令",
+  } as Record<ParticipationDecision["action"], string>)[action];
+}
+
+function participationReasonLabel(reason: string): string {
+  return ({
+    group_unavailable: "群未启用或不可用",
+    empty_message: "没有可处理内容",
+    administrative_command: "管理命令",
+    conversation_command: "对话命令",
+    direct_mention: "明确 @ 机器人",
+    explicit_reply: "引用机器人消息",
+    keyword_trigger: "命中群触发词",
+    muted_observation: "群已静默，仅观察",
+    ambient_observation: "普通群聊，仅观察",
+  } as Record<string, string>)[reason] || reason;
+}
+
+function participationActionClass(action: ParticipationDecision["action"]): Record<string, boolean> {
+  return {
+    danger: action === "ignore",
+    skipped: action === "observe",
+  };
+}
+
 function modelStatusLabel(model: ModelHealthHistoryEntry): string {
   if (model.skipped) return "跳过";
   return model.ok ? "正常" : "异常";
@@ -175,14 +239,14 @@ function closeModelDetail(): void {
 }
 
 function onRefresh(): void {
-  void load(true).catch((error) => app.showToast(error.message, "error"));
+  void load().catch((error) => app.showToast(error.message, "error"));
 }
 
 onMounted(() => {
   void load();
 });
 
-useRefreshEvents({ refresh: onRefresh });
+useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 </script>
 
 <template>
@@ -192,7 +256,7 @@ useRefreshEvents({ refresh: onRefresh });
         <h2>系统状态</h2>
         <p>模型检测每小时缓存一次，手动检测会刷新所有已启用模型。</p>
       </div>
-      <button class="btn" type="button" :disabled="loading" @click="load(true)">
+      <button v-if="app.role === 'super_admin'" class="btn" type="button" :disabled="loading" @click="load(true)">
         {{ loading ? "检测中..." : "立即检测" }}
       </button>
     </div>
@@ -246,6 +310,36 @@ useRefreshEvents({ refresh: onRefresh });
         <StatusCard title="服务器内存" :status="serverMetricStatus('memory')" />
         <StatusCard title="主机运行" :status="serverMetricStatus('host')" />
         <StatusCard title="服务进程" :status="serverMetricStatus('process')" />
+      </div>
+    </section>
+
+    <section class="status-section">
+      <div class="sub-head">
+        <div>
+          <h3>群聊参与决策</h3>
+          <p>展示当前群最近 20 条消息的参与判断。首轮策略仅影子化与解释既有触发规则，不增加主动插话。</p>
+        </div>
+        <span class="tag">回复 {{ participationSummary.reply }} · 观察 {{ participationSummary.observe }} · 忽略 {{ participationSummary.ignore }}</span>
+      </div>
+      <div v-if="!app.groupId" class="empty compact">请选择一个群后查看参与决策。</div>
+      <div v-else-if="!participation.length" class="empty compact">当前群暂未记录参与决策。</div>
+      <div v-else class="participation-table">
+        <div class="participation-head">
+          <span>时间</span>
+          <span>成员</span>
+          <span>判断</span>
+          <span>原因</span>
+          <span>分数</span>
+          <span>策略</span>
+        </div>
+        <article v-for="decision in participation" :key="decision.id" class="participation-row">
+          <span class="muted">{{ formatDateTime(decision.createdAt) }}</span>
+          <strong>{{ decision.userId }}</strong>
+          <span class="tag" :class="participationActionClass(decision.action)">{{ participationActionLabel(decision.action) }}</span>
+          <span>{{ participationReasonLabel(decision.reason) }}</span>
+          <span>{{ decision.score.toFixed(2) }}</span>
+          <span class="muted">{{ decision.policyVersion }}</span>
+        </article>
       </div>
     </section>
 
@@ -344,6 +438,34 @@ useRefreshEvents({ refresh: onRefresh });
 .sub-head p {
   margin-top: 5px;
   color: var(--muted);
+}
+
+.participation-table {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.participation-head,
+.participation-row {
+  display: grid;
+  grid-template-columns: 180px 120px 96px minmax(180px, 1fr) 80px 140px;
+  gap: 12px;
+  align-items: center;
+  min-width: 800px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.participation-head {
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.participation-row:last-child {
+  border-bottom: 0;
 }
 
 .history-table {

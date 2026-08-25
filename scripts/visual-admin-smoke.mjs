@@ -569,23 +569,15 @@ try {
 
   const auth = await loginAndGetAuth(baseUrl);
   await runHttpSmoke(baseUrl, auth, pages);
-  const groupAdminAuth = await loginGroupAdminAndGetAuth(baseUrl, "99999");
-  const viewerAuth = await loginViewerAndGetAuth(baseUrl, "3951154629");
-  await runGroupAdminHttpSmoke(baseUrl, groupAdminAuth);
-  await runViewerHttpSmoke(baseUrl, viewerAuth, hiddenDirectAccessFixtures);
-  await runViewerGroupAdminParitySmoke(baseUrl, viewerAuth, groupAdminAuth);
+  // QQ + shared password is intentionally no longer a valid group-admin
+  // authentication flow. Verify that this public endpoint rejects it until a
+  // verifiable identity provider exists.
+  await assertUnverifiedGroupAdminLoginRejected(baseUrl, "99999");
   await runStaticAdminSmoke();
 
   if (process.env.ADMIN_SMOKE_SCREENSHOTS === "1") {
     await runScreenshotStep("admin screenshots", () => captureCdpScreenshots(baseUrl, auth.cookie, [
       ["login", "/login", { width: 1600, height: 1000 }],
-      ["login-viewer-mode", "/login", {
-        width: 1600,
-        height: 1000,
-        click: ".mode-tabs button:nth-child(2)",
-        expectText: ["普通用户", "QQ 账号", "只读进入"],
-        expectNoSelector: 'input[type="password"]',
-      }],
       ...pages.map(([name, route]) => [name, route, { width: 1600, height: 1000 }]),
       ["skills-editor", "/skills", { width: 1600, height: 1000, click: ".skill-table .table-row", afterClickScrollTo: ".tts-form-block" }],
       ["tasks-detail", "/tasks", { width: 1600, height: 1000, click: ".task-row .row-action", afterClickScrollTo: ".task-detail" }],
@@ -602,49 +594,6 @@ try {
       ["tasks-mobile-filters", "/tasks", { width: 390, height: 844, scrollTo: ".filter-card" }],
       ["settings-mobile", "/settings", { width: 390, height: 844 }],
     ]));
-    await runScreenshotStep("viewer screenshots", () => captureCdpScreenshots(baseUrl, viewerAuth.cookie, [
-      ["viewer-overview", "/", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-groups", "/groups", {
-        width: 1600,
-        height: 1000,
-        expectSelector: ".readonly-banner",
-        expectText: ["语音功能", "默认语音回复"],
-        expectDisabledText: ["只读模式不可保存"],
-      }],
-      ["viewer-members", "/members", {
-        width: 1600,
-        height: 1000,
-        expectSelector: ".readonly-banner",
-        expectDisabledText: ["重新生成", "修改备注", "记忆去重", "禁用记忆"],
-      }],
-      ["viewer-memories-dedup", "/memories?userId=3951154629&type=member_profile&dedup=1", {
-        width: 1600,
-        height: 1000,
-        expectSelector: ".readonly-banner",
-        expectDisabledText: ["只读模式不可检测", "只读模式不可去重"],
-      }],
-      ["viewer-candidates", "/candidates", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-profiles", "/profiles", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-knowledge", "/knowledge", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-tasks", "/tasks", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-audit", "/audit", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-health", "/health", { width: 1600, height: 1000, expectSelector: ".readonly-banner" }],
-      ["viewer-skills-blocked", "/skills", { width: 1600, height: 1000, expectPath: "/", expectSelector: ".readonly-banner" }],
-      ["viewer-commands-blocked", "/commands", { width: 1600, height: 1000, expectPath: "/", expectSelector: ".readonly-banner" }],
-      ["viewer-settings-blocked", "/settings", { width: 1600, height: 1000, expectPath: "/", expectSelector: ".readonly-banner" }],
-      ["viewer-groups-mobile", "/groups", {
-        width: 390,
-        height: 844,
-        expectSelector: ".readonly-banner",
-        expectText: ["语音功能", "默认语音回复"],
-      }],
-      ["viewer-members-mobile", "/members", { width: 390, height: 844, expectSelector: ".readonly-banner" }],
-      ["viewer-candidates-mobile", "/candidates", { width: 390, height: 844, expectSelector: ".readonly-banner" }],
-      ["viewer-memories-mobile", "/memories", { width: 390, height: 844, expectSelector: ".readonly-banner" }],
-      ["viewer-profiles-mobile", "/profiles", { width: 390, height: 844, expectSelector: ".readonly-banner" }],
-      ["viewer-knowledge-mobile", "/knowledge", { width: 390, height: 844, expectSelector: ".readonly-banner" }],
-      ["viewer-tasks-mobile", "/tasks", { width: 390, height: 844, expectSelector: ".readonly-banner" }],
-    ], { runTopbarSmoke: false }));
     await runScreenshotStep("contact sheet", () => writeContactSheet());
   }
 
@@ -680,50 +629,19 @@ async function loginAndGetAuth(baseUrl) {
   return { cookie, csrfToken };
 }
 
-async function loginViewerAndGetAuth(baseUrl, userId) {
-  const response = await fetch(`${baseUrl}/api/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "viewer", username: userId }),
-  });
-  if (!response.ok) {
-    throw new Error(`Viewer smoke login failed: ${response.status} ${await response.text()}`);
-  }
-  const setCookie = response.headers.get("set-cookie") ?? "";
-  const cookie = setCookie.split(";")[0];
-  if (!cookie.startsWith("admin_session=")) {
-    throw new Error(`Viewer smoke login did not return an admin session cookie: ${setCookie}`);
-  }
-  const body = await response.json();
-  const session = body?.session;
-  const csrfToken = session?.csrfToken || body?.csrfToken;
-  if (!csrfToken || session?.role !== "viewer" || session?.userId !== userId) {
-    throw new Error(`Viewer smoke login returned an invalid session: ${JSON.stringify(body)}`);
-  }
-  return { cookie, csrfToken, userId };
-}
-
-async function loginGroupAdminAndGetAuth(baseUrl, userId) {
+async function assertUnverifiedGroupAdminLoginRejected(baseUrl, userId) {
   const response = await fetch(`${baseUrl}/api/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode: "admin", username: userId, password: "group-secret" }),
   });
-  if (!response.ok) {
-    throw new Error(`Group admin smoke login failed: ${response.status} ${await response.text()}`);
-  }
-  const setCookie = response.headers.get("set-cookie") ?? "";
-  const cookie = setCookie.split(";")[0];
-  if (!cookie.startsWith("admin_session=")) {
-    throw new Error(`Group admin smoke login did not return an admin session cookie: ${setCookie}`);
+  if (response.status !== 401) {
+    throw new Error(`Unverified group-admin login must be rejected: ${response.status} ${await response.text()}`);
   }
   const body = await response.json();
-  const session = body?.session;
-  const csrfToken = session?.csrfToken || body?.csrfToken;
-  if (!csrfToken || session?.role !== "group_admin" || session?.userId !== userId) {
-    throw new Error(`Group admin smoke login returned an invalid session: ${JSON.stringify(body)}`);
+  if (body?.error !== "invalid_credentials") {
+    throw new Error(`Unverified group-admin login returned an unexpected body: ${JSON.stringify(body)}`);
   }
-  return { cookie, csrfToken, userId };
 }
 
 async function runHttpSmoke(baseUrl, auth, pages) {
@@ -750,7 +668,14 @@ async function runHttpSmoke(baseUrl, auth, pages) {
     throw new Error(`Overview stats did not include pending candidates: ${JSON.stringify(overview.stats)}`);
   }
 
-  const health = await fetchJson(`${baseUrl}/api/health?refresh=1`, cookie);
+  const healthResponse = await fetch(`${baseUrl}/api/health/probe`, {
+    method: "POST",
+    headers: { Cookie: cookie, "X-CSRF-Token": csrfToken },
+  });
+  if (!healthResponse.ok) {
+    throw new Error(`Health probe failed: ${healthResponse.status} ${await healthResponse.text()}`);
+  }
+  const health = await healthResponse.json();
   assertObjectPath(health, "profileAiHealth.ok", true);
   if (typeof health.profileAiHealth.latencyMs !== "number" || health.profileAiHealth.cached !== false) {
     throw new Error(`Health refresh did not expose latency/cache fields: ${JSON.stringify(health.profileAiHealth)}`);
@@ -832,7 +757,14 @@ async function runHttpSmoke(baseUrl, auth, pages) {
     throw new Error("Updated model options leaked an API key.");
   }
 
-  const members = await fetchJson(`${baseUrl}/api/groups/${encodeURIComponent(group.groupId)}/members?page=1&pageSize=5&includeNapcatMembers=1`, cookie);
+  const refreshMembers = await fetch(`${baseUrl}/api/groups/${encodeURIComponent(group.groupId)}/members/refresh`, {
+    method: "POST",
+    headers: { Cookie: cookie, "X-CSRF-Token": csrfToken },
+  });
+  if (!refreshMembers.ok) {
+    throw new Error(`Member refresh failed: ${refreshMembers.status} ${await refreshMembers.text()}`);
+  }
+  const members = await fetchJson(`${baseUrl}/api/groups/${encodeURIComponent(group.groupId)}/members?page=1&pageSize=5`, cookie);
   if (!Array.isArray(members.members) || members.members.length < 1 || !members.pagination) {
     throw new Error(`Members payload is not paginated: ${JSON.stringify(members)}`);
   }
@@ -850,363 +782,6 @@ async function runHttpSmoke(baseUrl, auth, pages) {
   const commands = await fetchJson(`${baseUrl}/api/commands`, cookie);
   if (!Array.isArray(commands.commands) || !commands.commands.some((command) => command.id === "model")) {
     throw new Error(`Commands payload is incomplete: ${JSON.stringify(commands)}`);
-  }
-}
-
-function groupScopedReadableUrls(baseUrl, userId = "3951154629") {
-  return [
-    `${baseUrl}/api/overview`,
-    `${baseUrl}/api/groups`,
-    `${baseUrl}/api/groups/866209871/config`,
-    `${baseUrl}/api/skill-options`,
-    `${baseUrl}/api/groups/866209871/members?page=1&pageSize=20&includeNapcatMembers=1`,
-    `${baseUrl}/api/groups/866209871/reminders`,
-    `${baseUrl}/api/groups/866209871/schedule-preview?days=7`,
-    `${baseUrl}/api/memories?groupId=866209871&subjectUserId=${encodeURIComponent(userId)}&page=1&pageSize=5`,
-    `${baseUrl}/api/memory-candidates?groupId=866209871&page=1&pageSize=5`,
-    `${baseUrl}/api/knowledge?groupId=866209871&page=1&pageSize=5`,
-    `${baseUrl}/api/profile-records?groupId=866209871&userId=${encodeURIComponent(userId)}&page=1&pageSize=5`,
-    `${baseUrl}/api/tasks?page=1&pageSize=20`,
-    `${baseUrl}/api/logs?groupId=866209871&limit=20`,
-    `${baseUrl}/api/health?refresh=1`,
-    `${baseUrl}/api/model-options`,
-    `${baseUrl}/api/notifications`,
-  ];
-}
-
-async function runGroupAdminHttpSmoke(baseUrl, auth) {
-  const { cookie, csrfToken, userId } = auth;
-  const session = await fetchJson(`${baseUrl}/api/session`, cookie);
-  if (
-    session.role !== "group_admin" ||
-    session.username !== userId ||
-    session.userId !== userId ||
-    JSON.stringify(session.allowedGroupIds) !== JSON.stringify(["866209871"])
-  ) {
-    throw new Error(`Group admin session is not scoped to the managed group: ${JSON.stringify(session)}`);
-  }
-  for (const url of groupScopedReadableUrls(baseUrl)) {
-    await fetchJson(url, cookie);
-  }
-  const groupAdminConfig = await fetchJson(`${baseUrl}/api/groups/866209871/config`, cookie);
-  assertVoiceReplyConfig(groupAdminConfig, "group admin group config");
-  const groupAdminModelOptions = await fetchJson(`${baseUrl}/api/model-options`, cookie);
-  if (groupAdminModelOptions.models !== undefined) {
-    throw new Error(`Group admin model options exposed full model settings: ${JSON.stringify(groupAdminModelOptions)}`);
-  }
-  if (!groupAdminModelOptions.replyModels?.some((model) => model.id === "gpt")) {
-    throw new Error(`Group admin reply model options are incomplete: ${JSON.stringify(groupAdminModelOptions)}`);
-  }
-  assertPublicReplyModelOptions(groupAdminModelOptions.replyModels, "Group admin");
-  await expectJsonStatus(`${baseUrl}/api/system-settings`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-  await expectJsonStatus(`${baseUrl}/api/skills`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-  await expectJsonStatus(`${baseUrl}/api/commands`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-
-  const updateGroup = await fetch(`${baseUrl}/api/groups/866209871/config`, {
-    method: "PUT",
-    headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-    body: JSON.stringify({ botMuted: true }),
-  });
-  if (!updateGroup.ok) {
-    throw new Error(`Group admin could not update managed group config: ${updateGroup.status} ${await updateGroup.text()}`);
-  }
-  const afterUpdate = await updateGroup.json();
-  if (afterUpdate.botMuted !== true) {
-    throw new Error(`Group admin update did not apply to managed group config: ${JSON.stringify(afterUpdate)}`);
-  }
-  const restoreGroup = await fetch(`${baseUrl}/api/groups/866209871/config`, {
-    method: "PUT",
-    headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-    body: JSON.stringify({ botMuted: false }),
-  });
-  if (!restoreGroup.ok) {
-    throw new Error(`Group admin could not restore managed group config: ${restoreGroup.status} ${await restoreGroup.text()}`);
-  }
-}
-
-async function runViewerGroupAdminParitySmoke(baseUrl, viewerAuth, groupAdminAuth) {
-  const readableUrls = groupScopedReadableUrls(baseUrl, viewerAuth.userId);
-  for (const url of readableUrls) {
-    const groupAdminResponse = await fetch(url, { headers: { Cookie: groupAdminAuth.cookie } });
-    const viewerResponse = await fetch(url, { headers: { Cookie: viewerAuth.cookie } });
-    if (!groupAdminResponse.ok || !viewerResponse.ok) {
-      throw new Error(`Viewer/group-admin readable parity failed for ${url}: groupAdmin=${groupAdminResponse.status}, viewer=${viewerResponse.status}`);
-    }
-    await groupAdminResponse.arrayBuffer();
-    await viewerResponse.arrayBuffer();
-  }
-}
-
-async function runViewerHttpSmoke(baseUrl, auth, hiddenFixtures = {}) {
-  const { cookie, csrfToken, userId } = auth;
-  const expectedGroupIds = ["866209871", "777888999"];
-  const expectedGroupIdSet = new Set(expectedGroupIds);
-  const session = await fetchJson(`${baseUrl}/api/session`, cookie);
-  if (
-    session.role !== "viewer" ||
-    session.username !== userId ||
-    session.userId !== userId ||
-    JSON.stringify(session.allowedGroupIds) !== JSON.stringify(expectedGroupIds)
-  ) {
-    throw new Error(`Viewer session is not scoped to the member's enabled groups: ${JSON.stringify(session)}`);
-  }
-
-  const groups = await fetchJson(`${baseUrl}/api/groups`, cookie);
-  const groupIds = (groups.groups ?? []).map((group) => group.groupId);
-  if (JSON.stringify(groupIds) !== JSON.stringify(expectedGroupIds)) {
-    throw new Error(`Viewer groups leaked inaccessible groups: ${JSON.stringify(groups)}`);
-  }
-  assertVoiceReplyConfig(groups.groups?.[0], "viewer groups list");
-
-  const viewerGroupConfig = await fetchJson(`${baseUrl}/api/groups/866209871/config`, cookie);
-  assertVoiceReplyConfig(viewerGroupConfig, "viewer group config");
-  const viewerSecondGroupConfig = await fetchJson(`${baseUrl}/api/groups/777888999/config`, cookie);
-  if (viewerSecondGroupConfig.groupId !== "777888999" || viewerSecondGroupConfig.defaultVoiceReplyEnabled !== false) {
-    throw new Error(`Viewer could not read second enabled group config: ${JSON.stringify(viewerSecondGroupConfig)}`);
-  }
-  await expectJsonStatus(`${baseUrl}/api/groups/100200300/config`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-  await expectJsonStatus(`${baseUrl}/api/system-settings`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-  await expectJsonStatus(`${baseUrl}/api/skills`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-  await expectJsonStatus(`${baseUrl}/api/commands`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-
-  const viewerModelOptions = await fetchJson(`${baseUrl}/api/model-options`, cookie);
-  if (viewerModelOptions.models !== undefined) {
-    throw new Error(`Viewer model options exposed full model settings: ${JSON.stringify(viewerModelOptions)}`);
-  }
-  if (!viewerModelOptions.replyModels?.some((model) => model.id === "gpt")) {
-    throw new Error(`Viewer reply model options are incomplete: ${JSON.stringify(viewerModelOptions)}`);
-  }
-  assertPublicReplyModelOptions(viewerModelOptions.replyModels, "Viewer");
-
-  const viewerOverview = await fetchJson(`${baseUrl}/api/overview`, cookie);
-  const overviewGroupIds = (viewerOverview.groups ?? []).map((group) => group.groupId);
-  if (JSON.stringify(overviewGroupIds) !== JSON.stringify(expectedGroupIds)) {
-    throw new Error(`Viewer overview leaked inaccessible groups: ${JSON.stringify(viewerOverview.groups)}`);
-  }
-  if (!viewerOverview.recent?.candidates?.every((candidate) => expectedGroupIdSet.has(candidate.groupId))) {
-    throw new Error(`Viewer overview leaked inaccessible candidates: ${JSON.stringify(viewerOverview.recent?.candidates)}`);
-  }
-  if (!viewerOverview.recent?.memories?.every((memory) => expectedGroupIdSet.has(memory.groupId))) {
-    throw new Error(`Viewer overview leaked inaccessible memories: ${JSON.stringify(viewerOverview.recent?.memories)}`);
-  }
-  if (!viewerOverview.recent?.knowledge?.every((entry) => expectedGroupIdSet.has(entry.groupId))) {
-    throw new Error(`Viewer overview leaked inaccessible knowledge: ${JSON.stringify(viewerOverview.recent?.knowledge)}`);
-  }
-  if (!viewerOverview.recent?.memories?.some((memory) => memory.groupId === "777888999")) {
-    throw new Error(`Viewer overview did not include second enabled group memory: ${JSON.stringify(viewerOverview.recent?.memories)}`);
-  }
-
-  const viewerHealth = await fetchJson(`${baseUrl}/api/health?refresh=1`, cookie);
-  if (
-    viewerHealth.profileAiHealth.cached !== true ||
-    viewerHealth.profileAiHealth.detail !== "restricted" ||
-    viewerHealth.modelStatuses?.length !== 0 ||
-    viewerHealth.abnormalModelStatuses?.length !== 0
-  ) {
-    throw new Error(`Viewer health refreshed model checks or exposed model details: ${JSON.stringify(viewerHealth)}`);
-  }
-
-  const viewerLogs = await fetchJson(`${baseUrl}/api/logs?groupId=866209871&limit=20`, cookie);
-  if (!Array.isArray(viewerLogs.entries) || viewerLogs.entries.some((entry) => entry.groupId !== "866209871")) {
-    throw new Error(`Viewer audit logs leaked another group: ${JSON.stringify(viewerLogs)}`);
-  }
-  const viewerSecondGroupLogs = await fetchJson(`${baseUrl}/api/logs?groupId=777888999&limit=20`, cookie);
-  if (!Array.isArray(viewerSecondGroupLogs.entries) || !viewerSecondGroupLogs.entries.some((entry) => entry.groupId === "777888999")) {
-    throw new Error(`Viewer audit logs did not include the second enabled group: ${JSON.stringify(viewerSecondGroupLogs)}`);
-  }
-  await expectJsonStatus(`${baseUrl}/api/logs`, {
-    headers: { Cookie: cookie },
-  }, 400, { error: "group_id_required" });
-
-  const viewerTasks = await fetchJson(`${baseUrl}/api/tasks?page=1&pageSize=20`, cookie);
-  if (!Array.isArray(viewerTasks.tasks) || viewerTasks.tasks.length < 1) {
-    throw new Error(`Viewer task center did not include accessible group tasks: ${JSON.stringify(viewerTasks)}`);
-  }
-  if (viewerTasks.tasks.some((task) => !task.groupId || !expectedGroupIdSet.has(task.groupId))) {
-    throw new Error(`Viewer task center leaked system or hidden-group tasks: ${JSON.stringify(viewerTasks.tasks)}`);
-  }
-  if (!viewerTasks.tasks.every((task) => task.groupId === "866209871")) {
-    throw new Error(`Viewer default task center should stay scoped to the current group: ${JSON.stringify(viewerTasks.tasks)}`);
-  }
-  const viewerSecondGroupTasks = await fetchJson(`${baseUrl}/api/tasks?groupId=777888999&page=1&pageSize=20`, cookie);
-  if (!Array.isArray(viewerSecondGroupTasks.tasks) || !viewerSecondGroupTasks.tasks.some((task) => task.groupId === "777888999")) {
-    throw new Error(`Viewer task center did not include the second enabled group task when scoped: ${JSON.stringify(viewerSecondGroupTasks)}`);
-  }
-  if (viewerSecondGroupTasks.tasks.some((task) => task.groupId !== "777888999")) {
-    throw new Error(`Viewer second-group task center leaked another scope: ${JSON.stringify(viewerSecondGroupTasks.tasks)}`);
-  }
-  const viewerTask = viewerTasks.tasks[0];
-  await fetchJson(`${baseUrl}/api/tasks/${encodeURIComponent(viewerTask.id)}`, cookie);
-  await expectJsonStatus(`${baseUrl}/api/tasks/${encodeURIComponent("missing-system-task")}`, {
-    headers: { Cookie: cookie },
-  }, 404, { error: "not_found" });
-
-  const members = await fetchJson(`${baseUrl}/api/groups/866209871/members?page=1&pageSize=20&includeNapcatMembers=1`, cookie);
-  if (!members.members?.some((member) => member.userId === userId)) {
-    throw new Error(`Viewer member list did not include the logged-in QQ user: ${JSON.stringify(members)}`);
-  }
-
-  const defaultMemories = await fetchJson(`${baseUrl}/api/memories?page=1&pageSize=20`, cookie);
-  assertCollectionOnlyGroup(defaultMemories, "memories", "866209871", "Viewer default memories");
-  const defaultCandidates = await fetchJson(`${baseUrl}/api/memory-candidates?page=1&pageSize=20`, cookie);
-  assertCollectionOnlyGroup(defaultCandidates, "candidates", "866209871", "Viewer default candidates");
-  const defaultKnowledge = await fetchJson(`${baseUrl}/api/knowledge?page=1&pageSize=20`, cookie);
-  assertCollectionOnlyGroup(defaultKnowledge, "entries", "866209871", "Viewer default knowledge");
-  const defaultProfileRecords = await fetchJson(`${baseUrl}/api/profile-records?page=1&pageSize=20`, cookie);
-  assertCollectionOnlyGroup(defaultProfileRecords, "records", "866209871", "Viewer default profile records");
-
-  const memories = await fetchJson(`${baseUrl}/api/memories?groupId=866209871&subjectUserId=${encodeURIComponent(userId)}&page=1&pageSize=5`, cookie);
-  if (!Array.isArray(memories.memories) || memories.memories.some((item) => item.groupId !== "866209871" || item.subjectUserId !== userId)) {
-    throw new Error(`Viewer memories were not restricted to the selected member/group: ${JSON.stringify(memories)}`);
-  }
-  const secondGroupMemories = await fetchJson(`${baseUrl}/api/memories?groupId=777888999&subjectUserId=${encodeURIComponent(userId)}&page=1&pageSize=5`, cookie);
-  if (!Array.isArray(secondGroupMemories.memories) || !secondGroupMemories.memories.some((item) => item.groupId === "777888999" && item.subjectUserId === userId)) {
-    throw new Error(`Viewer memories did not include the second enabled group: ${JSON.stringify(secondGroupMemories)}`);
-  }
-
-  const knowledge = await fetchJson(`${baseUrl}/api/knowledge?groupId=866209871&page=1&pageSize=5`, cookie);
-  if (!Array.isArray(knowledge.entries) || knowledge.entries.some((entry) => entry.groupId !== "866209871")) {
-    throw new Error(`Viewer knowledge entries leaked another group: ${JSON.stringify(knowledge)}`);
-  }
-  const secondGroupKnowledge = await fetchJson(`${baseUrl}/api/knowledge?groupId=777888999&page=1&pageSize=5`, cookie);
-  if (!Array.isArray(secondGroupKnowledge.entries) || !secondGroupKnowledge.entries.some((entry) => entry.groupId === "777888999")) {
-    throw new Error(`Viewer knowledge did not include the second enabled group: ${JSON.stringify(secondGroupKnowledge)}`);
-  }
-
-  const profileRecords = await fetchJson(`${baseUrl}/api/profile-records?groupId=866209871&userId=${encodeURIComponent(userId)}&page=1&pageSize=5`, cookie);
-  const profileRecord = profileRecords.records?.[0];
-  if (!profileRecord?.id || profileRecords.records.some((record) => record.groupId !== "866209871" || record.userId !== userId)) {
-    throw new Error(`Viewer profile records were not restricted to the selected member/group: ${JSON.stringify(profileRecords)}`);
-  }
-  await fetchJson(`${baseUrl}/api/profile-records/${encodeURIComponent(profileRecord.id)}`, cookie);
-  await expectJsonStatus(`${baseUrl}/api/groups/866209871/members/3334445555/profile-summary?type=overall`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "readonly_session" });
-  const uncachedProfileRecords = await fetchJson(`${baseUrl}/api/profile-records?groupId=866209871&userId=3334445555&page=1&pageSize=5`, cookie);
-  if (uncachedProfileRecords.pagination?.total !== 0 || uncachedProfileRecords.records?.length !== 0) {
-    throw new Error(`Viewer uncached profile summary created a profile record: ${JSON.stringify(uncachedProfileRecords)}`);
-  }
-  const secondGroupProfileRecords = await fetchJson(`${baseUrl}/api/profile-records?groupId=777888999&userId=${encodeURIComponent(userId)}&page=1&pageSize=5`, cookie);
-  if (!Array.isArray(secondGroupProfileRecords.records) || !secondGroupProfileRecords.records.some((record) => record.groupId === "777888999" && record.userId === userId)) {
-    throw new Error(`Viewer profile records did not include the second enabled group: ${JSON.stringify(secondGroupProfileRecords)}`);
-  }
-
-  const candidates = await fetchJson(`${baseUrl}/api/memory-candidates?groupId=866209871&page=1&pageSize=5`, cookie);
-  const candidate = candidates.candidates?.[0];
-  if (!candidate?.id) {
-    throw new Error(`Viewer candidates payload is incomplete: ${JSON.stringify(candidates)}`);
-  }
-  const secondGroupCandidates = await fetchJson(`${baseUrl}/api/memory-candidates?groupId=777888999&page=1&pageSize=5`, cookie);
-  if (!Array.isArray(secondGroupCandidates.candidates) || !secondGroupCandidates.candidates.some((item) => item.groupId === "777888999")) {
-    throw new Error(`Viewer candidates did not include the second enabled group when scoped: ${JSON.stringify(secondGroupCandidates)}`);
-  }
-  await expectJsonStatus(`${baseUrl}/api/search?groupId=100200300&q=Hidden`, {
-    headers: { Cookie: cookie },
-  }, 403, { error: "forbidden" });
-  for (const hiddenUrl of [
-    `${baseUrl}/api/memories?groupId=100200300&page=1&pageSize=5`,
-    `${baseUrl}/api/memory-candidates?groupId=100200300&page=1&pageSize=5`,
-    `${baseUrl}/api/knowledge?groupId=100200300&page=1&pageSize=5`,
-    `${baseUrl}/api/profile-records?groupId=100200300&page=1&pageSize=5`,
-  ]) {
-    await expectJsonStatus(hiddenUrl, {
-      headers: { Cookie: cookie },
-    }, 403, { error: "forbidden" });
-  }
-  for (const hiddenDetailUrl of [
-    hiddenFixtures.memory?.id ? `${baseUrl}/api/memories/${encodeURIComponent(hiddenFixtures.memory.id)}` : undefined,
-    hiddenFixtures.candidate?.id ? `${baseUrl}/api/memory-candidates/${encodeURIComponent(hiddenFixtures.candidate.id)}` : undefined,
-    hiddenFixtures.profileRecord?.id ? `${baseUrl}/api/profile-records/${encodeURIComponent(hiddenFixtures.profileRecord.id)}` : undefined,
-    hiddenFixtures.task?.id ? `${baseUrl}/api/tasks/${encodeURIComponent(hiddenFixtures.task.id)}` : undefined,
-  ].filter(Boolean)) {
-    await expectJsonStatus(hiddenDetailUrl, {
-      headers: { Cookie: cookie },
-    }, 403, { error: "forbidden" });
-  }
-
-  const readonlyRequests = [
-    [`${baseUrl}/api/groups/866209871/config`, {
-      method: "PUT",
-      headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ botMuted: true }),
-    }],
-    [`${baseUrl}/api/system-settings`, {
-      method: "PUT",
-      headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ profileSummaryMaxChars: 1200 }),
-    }],
-    [`${baseUrl}/api/knowledge/import/preview`, {
-      method: "POST",
-      headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ groupId: "866209871", text: "Q: viewer import\nA: readonly" }),
-    }],
-    [`${baseUrl}/api/memory-candidates/${encodeURIComponent(candidate.id)}/reject`, {
-      method: "POST",
-      headers: { Cookie: cookie, "X-CSRF-Token": csrfToken },
-    }],
-    [`${baseUrl}/api/groups/866209871/reminders`, {
-      method: "POST",
-      headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ topic: "viewer reminder", intervalMinutes: 30 }),
-    }],
-    [`${baseUrl}/api/profile-records/${encodeURIComponent(profileRecord.id)}`, {
-      method: "DELETE",
-      headers: { Cookie: cookie, "X-CSRF-Token": csrfToken },
-    }],
-    [`${baseUrl}/api/groups/866209871/config`, {
-      method: "PATCH",
-      headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-      body: JSON.stringify({ botMuted: true }),
-    }],
-  ];
-  for (const [url, init] of readonlyRequests) {
-    await expectJsonStatus(url, init, 403, { error: "readonly_session" });
-  }
-
-  const candidateAfterReadonlyWrites = await fetchJson(`${baseUrl}/api/memory-candidates/${encodeURIComponent(candidate.id)}`, cookie);
-  if (candidateAfterReadonlyWrites.status !== "pending") {
-    throw new Error(`Viewer readonly reject changed candidate state: ${JSON.stringify(candidateAfterReadonlyWrites)}`);
-  }
-}
-
-function assertCollectionOnlyGroup(payload, key, expectedGroupId, label) {
-  const items = payload?.[key];
-  if (!Array.isArray(items) || items.length < 1 || items.some((item) => item.groupId !== expectedGroupId)) {
-    throw new Error(`${label} leaked or omitted group-scoped data: ${JSON.stringify(payload)}`);
-  }
-}
-
-function assertPublicReplyModelOptions(replyModels, label) {
-  if (!Array.isArray(replyModels) || replyModels.length < 1) {
-    throw new Error(`${label} reply model options are empty or invalid: ${JSON.stringify(replyModels)}`);
-  }
-  for (const model of replyModels) {
-    const keys = Object.keys(model).sort();
-    if (JSON.stringify(keys) !== JSON.stringify(["enabled", "id", "label", "purpose"])) {
-      throw new Error(`${label} reply model option exposed non-public fields: ${JSON.stringify(model)}`);
-    }
-    if (
-      typeof model.id !== "string" ||
-      typeof model.label !== "string" ||
-      model.purpose !== "reply" ||
-      typeof model.enabled !== "boolean"
-    ) {
-      throw new Error(`${label} reply model option has invalid public shape: ${JSON.stringify(model)}`);
-    }
   }
 }
 
@@ -1267,15 +842,6 @@ async function fetchJson(url, cookie) {
     throw new Error(`Fetch JSON failed: ${url} ${response.status} ${await response.text()}`);
   }
   return await response.json();
-}
-
-async function expectJsonStatus(url, init, expectedStatus, expectedBody) {
-  const response = await fetch(url, init);
-  const body = await response.json();
-  if (response.status !== expectedStatus || JSON.stringify(body) !== JSON.stringify(expectedBody)) {
-    throw new Error(`Expected ${url} to return ${expectedStatus} ${JSON.stringify(expectedBody)}, got ${response.status} ${JSON.stringify(body)}`);
-  }
-  return body;
 }
 
 function assertVoiceReplyConfig(group, label) {

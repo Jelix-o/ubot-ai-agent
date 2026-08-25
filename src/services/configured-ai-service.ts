@@ -143,6 +143,7 @@ export class ConfiguredAiService implements RuntimeAiService {
       model.baseUrl,
       model.model,
       model.apiKey,
+      model.apiProtocol,
       model.reasoningEffort,
       model.maxCompletionTokens,
       model.requestTimeoutMs,

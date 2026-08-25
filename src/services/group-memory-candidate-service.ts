@@ -40,8 +40,10 @@ interface MemoryConfidencePolicy {
   unattendedModeEnabled: boolean;
 }
 
-interface GroupMemoryCandidateFlushOptions {
+export interface GroupMemoryCandidateFlushOptions {
   normalizeNonChineseCandidates?: boolean;
+  excludedSubjectUserIdsByGroup?: Readonly<Record<string, readonly string[]>>;
+  excludedSubjectUserIds?: readonly string[];
 }
 
 export class GroupMemoryCandidateService {
@@ -216,7 +218,10 @@ export class GroupMemoryCandidateService {
   ): Promise<GroupMemoryCandidateFlushStats[]> {
     const allowedGroupIds = groupIds ? new Set(groupIds) : undefined;
     const bufferedGroupIds = [...this.buffers.keys()].filter((groupId) => !allowedGroupIds || allowedGroupIds.has(groupId));
-    const results = await Promise.all(bufferedGroupIds.map((groupId) => this.flushGroup(groupId, options)));
+    const results = await Promise.all(bufferedGroupIds.map((groupId) => this.flushGroup(groupId, {
+      ...options,
+      excludedSubjectUserIds: options.excludedSubjectUserIdsByGroup?.[groupId] ?? options.excludedSubjectUserIds,
+    })));
     return results.filter((result): result is GroupMemoryCandidateFlushStats => Boolean(result));
   }
 
@@ -231,25 +236,44 @@ export class GroupMemoryCandidateService {
 
     this.buffers.set(groupId, []);
     try {
-      const messages: MemoryCandidateExtractionMessage[] = buffer.map((message) => ({
+      const excludedSubjectUserIds = new Set(options.excludedSubjectUserIds ?? []);
+      const eligibleBuffer = buffer.filter((message) => !excludedSubjectUserIds.has(message.userId));
+      if (eligibleBuffer.length === 0) {
+        return {
+          groupId,
+          messageCount: 0,
+          candidateCount: 0,
+          autoApprovedCount: 0,
+          pendingCount: 0,
+          skippedDuplicateCount: 0,
+          skippedLowValueCount: 0,
+          mergedCandidateCount: 0,
+          refinedMemoryCount: 0,
+        };
+      }
+      const messages: MemoryCandidateExtractionMessage[] = eligibleBuffer.map((message) => ({
         userId: message.userId,
         userName: message.userName,
         text: message.text,
         timestamp: message.timestamp,
       }));
-      const evidence = buildEvidence(buffer);
-      const speakerIds = new Set(buffer.map((message) => message.userId));
+      const evidence = buildEvidence(eligibleBuffer);
+      const speakerIds = new Set(eligibleBuffer.map((message) => message.userId));
       const [existingMemories, existingCandidates] = await Promise.all([
         this.memoryStore.list(groupId),
         this.candidateStore.list({ groupId }),
       ]);
-      const dedupReferenceMemories = existingMemories.filter(isDedupReferenceMemory);
+      const dedupReferenceMemories = existingMemories
+        .filter((memory) => !isExcludedMemberProfile(memory, excludedSubjectUserIds))
+        .filter(isDedupReferenceMemory);
+      const visibleExistingCandidates = existingCandidates
+        .filter((candidate) => !isExcludedMemberProfile(candidate, excludedSubjectUserIds));
       const policy = await this.getMemoryConfidencePolicy();
       const candidates = await this.aiService.extractGroupMemoryCandidates({
         groupId,
         messages,
         existingMemories: dedupReferenceMemories,
-        existingCandidates: existingCandidates.filter((candidate) => candidate.status !== "rejected"),
+        existingCandidates: visibleExistingCandidates.filter((candidate) => candidate.status !== "rejected"),
         confidencePolicy: {
           candidateThreshold: policy.candidateThreshold,
           autoApproveThreshold: policy.autoApproveThreshold,
@@ -263,6 +287,9 @@ export class GroupMemoryCandidateService {
       let mergedCandidateCount = 0;
       let refinedMemoryCount = 0;
       for (const rawCandidate of candidates) {
+        if (isExcludedMemberProfile(rawCandidate, excludedSubjectUserIds)) {
+          continue;
+        }
         if (!meetsCandidateThreshold(rawCandidate, policy)) {
           skippedLowValueCount += 1;
           logInfo("Skipped below-threshold group memory candidate.", {
@@ -281,6 +308,9 @@ export class GroupMemoryCandidateService {
         if (!candidate) {
           await this.addPendingLanguageReviewCandidate(groupId, rawCandidate, evidence);
           pendingCount += 1;
+          continue;
+        }
+        if (isExcludedMemberProfile(candidate, excludedSubjectUserIds)) {
           continue;
         }
         if (!meetsCandidateThreshold(candidate, policy)) {
@@ -322,7 +352,7 @@ export class GroupMemoryCandidateService {
           source: "auto",
           evidence,
         };
-        const duplicateDecision = await this.findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, existingCandidates, policy);
+        const duplicateDecision = await this.findDuplicateDecision(normalizedCandidate, dedupReferenceMemories, visibleExistingCandidates, policy);
         if (duplicateDecision.kind === "skip" || duplicateDecision.kind === "skip_candidate") {
           skippedDuplicateCount += 1;
           continue;
@@ -361,12 +391,12 @@ export class GroupMemoryCandidateService {
             status: duplicateDecision.candidate.status === "rejected" ? "pending" : duplicateDecision.candidate.status,
           });
           if (merged) {
-            replaceCandidate(existingCandidates, merged);
+            replaceCandidate(visibleExistingCandidates, merged);
             mergedCandidateCount += 1;
             if (!forcedPending && shouldAutoApprove(merged, policy) && merged.status === "pending") {
               await this.candidateStore.approve(merged.id, this.memoryStore);
               const approvedCandidate = { ...merged, status: "approved" as const };
-              replaceCandidate(existingCandidates, approvedCandidate);
+              replaceCandidate(visibleExistingCandidates, approvedCandidate);
               existingMemories.push({
                 id: `approved:${merged.id}`,
                 groupId: merged.groupId,
@@ -392,11 +422,11 @@ export class GroupMemoryCandidateService {
         const result = await this.candidateStore.addCandidateWithResult({
           ...normalizedCandidate,
         });
-        replaceCandidate(existingCandidates, result.candidate);
+        replaceCandidate(visibleExistingCandidates, result.candidate);
         if (!forcedPending && shouldAutoApprove(result.candidate, policy) && (result.created || result.candidate.status === "pending")) {
           const approved = await this.candidateStore.approve(result.candidate.id, this.memoryStore);
           if (approved) {
-            replaceCandidate(existingCandidates, approved.candidate);
+            replaceCandidate(visibleExistingCandidates, approved.candidate);
             existingMemories.push(approved.memory);
             if (isDedupReferenceMemory(approved.memory)) {
               dedupReferenceMemories.push(approved.memory);
@@ -409,7 +439,7 @@ export class GroupMemoryCandidateService {
       }
       const stats = {
         groupId,
-        messageCount: buffer.length,
+        messageCount: eligibleBuffer.length,
         candidateCount: candidates.length,
         autoApprovedCount,
         pendingCount,
@@ -653,6 +683,17 @@ function sameScope(
 
 function isDedupReferenceMemory(memory: GroupMemory): boolean {
   return memory.enabled && !memory.source.startsWith("daily_profile_review:");
+}
+
+function isExcludedMemberProfile(
+  item: Pick<GroupMemory | GroupMemoryCandidate | ExtractedGroupMemoryCandidate, "type" | "subjectUserId">,
+  excludedSubjectUserIds: ReadonlySet<string>,
+): boolean {
+  const subjectUserId = item.subjectUserId;
+  return item.type === "member_profile" &&
+    subjectUserId !== undefined &&
+    subjectUserId !== "" &&
+    excludedSubjectUserIds.has(subjectUserId);
 }
 
 function isMoreSpecificMemory(candidate: CandidateLike, memory: GroupMemory, policy: MemoryConfidencePolicy): boolean {

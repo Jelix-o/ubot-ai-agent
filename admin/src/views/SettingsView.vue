@@ -20,15 +20,15 @@ let modelRowKeySeed = 0;
 const settings = reactive<SystemSettings>({
   profileSummaryMaxChars: 1800,
   profileShortSummaryMaxChars: 140,
-  dailyProfileReviewEnabled: true,
+  dailyProfileReviewEnabled: false,
   dailyProfileReviewTime: "00:00",
-  memoryDedupEnabled: true,
+  memoryDedupEnabled: false,
   memoryDedupTime: "23:00",
   memoryDedupSemanticTimeoutMinutes: 10,
   memoryCandidateConfidenceThreshold: 60,
   memoryAutoApproveConfidenceThreshold: 80,
   memoryUnattendedModeEnabled: false,
-  onlineLookupEnabled: true,
+  onlineLookupEnabled: false,
   tokenCostControl: {
     memoryCandidateExtractionEnabled: false,
     memoryCandidateNormalizationEnabled: false,
@@ -148,7 +148,7 @@ function applyLowTokenPreset(): void {
     modelHealthAutoProbeEnabled: false,
   };
   settings.dailyProfileReviewEnabled = false;
-  settings.memoryDedupEnabled = true;
+  settings.memoryDedupEnabled = false;
   app.showToast("已应用低 Token 配置，保存后生效");
 }
 

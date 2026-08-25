@@ -149,6 +149,37 @@ test("semantic judge failure falls back to local rules without blocking new memo
   }
 });
 
+test("candidate flush excludes opted-out speakers and their existing profile data", async () => {
+  const fixture = await createFixture();
+  try {
+    await fixture.memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "existing private profile",
+      content: "Tester prefers concise answers.",
+      source: "test",
+    });
+    fixture.ai.candidates = [{
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "new private profile",
+      content: "Tester has a durable preference for short replies.",
+      confidence: 0.95,
+    }];
+
+    fixture.service.queueMessage(message("Tester shared another private preference."));
+    const stats = await fixture.service.flushGroup("67890", { excludedSubjectUserIds: ["20001"] });
+
+    assert.equal(stats?.messageCount, 0);
+    assert.equal(fixture.ai.normalizeCalls.length, 0);
+    assert.equal((await fixture.memoryStore.list("67890")).length, 1);
+    assert.equal((await fixture.candidateStore.list({ groupId: "67890" })).length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("low-value memory candidates are skipped before pending or approval", async () => {
   const fixture = await createFixture();
   try {

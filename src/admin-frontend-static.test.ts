@@ -47,102 +47,31 @@ test("admin member management keeps required member actions available", async ()
   assert.match(membersView, /query:\s*\{\s*userId:\s*member\.userId,\s*type:\s*"member_profile"/);
 });
 
-test("admin ordinary QQ login creates scoped read-only viewer sessions", async () => {
-  const [loginView, appStore, routerFile, adminServer] = await Promise.all([
+test("admin disables unverified member login and public profile sharing", async () => {
+  const [loginView, appStore, adminServer, profilesView] = await Promise.all([
     readAdminFile(path.join("views", "LoginView.vue")),
     readAdminFile(path.join("stores", "app.ts")),
-    readAdminFile("router.ts"),
     readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
-  ]);
-
-  assert.match(loginView, /type LoginMode = "admin" \| "viewer"/);
-  assert.match(loginView, /mode = shallowRef<LoginMode>\("admin"\)/);
-  assert.match(loginView, /mode\.value === "viewer" && !\/\^\\d\+\$\/\.test\(form\.username\.trim\(\)\)/);
-  assert.match(loginView, /mode\.value === "viewer"[\s\S]*\{ mode: "viewer", username: form\.username\.trim\(\) \}/);
-  assert.match(loginView, /switchMode\('viewer'\)/);
-  assert.match(loginView, /v-if="mode === 'admin'"/);
-
-  assert.match(appStore, /role = shallowRef<AdminSession\["role"\]>\("super_admin"\)/);
-  assert.match(appStore, /allowedGroupIds = shallowRef<string\[\]>\(\[\]\)/);
-  assert.match(appStore, /readonly = computed\(\(\) => role\.value === "viewer"\)/);
-  assert.match(appStore, /allowedGroupIds\.value = session\.allowedGroupIds/);
-
-  assert.match(routerFile, /to\.meta\.superOnly && app\.role !== "super_admin"/);
-  assert.match(routerFile, /return \{ path: "\/" \}/);
-
-  assert.match(adminServer, /const mode = body\.mode === "viewer" \? "viewer" : "admin"/);
-  assert.match(adminServer, /mode === "viewer"\s*\?\s*await this\.buildViewerSession\(username\)/);
-  assert.match(adminServer, /private async buildViewerSession\(username: string\)/);
-  assert.match(adminServer, /if \(!\/\^\\d\+\$\/\.test\(userId\)\)/);
-  assert.match(adminServer, /const groups = await this\.findGroupsForViewer\(userId\)/);
-  assert.match(adminServer, /role: "viewer"/);
-  assert.match(adminServer, /allowedGroupIds: groups\.map\(\(group\) => group\.groupId\)/);
-  assert.match(adminServer, /if \(requestedGroupId && !groupIds\.has\(requestedGroupId\)\) \{\s*this\.sendJson\(res, \{ error: "forbidden" \}, 403\);\s*return;\s*\}/);
-  assert.match(adminServer, /if \(session\.role === "viewer" && session\.userId\) \{/);
-  assert.match(adminServer, /await this\.isCurrentNapcatGroupMember\(group\.groupId, session\.userId\)/);
-  assert.match(adminServer, /return this\.isCurrentNapcatGroupMember\(groupId, session\.userId\)/);
-  assert.match(adminServer, /private async isCurrentNapcatGroupMember\(groupId: string, userId: string\): Promise<boolean> \{/);
-  assert.match(adminServer, /String\(member\.user_id\) === userId/);
-  assert.match(adminServer, /private isReadOnlySession\(session: AdminSession\): boolean \{\s*return session\.role === "viewer";\s*\}/);
-  assert.match(adminServer, /this\.isReadOnlySession\(session\)[\s\S]*isStateChangingMethod\(req\.method\)[\s\S]*readonly_session/);
-});
-
-test("admin viewer sessions render non-system pages as read-only", async () => {
-  const [candidatesView, memoriesView, membersView, profilesView, knowledgeView] = await Promise.all([
-    readAdminFile(path.join("views", "CandidatesView.vue")),
-    readAdminFile(path.join("views", "MemoriesView.vue")),
-    readAdminFile(path.join("views", "MembersView.vue")),
     readAdminFile(path.join("views", "ProfilesView.vue")),
-    readAdminFile(path.join("views", "KnowledgeView.vue")),
   ]);
 
-  for (const view of [candidatesView, memoriesView, membersView, profilesView, knowledgeView]) {
-    assert.match(view, /readonly = computed\(\(\) => app\.readonly\)/);
-  }
-
-  assert.match(candidatesView, /function ensureWritable\(\): boolean/);
-  assert.match(candidatesView, /:disabled="readonly \|\| candidates\.bulkApproving \|\| candidates\.selectedCount === 0"/);
-  assert.match(candidatesView, /:disabled="readonly \|\| isBusy\(item\.id\) \|\| item\.status !== 'pending'"/);
-  assert.match(candidatesView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
-
-  assert.match(memoriesView, /function ensureWritable\(\): boolean/);
-  assert.match(memoriesView, /if \(readonly\.value\) return;/);
-  assert.match(memoriesView, /async function previewDeduplicate\(mode: DedupMode = "fast"\): Promise<void> \{\s*if \(!ensureWritable\(\)\) return;/);
-  assert.match(memoriesView, /@click="previewDeduplicate\('fast'\)"/);
-  assert.match(memoriesView, /@click="previewDeduplicate\('deep'\)"/);
-  assert.match(memoriesView, /dedupPollFailures\.value <= 3/);
-  assert.match(memoriesView, /轮询已暂停，请到任务中心查看任务/);
-  assert.match(memoriesView, /:disabled="readonly \|\| dedupLoading \|\| !dedupDecisions\.length"/);
-  assert.match(memoriesView, /:disabled="readonly \|\| loading \|\| !selectedIds\.size"/);
-  assert.match(memoriesView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
-
-  assert.match(membersView, /function ensureWritable\(\): boolean/);
-  assert.match(membersView, /refresh && !ensureWritable\(\)/);
-  assert.match(membersView, /:disabled="readonly" @click="activeMember\?\.userId === member\.userId \? regenerateActiveProfile\(\) : profile\(member, 'overall', true\)"/);
-  assert.match(membersView, /:disabled="readonly" @click="startEditNote\(member\)"/);
-  assert.match(membersView, /function deduplicateMemberMemories\(member: MemberProfile\): void \{\s*if \(!ensureWritable\(\)\) return;/);
-  assert.match(membersView, /:disabled="readonly" @click="deduplicateMemberMemories\(member\)"/);
-  assert.match(membersView, /:disabled="readonly \|\| togglingMemoryUserId === member\.userId"/);
-  assert.match(membersView, /:disabled="readonly" @click="deleteRecord\(record\)"/);
-
-  assert.match(profilesView, /readonly\.value[\s\S]*只读模式不能重新生成画像/);
-  assert.match(profilesView, /readonly\.value[\s\S]*只读模式不能删除画像记录/);
-  assert.match(profilesView, /readonly\.value[\s\S]*只读模式不能修改公开链接/);
-  assert.match(profilesView, /:disabled="readonly" @click="updateShareState\(record, true\)"/);
-  assert.match(profilesView, /:disabled="readonly \|\| generating" @click="regenerate\(record\)"/);
-  assert.match(profilesView, /:disabled="readonly" @click="removeRecord\(record\)"/);
-
-  assert.match(knowledgeView, /function ensureWritable\(\): boolean/);
-  assert.match(knowledgeView, /:disabled="readonly" @click="startCreate"/);
-  assert.match(knowledgeView, /:disabled="readonly \|\| importLoading"/);
-  assert.match(knowledgeView, /:disabled="readonly \|\| loading" @click="save"/);
-  assert.match(knowledgeView, /:disabled="readonly \|\| isBusy\(item\.id\)"/);
+  assert.doesNotMatch(loginView, /LoginMode|普通用户|只读进入|mode === "viewer"/);
+  assert.match(loginView, /mode: "admin"/);
+  assert.doesNotMatch(appStore, /role\.value === "viewer"/);
+  assert.match(appStore, /const readonly = computed\(\(\) => false\)/);
+  assert.match(adminServer, /body\.mode === "viewer"/);
+  assert.match(adminServer, /viewer_login_disabled/);
+  assert.doesNotMatch(adminServer, /buildViewerSession/);
+  assert.doesNotMatch(adminServer, /isCurrentNapcatGroupMember/);
+  assert.match(adminServer, /profile_sharing_disabled/);
+  assert.doesNotMatch(profilesView, /公开链接|生成链接|撤销公开|恢复公开|shareUrl/);
 });
 
 test("admin skills and command lists use the simplified table surfaces", async () => {
-  const [skillsView, commandsView] = await Promise.all([
+  const [skillsView, commandsView, apiService] = await Promise.all([
     readAdminFile(path.join("views", "SkillsView.vue")),
     readAdminFile(path.join("views", "CommandsView.vue")),
+    readAdminFile(path.join("services", "api.ts")),
   ]);
 
   assert.match(skillsView, /SkillDefinition/);
@@ -173,6 +102,8 @@ test("admin skills and command lists use the simplified table surfaces", async (
   assert.match(skillsView, /用户明确要求长文时可使用“最多消息数”/);
   assert.match(skillsView, /单条和总字符始终是硬上限/);
   assert.match(skillsView, /\/api\/skills\/backups/);
+  assert.doesNotMatch(skillsView, /sourceSkillLines|sourceSkillLineLimit|原始技能行|原始资料入 Prompt 上限/);
+  assert.doesNotMatch(apiService, /sourceSkillLines|sourceSkillLineLimit/);
 
   const commandTable = commandsView.slice(
     commandsView.indexOf('<div v-else class="command-table">'),
@@ -256,7 +187,7 @@ test("group default voice reply stays a child of voice reply", async () => {
     readFile(path.join(repoRoot, "src", "services", "group-config-service.test.ts"), "utf8"),
   ]);
 
-  assert.match(groupsView, /voiceReplyEnabled:\s*true/);
+  assert.match(groupsView, /voiceReplyEnabled:\s*false/);
   assert.match(groupsView, /defaultVoiceReplyEnabled:\s*false/);
   assert.match(groupsView, /<label><input v-model="form\.voiceReplyEnabled" :disabled="readonly" type="checkbox" \/>/);
   assert.match(groupsView, /<label class="voice-child" :class="\{ disabled: !form\.voiceReplyEnabled \}">/);
@@ -264,7 +195,7 @@ test("group default voice reply stays a child of voice reply", async () => {
   assert.match(groupsView, /watch\(\(\) => form\.voiceReplyEnabled,\s*\(enabled\) => \{\s*if \(!enabled\) \{\s*form\.defaultVoiceReplyEnabled = false;/);
   assert.match(groupsView, /watch\(\(\) => form\.defaultVoiceReplyEnabled,\s*\(enabled\) => \{\s*if \(enabled && !form\.voiceReplyEnabled\) \{\s*form\.defaultVoiceReplyEnabled = false;/);
 
-  assert.match(groupConfigService, /const voiceReplyEnabled = group\.voiceReplyEnabled !== false/);
+  assert.match(groupConfigService, /const voiceReplyEnabled = group\.voiceReplyEnabled === true/);
   assert.match(groupConfigService, /defaultVoiceReplyEnabled: voiceReplyEnabled && group\.defaultVoiceReplyEnabled === true/);
   assert.match(groupConfigService, /if \("voiceReplyEnabled" in input\)[\s\S]*next\.voiceReplyEnabled = normalizeBoolean\(input\.voiceReplyEnabled, "invalid_group_config"\)[\s\S]*if \(!next\.voiceReplyEnabled\) \{\s*next\.defaultVoiceReplyEnabled = false;/);
   assert.match(groupConfigService, /if \("defaultVoiceReplyEnabled" in input\)[\s\S]*next\.defaultVoiceReplyEnabled = normalizeBoolean\(input\.defaultVoiceReplyEnabled, "invalid_group_config"\)[\s\S]*if \(!next\.voiceReplyEnabled\) \{\s*next\.defaultVoiceReplyEnabled = false;/);
@@ -277,6 +208,18 @@ test("group default voice reply stays a child of voice reply", async () => {
   assert.match(groupConfigServiceTest, /assert\.equal\(voiceOn\.voiceReplyEnabled,\s*true\)/);
   assert.match(groupConfigServiceTest, /assert\.equal\(voiceOn\.defaultVoiceReplyEnabled,\s*true\)/);
   assert.match(groupConfigServiceTest, /assert\.equal\(voiceOff\.defaultVoiceReplyEnabled,\s*false\)/);
+});
+
+test("automatic ops alerts require an explicit group opt-in in both admin surfaces", async () => {
+  const [groupsView, legacyAdminScript, groupConfigService] = await Promise.all([
+    readAdminFile(path.join("views", "GroupsView.vue")),
+    readFile(path.join(repoRoot, "src", "admin-scripts.ts"), "utf8"),
+    readFile(path.join(repoRoot, "src", "services", "group-config-service.ts"), "utf8"),
+  ]);
+
+  assert.match(groupsView, /opsAlertsEnabled:\s*false/);
+  assert.match(legacyAdminScript, /checked\(g\.opsAlertsEnabled === true\)/);
+  assert.match(groupConfigService, /opsAlertsEnabled: group\.opsAlertsEnabled === true/);
 });
 
 test("admin knowledge import stays preview-first and uses formatted timestamps", async () => {
@@ -305,7 +248,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v2\.0\.3/);
+  assert.match(appShell, /UBot v3\.0\.0-rc\.1/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -319,8 +262,6 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /await app\.logout\(\)/);
   assert.match(appShell, /@click\.stop="logout"/);
   assert.match(appShell, /class="content-scroll"/);
-  assert.match(appShell, /readonly-banner/);
-  assert.match(appShell, /普通用户只读模式/);
   assert.match(appShell, /\.content-scroll\s*\{[\s\S]*overflow:\s*visible;/);
   const topbarBlock = appShell.slice(appShell.indexOf(".topbar {"), appShell.indexOf(".top-title"));
   assert.match(topbarBlock, /background:\s*color-mix\(in oklch,\s*var\(--surface\)\s*94%,\s*transparent\)/);
@@ -410,7 +351,7 @@ test("admin system status separates environment and server health", async () => 
   assert.match(healthView, /failureKindLabel/);
 });
 
-test("admin profile page keeps public link actions in the list", async () => {
+test("admin profile page keeps records inside the authenticated console", async () => {
   const profilesView = await readAdminFile(path.join("views", "ProfilesView.vue"));
   const listSection = profilesView.slice(
     profilesView.indexOf('<div v-else class="profile-list">'),
@@ -418,22 +359,11 @@ test("admin profile page keeps public link actions in the list", async () => {
   );
   const detailSection = profilesView.slice(profilesView.indexOf('<aside class="panel detail-panel sticky-detail-panel">'));
 
-  assert.match(listSection, /查看链接/);
-  assert.match(listSection, /复制链接/);
-  assert.match(listSection, /生成链接/);
-  assert.match(listSection, /撤销公开/);
-  assert.match(listSection, /v-if="!record\.shareToken"/);
-  assert.match(listSection, /openShareUrl\(record\)/);
-  assert.match(listSection, /copyShareUrl\(record\)/);
-  assert.match(listSection, /updateShareState\(record,\s*true\)/);
-  assert.match(listSection, /updateShareState\(record,\s*false\)/);
-  assert.doesNotMatch(listSection, /formatDateTime\(record\.generatedAt\)/);
-  assert.doesNotMatch(listSection, /来源记忆/);
-  assert.doesNotMatch(detailSection, /查看链接/);
-  assert.doesNotMatch(detailSection, /复制链接/);
-  assert.doesNotMatch(detailSection, /生成链接/);
-  assert.doesNotMatch(detailSection, /撤销公开/);
-  assert.doesNotMatch(detailSection, /updateShareState\(activeRecord/);
+  assert.match(listSection, /重新生成/);
+  assert.match(listSection, /删除/);
+  assert.doesNotMatch(listSection, /查看链接|复制链接|生成链接|撤销公开|恢复公开/);
+  assert.match(detailSection, /仅限受权限保护的管理后台/);
+  assert.doesNotMatch(detailSection, /公开链接|过期时间/);
 });
 
 test("model probes and tts use provider-specific health requests", async () => {
@@ -452,125 +382,17 @@ test("model probes and tts use provider-specific health requests", async () => {
   assert.match(ttsTest, /headers\.has\("authorization"\)/);
 });
 
-test("admin visual smoke covers all routes and key mobile viewports", async () => {
+test("admin visual smoke covers authenticated administrator routes", async () => {
   const smokeScript = await readFile(path.join(repoRoot, "scripts", "visual-admin-smoke.mjs"), "utf8");
 
   for (const routeName of ["overview", "groups", "members", "candidates", "memories", "profiles", "knowledge", "tasks", "audit", "health", "skills", "commands", "settings"]) {
-    assert.match(smokeScript, new RegExp(`\\["${routeName}",`));
+    assert.match(smokeScript, new RegExp("\\[\"" + routeName + "\","));
   }
+  assert.match(smokeScript, /loginAndGetAuth\(baseUrl\)/);
+  assert.match(smokeScript, /assertUnverifiedGroupAdminLoginRejected\(baseUrl,\s*"99999"\)/);
+  assert.doesNotMatch(smokeScript, /loginViewerAndGetAuth|runViewerHttpSmoke|viewer screenshots|login-viewer-mode/);
   assert.match(smokeScript, /\["overview-mobile",\s*"\/"/);
-  assert.match(smokeScript, /\["login-viewer-mode",\s*"\/login"/);
-  assert.match(smokeScript, /click:\s*"\.mode-tabs button:nth-child\(2\)"/);
-  assert.match(smokeScript, /expectText:\s*\["普通用户",\s*"QQ 账号",\s*"只读进入"\]/);
-  assert.match(smokeScript, /expectNoSelector:\s*'input\[type="password"\]'/);
-  assert.match(smokeScript, /\["skills-editor",\s*"\/skills"/);
-  assert.match(smokeScript, /click:\s*"\.skill-table \.table-row"/);
-  assert.match(smokeScript, /afterClickScrollTo:\s*"\.tts-form-block"/);
-  assert.match(smokeScript, /\["tasks-detail",\s*"\/tasks"/);
-  assert.match(smokeScript, /click:\s*"\.task-row \.row-action"/);
-  assert.match(smokeScript, /afterClickScrollTo:\s*"\.task-detail"/);
-  assert.match(smokeScript, /\["audit-detail",\s*"\/audit"/);
-  assert.match(smokeScript, /click:\s*"\.audit-row \.row-action"/);
-  assert.match(smokeScript, /afterClickScrollTo:\s*"\.audit-detail"/);
-  assert.match(smokeScript, /\["health-detail",\s*"\/health"/);
-  assert.match(smokeScript, /click:\s*"\.history-row \.row-action"/);
-  assert.match(smokeScript, /afterClickScrollTo:\s*"\.model-detail"/);
-  assert.match(smokeScript, /\["groups-mobile",\s*"\/groups"/);
-  assert.match(smokeScript, /\["members-mobile",\s*"\/members"/);
-  assert.match(smokeScript, /\["candidates-mobile",\s*"\/candidates"/);
-  assert.match(smokeScript, /\["memories-mobile",\s*"\/memories"/);
-  assert.doesNotMatch(smokeScript, new RegExp("\\[\"" + "iter" + "ation" + "\","));
-  assert.doesNotMatch(smokeScript, new RegExp("\\[\"" + "iter" + "ation" + "-mobile\","));
-  assert.match(smokeScript, /\["tasks-mobile",\s*"\/tasks"/);
-  assert.match(smokeScript, /\["tasks-mobile-filters",\s*"\/tasks"/);
   assert.match(smokeScript, /\["settings-mobile",\s*"\/settings"/);
-  assert.match(smokeScript, /loginViewerAndGetAuth\(baseUrl,\s*"3951154629"\)/);
-  assert.match(smokeScript, /groupPassword:\s*"group-secret"/);
-  assert.match(smokeScript, /defaultVoiceReplyEnabled:\s*true/);
-  assert.match(smokeScript, /groupId:\s*"777888999"/);
-  assert.match(smokeScript, /Viewer Second Group/);
-  assert.match(smokeScript, /const expectedGroupIds = \["866209871",\s*"777888999"\]/);
-  assert.match(smokeScript, /const enabledGroupIds = \["866209871",\s*"777888999"\]/);
-  assert.match(smokeScript, /expectedGroupIdSet\.has\(candidate\.groupId\)/);
-  assert.match(smokeScript, /api\/groups\/777888999\/config/);
-  assert.match(smokeScript, /api\/logs\?groupId=777888999&limit=20/);
-  assert.match(smokeScript, /api\/tasks\?groupId=777888999&page=1&pageSize=20/);
-  assert.match(smokeScript, /api\/memories\?groupId=777888999&subjectUserId=\$\{encodeURIComponent\(userId\)\}/);
-  assert.match(smokeScript, /api\/knowledge\?groupId=777888999/);
-  assert.match(smokeScript, /api\/profile-records\?groupId=777888999&userId=\$\{encodeURIComponent\(userId\)\}/);
-  assert.match(smokeScript, /api\/search\?groupId=100200300&q=Hidden/);
-  assert.match(smokeScript, /loginGroupAdminAndGetAuth\(baseUrl,\s*"99999"\)/);
-  assert.match(smokeScript, /runGroupAdminHttpSmoke\(baseUrl,\s*groupAdminAuth\)/);
-  assert.match(smokeScript, /runViewerHttpSmoke\(baseUrl,\s*viewerAuth,\s*hiddenDirectAccessFixtures\)/);
-  assert.match(smokeScript, /const hiddenDirectAccessFixtures = \{\}/);
-  assert.match(smokeScript, /hiddenDirectAccessFixtures\.memory = await memoryStore\.create/);
-  assert.match(smokeScript, /hiddenDirectAccessFixtures\.candidate = await candidateStore\.addCandidate/);
-  assert.match(smokeScript, /hiddenDirectAccessFixtures\.profileRecord = await profileRecordStore\.create/);
-  assert.match(smokeScript, /hiddenDirectAccessFixtures\.task = otherGroupTask/);
-  assert.match(smokeScript, /api\/memories\/\$\{encodeURIComponent\(hiddenFixtures\.memory\.id\)\}/);
-  assert.match(smokeScript, /api\/memory-candidates\/\$\{encodeURIComponent\(hiddenFixtures\.candidate\.id\)\}/);
-  assert.match(smokeScript, /api\/profile-records\/\$\{encodeURIComponent\(hiddenFixtures\.profileRecord\.id\)\}/);
-  assert.match(smokeScript, /api\/tasks\/\$\{encodeURIComponent\(hiddenFixtures\.task\.id\)\}/);
-  assert.match(smokeScript, /runViewerGroupAdminParitySmoke\(baseUrl,\s*viewerAuth,\s*groupAdminAuth\)/);
-  assert.match(smokeScript, /function groupScopedReadableUrls\(baseUrl,\s*userId = "3951154629"\)/);
-  assert.match(smokeScript, /session\.role !== "group_admin"/);
-  assert.match(smokeScript, /assertVoiceReplyConfig\(groupAdminConfig,\s*"group admin group config"\)/);
-  assert.match(smokeScript, /assertVoiceReplyConfig\(groups\.groups\?\.\[0\],\s*"viewer groups list"\)/);
-  assert.match(smokeScript, /assertVoiceReplyConfig\(viewerGroupConfig,\s*"viewer group config"\)/);
-  assert.match(smokeScript, /function assertVoiceReplyConfig\(group,\s*label\)/);
-  assert.match(smokeScript, /api\/groups\/866209871\/members\?page=1&pageSize=20&includeNapcatMembers=1/);
-  assert.match(smokeScript, /api\/skill-options/);
-  assert.match(smokeScript, /api\/groups\/866209871\/reminders/);
-  assert.match(smokeScript, /api\/groups\/866209871\/schedule-preview\?days=7/);
-  assert.match(smokeScript, /api\/profile-records\?groupId=866209871&userId=\$\{encodeURIComponent\(userId\)\}/);
-  assert.match(smokeScript, /api\/health\?refresh=1/);
-  assert.match(smokeScript, /api\/model-options/);
-  assert.match(smokeScript, /api\/notifications/);
-  assert.match(smokeScript, /Group admin could not update managed group config/);
-  assert.match(smokeScript, /Viewer\/group-admin readable parity failed/);
-  assert.match(smokeScript, /readonly_session/);
-  assert.match(smokeScript, /method:\s*"DELETE"/);
-  assert.match(smokeScript, /method:\s*"PATCH"/);
-  assert.match(smokeScript, /viewerModelOptions\.models !== undefined/);
-  assert.match(smokeScript, /viewerOverview/);
-  assert.match(smokeScript, /viewerHealth/);
-  assert.match(smokeScript, /viewerLogs/);
-  assert.match(smokeScript, /viewerTasks\.tasks\.some/);
-  assert.match(smokeScript, /profileRecords/);
-  assert.match(smokeScript, /api\/skills/);
-  assert.match(smokeScript, /api\/commands/);
-  assert.match(smokeScript, /\/api\/knowledge\?groupId=866209871/);
-  assert.match(smokeScript, /\["viewer-overview",\s*"\/"/);
-  assert.match(smokeScript, /\["viewer-groups",\s*"\/groups"/);
-  assert.match(smokeScript, /expectText:\s*\["语音功能",\s*"默认语音回复"\]/);
-  assert.match(smokeScript, /expectDisabledText:\s*\["只读模式不可保存"\]/);
-  assert.match(smokeScript, /\["viewer-members",\s*"\/members"/);
-  assert.match(smokeScript, /\["viewer-memories-dedup",\s*"\/memories\?userId=3951154629&type=member_profile&dedup=1"/);
-  assert.match(smokeScript, /\["viewer-candidates",\s*"\/candidates"/);
-  assert.match(smokeScript, /\["viewer-profiles",\s*"\/profiles"/);
-  assert.match(smokeScript, /\["viewer-knowledge",\s*"\/knowledge"/);
-  assert.match(smokeScript, /\["viewer-tasks",\s*"\/tasks"/);
-  assert.match(smokeScript, /\["viewer-audit",\s*"\/audit"/);
-  assert.match(smokeScript, /\["viewer-health",\s*"\/health"/);
-  assert.match(smokeScript, /\["viewer-skills-blocked",\s*"\/skills"/);
-  assert.match(smokeScript, /\["viewer-commands-blocked",\s*"\/commands"/);
-  assert.match(smokeScript, /\["viewer-settings-blocked",\s*"\/settings"/);
-  assert.match(smokeScript, /expectPath:\s*"\/"/);
-  assert.match(smokeScript, /\["viewer-groups-mobile",\s*"\/groups"/);
-  assert.match(smokeScript, /\["viewer-candidates-mobile",\s*"\/candidates"/);
-  assert.match(smokeScript, /\["viewer-memories-mobile",\s*"\/memories"/);
-  assert.match(smokeScript, /\["viewer-profiles-mobile",\s*"\/profiles"/);
-  assert.match(smokeScript, /\["viewer-knowledge-mobile",\s*"\/knowledge"/);
-  assert.match(smokeScript, /\["viewer-tasks-mobile",\s*"\/tasks"/);
-  assert.match(smokeScript, /expectSelector:\s*"\.readonly-banner"/);
-  assert.match(smokeScript, /expectDisabledText:\s*\["重新生成",\s*"修改备注",\s*"记忆去重",\s*"禁用记忆"\]/);
-  assert.match(smokeScript, /expectDisabledText:\s*\["只读模式不可检测",\s*"只读模式不可去重"\]/);
-  assert.match(smokeScript, /assertButtonWithTextDisabled/);
-  assert.match(smokeScript, /assertViewportExpectations/);
-  assert.match(smokeScript, /assertTextVisible/);
-  assert.match(smokeScript, /assertNoElementVisible/);
-  assert.match(smokeScript, /waitForLocationPath\(cdp,\s*viewport\.expectPath\)/);
-  assert.match(smokeScript, /runTopbarSmoke:\s*false/);
 });
 
 test("windows release package avoids local runtime group config", async () => {
@@ -578,7 +400,7 @@ test("windows release package avoids local runtime group config", async () => {
 
   assert.doesNotMatch(packageScript, /"config",/);
   assert.match(packageScript, /"COMMANDS\.md"/);
-  assert.match(packageScript, /"RELEASE-v2\.0\.3\.md"/);
+  assert.match(packageScript, /"RELEASE-v\$packageVersion\.md"/);
   assert.doesNotMatch(packageScript, /"RELEASE-v1\.0\.2\.md"/);
   assert.doesNotMatch(packageScript, /"V1\.0\.2-LOCAL-AUDIT\.md"/);
   assert.match(packageScript, /groups\.example\.json/);
@@ -587,26 +409,32 @@ test("windows release package avoids local runtime group config", async () => {
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
-test("v2.0.3 docs and release metadata stay current", async () => {
-  const [packageRaw, readmeDoc, commandsDoc, releaseNotes] = await Promise.all([
+test("v3.0.0-rc.1 docs and release metadata stay current", async () => {
+  const [packageRaw, readmeDoc, commandsDoc, releaseNotes, startScript] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASE-v2.0.3.md"), "utf8"),
+    readFile(path.join(repoRoot, "RELEASE-v3.0.0-rc.1.md"), "utf8"),
+    readFile(path.join(repoRoot, "scripts", "start-prod.sh"), "utf8"),
   ]);
-  const packageJson = JSON.parse(packageRaw) as { version?: string };
+  const packageJson = JSON.parse(packageRaw) as { version?: string; scripts?: Record<string, string> };
 
-  assert.equal(packageJson.version, "2.0.3");
-  assert.match(readmeDoc, /^# UBot V2\.0\.3/m);
-  assert.match(readmeDoc, /v2\.0\.3/);
-  assert.match(readmeDoc, /RELEASE-v2\.0\.3\.md/);
-  assert.doesNotMatch(readmeDoc, /^# UBot V1\.0\.[0-9]/m);
-
-  assert.match(releaseNotes, /^# UBot V2\.0\.3 Release Notes/m);
-  assert.match(releaseNotes, /显式长文本/);
-  assert.match(releaseNotes, /3000 字/);
-  assert.match(releaseNotes, /maxReplyCharsPerMessage/);
-  assert.match(releaseNotes, /单次模型调用/);
+  assert.equal(packageJson.version, "3.0.0-rc.1");
+  assert.equal(packageJson.scripts?.["migrate:participation"], "node scripts/run-node22.cjs scripts/migrate-participation-mode.mjs");
+  assert.equal(packageJson.scripts?.["package:linux"], "bash scripts/package-linux-release.sh");
+  assert.match(readmeDoc, /^# UBot V3\.0\.0-rc\.1/m);
+  assert.match(readmeDoc, /v3\.0\.0-rc\.1/);
+  assert.match(readmeDoc, /RELEASE-v3\.0\.0-rc\.1\.md/);
+  assert.match(readmeDoc, /mentions_only/);
+  assert.match(readmeDoc, /migrate:participation/);
+  assert.match(readmeDoc, /重构第一阶段候选版/);
+  assert.match(commandsDoc, /^# UBot V3\.0\.0-rc\.1/m);
+  assert.match(commandsDoc, /引用普通成员/);
+  assert.match(releaseNotes, /^# UBot V3\.0\.0-rc\.1 Release Notes/m);
+  assert.match(releaseNotes, /重构第一阶段候选版/);
+  assert.match(releaseNotes, /ParticipationPolicy/);
+  assert.match(releaseNotes, /不自动(?:重复发送|补发)/);
+  assert.match(startScript, /UBot V3\.0\.0-rc\.1/);
 });
 
 test("local build and test scripts avoid nested npm update checks", async () => {
@@ -714,6 +542,7 @@ test("admin audit view exposes operation log filters and table", async () => {
   assert.match(auditView, /未知操作/);
   assert.match(auditView, /humanizeActionCode/);
   assert.match(auditView, /translateDetailText/);
+  assert.match(auditView, /group_config_update/);
   assert.match(auditView, /连接失败/);
   assert.match(auditView, /请求失败/);
 });
@@ -732,6 +561,9 @@ test("admin health view exposes model health history details", async () => {
   assert.match(healthView, /完整详情/);
   assert.match(healthView, /服务地址/);
   assert.match(healthView, /缓存状态/);
+  assert.match(healthView, /群聊参与决策/);
+  assert.match(healthView, /participation-decisions/);
+  assert.match(healthView, /participationSummary/);
 });
 
 test("admin group config reloads on group switch and uses selectable config controls", async () => {

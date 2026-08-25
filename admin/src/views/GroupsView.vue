@@ -61,6 +61,7 @@ function defaultGroupConfig(): GroupConfig {
     enabled: true,
     currentSkillId: "",
     replyModelMode: "gpt",
+    participationMode: "mentions_only",
     allowedSkillIds: [],
     switcherUserIds: [],
     liveChatUserIds: [],
@@ -77,14 +78,15 @@ function defaultGroupConfig(): GroupConfig {
     holidayCountdownDateRule: "all",
     holidayCountdownWeekdays: [],
     botMuted: false,
-    scheduledRemindersEnabled: true,
+    scheduledRemindersEnabled: false,
     blacklistedUserIds: [],
-    opsAlertsEnabled: true,
+    opsAlertsEnabled: false,
     triggerKeywords: [{ keyword: "乘风", enabled: true }],
-    voiceReplyEnabled: true,
+    voiceReplyEnabled: false,
     defaultVoiceReplyEnabled: false,
     memoryDisabledUserIds: [],
-    onlineLookupEnabled: true,
+    onlineLookupEnabled: false,
+    visionEnabled: false,
   };
 }
 
@@ -155,7 +157,6 @@ async function loadSkillOptions(): Promise<void> {
 async function loadMemberOptions(groupId = app.groupId): Promise<void> {
   if (!groupId) return;
   const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(`/api/groups/${encodeURIComponent(groupId)}/members${queryString({
-    includeNapcat: 1,
     page: 1,
     pageSize: 1000,
   })}`);
@@ -466,7 +467,15 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             </select>
             <small class="muted">系统设置中启用的对话模型会同步进入群内 #模型 切换列表</small>
           </label>
-          <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly" /></label>
+          <label>参与方式
+            <select v-model="form.participationMode" class="select" :disabled="readonly">
+              <option value="mentions_only">仅在 @ / 引用时回复</option>
+              <option value="mentions_and_keywords">@ / 引用 + 关键词</option>
+              <option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option>
+            </select>
+            <small class="muted">默认不主动插话；“指定成员低频参与”仅对下方实时对话 QQ 生效，并仍遵守延迟与静音。</small>
+          </label>
+          <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /></label>
           <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
           <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
           <label>节日倒计时时间<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
@@ -486,6 +495,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           <label><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /> 机器人静音</label>
           <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
           <label><input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" /> 自动查询实时资料</label>
+          <label><input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" /> 图片理解</label>
           <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
             <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
           </label>
@@ -511,7 +521,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <MultiTagSelect v-model="form.switcherUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label>实时对话 QQ
-            <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
+            <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label>嘴臭模式 QQ
             <MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
@@ -1529,5 +1539,3 @@ dd {
   }
 }
 </style>
-
-

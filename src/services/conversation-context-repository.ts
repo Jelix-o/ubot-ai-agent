@@ -803,6 +803,17 @@ export class ConversationContextRepository {
         binding.direction,
         binding.createdAt,
       );
+    if (binding.direction === "assistant") {
+      // Direct/legacy transports receive a real platform id before the
+      // assistant turn is persisted. Mirror that acknowledged id into the
+      // reply-anchor registry so their quote replies follow the same policy
+      // as the outbox acknowledgement path.
+      this.sharedDb.recordBotMessage(
+        binding.groupId,
+        binding.platformMessageId.trim(),
+        binding.createdAt,
+      );
+    }
   }
 
   private deleteTopic(topicId: string): void {

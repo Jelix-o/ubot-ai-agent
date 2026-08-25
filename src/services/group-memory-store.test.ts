@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +7,80 @@ import test from "node:test";
 import { GroupMemoryCandidateService } from "./group-memory-candidate-service.js";
 import { GroupMemoryCandidateStore } from "./group-memory-candidate-store.js";
 import { GroupMemoryStore } from "./group-memory-store.js";
+
+test("group memory store refreshes a second process cache after an external write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-refresh-"));
+  const filePath = path.join(dir, "memory.json");
+  try {
+    const reader = new GroupMemoryStore(filePath);
+    const writer = new GroupMemoryStore(filePath);
+    await writer.create({
+      groupId: "67890",
+      type: "group_fact",
+      title: "First fact",
+      content: "The first shared fact.",
+    });
+    assert.equal((await reader.list("67890")).length, 1);
+
+    const raw = JSON.parse(await (await import("node:fs/promises")).readFile(filePath, "utf8")) as { memories: unknown[] };
+    raw.memories.push({
+      id: "external-memory",
+      groupId: "67890",
+      type: "group_fact",
+      title: "External fact",
+      content: "A backend process wrote this fact.",
+      confidence: 0.8,
+      source: "external",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+      enabled: true,
+    });
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(filePath);
+    await utimes(filePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal((await reader.list("67890")).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("candidate store refreshes after an external admin write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-candidate-refresh-"));
+  const filePath = path.join(dir, "candidates.json");
+  try {
+    const reader = new GroupMemoryCandidateStore(filePath);
+    const writer = new GroupMemoryCandidateStore(filePath);
+    await writer.addCandidate({
+      groupId: "67890",
+      type: "group_fact",
+      title: "第一条候选",
+      content: "第一条候选内容",
+    });
+    assert.equal((await reader.list({ groupId: "67890" })).length, 1);
+
+    const raw = JSON.parse(await (await import("node:fs/promises")).readFile(filePath, "utf8")) as { candidates: unknown[] };
+    raw.candidates.push({
+      id: "external-candidate",
+      groupId: "67890",
+      type: "group_fact",
+      title: "外部候选",
+      content: "管理后台写入的候选",
+      confidence: 0.7,
+      source: "admin",
+      status: "pending",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    });
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(filePath);
+    await utimes(filePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal((await reader.list({ groupId: "67890" })).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("group memory store initializes, persists, filters, updates and removes", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-"));
@@ -108,6 +182,40 @@ test("group memory reply selection prioritizes participants and stays within its
     ]);
     assert.ok(selected.length <= 8);
     assert.ok(selected.reduce((total, memory) => total + memory.title.length + memory.content.length, 0) <= 3_200);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("group memory reply selection excludes opted-out member memories before ranking and limit", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "group-memory-opt-out-"));
+  try {
+    const store = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const create = (title: string, type: "member_profile" | "group_fact", subjectUserId: string | undefined, minute: number) =>
+      store.create({
+        groupId: "67890",
+        type,
+        ...(subjectUserId ? { subjectUserId } : {}),
+        title,
+        content: `${title} content`,
+        createdAt: `2026-06-01T10:${String(minute).padStart(2, "0")}:00.000Z`,
+      });
+
+    await create("excluded current speaker", "member_profile", "20001", 4);
+    await create("excluded interaction target", "member_profile", "20002", 3);
+    await create("shared group fact", "group_fact", undefined, 2);
+    await create("eligible member memory", "member_profile", "30001", 1);
+
+    const selected = await store.listRelevantEnabled({
+      groupId: "67890",
+      currentUserId: "20001",
+      relatedUserIds: ["20002"],
+      excludedSubjectUserIds: ["20001", "20002"],
+      limit: 2,
+    });
+
+    assert.deepEqual(selected.map((memory) => memory.title), ["shared group fact", "eligible member memory"]);
+    assert.equal(selected.some((memory) => memory.subjectUserId === "20001" || memory.subjectUserId === "20002"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

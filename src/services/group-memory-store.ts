@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 
 import type { GroupMemory, GroupMemoryEvidence, GroupMemoryType } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
@@ -40,6 +41,7 @@ export interface RelevantEnabledMemoryArgs {
   groupId: string;
   currentUserId: string;
   relatedUserIds?: string[];
+  excludedSubjectUserIds?: string[];
   queryText?: string;
   identityTerms?: string[];
   limit?: number;
@@ -66,6 +68,7 @@ const SUPERSEDED_CONFIDENCE_DECAY = 0.3;
 
 export class GroupMemoryStore {
   private cachedData?: GroupMemoryFile;
+  private cachedVersion?: string;
 
   constructor(private readonly filePath: string) {}
 
@@ -123,6 +126,7 @@ export class GroupMemoryStore {
     const maxChars = Math.max(200, Math.min(args.maxChars ?? 3_200, 12_000));
     const relatedUserIds = new Set((args.relatedUserIds ?? []).filter(Boolean));
     relatedUserIds.delete(args.currentUserId);
+    const excludedSubjectUserIds = new Set((args.excludedSubjectUserIds ?? []).filter(Boolean));
     const terms = buildRelevanceTerms(args.queryText, args.identityTerms);
     const supersededIds = new Set(
       data.memories
@@ -131,6 +135,7 @@ export class GroupMemoryStore {
     );
     const prioritized = data.memories
       .filter((memory) => memory.groupId === args.groupId && memory.enabled)
+      .filter((memory) => !memory.subjectUserId || !excludedSubjectUserIds.has(memory.subjectUserId))
       .map((memory) => {
         // 覆盖链 + 时间衰减（计划 §8-4）：被更新的记忆覆盖的旧记忆置信度降为 0.3。
         const decayed = supersededIds.has(memory.id)
@@ -263,17 +268,20 @@ export class GroupMemoryStore {
   }
 
   private async readData(): Promise<GroupMemoryFile> {
-    if (this.cachedData) {
+    const version = await fileVersion(this.filePath);
+    if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
     }
 
     try {
       this.cachedData = normalizeMemoryFile(await readJsonFile<GroupMemoryFile>(this.filePath));
+      this.cachedVersion = version;
       return this.cachedData;
     } catch (error) {
       const knownError = error as NodeJS.ErrnoException;
       if (knownError.code === "ENOENT") {
         this.cachedData = { memories: [] };
+        this.cachedVersion = "missing";
         return this.cachedData;
       }
       throw error;
@@ -281,8 +289,20 @@ export class GroupMemoryStore {
   }
 
   private async writeData(data: GroupMemoryFile): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedVersion = await fileVersion(this.filePath);
+  }
+}
+
+async function fileVersion(filePath: string): Promise<string> {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch (error) {
+    const known = error as NodeJS.ErrnoException;
+    if (known.code === "ENOENT") return "missing";
+    throw error;
   }
 }
 

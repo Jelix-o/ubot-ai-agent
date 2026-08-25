@@ -52,7 +52,6 @@ async function load(): Promise<void> {
 async function loadMemberOptions(): Promise<void> {
   if (!app.groupId) return;
   const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(`/api/groups/${encodeURIComponent(app.groupId)}/members${queryString({
-    includeNapcat: 1,
     page: 1,
     pageSize: 1000,
   })}`);
@@ -108,61 +107,6 @@ async function removeRecord(record: ProfileRecord): Promise<void> {
   if (activeRecord.value?.id === record.id) activeRecord.value = undefined;
   await load();
   app.showToast("画像记录已删除");
-}
-
-function shareStatusLabel(record?: ProfileRecord): string {
-  if (!record?.shareToken) return "暂无链接";
-  if (record.revokedAt || record.publicEnabled === false) return "已撤销";
-  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) return "已过期";
-  return "公开中";
-}
-
-function shareUrl(record: ProfileRecord): string {
-  return record.shareUrl || "";
-}
-
-function canUseShareUrl(record: ProfileRecord): boolean {
-  const expiresAt = record.expiresAt ? new Date(record.expiresAt).getTime() : undefined;
-  return Boolean(shareUrl(record)) &&
-    record.publicEnabled !== false &&
-    !record.revokedAt &&
-    (expiresAt === undefined || expiresAt > Date.now());
-}
-
-function openShareUrl(record: ProfileRecord): void {
-  const url = shareUrl(record);
-  if (!url) {
-    app.showToast("这条画像还没有公开链接", "error");
-    return;
-  }
-  window.open(url, "_blank", "noopener,noreferrer");
-}
-
-async function copyShareUrl(record: ProfileRecord): Promise<void> {
-  const url = shareUrl(record);
-  if (!url) {
-    app.showToast("这条画像还没有公开链接", "error");
-    return;
-  }
-  await navigator.clipboard.writeText(url);
-  app.showToast("公开链接已复制");
-}
-
-async function updateShareState(record: ProfileRecord, publicEnabled: boolean): Promise<void> {
-  if (readonly.value) {
-    app.showToast("只读模式不能修改公开链接", "error");
-    return;
-  }
-  const updated = await api<ProfileRecord>(`/api/profile-records/${encodeURIComponent(record.id)}/share`, {
-    method: "PUT",
-    body: JSON.stringify({
-      publicEnabled,
-      revokedAt: publicEnabled ? null : new Date().toISOString(),
-    }),
-  });
-  if (activeRecord.value?.id === record.id) activeRecord.value = updated;
-  records.value = records.value.map((item) => item.id === record.id ? updated : item);
-  app.showToast(publicEnabled ? "画像公开链接已恢复" : "画像公开链接已撤销");
 }
 
 function memberLabel(userId?: string): string {
@@ -245,12 +189,6 @@ watch(() => [pagination.page, pagination.pageSize], () => {
             <small>创建人 {{ record.createdBy }}</small>
           </button>
           <div class="row-actions">
-            <span class="tag" :class="{ danger: record.publicEnabled === false || Boolean(record.revokedAt) }">{{ shareStatusLabel(record) }}</span>
-            <button v-if="record.shareUrl" class="ghost-btn" type="button" :disabled="!canUseShareUrl(record)" @click="openShareUrl(record)">查看链接</button>
-            <button v-if="record.shareUrl" class="ghost-btn" type="button" :disabled="!canUseShareUrl(record)" @click="copyShareUrl(record)">复制链接</button>
-            <button v-if="!record.shareToken" class="ghost-btn" type="button" :disabled="readonly" @click="updateShareState(record, true)">生成链接</button>
-            <button v-else-if="record.publicEnabled !== false && !record.revokedAt" class="ghost-btn danger" type="button" :disabled="readonly" @click="updateShareState(record, false)">撤销公开</button>
-            <button v-else class="ghost-btn" type="button" :disabled="readonly" @click="updateShareState(record, true)">恢复公开</button>
             <button class="ghost-btn" type="button" :disabled="readonly || generating" @click="regenerate(record)">重新生成</button>
             <button class="ghost-btn danger" type="button" :disabled="readonly" @click="removeRecord(record)">删除</button>
           </div>
@@ -278,8 +216,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <div><dt>生成时间</dt><dd>{{ formatDateTime(activeRecord.generatedAt) }}</dd></div>
           <div><dt>来源记忆</dt><dd>{{ activeRecord.sourceMemoryCount }} 条</dd></div>
           <div><dt>创建人</dt><dd>{{ activeRecord.createdBy }}</dd></div>
-          <div><dt>公开链接</dt><dd>{{ shareStatusLabel(activeRecord) }} / {{ activeRecord.accessCount || 0 }} 次访问</dd></div>
-          <div v-if="activeRecord.expiresAt"><dt>过期时间</dt><dd>{{ formatDateTime(activeRecord.expiresAt) }}</dd></div>
+          <div><dt>访问范围</dt><dd>仅限受权限保护的管理后台</dd></div>
         </dl>
         <article class="summary-text">{{ activeRecord.summary }}</article>
       </template>

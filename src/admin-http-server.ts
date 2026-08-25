@@ -23,6 +23,7 @@ import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { AdminTaskStore } from "./services/admin-task-store.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
+import type { SharedDb } from "./shared/sqlite.js";
 import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
 import {
   GroupMemoryDeduplicateService,
@@ -50,7 +51,6 @@ interface AdminHttpServerOptions {
   publicBaseUrl: string;
   username: string;
   password: string;
-  groupPassword?: string;
   sessionSecret: string;
   groupConfigService: GroupConfigService;
   groupMemoryStore: GroupMemoryStore;
@@ -65,11 +65,12 @@ interface AdminHttpServerOptions {
   modelHealthHistoryStore?: ModelHealthHistoryStore;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
-  getProfileAiHealthStatus?: (options?: { refresh?: boolean }) => Promise<AiHealthStatus>;
+  getProfileAiHealthStatus?: (options?: { refresh?: boolean; cacheOnly?: boolean }) => Promise<AiHealthStatus>;
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>;
   summarizeOverallMemberProfile?: (args: { groupId: string; userId: string; displayName: string; memories: GroupMemory[] }) => Promise<string | null>;
   listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
   listGroups?: () => Promise<NapcatGroupInfo[]>;
+  sharedDb?: SharedDb;
 }
 
 type RouteParams = Record<string, string>;
@@ -232,7 +233,12 @@ export class AdminHttpServer {
 
       const publicProfileRoute = matchRoute(pathname, /^\/profile\/([^/]+)$/);
       if (req.method === "GET" && publicProfileRoute) {
-        await this.handlePublicProfilePage(req, res, publicProfileRoute.id);
+        // Anonymous profile sharing is disabled until a verified, revocable
+        // recipient-authentication flow replaces bearer links.
+        this.sendText(res, publicProfileNotFoundHtml(), "text/html; charset=utf-8", {
+          statusCode: 404,
+          cacheControl: "no-store",
+        });
         return;
       }
 
@@ -249,17 +255,6 @@ export class AdminHttpServer {
 
       if (pathname.startsWith("/api/") && session && isStateChangingMethod(req.method) && !this.isValidCsrf(req, session)) {
         this.sendJson(res, { error: "csrf_required" }, 403);
-        return;
-      }
-
-      if (
-        pathname.startsWith("/api/") &&
-        session &&
-        this.isReadOnlySession(session) &&
-        isStateChangingMethod(req.method) &&
-        pathname !== "/api/logout"
-      ) {
-        this.sendJson(res, { error: "readonly_session" }, 403);
         return;
       }
 
@@ -341,7 +336,7 @@ export class AdminHttpServer {
         ? sanitizeHealthStatus(rawTransportHealth)
         : publicHealthStatus(rawTransportHealth);
       const profileAiHealth = canViewDiagnostics
-        ? sanitizeHealthStatus(await this.getProfileAiHealthStatus())
+        ? sanitizeHealthStatus(await this.getProfileAiHealthStatus({ cacheOnly: true }))
         : restrictedHealthStatus();
       const modelStatuses = canViewDiagnostics ? await this.getModelHealthStatuses() : [];
       const abnormalModelStatuses = modelStatuses.filter(isAbnormalModelStatus);
@@ -400,7 +395,7 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "forbidden" }, 403);
         return;
       }
-      await this.handleGroupConfig(req, res, groupConfigRoute);
+      await this.handleGroupConfig(req, res, groupConfigRoute, session);
       return;
     }
 
@@ -411,6 +406,20 @@ export class AdminHttpServer {
         return;
       }
       await this.handleGroupMembers(res, membersRoute.groupId, url);
+      return;
+    }
+
+    const membersRefreshRoute = matchGroupMemberRoute(pathname, /^\/api\/groups\/([^/]+)\/members\/refresh$/);
+    if (membersRefreshRoute) {
+      if (!(await this.canAccessGroup(session, membersRefreshRoute.groupId))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      if (req.method !== "POST") {
+        this.sendJson(res, { error: "method_not_allowed" }, 405);
+        return;
+      }
+      await this.handleGroupMembersRefresh(res, membersRefreshRoute.groupId, url);
       return;
     }
 
@@ -556,52 +565,58 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/api/health") {
-      const canViewDiagnostics = session.role === "super_admin";
-      const refresh = canViewDiagnostics && url.searchParams.get("refresh") === "1";
-      const rawTransportHealth = this.options.getTransportHealthStatus
-        ? await this.options.getTransportHealthStatus()
-        : { ok: true, detail: "未配置传输层自检" };
-      const transportHealth = canViewDiagnostics
-        ? sanitizeHealthStatus(rawTransportHealth)
-        : publicHealthStatus(rawTransportHealth);
-      const profileAiHealth = canViewDiagnostics
-        ? sanitizeHealthStatus(await this.getProfileAiHealthStatus({ refresh }))
-        : restrictedHealthStatus();
-      const modelStatuses = canViewDiagnostics ? await this.getModelHealthStatuses({ refresh }) : [];
-      const abnormalModelStatuses = modelStatuses.filter(isAbnormalModelStatus);
-      const memory = process.memoryUsage();
-      const environmentStatus = {
-        transportHealth,
-        node: {
-          ok: true,
-          detail: canViewDiagnostics ? `${process.version} / PID ${process.pid}` : process.version,
-          checkedAt: `uptime ${Math.floor(process.uptime())}s`,
-          latencyMs: 0,
-        },
-        memory: {
-          ok: true,
-          detail: `RSS ${Math.round(memory.rss / 1024 / 1024)}MB，堆内存 ${Math.round(memory.heapUsed / 1024 / 1024)}MB`,
-          checkedAt: new Date().toISOString(),
-          latencyMs: 0,
-        },
-      };
-      this.sendJson(res, {
-        transportHealth,
-        profileAiHealth,
-        environmentStatus,
-        modelStatuses,
-        abnormalModelStatuses,
-        modelStatusSummary: {
-          total: modelStatuses.length,
-          abnormal: abnormalModelStatuses.length,
-          checkedAt: new Date().toISOString(),
-        },
-        uptimeSeconds: Math.floor(process.uptime()),
-        nodeVersion: process.version,
-        ...(canViewDiagnostics
-          ? { serverStatus: getServerStatusSnapshot(), pid: process.pid, memory }
-          : { memory: { rss: memory.rss, heapUsed: memory.heapUsed } }),
+      if (url.searchParams.has("refresh")) {
+        this.sendJson(res, { error: "health_probe_requires_post" }, 405);
+        return;
+      }
+      this.sendJson(res, await this.buildHealthResponse(session));
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/health/probe") {
+      if (!this.requireSuperAdmin(session, res)) return;
+      const health = await this.buildHealthResponse(session, { refresh: true });
+      await this.recordOperation({
+        session,
+        groupId: "system",
+        action: "health_probe",
+        target: "all",
+        detail: "manual",
       });
+      this.sendJson(res, health);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/participation-decisions") {
+      if (!this.options.sharedDb) {
+        this.sendJson(res, { error: "participation_decisions_unavailable" }, 503);
+        return;
+      }
+      const groupId = url.searchParams.get("groupId") ?? undefined;
+      if (groupId && !(await this.canAccessGroup(session, groupId))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      if (!groupId && session.role !== "super_admin") {
+        this.sendJson(res, { error: "group_id_required" }, 400);
+        return;
+      }
+      const decisions = this.options.sharedDb.listParticipationDecisions({
+        ...(groupId ? { groupId } : {}),
+        limit: Math.max(1, Math.min(200, Number(url.searchParams.get("limit") ?? 50) || 50)),
+      }).map((decision) => ({
+        id: decision.id,
+        sourceRowId: decision.source_row_id,
+        groupId: decision.group_id,
+        userId: decision.user_id,
+        action: decision.action,
+        reason: decision.reason,
+        score: decision.score,
+        policyVersion: decision.policy_version,
+        signals: safeJsonObject(decision.signals_json),
+        createdAt: new Date(decision.created_at).toISOString(),
+      }));
+      this.sendJson(res, { decisions });
       return;
     }
 
@@ -686,6 +701,14 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "member_profile_requires_subject_user_id" }, 400);
         return;
       }
+      if (
+        nextType === "member_profile" &&
+        nextSubjectUserId &&
+        await this.isMemberMemoryDisabled(current.groupId, nextSubjectUserId)
+      ) {
+        this.sendJson(res, { error: "memory_collection_disabled" }, 403);
+        return;
+      }
       const result = await this.options.groupMemoryCandidateService.approveDirect(approveRoute.id, patch);
       this.sendJson(res, result ?? { error: "not_found" }, result ? 200 : 404);
       return;
@@ -763,32 +786,6 @@ export class AdminHttpServer {
     await this.sendAdminStaticFile(res, ADMIN_STATIC_INDEX, "text/html; charset=utf-8", ADMIN_APP_HTML_V2);
   }
 
-  private async handlePublicProfilePage(req: IncomingMessage, res: ServerResponse, shareToken: string): Promise<void> {
-    const record = this.options.profileRecordStore
-      ? await this.options.profileRecordStore.getByShareToken(shareToken)
-      : undefined;
-    if (!record) {
-      this.sendText(res, publicProfileNotFoundHtml(), "text/html; charset=utf-8", {
-        statusCode: 404,
-        cacheControl: "no-store",
-      });
-      return;
-    }
-    if (!isProfileSharePublic(record)) {
-      this.sendText(res, publicProfileNotFoundHtml(), "text/html; charset=utf-8", {
-        statusCode: 404,
-        cacheControl: "no-store",
-      });
-      return;
-    }
-    if (!this.getSession(req)) {
-      await this.options.profileRecordStore?.recordShareAccess(record.id);
-    }
-    this.sendText(res, publicProfileHtml(record.summary), "text/html; charset=utf-8", {
-      cacheControl: "private, no-store",
-    });
-  }
-
   private async trySendAdminStaticFile(res: ServerResponse, filePath: string): Promise<boolean> {
     try {
       await this.sendAdminStaticFile(res, filePath, contentTypeFor(filePath));
@@ -821,15 +818,19 @@ export class AdminHttpServer {
     const body = await readJsonBody(req);
     const username = typeof body.username === "string" ? body.username : "";
     const password = typeof body.password === "string" ? body.password : "";
-    const mode = body.mode === "viewer" ? "viewer" : "admin";
+    if (body.mode === "viewer") {
+      // A QQ number is an identifier, not proof that the requester controls it.
+      // Reject the retired login path and thereby invalidate the old product
+      // assumption before a verified member-auth flow is introduced.
+      this.sendJson(res, { error: "viewer_login_disabled" }, 403);
+      return;
+    }
     const loginKey = this.loginAttemptKey(req, username);
     if (this.isLoginLocked(loginKey)) {
       this.sendJson(res, { error: "too_many_login_attempts" }, 429);
       return;
     }
-    const session = mode === "viewer"
-      ? await this.buildViewerSession(username)
-      : await this.buildLoginSession(username, password);
+    const session = await this.buildLoginSession(username, password);
     if (!session) {
       this.recordFailedLogin(loginKey);
       this.sendJson(res, { error: "invalid_credentials" }, 401);
@@ -1066,11 +1067,20 @@ export class AdminHttpServer {
       this.sendJson(res, { error: "subject_user_id_required" }, 400);
       return;
     }
+    const type = body.type === "member_profile" || body.type === "group_fact" ? body.type : undefined;
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "group_not_found" }, 404);
+      return;
+    }
+    if (type !== "group_fact" && (groupConfig.memoryDisabledUserIds ?? []).includes(subjectUserId)) {
+      this.sendJson(res, { error: "memory_collection_disabled" }, 403);
+      return;
+    }
     const service = new GroupMemoryDeduplicateService(this.options.groupMemoryStore, this.options.judgeMemorySemanticRelation);
     const semanticTimeoutMs = await this.getMemoryDedupSemanticTimeoutMs();
     const mode = body.mode === "deep" ? "deep" : "fast";
     const previewSemanticTimeoutMs = mode === "deep" ? Math.min(semanticTimeoutMs, 30 * 1000) : semanticTimeoutMs;
-    const type = body.type === "member_profile" || body.type === "group_fact" ? body.type : undefined;
     const runPreview = async (updateTaskProgress?: (event: MemoryDedupProgressEvent) => Promise<void>) => {
       const dedupPreview = await service.previewGroup(groupId, {
         subjectUserId,
@@ -1078,6 +1088,7 @@ export class AdminHttpServer {
         semanticMode: "member",
         useSemanticJudge: mode === "deep",
         semanticTimeoutMs: previewSemanticTimeoutMs,
+        excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
         ...(updateTaskProgress ? { onProgress: updateTaskProgress } : {}),
       });
       return {
@@ -1128,6 +1139,16 @@ export class AdminHttpServer {
       this.sendJson(res, { error: "subject_user_id_required" }, 400);
       return;
     }
+    const type = body.type === "member_profile" || body.type === "group_fact" ? body.type : undefined;
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "group_not_found" }, 404);
+      return;
+    }
+    if (type !== "group_fact" && (groupConfig.memoryDisabledUserIds ?? []).includes(subjectUserId)) {
+      this.sendJson(res, { error: "memory_collection_disabled" }, 403);
+      return;
+    }
     const incoming = Array.isArray(body.decisions) ? body.decisions : [];
     const service = new GroupMemoryDeduplicateService(this.options.groupMemoryStore, this.options.judgeMemorySemanticRelation);
     const semanticTimeoutMs = await this.getMemoryDedupSemanticTimeoutMs();
@@ -1135,9 +1156,11 @@ export class AdminHttpServer {
       ? incoming.map(normalizeMemoryDedupDecision).filter((item): item is MemoryDedupDecision => Boolean(item))
       : (await service.previewGroup(groupId, {
           subjectUserId,
+          ...(type ? { type } : {}),
           semanticMode: "member",
           useSemanticJudge: true,
           semanticTimeoutMs,
+          excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
         })).decisions;
     const wrapped = this.options.adminTaskStore
       ? await this.options.adminTaskStore.run({
@@ -1147,8 +1170,12 @@ export class AdminHttpServer {
           subjectUserId,
           operatorUserId: session.userId ?? session.username,
           detail: `${decisions.length} decisions`,
-        }, () => service.apply(groupId, decisions))
-      : { result: await service.apply(groupId, decisions), task: undefined };
+        }, () => service.apply(groupId, decisions, {
+          excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
+        }))
+      : { result: await service.apply(groupId, decisions, {
+          excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
+        }), task: undefined };
     const result = wrapped.result;
     this.invalidateMemberProfileCache(groupId);
     await this.recordOperation({
@@ -1178,6 +1205,16 @@ export class AdminHttpServer {
       return;
     }
 
+    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+    if (!groupConfig) {
+      this.sendJson(res, { error: "group_not_found" }, 404);
+      return;
+    }
+    if ((groupConfig.memoryDisabledUserIds ?? []).includes(subjectUserId)) {
+      this.sendJson(res, { error: "memory_collection_disabled" }, 403);
+      return;
+    }
+
     if (!this.options.summarizeOverallMemberProfile) {
       this.sendJson(res, { error: "summarize_not_available" }, 500);
       return;
@@ -1190,12 +1227,6 @@ export class AdminHttpServer {
 
     if (userMemories.length === 0) {
       this.sendJson(res, { error: "no_memories_found" }, 404);
-      return;
-    }
-
-    const groupConfig = await this.options.groupConfigService.getGroup(groupId);
-    if (!groupConfig) {
-      this.sendJson(res, { error: "group_not_found" }, 404);
       return;
     }
 
@@ -1305,16 +1336,24 @@ export class AdminHttpServer {
 
     const requestedCandidates = await Promise.all(ids.map(async (id) => [id, await this.findCandidate(id)] as const));
     const candidatesById = new Map(requestedCandidates);
+    const memoryDisabledCandidateIds = new Set((await Promise.all(requestedCandidates.map(async ([id, candidate]) => {
+      if (candidate?.type !== "member_profile" || !candidate.subjectUserId) {
+        return undefined;
+      }
+      return await this.isMemberMemoryDisabled(candidate.groupId, candidate.subjectUserId) ? id : undefined;
+    }))).filter((id): id is string => Boolean(id)));
     const candidateGroupIds = Array.from(new Set(requestedCandidates
+      .filter(([id]) => !memoryDisabledCandidateIds.has(id))
       .map(([, candidate]) => candidate?.groupId)
       .filter((groupId): groupId is string => Boolean(groupId))));
-    const task = this.options.adminTaskStore
+    const reviewableIds = ids.filter((id) => !memoryDisabledCandidateIds.has(id));
+    const task = this.options.adminTaskStore && reviewableIds.length > 0
       ? await this.options.adminTaskStore.create({
           type: "bulk-review",
-          title: `批量审核 ${ids.length} 条候选记忆`,
+          title: `批量审核 ${reviewableIds.length} 条候选记忆`,
           ...(candidateGroupIds.length === 1 ? { groupId: candidateGroupIds[0] } : {}),
           operatorUserId: session.userId ?? session.username,
-          detail: ids.join(",").slice(0, 500),
+          detail: reviewableIds.join(",").slice(0, 500),
         })
       : undefined;
     if (task) {
@@ -1346,6 +1385,10 @@ export class AdminHttpServer {
       }
       if (candidate.type === "member_profile" && !candidate.subjectUserId) {
         skipped.push({ id, error: "member_profile_requires_subject_user_id" });
+        continue;
+      }
+      if (memoryDisabledCandidateIds.has(id)) {
+        skipped.push({ id, error: "memory_collection_disabled" });
         continue;
       }
       try {
@@ -1448,24 +1491,49 @@ export class AdminHttpServer {
   }
 
   private async handleGroupMembers(res: ServerResponse, groupId: string, url: URL): Promise<void> {
-    const force = url.searchParams.get("refresh") === "1";
-    const includeNapcatMembers =
-      force ||
-      url.searchParams.get("includeNapcat") === "1" ||
-      url.searchParams.get("includeNapcatMembers") === "1";
-    const profiles = await this.getCachedMemberProfileData(groupId, { force, includeNapcatMembers });
+    // A members GET is intentionally cache-only. In particular, legacy
+    // includeNapcat/refresh query parameters must never turn navigation or
+    // search into a remote NapCat read or mutate the process cache.
+    const profiles = await this.getCachedMemberProfileData(groupId, { cacheOnly: true });
+    if (!profiles) {
+      const groupConfig = await this.options.groupConfigService.getGroup(groupId);
+      if (!groupConfig) {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
+      this.sendMemberProfiles(res, [], url, "unloaded");
+      return;
+    }
+
+    this.sendMemberProfiles(res, profiles.members, url, "cached");
+  }
+
+  private async handleGroupMembersRefresh(res: ServerResponse, groupId: string, url: URL): Promise<void> {
+    const profiles = await this.getCachedMemberProfileData(groupId, {
+      force: true,
+      includeNapcatMembers: true,
+    });
     if (!profiles) {
       this.sendJson(res, { error: "not_found" }, 404);
       return;
     }
+    this.sendMemberProfiles(res, profiles.members, url, "refreshed");
+  }
 
+  private sendMemberProfiles(
+    res: ServerResponse,
+    members: GroupMemberProfile[],
+    url: URL,
+    cacheStatus: "cached" | "refreshed" | "unloaded",
+  ): void {
     const query = normalizeSearchQuery(url.searchParams.get("q") ?? undefined);
     const returnAll = url.searchParams.get("all") === "1";
     const pagination = paginationParams(url, 24, 100);
-    const filteredMembers = profiles.members.filter((member) => !query || memberMatchesQuery(member, query));
+    const filteredMembers = members.filter((member) => !query || memberMatchesQuery(member, query));
     if (returnAll) {
       this.sendJson(res, {
         members: filteredMembers,
+        cacheStatus,
         pagination: {
           page: 1,
           pageSize: Math.max(1, filteredMembers.length),
@@ -1479,6 +1547,7 @@ export class AdminHttpServer {
     this.sendJson(res, {
       members: page.items,
       pagination: page.pagination,
+      cacheStatus,
     });
   }
 
@@ -1495,20 +1564,26 @@ export class AdminHttpServer {
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
       const currentProfile = await this.getMemberProfile(route.groupId, route.userId);
+      const previousCache = this.memberProfileCache.get(route.groupId);
       const group = await this.options.groupConfigService.updateManualIdentity(route.groupId, route.userId, {
         names: normalizeNames(body.names),
         note: optionalString(body.note),
       });
       this.invalidateMemberProfileCache(route.groupId);
-      this.sendJson(res, { group, member: await this.buildUpdatedMemberProfile(route.groupId, route.userId, group, currentProfile) });
+      const member = await this.buildUpdatedMemberProfile(route.groupId, route.userId, group, currentProfile);
+      this.replaceMemberProfileCache(route.groupId, group, member, previousCache);
+      this.sendJson(res, { group, member });
       return;
     }
 
     if (req.method === "DELETE") {
       const currentProfile = await this.getMemberProfile(route.groupId, route.userId);
+      const previousCache = this.memberProfileCache.get(route.groupId);
       const group = await this.options.groupConfigService.removeManualIdentity(route.groupId, route.userId);
       this.invalidateMemberProfileCache(route.groupId);
-      this.sendJson(res, { group, member: await this.buildUpdatedMemberProfile(route.groupId, route.userId, group, currentProfile) });
+      const member = await this.buildUpdatedMemberProfile(route.groupId, route.userId, group, currentProfile);
+      this.replaceMemberProfileCache(route.groupId, group, member, previousCache);
+      this.sendJson(res, { group, member });
       return;
     }
 
@@ -1522,9 +1597,8 @@ export class AdminHttpServer {
     session: AdminSession,
   ): Promise<void> {
     const type = url.searchParams.get("type") === "yesterday" ? "yesterday" : "overall";
-    const refresh = url.searchParams.get("refresh") === "1";
-    if (this.isReadOnlySession(session) && refresh) {
-      this.sendJson(res, { error: "readonly_session" }, 403);
+    if (url.searchParams.has("refresh")) {
+      this.sendJson(res, { error: "profile_refresh_requires_post" }, 405);
       return;
     }
     try {
@@ -1532,9 +1606,9 @@ export class AdminHttpServer {
         groupId: route.groupId,
         userId: route.userId,
         type,
-        refresh,
+        refresh: false,
         createdBy: session.username,
-        cacheOnly: this.isReadOnlySession(session),
+        cacheOnly: true,
       });
       this.sendJson(res, generated);
     } catch (error) {
@@ -1542,7 +1616,12 @@ export class AdminHttpServer {
     }
   }
 
-  private async handleGroupConfig(req: IncomingMessage, res: ServerResponse, params: RouteParams): Promise<void> {
+  private async handleGroupConfig(
+    req: IncomingMessage,
+    res: ServerResponse,
+    params: RouteParams,
+    session: AdminSession,
+  ): Promise<void> {
     if (req.method === "GET") {
       const group = await this.options.groupConfigService.getGroup(params.id);
       this.sendJson(res, group ?? { error: "not_found" }, group ? 200 : 404);
@@ -1554,6 +1633,13 @@ export class AdminHttpServer {
       try {
         const group = await this.options.groupConfigService.updateGroupConfig(params.id, body);
         this.invalidateMemberProfileCache(params.id);
+        await this.recordOperation({
+          session,
+          groupId: params.id,
+          action: "group_config_update",
+          target: "group_config",
+          detail: Object.keys(body).sort().join(",").slice(0, 500),
+        });
         this.sendJson(res, group);
       } catch (error) {
         if (error instanceof GroupConfigValidationError) {
@@ -1890,11 +1976,18 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "forbidden" }, 403);
         return;
       }
+      const accessibleGroups = groupId
+        ? [await this.options.groupConfigService.getGroup(groupId)].filter((group): group is GroupBotConfig => Boolean(group))
+        : await this.visibleGroups(session);
+      const excludedSubjectKeys = this.profileRecordExcludedSubjectKeys(
+        groupId ? accessibleGroups.filter((group) => group.groupId === groupId) : accessibleGroups,
+      );
       const page = await this.options.profileRecordStore.listPage({
         groupId,
         userId: url.searchParams.get("userId") ?? undefined,
         type: normalizeProfileRecordType(url.searchParams.get("type") ?? undefined),
         query: normalizeSearchQuery(url.searchParams.get("q") ?? undefined),
+        excludedSubjectKeys,
         ...paginationParams(url, 20, 100),
       });
       this.sendJson(res, { records: this.withProfileShareUrls(await this.filterGroupItems(session, page.items)), pagination: page.pagination });
@@ -1911,6 +2004,10 @@ export class AdminHttpServer {
       }
       if (!(await this.canAccessGroup(session, groupId))) {
         this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      if (await this.isMemberMemoryDisabled(groupId, userId)) {
+        this.sendJson(res, { error: "memory_collection_disabled" }, 403);
         return;
       }
       try {
@@ -1969,11 +2066,20 @@ export class AdminHttpServer {
       this.sendJson(res, { error: "forbidden" }, 403);
       return;
     }
+    const memoryDisabled = await this.isMemberMemoryDisabled(record.groupId, record.userId);
     if (req.method === "GET") {
+      if (memoryDisabled) {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
       this.sendJson(res, this.withProfileShareUrl(record));
       return;
     }
     if (req.method === "PUT") {
+      if (memoryDisabled) {
+        this.sendJson(res, { error: "memory_collection_disabled" }, 403);
+        return;
+      }
       if (!/^\d+$/.test(record.userId)) {
         this.sendJson(res, { error: "invalid_user_id" }, 400);
         return;
@@ -2026,41 +2132,10 @@ export class AdminHttpServer {
     this.sendJson(res, { error: "method_not_allowed" }, 405);
   }
 
-  private async handleProfileRecordShare(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
-    if (!this.options.profileRecordStore) {
-      this.sendJson(res, { error: "profile_records_unavailable" }, 503);
-      return;
-    }
-    const record = await this.options.profileRecordStore.get(id);
-    if (!record) {
-      this.sendJson(res, { error: "not_found" }, 404);
-      return;
-    }
-    if (!(await this.canAccessGroup(session, record.groupId))) {
-      this.sendJson(res, { error: "forbidden" }, 403);
-      return;
-    }
-    if (req.method !== "PUT") {
-      this.sendJson(res, { error: "method_not_allowed" }, 405);
-      return;
-    }
-    const body = await readJsonBody(req);
-    const publicEnabled = optionalBoolean(body.publicEnabled);
-    const expiresAt = body.expiresAt === null ? null : normalizeOptionalIso(body.expiresAt);
-    const revokedAt = publicEnabled === false ? new Date().toISOString() : body.revokedAt === null ? null : normalizeOptionalIso(body.revokedAt);
-    const updated = await this.options.profileRecordStore.updateShareState(id, {
-      ...(publicEnabled !== undefined ? { publicEnabled } : {}),
-      ...(body.expiresAt !== undefined ? { expiresAt } : {}),
-      ...(publicEnabled === false || body.revokedAt !== undefined ? { revokedAt } : {}),
-    });
-    await this.recordOperation({
-      session,
-      groupId: record.groupId,
-      action: publicEnabled === false ? "profile_share_revoke" : "profile_share_update",
-      target: id,
-      detail: publicEnabled === false ? "revoked public profile link" : "updated public profile link",
-    });
-    this.sendJson(res, updated ? this.withProfileShareUrl(updated) : { error: "not_found" }, updated ? 200 : 404);
+  private async handleProfileRecordShare(_req: IncomingMessage, res: ServerResponse, _id: string, _session: AdminSession): Promise<void> {
+    // Kept as a route boundary so old clients receive an explicit response
+    // instead of accidentally re-enabling bearer-link profile sharing.
+    this.sendJson(res, { error: "profile_sharing_disabled" }, 410);
   }
 
   private async generateProfileRecordResponse(args: {
@@ -2075,12 +2150,15 @@ export class AdminHttpServer {
     if (!/^\d+$/.test(args.userId)) {
       throw new ProfileRecordGenerationError("invalid_user_id", 400);
     }
-    if (!this.options.dailyProfileReviewService) {
-      throw new ProfileRecordGenerationError("profile_review_unavailable", 503);
-    }
     const groupConfig = await this.options.groupConfigService.getGroup(args.groupId);
     if (!groupConfig) {
       throw new ProfileRecordGenerationError("not_found", 404);
+    }
+    if ((groupConfig.memoryDisabledUserIds ?? []).includes(args.userId)) {
+      throw new ProfileRecordGenerationError("memory_collection_disabled", 403);
+    }
+    if (!this.options.dailyProfileReviewService) {
+      throw new ProfileRecordGenerationError("profile_review_unavailable", 503);
     }
     const profiles = await this.getCachedMemberProfileData(args.groupId);
     const members = profiles?.members ?? [];
@@ -2106,7 +2184,7 @@ export class AdminHttpServer {
       }
     }
     if (args.cacheOnly) {
-      throw new ProfileRecordGenerationError("readonly_session", 403);
+      throw new ProfileRecordGenerationError("profile_not_generated", 404);
     }
     const result = args.type === "yesterday"
       ? await this.options.dailyProfileReviewService.getYesterdaySummaryDetail({
@@ -2147,7 +2225,7 @@ export class AdminHttpServer {
       memoryCount: result.memoryCount,
       sourceMemoryCount: result.memoryCount,
       cached: result.cached ?? false,
-      ...(record ? { record } : {}),
+      ...(record ? { record: this.withProfileShareUrl(record) } : {}),
     };
   }
 
@@ -2211,11 +2289,14 @@ export class AdminHttpServer {
 
   private async getCachedMemberProfileData(
     groupId: string,
-    options: { force?: boolean; includeNapcatMembers?: boolean } = {},
+    options: { force?: boolean; includeNapcatMembers?: boolean; cacheOnly?: boolean } = {},
   ): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
+    const cached = this.memberProfileCache.get(groupId);
+    if (options.cacheOnly === true) {
+      return cached ? { groupConfig: cached.groupConfig, members: cached.members } : undefined;
+    }
     const force = options.force === true;
     const includeNapcatMembers = options.includeNapcatMembers === true;
-    const cached = this.memberProfileCache.get(groupId);
     if (!force && cached && cached.expiresAt > Date.now() && (!includeNapcatMembers || cached.includesNapcatMembers)) {
       return { groupConfig: cached.groupConfig, members: cached.members };
     }
@@ -2360,6 +2441,35 @@ export class AdminHttpServer {
     this.memberProfileInflight.clear();
   }
 
+  private replaceMemberProfileCache(
+    groupId: string,
+    groupConfig: GroupBotConfig,
+    member: GroupMemberProfile,
+    previousCache?: {
+      expiresAt: number;
+      groupConfig: GroupBotConfig;
+      members: GroupMemberProfile[];
+      includesNapcatMembers: boolean;
+    },
+  ): void {
+    // This is called only from explicit identity mutations. It keeps a prior
+    // NapCat snapshot usable after the write without making a later GET fetch
+    // remotely or rebuild cache state on its own.
+    const cached = previousCache ?? this.memberProfileCache.get(groupId);
+    if (!cached) {
+      return;
+    }
+    const exists = cached.members.some((item) => item.userId === member.userId);
+    this.memberProfileCache.set(groupId, {
+      groupConfig,
+      members: exists
+        ? cached.members.map((item) => item.userId === member.userId ? member : item)
+        : [...cached.members, member],
+      includesNapcatMembers: cached.includesNapcatMembers,
+      expiresAt: Date.now() + 30_000,
+    });
+  }
+
   private async getMemberProfile(groupId: string, userId: string): Promise<GroupMemberProfile | undefined> {
     const profiles = await this.getCachedMemberProfileData(groupId);
     return profiles?.members.find((member) => member.userId === userId);
@@ -2413,7 +2523,62 @@ export class AdminHttpServer {
     }
   }
 
-  private async getProfileAiHealthStatus(options: { refresh?: boolean } = {}): Promise<AiHealthStatus> {
+  private async buildHealthResponse(
+    session: AdminSession,
+    options: { refresh?: boolean } = {},
+  ) {
+    const canViewDiagnostics = session.role === "super_admin";
+    const rawTransportHealth = this.options.getTransportHealthStatus
+      ? await this.options.getTransportHealthStatus()
+      : { ok: true, detail: "未配置传输层自检" };
+    const transportHealth = canViewDiagnostics
+      ? sanitizeHealthStatus(rawTransportHealth)
+      : publicHealthStatus(rawTransportHealth);
+    const profileAiHealth = canViewDiagnostics
+      ? sanitizeHealthStatus(await this.getProfileAiHealthStatus(
+        options.refresh ? { refresh: true } : { cacheOnly: true },
+      ))
+      : restrictedHealthStatus();
+    const modelStatuses = canViewDiagnostics
+      ? await this.getModelHealthStatuses(options.refresh ? { refresh: true, source: "manual" } : {})
+      : [];
+    const abnormalModelStatuses = modelStatuses.filter(isAbnormalModelStatus);
+    const memory = process.memoryUsage();
+    const environmentStatus = {
+      transportHealth,
+      node: {
+        ok: true,
+        detail: canViewDiagnostics ? `${process.version} / PID ${process.pid}` : process.version,
+        checkedAt: `uptime ${Math.floor(process.uptime())}s`,
+        latencyMs: 0,
+      },
+      memory: {
+        ok: true,
+        detail: `RSS ${Math.round(memory.rss / 1024 / 1024)}MB，堆内存 ${Math.round(memory.heapUsed / 1024 / 1024)}MB`,
+        checkedAt: new Date().toISOString(),
+        latencyMs: 0,
+      },
+    };
+    return {
+      transportHealth,
+      profileAiHealth,
+      environmentStatus,
+      modelStatuses,
+      abnormalModelStatuses,
+      modelStatusSummary: {
+        total: modelStatuses.length,
+        abnormal: abnormalModelStatuses.length,
+        checkedAt: new Date().toISOString(),
+      },
+      uptimeSeconds: Math.floor(process.uptime()),
+      nodeVersion: process.version,
+      ...(canViewDiagnostics
+        ? { serverStatus: getServerStatusSnapshot(), pid: process.pid, memory }
+        : { memory: { rss: memory.rss, heapUsed: memory.heapUsed } }),
+    };
+  }
+
+  private async getProfileAiHealthStatus(options: { refresh?: boolean; cacheOnly?: boolean } = {}): Promise<AiHealthStatus> {
     if (!this.options.getProfileAiHealthStatus) {
       return {
         ok: true,
@@ -2423,6 +2588,7 @@ export class AdminHttpServer {
         checkedAt: new Date().toISOString(),
         latencyMs: 0,
         cached: false,
+        skipped: options.cacheOnly === true,
       };
     }
 
@@ -2446,22 +2612,34 @@ export class AdminHttpServer {
       return [];
     }
     const settings = await this.options.systemSettingsStore.getInternal();
-    const autoProbeEnabled = settings.tokenCostControl.modelHealthAutoProbeEnabled;
-    if (!options.refresh && !autoProbeEnabled) {
-      return settings.models.map((model) => this.buildModelHealthSkippedStatus(model, settings, "模型自动探测已关闭，请使用手动检测。"));
+    if (!options.refresh) {
+      const historicalStatuses = this.options.modelHealthHistoryStore
+        ? new Map((await this.options.modelHealthHistoryStore.list()).map((status) => [status.id, status]))
+        : new Map<string, ModelHealthHistoryEntry>();
+      return settings.models.map((model) => {
+        const cached = this.modelHealthCache.get(model.id);
+        if (cached && cached.expiresAt > Date.now()) {
+          return { ...cached.status, cached: true };
+        }
+        const historical = historicalStatuses.get(model.id);
+        if (historical) {
+          return {
+            ...historical,
+            ...this.buildModelHealthBase(model, settings),
+            cached: true,
+          };
+        }
+        return this.buildModelHealthSkippedStatus(model, settings, "尚未手动检测。");
+      });
     }
-    const source = options.source ?? (options.refresh ? "health" : "overview");
-    const statuses = await Promise.all(settings.models.map(async (model) => {
-      const cached = this.modelHealthCache.get(model.id);
-      if (!options.refresh && cached && cached.expiresAt > Date.now()) {
-        return cached.status;
-      }
+
+    const source = options.source ?? "manual";
+    return await Promise.all(settings.models.map(async (model) => {
       const status = await this.buildModelHealthStatus(model, settings);
       this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
       await this.recordModelHealth(status, source);
       return status;
     }));
-    return statuses;
   }
 
   private async buildModelHealthStatus(model: SystemSettings["models"][number], settings: SystemSettings): Promise<ModelHealthStatus> {
@@ -2705,54 +2883,19 @@ export class AdminHttpServer {
         allowedGroupIds: [],
       };
     }
-    const groupPassword = this.options.groupPassword;
-    const groupAdminSecretValid = this.options.systemSettingsStore
-      ? await this.options.systemSettingsStore.verifyGroupAdminSecret(password, groupPassword)
-      : Boolean(groupPassword) && password === groupPassword;
-    if (!groupAdminSecretValid || !/^\d+$/.test(username)) {
-      return undefined;
-    }
-    const groups = await this.options.groupConfigService.getAll();
-    const allowedGroupIds = groups
-      .filter((group) => group.enabled !== false && group.switcherUserIds.includes(username))
-      .map((group) => group.groupId);
-    if (allowedGroupIds.length === 0) {
-      return undefined;
-    }
-    return {
-      role: "group_admin",
-      username,
-      userId: username,
-      allowedGroupIds,
-    };
-  }
 
-  private async buildViewerSession(username: string): Promise<Omit<AdminSession, "csrfToken" | "expiresAt"> | undefined> {
-    const userId = username.trim();
-    if (!/^\d+$/.test(userId)) {
-      return undefined;
-    }
-    const groups = await this.findGroupsForViewer(userId);
-    if (groups.length === 0) {
-      return undefined;
-    }
-    return {
-      role: "viewer",
-      username: userId,
-      userId,
-      allowedGroupIds: groups.map((group) => group.groupId),
-    };
+    // A QQ identifier plus a shared secret does not prove that the requester
+    // controls that QQ account. Group-admin sessions must be issued only by a
+    // future verified identity flow, never by this public password endpoint.
+    return undefined;
   }
 
   private async publicSession(session: AdminSession): Promise<Omit<AdminSession, "expiresAt"> & { publicBaseUrl: string }> {
-    const allowedGroupIds = session.role === "viewer" && session.userId
-      ? (await this.findGroupsForViewer(session.userId)).map((group) => group.groupId)
-      : session.allowedGroupIds;
     return {
       role: session.role,
       username: session.username,
       ...(session.userId ? { userId: session.userId } : {}),
-      allowedGroupIds,
+      allowedGroupIds: session.allowedGroupIds,
       csrfToken: session.csrfToken,
       publicBaseUrl: this.options.publicBaseUrl,
     };
@@ -2774,12 +2917,18 @@ export class AdminHttpServer {
     const searchGroups = requestedGroupId
       ? groups.filter((group) => group.groupId === requestedGroupId)
       : groups;
+    const excludedProfileSubjectKeys = this.profileRecordExcludedSubjectKeys(searchGroups);
     const [memories, candidates, knowledge, profileRecordsPage] = await Promise.all([
       this.options.groupMemoryStore.list(),
       this.options.groupMemoryCandidateService.list({}),
       this.options.knowledgeBaseStore.list(),
       this.options.profileRecordStore
-        ? this.options.profileRecordStore.listPage({ query, page: 1, pageSize: 20 })
+        ? this.options.profileRecordStore.listPage({
+            query,
+            excludedSubjectKeys: excludedProfileSubjectKeys,
+            page: 1,
+            pageSize: 20,
+          })
         : Promise.resolve({ items: [], pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 } }),
     ]);
     const resultItems: Array<{ type: string; title: string; subtitle: string; path: string; groupId: string }> = [];
@@ -2789,7 +2938,7 @@ export class AdminHttpServer {
       }
     }
     for (const group of searchGroups) {
-      const profiles = await this.getCachedMemberProfileData(group.groupId, { includeNapcatMembers: true });
+      const profiles = await this.getCachedMemberProfileData(group.groupId, { cacheOnly: true });
       for (const member of (profiles?.members ?? []).slice(0, 500)) {
         if (memberMatchesQuery(member, query)) {
           resultItems.push({
@@ -2817,7 +2966,9 @@ export class AdminHttpServer {
         resultItems.push({ type: "knowledge", title: entry.title, subtitle: entry.question, path: `/knowledge?q=${encodeURIComponent(query)}`, groupId: entry.groupId });
       }
     }
-    for (const record of profileRecordsPage.items.filter((item) => groupIds.has(item.groupId))) {
+    for (const record of profileRecordsPage.items
+      .filter((item) => groupIds.has(item.groupId))
+      .filter((item) => !excludedProfileSubjectKeys.has(profileRecordSubjectKey(item.groupId, item.userId)))) {
       resultItems.push({
         type: "profile",
         title: record.type === "yesterday" ? "昨日画像" : "群聊画像",
@@ -2829,15 +2980,12 @@ export class AdminHttpServer {
     this.sendJson(res, { results: resultItems.slice(0, 30) });
   }
 
-  private withProfileShareUrls<T extends { shareToken?: string }>(records: T[]): Array<T & { shareUrl?: string }> {
-    return records.map((record) => this.withProfileShareUrl(record));
+  private withProfileShareUrls(records: ProfileRecord[]): ProfileRecord[] {
+    return records;
   }
 
-  private withProfileShareUrl<T extends { shareToken?: string }>(record: T): T & { shareUrl?: string } {
-    return {
-      ...record,
-      ...(record.shareToken ? { shareUrl: buildProfileShareUrl(this.options.publicBaseUrl, record.shareToken) } : {}),
-    };
+  private withProfileShareUrl(record: ProfileRecord): ProfileRecord {
+    return record;
   }
 
   private async visibleGroups(session: AdminSession, options: { includeDisabled?: boolean } = {}): Promise<GroupBotConfig[]> {
@@ -2846,27 +2994,12 @@ export class AdminHttpServer {
       return options.includeDisabled ? groups : groups.filter((group) => group.enabled !== false);
     }
     const allowed = new Set(session.allowedGroupIds);
-    if (session.role === "group_admin") {
-      return groups.filter((group) => (
-        group.enabled !== false &&
-        allowed.has(group.groupId) &&
-        session.userId !== undefined &&
-        group.switcherUserIds.includes(session.userId)
-      ));
-    }
-    if (session.role === "viewer" && session.userId) {
-      const visible: GroupBotConfig[] = [];
-      for (const group of groups) {
-        if (group.enabled === false) {
-          continue;
-        }
-        if (await this.isCurrentNapcatGroupMember(group.groupId, session.userId)) {
-          visible.push(group);
-        }
-      }
-      return visible;
-    }
-    return groups.filter((group) => group.enabled !== false && allowed.has(group.groupId));
+    return groups.filter((group) => (
+      group.enabled !== false &&
+      allowed.has(group.groupId) &&
+      session.userId !== undefined &&
+      group.switcherUserIds.includes(session.userId)
+    ));
   }
 
   private async canAccessGroup(session: AdminSession, groupId: string): Promise<boolean> {
@@ -2874,13 +3007,27 @@ export class AdminHttpServer {
       return true;
     }
     const group = await this.options.groupConfigService.getGroup(groupId);
-    if (!group || group.enabled === false || !session.userId) {
-      return false;
+    return Boolean(
+      group &&
+      group.enabled !== false &&
+      session.userId &&
+      group.switcherUserIds.includes(session.userId),
+    );
+  }
+
+  private async isMemberMemoryDisabled(groupId: string, userId: string): Promise<boolean> {
+    const group = await this.options.groupConfigService.getGroup(groupId);
+    return Boolean(group?.memoryDisabledUserIds?.includes(userId));
+  }
+
+  private profileRecordExcludedSubjectKeys(groups: GroupBotConfig[]): Set<string> {
+    const excluded = new Set<string>();
+    for (const group of groups) {
+      for (const userId of group.memoryDisabledUserIds ?? []) {
+        excluded.add(profileRecordSubjectKey(group.groupId, userId));
+      }
     }
-    if (session.role === "group_admin") {
-      return group.switcherUserIds.includes(session.userId);
-    }
-    return this.isCurrentNapcatGroupMember(groupId, session.userId);
+    return excluded;
   }
 
   private requireSuperAdmin(session: AdminSession, res: ServerResponse): boolean {
@@ -2889,25 +3036,6 @@ export class AdminHttpServer {
     }
     this.sendJson(res, { error: "forbidden" }, 403);
     return false;
-  }
-
-  private isReadOnlySession(session: AdminSession): boolean {
-    return session.role === "viewer";
-  }
-
-  private async findGroupsForViewer(userId: string): Promise<GroupBotConfig[]> {
-    const groups = (await this.options.groupConfigService.getAll()).filter((group) => group.enabled !== false);
-    const visibleGroups: GroupBotConfig[] = [];
-    for (const group of groups) {
-      if (await this.isCurrentNapcatGroupMember(group.groupId, userId)) {
-        visibleGroups.push(group);
-      }
-    }
-    return visibleGroups;
-  }
-
-  private async isCurrentNapcatGroupMember(groupId: string, userId: string): Promise<boolean> {
-    return (await this.safeListGroupMembers(groupId)).some((member) => String(member.user_id) === userId);
   }
 
   private async recordOperation(args: {
@@ -3015,8 +3143,12 @@ export class AdminHttpServer {
         csrfToken?: string;
         expiresAt?: string;
       };
-      const role = parsed.role === "viewer" ? "viewer" : parsed.role === "group_admin" ? "group_admin" : "super_admin";
-      return typeof parsed.username === "string" && typeof parsed.csrfToken === "string" && typeof parsed.expiresAt === "string"
+      const role = parsed.role === "group_admin"
+        ? "group_admin"
+        : parsed.role === "super_admin"
+          ? "super_admin"
+          : undefined;
+      return role && typeof parsed.username === "string" && typeof parsed.csrfToken === "string" && typeof parsed.expiresAt === "string"
         ? {
             role,
             username: parsed.username,
@@ -3152,26 +3284,6 @@ function contentTypeFor(filePath: string): string {
   return STATIC_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 
-function publicProfileHtml(summary: string): string {
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="robots" content="noindex,nofollow">
-  <title>画像</title>
-  <style>
-    body { margin: 0; background: #f6fbfa; color: #102027; font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif; line-height: 1.8; }
-    main { max-width: 820px; margin: 0 auto; padding: 32px 18px; }
-    pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
-  </style>
-</head>
-<body>
-  <main><pre>${escapeHtml(summary)}</pre></main>
-</body>
-</html>`;
-}
-
 function publicProfileNotFoundHtml(): string {
   return `<!doctype html>
 <html lang="zh-CN">
@@ -3179,19 +3291,10 @@ function publicProfileNotFoundHtml(): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex,nofollow">
-  <title>画像不存在</title>
+  <title>页面不存在</title>
 </head>
-<body>画像不存在或已失效</body>
+<body>页面不存在</body>
 </html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function normalizeMemoryInput(body: Record<string, unknown>) {
@@ -3323,6 +3426,10 @@ function normalizeProfileRecordType(value: string | undefined): ProfileRecordTyp
   return value === "overall" || value === "yesterday" ? value : undefined;
 }
 
+function profileRecordSubjectKey(groupId: string, userId: string): string {
+  return `${groupId}:${userId}`;
+}
+
 function normalizeReminderInterval(value: unknown): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -3419,24 +3526,6 @@ function normalizeLogLimit(value: string | undefined): number {
 function isStateChangingMethod(method: string | undefined): boolean {
   const normalized = (method ?? "GET").toUpperCase();
   return normalized !== "GET" && normalized !== "HEAD" && normalized !== "OPTIONS";
-}
-
-function normalizeOptionalIso(value: unknown): string | null | undefined {
-  if (value === null) return null;
-  if (value === undefined || value === "") return undefined;
-  if (typeof value !== "string") return undefined;
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
-}
-
-function isProfileSharePublic(record: ProfileRecord): boolean {
-  if (record.publicEnabled === false || record.revokedAt) {
-    return false;
-  }
-  if (record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()) {
-    return false;
-  }
-  return Boolean(record.shareToken);
 }
 
 function buildSchedulePreview(groupConfig: GroupBotConfig, reminders: Array<{
@@ -3803,10 +3892,6 @@ function redactSensitiveText(value: string): string {
     .slice(0, 500);
 }
 
-function buildProfileShareUrl(publicBaseUrl: string, shareToken: string): string {
-  return `${publicBaseUrl.replace(/\/+$/, "")}/profile/${encodeURIComponent(shareToken)}`;
-}
-
 function trimTrailingSlash(pathname: string): string {
   return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname === "/" ? "" : pathname;
 }
@@ -3820,6 +3905,20 @@ function parseCookies(raw: string): Record<string, string> {
     }
   }
   return cookies;
+}
+
+function safeJsonObject(raw: string): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+    );
+  } catch {
+    return {};
+  }
 }
 
 function safeEqual(left: string, right: string): boolean {

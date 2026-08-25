@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -22,6 +22,27 @@ const baseGroupConfig: GroupBotConfig = {
   holidayCountdownEnabled: true,
   holidayCountdownTime: "09:00",
 };
+
+test("DailyReportStore refreshes sent-state after an external write", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-store-refresh-"));
+  const storePath = path.join(tempDir, "daily-report-store.json");
+  try {
+    const workerStore = new DailyReportStore(storePath);
+    const adminStore = new DailyReportStore(storePath);
+    assert.equal(await workerStore.getLastSentDate("67890"), undefined);
+    await adminStore.markSent("67890", "2026-08-23");
+
+    const raw = JSON.parse(await readFile(storePath, "utf8")) as { days: Record<string, unknown>; lastSentDateByGroup: Record<string, string> };
+    raw.lastSentDateByGroup["67890"] = "2026-08-23";
+    await writeFile(storePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(storePath);
+    await utimes(storePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal(await workerStore.getLastSentDate("67890"), "2026-08-23");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("daily report scheduler only fires during the configured minute on weekdays", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-service-test-"));

@@ -11,7 +11,6 @@ const skill: SkillDefinition = {
   systemPrompt: "你是一个更像私聊里回消息的雷军分身",
   styleRules: ["短句", "口语化"],
   knowledge: ["更像聊天，不像演讲"],
-  sourceSkillLines: ["# 原始技能", "请严格遵循原始技能内容"],
   exampleExchanges: [
     {
       user: "最近状态不太好",
@@ -31,11 +30,22 @@ test("buildSystemPrompt includes target examples", () => {
   assert.equal(prompt.includes("Target chat examples:"), true);
   assert.equal(prompt.includes("User: 最近状态不太好"), true);
   assert.equal(prompt.includes("Assistant: 先别把自己绷太紧，睡够一觉再说"), true);
-  assert.equal(prompt.includes("Original source skill content:"), true);
-  assert.equal(prompt.includes("# 原始技能"), true);
   assert.equal(prompt.includes("Runtime context:"), true);
   assert.match(prompt, /当前时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\+8/);
   assert.equal(prompt.includes("当用户问今天、现在几点、星期几、日期或相对时间时"), true);
+});
+
+test("buildSystemPrompt ignores legacy raw source fields", () => {
+  const legacySkill = {
+    ...skill,
+    sourceSkillLines: ["private source one", "private source two"],
+    sourceSkillLineLimit: 2,
+  };
+  const prompt = buildSystemPrompt(legacySkill);
+
+  assert.equal(prompt.includes("private source one"), false);
+  assert.equal(prompt.includes("private source two"), false);
+  assert.equal(prompt.includes("Original source skill content"), false);
 });
 
 test("buildSystemPrompt includes manual group identity memory", () => {
@@ -232,8 +242,8 @@ test("buildSystemPrompt treats real-time lookup material as untrusted evidence",
   assert.match(prompt, /current policy fact/);
 });
 
-test("buildSystemPrompt includes compact live-chat and reminder task state", () => {
-  const prompt = buildSystemPrompt(skill, {
+test("buildSystemPrompt omits legacy runtime task state", () => {
+  const staleContext = {
     groupId: "67890",
     currentUserId: "20001",
     manualIdentities: [{ userIds: ["20002"], names: ["季博神"] }],
@@ -250,13 +260,11 @@ test("buildSystemPrompt includes compact live-chat and reminder task state", () 
         nextTask: { topic: "提醒喝水", nextRunAt: "2026-07-30T10:00:00.000Z" },
       },
     },
-  });
+  };
+  const prompt = buildSystemPrompt(skill, staleContext);
 
-  assert.match(prompt, /Current group task state/);
-  assert.match(prompt, /实时对话：已开启，监听 2 人，静默倒计时 30 秒/);
-  assert.match(prompt, /季博神（QQ 20002）：3 条，仍在等待静默倒计时/);
-  assert.match(prompt, /最近定时任务：提醒喝水；执行时间 2026-07-30T10:00:00.000Z/);
-  assert.match(prompt, /不要自行创建、修改或开启任务/);
+  assert.doesNotMatch(prompt, /Current group task state/);
+  assert.doesNotMatch(prompt, /实时对话：已开启|监听 2 人|季博神（QQ 20002）|提醒喝水|2026-07-30/);
 });
 
 test("buildChatMessages injects examples before conversation history", () => {
@@ -384,6 +392,26 @@ test("generateReply falls back once when streaming is explicitly unsupported", a
 
   const reply = await service.generateReply({ skill, history: [], userInput: "hello" });
   assert.equal(reply.text, "fallback reply");
+  assert.deepEqual(requests.map((request) => request.stream ?? false), [true, false]);
+});
+
+test("generateReply falls back once when Anthropic adapter explicitly declines streaming", async () => {
+  const requests: Array<{ stream?: boolean }> = [];
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create(args: { stream?: boolean }) {
+      requests.push(args);
+      if (args.stream) {
+        throw new Error("anthropic_stream_unsupported");
+      }
+      return {
+        model: "test-model",
+        choices: [{ message: { content: "non-streaming anthropic reply" } }],
+      };
+    },
+  } as never);
+
+  const reply = await service.generateReply({ skill, history: [], userInput: "hello" });
+  assert.equal(reply.text, "non-streaming anthropic reply");
   assert.deepEqual(requests.map((request) => request.stream ?? false), [true, false]);
 });
 
@@ -756,6 +784,23 @@ test("checkHealth treats successful empty completions as available", async () =>
   assert.equal(health.model, "mimo-v2.5-pro");
   assert.equal(health.baseUrl, "https://example.invalid/v1");
   assert.equal(health.cached, false);
+});
+
+test("checkHealth cache-only mode never contacts the upstream model", async () => {
+  let calls = 0;
+  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
+    async create() {
+      calls += 1;
+      throw new Error("cache-only mode must not call upstream");
+    },
+  } as never);
+
+  const health = await service.checkHealth({ cacheOnly: true });
+
+  assert.equal(calls, 0);
+  assert.equal(health.ok, true);
+  assert.equal(health.skipped, true);
+  assert.equal(health.detail, "尚未手动检测画像/记忆模型。");
 });
 
 test("checkHealth classifies upstream failures", async () => {

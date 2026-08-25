@@ -193,7 +193,7 @@ export class AiService {
     this.chatCompletions = chatCompletions ?? this.client.chat.completions;
   }
 
-  async checkHealth(options: { refresh?: boolean; cacheTtlMs?: number } = {}): Promise<AiHealthStatus> {
+  async checkHealth(options: { refresh?: boolean; cacheOnly?: boolean; cacheTtlMs?: number } = {}): Promise<AiHealthStatus> {
     const cacheTtlMs = options.cacheTtlMs ?? 5 * 60 * 1000;
     if (
       !options.refresh &&
@@ -201,6 +201,19 @@ export class AiService {
       Date.now() - Date.parse(this.cachedHealth.checkedAt) < cacheTtlMs
     ) {
       return { ...this.cachedHealth, cached: true };
+    }
+
+    if (options.cacheOnly) {
+      return {
+        ok: true,
+        detail: "尚未手动检测画像/记忆模型。",
+        model: this.model,
+        baseUrl: this.baseURL,
+        checkedAt: new Date().toISOString(),
+        latencyMs: 0,
+        cached: false,
+        skipped: true,
+      };
     }
 
     const startedAt = Date.now();
@@ -1177,7 +1190,7 @@ function countPromptChars(messages: ChatMessage[]): number {
 
 function isStreamFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /stream(?:ing)?[^\n]{0,80}(?:not supported|unsupported|not available)|unsupported[^\n]{0,80}stream/i.test(message);
+  return /stream(?:ing)?[^\n]{0,80}(?:not supported|unsupported|not available)|unsupported[^\n]{0,80}stream|anthropic_stream_unsupported/i.test(message);
 }
 
 export function buildChatMessages(
@@ -1466,7 +1479,6 @@ export function buildSystemPrompt(
   const knowledgeContext = buildKnowledgeContext(identityContext);
   const interactionContext = buildInteractionContext(identityContext);
   const atmosphereContext = buildAtmosphereContext(identityContext);
-  const groupRuntimeContext = buildGroupRuntimeContext(identityContext);
   const realtimeLookupContext = buildRealtimeLookupContext(identityContext);
   const examples =
     skill.exampleExchanges?.length
@@ -1479,15 +1491,6 @@ export function buildSystemPrompt(
           ]),
         ].join("\n")
       : "";
-  const sourceSkill =
-    skill.sourceSkillLines?.length
-      ? [
-          "",
-          "Original source skill content:",
-          ...skill.sourceSkillLines,
-        ].join("\n")
-      : "";
-
   return [
     skill.systemPrompt,
     "",
@@ -1513,11 +1516,9 @@ export function buildSystemPrompt(
     knowledgeContext ? ["", "Matched group knowledge:", knowledgeContext].join("\n") : "",
     interactionContext ? ["", "Current interaction context:", interactionContext].join("\n") : "",
     atmosphereContext ? ["", "Sanitized group atmosphere:", atmosphereContext].join("\n") : "",
-    groupRuntimeContext ? ["", "Current group task state:", groupRuntimeContext].join("\n") : "",
     realtimeLookupContext ? ["", "Realtime lookup context:", realtimeLookupContext].join("\n") : "",
     scenarioInstruction ? ["", "Current one-shot scenario:", scenarioInstruction].join("\n") : "",
     examples,
-    sourceSkill,
   ].join("\n");
 }
 
@@ -1714,53 +1715,6 @@ function sanitizeAtmosphereSummary(summary?: string): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 400);
-}
-
-function buildGroupRuntimeContext(identityContext?: AiIdentityContext): string {
-  const runtime = identityContext?.groupRuntimeContext;
-  if (!runtime) {
-    return "";
-  }
-
-  const live = runtime.liveChat;
-  const reminders = runtime.scheduledReminders;
-  const lines = [
-    "- 这是程序此刻读取到的群运行任务状态，只用于准确回答任务、监听和提醒相关问题；不要把它说成长期记忆或最近群聊。",
-    live.enabled
-      ? `- 实时对话：已开启，监听 ${live.trackedUserCount} 人，静默倒计时 ${live.delaySeconds} 秒。`
-      : `- 实时对话：未开启，当前没有监听成员；配置倒计时 ${live.delaySeconds} 秒。`,
-  ];
-
-  if (live.pendingUsers.length === 0) {
-    lines.push("- 主动接话缓冲：当前没有待接话消息；这不代表群里没有近期聊天。");
-  } else {
-    lines.push("- 主动接话缓冲（只统计指定监听成员，并不等于完整群聊）：");
-    for (const pending of live.pendingUsers.slice(0, 4)) {
-      const label = formatRuntimeUser(identityContext, pending.userId);
-      const state = pending.state === "ready" ? "已满足倒计时，可尝试接话" : "仍在等待静默倒计时";
-      lines.push(`  - ${label}：${pending.messageCount} 条，${state}。`);
-    }
-  }
-
-  lines.push(
-    reminders.enabled
-      ? `- 定时任务：总开关已开启，当前 ${reminders.activeTaskCount} 个启用任务。`
-      : `- 定时任务：总开关已关闭，当前 ${reminders.activeTaskCount} 个启用任务不会自动发送。`,
-  );
-  if (reminders.nextTask) {
-    lines.push(`- 最近定时任务：${reminders.nextTask.topic}；执行时间 ${reminders.nextTask.nextRunAt}。`);
-  } else {
-    lines.push("- 定时任务：当前无待执行任务。");
-  }
-  lines.push("- 不要把待接话或定时任务说成已经完成，也不要自行创建、修改或开启任务。");
-  return lines.join("\n");
-}
-
-function formatRuntimeUser(identityContext: AiIdentityContext, userId: string): string {
-  const matched = (identityContext.manualIdentities ?? [])
-    .filter((identity) => identity.userIds.includes(userId));
-  const manualName = matched.length === 1 ? matched[0]?.names[0]?.trim() : undefined;
-  return manualName ? `${manualName}（QQ ${userId}）` : `QQ ${userId}`;
 }
 
 function buildRealtimeLookupContext(identityContext?: AiIdentityContext): string {

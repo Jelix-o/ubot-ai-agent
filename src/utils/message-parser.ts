@@ -4,7 +4,17 @@ export interface ParsedGroupMessage {
   hasAtBot: boolean;
   text: string;
   images: MessageImageInput[];
-  mentionUserIds: string[];
+  /**
+   * Targets carried by a platform message segment, rather than inferred from
+   * free-form text. These are the only mention targets that may authorize
+   * person-specific prompt context or an outbound @.
+   */
+  verifiedMentionUserIds: string[];
+  /**
+   * QQ numbers and @-style strings typed into message text. Keep them separate
+   * for non-authorizing text handling; they do not establish an identity link.
+   */
+  plainTextMentionCandidates: string[];
   replyMessageId?: string;
 }
 
@@ -97,35 +107,42 @@ export function parseGroupMessage(
   if (typeof message === "string") {
     const text = normalizeText(message);
     const escapedQq = escapeRegex(botQq);
-    const cqAtPattern = new RegExp(`\\[CQ:at,qq=${escapedQq}(?:,[^\\]]*)?\\]`, "gi");
     const cqReplyPattern = /\[CQ:reply,id=([^\],]+)(?:,[^\]]*)?\]/i;
-    const plainAtPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`, "g");
-    const hasAtBot = cqAtPattern.test(text) || plainAtPattern.test(text);
     const replyMessageId = text.match(cqReplyPattern)?.[1]?.trim();
     const textWithoutReply = text.replace(cqReplyPattern, " ");
+    const cqAtTargets = extractCqAtTargets(textWithoutReply);
+    const plainBotAtPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`);
+    const botAtReplacementPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`, "g");
+    const hasAtBot = cqAtTargets.includes(botQq) || plainBotAtPattern.test(text);
 
     return {
       hasAtBot,
       text: normalizeText(
         textWithoutReply
-          .replace(cqAtPattern, " ")
-          .replace(plainAtPattern, " "),
+          .replace(CQ_AT_PATTERN, (_match, rawTarget: string) => formatCqAtText(rawTarget, botQq))
+          .replace(botAtReplacementPattern, " "),
       ),
       images: [],
-      mentionUserIds: extractMentionCandidatesFromText(textWithoutReply, botQq),
+      verifiedMentionUserIds: normalizeMentionUserIds(cqAtTargets.filter((target) => target !== botQq)),
+      plainTextMentionCandidates: extractPlainTextMentionCandidates(
+        textWithoutReply.replace(CQ_AT_PATTERN, " "),
+        botQq,
+      ),
       replyMessageId,
     };
   }
 
   let hasAtBot = false;
   const parts: string[] = [];
+  const plainTextParts: string[] = [];
   const images: MessageImageInput[] = [];
-  const mentionUserIds: string[] = [];
+  const verifiedMentionUserIds: string[] = [];
   let replyMessageId: string | undefined;
 
   for (const segment of message) {
     if (typeof segment === "string") {
       parts.push(segment);
+      plainTextParts.push(segment);
       continue;
     }
 
@@ -134,7 +151,7 @@ export function parseGroupMessage(
       if (targetQq === botQq) {
         hasAtBot = true;
       } else if (targetQq) {
-        mentionUserIds.push(targetQq);
+        verifiedMentionUserIds.push(targetQq);
         parts.push(`@${targetQq}`);
       }
       continue;
@@ -150,6 +167,7 @@ export function parseGroupMessage(
 
     if (segment.type === "text") {
       parts.push(segment.data?.text ?? "");
+      plainTextParts.push(segment.data?.text ?? "");
       continue;
     }
 
@@ -163,19 +181,35 @@ export function parseGroupMessage(
     hasAtBot,
     text: normalizeText(parts.join(" ")),
     images,
-    mentionUserIds: mergeMentionUserIds(
-      mentionUserIds,
-      extractMentionCandidatesFromText(parts.join(" "), botQq),
-    ),
+    verifiedMentionUserIds: normalizeMentionUserIds(verifiedMentionUserIds),
+    plainTextMentionCandidates: extractPlainTextMentionCandidates(plainTextParts.join(" "), botQq),
     replyMessageId,
   };
 }
+
+const CQ_AT_PATTERN = /\[CQ:at,qq=([^,\]]+)(?:,[^\]]*)?\]/gi;
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function extractMentionCandidatesFromText(text: string, botQq: string): string[] {
+function extractCqAtTargets(text: string): string[] {
+  const targets: string[] = [];
+  for (const match of text.matchAll(CQ_AT_PATTERN)) {
+    const target = match[1]?.trim();
+    if (target) {
+      targets.push(target);
+    }
+  }
+  return targets;
+}
+
+function formatCqAtText(rawTarget: string, botQq: string): string {
+  const target = rawTarget.trim();
+  return target && target !== botQq ? `@${target}` : " ";
+}
+
+function extractPlainTextMentionCandidates(text: string, botQq: string): string[] {
   const candidates = new Set<string>();
   const qqNumberPattern = /(?<!\d)(\d{5,12})(?!\d)/g;
   const plainAtPattern = /(^|[\s，,。！？!；;、])@([^\s@，,。！？!；;、()[\]{}<>《》"'`]+)/g;
@@ -199,6 +233,6 @@ function extractMentionCandidatesFromText(text: string, botQq: string): string[]
   return [...candidates];
 }
 
-function mergeMentionUserIds(left: string[], right: string[]): string[] {
-  return [...new Set([...left, ...right])];
+function normalizeMentionUserIds(userIds: string[]): string[] {
+  return [...new Set(userIds.map((userId) => userId.trim()).filter(Boolean))];
 }

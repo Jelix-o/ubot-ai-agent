@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 
 import type { KnowledgeBaseEntry } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
@@ -45,6 +46,7 @@ export interface KnowledgeBaseDuplicateMatch {
 
 export class KnowledgeBaseStore {
   private cachedData?: KnowledgeBaseFile;
+  private cachedVersion?: string;
 
   constructor(private readonly filePath: string) {}
 
@@ -169,17 +171,20 @@ export class KnowledgeBaseStore {
   }
 
   private async readData(): Promise<KnowledgeBaseFile> {
-    if (this.cachedData) {
+    const version = await fileVersion(this.filePath);
+    if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
     }
 
     try {
       this.cachedData = normalizeKnowledgeBaseFile(await readJsonFile<KnowledgeBaseFile>(this.filePath));
+      this.cachedVersion = version;
       return this.cachedData;
     } catch (error) {
       const knownError = error as NodeJS.ErrnoException;
       if (knownError.code === "ENOENT") {
         this.cachedData = { entries: [] };
+        this.cachedVersion = "missing";
         return this.cachedData;
       }
       throw error;
@@ -187,13 +192,25 @@ export class KnowledgeBaseStore {
   }
 
   private async writeData(data: KnowledgeBaseFile): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedVersion = await fileVersion(this.filePath);
   }
 }
 
 export function tokenizeKnowledgeText(value: string): string[] {
   return tokenize(value);
+}
+
+async function fileVersion(filePath: string): Promise<string> {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch (error) {
+    const known = error as NodeJS.ErrnoException;
+    if (known.code === "ENOENT") return "missing";
+    throw error;
+  }
 }
 
 function normalizeKnowledgeBaseFile(data: Partial<KnowledgeBaseFile>): KnowledgeBaseFile {

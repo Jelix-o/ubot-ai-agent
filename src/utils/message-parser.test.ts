@@ -23,7 +23,8 @@ test("parseGroupMessage extracts CQ reply ids from string messages", () => {
   assert.equal(result.hasAtBot, true);
   assert.equal(result.text, "hello");
   assert.equal(result.replyMessageId, "987654");
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
+  assert.deepEqual(result.plainTextMentionCandidates, []);
 });
 
 test("parseGroupMessage extracts text when bot is mentioned", () => {
@@ -37,7 +38,7 @@ test("parseGroupMessage extracts text when bot is mentioned", () => {
 
   assert.equal(result.hasAtBot, true);
   assert.equal(result.text, "你好，帮我总结一下");
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
 });
 
 test("parseGroupMessage ignores text when bot is not mentioned", () => {
@@ -48,7 +49,7 @@ test("parseGroupMessage ignores text when bot is not mentioned", () => {
 
   assert.equal(result.hasAtBot, false);
   assert.equal(result.text, "普通群消息");
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
 });
 
 test("parseGroupMessage handles numeric at qq", () => {
@@ -62,7 +63,7 @@ test("parseGroupMessage handles numeric at qq", () => {
 
   assert.equal(result.hasAtBot, true);
   assert.equal(result.text, "test number qq");
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
 });
 
 test("parseGroupMessage handles CQ at string format", () => {
@@ -71,7 +72,7 @@ test("parseGroupMessage handles CQ at string format", () => {
   assert.equal(result.hasAtBot, true);
   assert.equal(result.text, "hello world");
   assert.deepEqual(result.images, []);
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
 });
 
 test("parseGroupMessage extracts image urls", () => {
@@ -88,7 +89,7 @@ test("parseGroupMessage extracts image urls", () => {
   assert.equal(result.text, "这图是啥");
   assert.equal(result.images.length, 1);
   assert.equal(result.images[0]?.url, "https://example.com/test.png");
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
 });
 
 test("parseGroupMessage keeps image file identifiers when url is absent", () => {
@@ -105,7 +106,7 @@ test("parseGroupMessage keeps image file identifiers when url is absent", () => 
   assert.equal(result.images.length, 1);
   assert.equal(result.images[0]?.file, "7f0000011234567890.image");
   assert.equal(result.images[0]?.summary, "[图片]");
-  assert.deepEqual(result.mentionUserIds, []);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
 });
 
 test("parseGroupMessage keeps non-bot mentions as text and targets", () => {
@@ -120,13 +121,24 @@ test("parseGroupMessage keeps non-bot mentions as text and targets", () => {
 
   assert.equal(result.hasAtBot, true);
   assert.equal(result.text, "@67890 你去和他说一下");
-  assert.deepEqual(result.mentionUserIds, ["67890"]);
+  assert.deepEqual(result.verifiedMentionUserIds, ["67890"]);
+  assert.deepEqual(result.plainTextMentionCandidates, []);
 });
 
-test("parseGroupMessage extracts qq numbers from plain text as mention targets", () => {
+test("parseGroupMessage keeps plain-text QQ numbers separate from verified targets", () => {
   const result = parseGroupMessage("[CQ:at,qq=12345] 你去和 67890 还有 55667788 说一声", "12345");
 
   assert.equal(result.hasAtBot, true);
   assert.equal(result.text, "你去和 67890 还有 55667788 说一声");
-  assert.deepEqual(result.mentionUserIds, ["67890", "55667788"]);
+  assert.deepEqual(result.verifiedMentionUserIds, []);
+  assert.deepEqual(result.plainTextMentionCandidates, ["67890", "55667788"]);
+});
+
+test("parseGroupMessage identifies non-bot CQ at segments as verified targets", () => {
+  const result = parseGroupMessage("[CQ:at,qq=12345][CQ:at,qq=67890] 请提醒他", "12345");
+
+  assert.equal(result.hasAtBot, true);
+  assert.equal(result.text, "@67890 请提醒他");
+  assert.deepEqual(result.verifiedMentionUserIds, ["67890"]);
+  assert.deepEqual(result.plainTextMentionCandidates, []);
 });

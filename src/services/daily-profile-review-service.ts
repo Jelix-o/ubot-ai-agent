@@ -1,3 +1,5 @@
+import { stat } from "node:fs/promises";
+
 import { logWarn } from "../logger.js";
 import type { GroupBotConfig, GroupMemberProfile, GroupMemory } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
@@ -27,6 +29,7 @@ export interface MemberProfileSummaryResult {
 
 export class DailyProfileReviewService {
   private cachedData?: DailyProfileReviewFile;
+  private cachedVersion?: string;
 
   constructor(
     private readonly filePath: string,
@@ -64,6 +67,10 @@ export class DailyProfileReviewService {
     dateKey: string;
     members?: GroupMemberProfile[];
   }): Promise<GroupMemory | undefined> {
+    if (isProfileMemoryDisabled(args.groupConfig, args.userId)) {
+      return undefined;
+    }
+
     const existing = await this.findDailySummary(args.groupConfig.groupId, args.userId, args.dateKey);
     if (existing) {
       return existing;
@@ -91,6 +98,10 @@ export class DailyProfileReviewService {
     userId: string;
     members?: GroupMemberProfile[];
   }): Promise<MemberProfileSummaryResult | null> {
+    if (isProfileMemoryDisabled(args.groupConfig, args.userId)) {
+      return null;
+    }
+
     const memories = await this.listUsableMemberProfileMemories(args.groupConfig.groupId, args.userId);
     if (memories.length === 0) {
       return null;
@@ -140,7 +151,10 @@ export class DailyProfileReviewService {
     const memories = await this.memoryStore.list(args.groupConfig.groupId);
     const userIds = Array.from(new Set(
       memories
-        .filter((memory) => isNewDailyMemberProfile(memory, args.dateKey))
+        .filter((memory) =>
+          isNewDailyMemberProfile(memory, args.dateKey) &&
+          !isProfileMemoryDisabled(args.groupConfig, memory.subjectUserId ?? "")
+        )
         .map((memory) => memory.subjectUserId!)
     ));
 
@@ -176,6 +190,10 @@ export class DailyProfileReviewService {
     members: GroupMemberProfile[];
     allMemories?: GroupMemory[];
   }): Promise<GroupMemory | undefined> {
+    if (isProfileMemoryDisabled(args.groupConfig, args.userId)) {
+      return undefined;
+    }
+
     const existing = await this.findDailySummary(args.groupConfig.groupId, args.userId, args.dateKey);
     if (existing) {
       return existing;
@@ -236,7 +254,8 @@ export class DailyProfileReviewService {
   }
 
   private async readData(): Promise<DailyProfileReviewFile> {
-    if (this.cachedData) {
+    const version = await fileVersion(this.filePath);
+    if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
     }
 
@@ -245,11 +264,13 @@ export class DailyProfileReviewService {
       this.cachedData = {
         reviewedDatesByGroup: data.reviewedDatesByGroup ?? {},
       };
+      this.cachedVersion = version;
       return this.cachedData;
     } catch (error) {
       const knownError = error as NodeJS.ErrnoException;
       if (knownError.code === "ENOENT") {
         this.cachedData = { reviewedDatesByGroup: {} };
+        this.cachedVersion = "missing";
         return this.cachedData;
       }
       throw error;
@@ -257,8 +278,20 @@ export class DailyProfileReviewService {
   }
 
   private async writeData(data: DailyProfileReviewFile): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedVersion = await fileVersion(this.filePath);
+  }
+}
+
+async function fileVersion(filePath: string): Promise<string> {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch (error) {
+    const known = error as NodeJS.ErrnoException;
+    if (known.code === "ENOENT") return "missing";
+    throw error;
   }
 }
 
@@ -291,6 +324,10 @@ function isGeneratedProfileSummaryMemory(memory: GroupMemory): boolean {
     memory.title.includes("画像总结") ||
     memory.title.includes("昨日画像") ||
     memory.title.includes("群聊画像");
+}
+
+function isProfileMemoryDisabled(groupConfig: GroupBotConfig, userId: string): boolean {
+  return (groupConfig.memoryDisabledUserIds ?? []).includes(userId);
 }
 
 function toProfileMemoryInput(memory: GroupMemory): { title: string; content: string; createdAt: string; confidence: number } {

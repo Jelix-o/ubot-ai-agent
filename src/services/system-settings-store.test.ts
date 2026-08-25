@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { SystemSettingsStore } from "./system-settings-store.js";
+import type { SystemSettings } from "../types.js";
+import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import {
   LEGACY_MIMO_TTS_BASE_URL,
   LEGACY_MIMO_TTS_MODEL,
@@ -355,14 +357,30 @@ test("SystemSettingsStore backfills and persists token cost controls", async () 
   assert.equal(reloaded.tokenCostControl.dailyReportAiQuipEnabled, false);
 });
 
-test("SystemSettingsStore enables online lookup by default and persists its global switch", async () => {
+test("SystemSettingsStore requires explicit opt-in for daily profiles, memory dedup, and online lookup", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-online-"));
   const filePath = path.join(dir, "system-settings.json");
   try {
+    await writeFile(filePath, "{}", "utf8");
     const store = new SystemSettingsStore(filePath);
-    assert.equal((await store.get()).onlineLookupEnabled, true);
-    assert.equal((await store.update({ onlineLookupEnabled: false })).onlineLookupEnabled, false);
-    assert.equal((await new SystemSettingsStore(filePath).get()).onlineLookupEnabled, false);
+    const defaults = await store.get();
+    assert.equal(defaults.dailyProfileReviewEnabled, false);
+    assert.equal(defaults.memoryDedupEnabled, false);
+    assert.equal(defaults.onlineLookupEnabled, false);
+
+    const enabled = await store.update({
+      dailyProfileReviewEnabled: true,
+      memoryDedupEnabled: true,
+      onlineLookupEnabled: true,
+    });
+    assert.equal(enabled.dailyProfileReviewEnabled, true);
+    assert.equal(enabled.memoryDedupEnabled, true);
+    assert.equal(enabled.onlineLookupEnabled, true);
+
+    const reloaded = await new SystemSettingsStore(filePath).get();
+    assert.equal(reloaded.dailyProfileReviewEnabled, true);
+    assert.equal(reloaded.memoryDedupEnabled, true);
+    assert.equal(reloaded.onlineLookupEnabled, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -661,6 +679,52 @@ test("SystemSettingsStore recovers settings when commands are corrupt without lo
   const repairedRaw = await readFile(filePath, "utf8");
   const repaired = JSON.parse(repairedRaw) as { commands: Array<{ id: string }> };
   assert.equal(repaired.commands.some((command) => command.id === "model"), true);
+});
+
+test("SystemSettingsStore mirrors only after an explicit sync or a successful JSON write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-shadow-store-"));
+  const filePath = path.join(dir, "system-settings.json");
+  const snapshots: SystemSettings[] = [];
+  const shadowWriter: SystemSettingsShadowWriter = {
+    syncFromAuthoritative(settings) {
+      snapshots.push(JSON.parse(JSON.stringify(settings)) as SystemSettings);
+      return { status: "created", snapshotHash: "test" };
+    },
+  };
+
+  try {
+    const store = new SystemSettingsStore(filePath, [], shadowWriter);
+    await store.get();
+    assert.equal(snapshots.length, 0, "ordinary configuration reads must not write the shadow");
+
+    assert.equal(await store.syncShadowFromAuthoritative(), true);
+    assert.equal(snapshots.length, 1);
+
+    await store.update({ onlineLookupEnabled: true });
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots[1]?.onlineLookupEnabled, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SystemSettingsStore preserves JSON updates when SQLite shadow sync fails", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-shadow-failure-"));
+  const filePath = path.join(dir, "system-settings.json");
+  const failingShadowWriter: SystemSettingsShadowWriter = {
+    syncFromAuthoritative() {
+      throw new Error("sqlite_unavailable");
+    },
+  };
+
+  try {
+    const store = new SystemSettingsStore(filePath, [], failingShadowWriter);
+    const updated = await store.update({ onlineLookupEnabled: true });
+    assert.equal(updated.onlineLookupEnabled, true);
+    assert.equal((await new SystemSettingsStore(filePath).get()).onlineLookupEnabled, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 async function createStore(defaultModels: ConstructorParameters<typeof SystemSettingsStore>[1] = []): Promise<SystemSettingsStore> {

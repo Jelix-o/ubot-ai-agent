@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -46,6 +46,29 @@ class FakeProfileAi {
     return `${args.userId} 整体画像总结`;
   }
 }
+
+test("daily profile review refreshes reviewed-date state after an external update", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "daily-profile-review-refresh-"));
+  const filePath = path.join(dir, "review.json");
+  try {
+    const memories = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const ai = new FakeProfileAi();
+    const reader = new DailyProfileReviewService(filePath, memories, ai);
+    const writer = new DailyProfileReviewService(filePath, memories, ai);
+    assert.equal(await reader.shouldRunGroupReview("67890", "2026-08-23"), true);
+
+    await writer.reviewGroup({ groupConfig, dateKey: "2026-08-23" });
+    const raw = JSON.parse(await readFile(filePath, "utf8")) as { reviewedDatesByGroup: Record<string, string[]> };
+    raw.reviewedDatesByGroup["67890"] = ["2026-08-23"];
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(filePath);
+    await utimes(filePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal(await reader.shouldRunGroupReview("67890", "2026-08-23"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("daily profile review summarizes only yesterday's new member profile memories once", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "daily-profile-review-"));
@@ -171,6 +194,81 @@ test("daily profile review can create yesterday summary on demand and summarize 
     assert.equal(overallDetail?.summary, "20001 整体画像总结");
     assert.equal(overallDetail?.memoryCount, 1);
     assert.equal(overallDetail?.cached, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("daily profile review does not surface or generate profiles for members with memory disabled", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "daily-profile-review-memory-disabled-"));
+  try {
+    const memoryStore = new GroupMemoryStore(path.join(dir, "memory.json"));
+    const ai = new FakeProfileAi();
+    const service = new DailyProfileReviewService(path.join(dir, "review.json"), memoryStore, ai);
+    const dateKey = "2026-06-01";
+    const disabledGroupConfig: GroupBotConfig = {
+      ...groupConfig,
+      memoryDisabledUserIds: ["20001"],
+    };
+
+    await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: "已退出成员的原始画像",
+      content: "不应再用于生成或展示。",
+      source: "auto",
+      createdAt: `${dateKey}T09:00:00.000Z`,
+    });
+    const existingDisabledSummary = await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20001",
+      title: `${dateKey} 昨日画像总结`,
+      content: "历史摘要应保留在存储中，但不可再展示。",
+      source: `daily_profile_review:${dateKey}`,
+      createdAt: `${dateKey}T10:00:00.000Z`,
+    });
+    await memoryStore.create({
+      groupId: "67890",
+      type: "member_profile",
+      subjectUserId: "20002",
+      title: "未退出成员的原始画像",
+      content: "应该正常生成每日摘要。",
+      source: "auto",
+      createdAt: `${dateKey}T11:00:00.000Z`,
+    });
+
+    const review = await service.reviewGroup({ groupConfig: disabledGroupConfig, dateKey });
+    assert.equal(review.createdCount, 1);
+    assert.deepEqual(review.createdSummaries.map((memory) => memory.subjectUserId), ["20002"]);
+    assert.deepEqual(ai.dailyCalls.map((call) => call.userId), ["20002"]);
+
+    assert.equal(await service.getOrCreateYesterdaySummary({
+      groupConfig: disabledGroupConfig,
+      userId: "20001",
+      dateKey,
+    }), undefined);
+    assert.equal(await service.getYesterdaySummaryDetail({
+      groupConfig: disabledGroupConfig,
+      userId: "20001",
+      dateKey,
+    }), null);
+    assert.equal(await service.summarizeOverallProfile({
+      groupConfig: disabledGroupConfig,
+      userId: "20001",
+    }), null);
+    assert.equal(await service.summarizeOverallProfileDetail({
+      groupConfig: disabledGroupConfig,
+      userId: "20001",
+    }), null);
+    assert.equal(ai.overallCalls.length, 0);
+
+    const allMemories = await memoryStore.list("67890");
+    assert.equal(allMemories.some((memory) => memory.id === existingDisabledSummary.id), true);
+    assert.equal(allMemories.filter((memory) =>
+      memory.subjectUserId === "20001" && memory.source === `daily_profile_review:${dateKey}`
+    ).length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

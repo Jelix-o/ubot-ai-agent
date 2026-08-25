@@ -34,6 +34,8 @@ export interface IngressMessageRow {
   context_topic_id: string | null;
   context_branch_id: string | null;
   context_route_reason: string | null;
+  processable: number;
+  drop_reason: string | null;
 }
 
 export interface InflightRow {
@@ -80,6 +82,54 @@ export interface RecentGroupMessageRow {
   images_json: string;
 }
 
+export interface ParticipationDecisionRow {
+  id: number;
+  source_row_id: number;
+  group_id: string;
+  user_id: string;
+  action: string;
+  reason: string;
+  score: number;
+  policy_version: string;
+  signals_json: string;
+  created_at: number;
+}
+
+/** A completed, versioned SQLite schema migration. */
+export interface SchemaMigrationRow {
+  version: number;
+  name: string;
+  applied_at: number;
+}
+
+/**
+ * Non-authoritative copy of the normalized groups.json document.
+ *
+ * This is deliberately a single snapshot rather than the runtime source of
+ * truth. Phase 1 uses it to prove migrations and compare JSON/SQLite state
+ * before any reader is switched to SQLite.
+ */
+export interface GroupConfigShadowSnapshotRow {
+  source_key: string;
+  snapshot_json: string;
+  snapshot_hash: string;
+  schema_version: number;
+  group_count: number;
+  synced_at: number;
+}
+
+/**
+ * Sanitized, non-authoritative copy of system-settings.json. Secrets and
+ * secret hashes are deliberately excluded before a row reaches this table.
+ */
+export interface SystemSettingsShadowSnapshotRow {
+  source_key: string;
+  snapshot_json: string;
+  snapshot_hash: string;
+  schema_version: number;
+  synced_at: number;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,11 +145,28 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_to TEXT,
   has_at_bot INTEGER NOT NULL DEFAULT 0,
   is_bot_msg INTEGER NOT NULL DEFAULT 0,
+  processable INTEGER NOT NULL DEFAULT 1,
+  drop_reason TEXT,
   created_at INTEGER NOT NULL,
   dedup_key TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages (group_id, msg_time);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages (created_at);
+
+CREATE TABLE IF NOT EXISTS participation_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_row_id INTEGER NOT NULL UNIQUE,
+  group_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  score REAL NOT NULL,
+  policy_version TEXT NOT NULL,
+  signals_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_participation_decisions_group_created
+  ON participation_decisions (group_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS conversation_topics (
   topic_id TEXT PRIMARY KEY,
@@ -251,6 +318,88 @@ CREATE TABLE IF NOT EXISTS bot_messages (
 );
 `;
 
+interface SqliteMigration {
+  version: number;
+  name: string;
+  apply(db: DatabaseSync): void;
+}
+
+const GROUP_CONFIG_SHADOW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS group_config_shadow_snapshots (
+  source_key TEXT PRIMARY KEY,
+  snapshot_json TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  group_count INTEGER NOT NULL,
+  synced_at INTEGER NOT NULL
+);
+`;
+
+const SYSTEM_SETTINGS_SHADOW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS system_settings_shadow_snapshots (
+  source_key TEXT PRIMARY KEY,
+  snapshot_json TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  synced_at INTEGER NOT NULL
+);
+`;
+
+/**
+ * Reconciles schemas produced by pre-migration releases. Keep this as the
+ * first tracked migration so an existing installation has an auditable
+ * baseline before new domain tables are added.
+ */
+function reconcileLegacyColumns(db: DatabaseSync): void {
+  const messageCols = db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+  for (const [name, sqlType] of [
+    ["sender_card", "TEXT"],
+    ["sender_nickname", "TEXT"],
+    ["processable", "INTEGER NOT NULL DEFAULT 1"],
+    ["drop_reason", "TEXT"],
+  ] as const) {
+    if (!messageCols.some((col) => col.name === name)) {
+      db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${sqlType}`);
+    }
+  }
+
+  const outboxCols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  const additions: Array<[string, string]> = [
+    ["updated_at", "INTEGER"],
+    ["topic_id", "TEXT"],
+    ["branch_id", "TEXT"],
+    ["source_turn_id", "INTEGER"],
+    ["turn_id", "INTEGER"],
+    ["delivery_id", "TEXT"],
+    ["platform_message_id", "TEXT"],
+    ["sent_at", "INTEGER"],
+    ["retry_after", "INTEGER"],
+  ];
+  for (const [name, sqlType] of additions) {
+    if (!outboxCols.some((col) => col.name === name)) {
+      db.exec(`ALTER TABLE outbox ADD COLUMN ${name} ${sqlType}`);
+    }
+  }
+}
+
+const MIGRATIONS: readonly SqliteMigration[] = [
+  {
+    version: 1,
+    name: "reconcile-pre-versioned-schema",
+    apply: reconcileLegacyColumns,
+  },
+  {
+    version: 2,
+    name: "add-group-config-shadow-snapshots",
+    apply: (db) => db.exec(GROUP_CONFIG_SHADOW_SCHEMA),
+  },
+  {
+    version: 3,
+    name: "add-system-settings-shadow-snapshots",
+    apply: (db) => db.exec(SYSTEM_SETTINGS_SHADOW_SCHEMA),
+  },
+];
+
 export class SharedDb {
   readonly db: DatabaseSync;
 
@@ -261,38 +410,53 @@ export class SharedDb {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA synchronous = NORMAL");
     this.db.exec(SCHEMA);
-    this.migrateSchema();
+    this.runMigrations();
   }
 
-  /** 轻量 schema 迁移：旧库缺列时补齐（CREATE TABLE IF NOT EXISTS 不会改已有表）。 */
-  private migrateSchema(): void {
-    const messageCols = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
-    for (const [name, sqlType] of [
-      ["sender_card", "TEXT"],
-      ["sender_nickname", "TEXT"],
-    ] as const) {
-      if (!messageCols.some((col) => col.name === name)) {
-        this.db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${sqlType}`);
+  /**
+   * Runs each additive migration exactly once under an IMMEDIATE transaction.
+   * The initial CREATE TABLE statements stay as a bootstrap for older installs;
+   * every new runtime table must be added through MIGRATIONS from now on.
+   */
+  private runMigrations(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at INTEGER NOT NULL
+      );
+    `);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const applied = new Set(
+        (this.db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>)
+          .map((row) => row.version),
+      );
+      const insert = this.db.prepare(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+      );
+      for (const migration of MIGRATIONS) {
+        if (applied.has(migration.version)) {
+          continue;
+        }
+        migration.apply(this.db);
+        insert.run(migration.version, migration.name, Date.now());
       }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // The transaction may not have been opened if SQLite rejected BEGIN.
+      }
+      throw error;
     }
+  }
 
-    const outboxCols = this.db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
-    const additions: Array<[string, string]> = [
-      ["updated_at", "INTEGER"],
-      ["topic_id", "TEXT"],
-      ["branch_id", "TEXT"],
-      ["source_turn_id", "INTEGER"],
-      ["turn_id", "INTEGER"],
-      ["delivery_id", "TEXT"],
-      ["platform_message_id", "TEXT"],
-      ["sent_at", "INTEGER"],
-      ["retry_after", "INTEGER"],
-    ];
-    for (const [name, sqlType] of additions) {
-      if (!outboxCols.some((col) => col.name === name)) {
-        this.db.exec(`ALTER TABLE outbox ADD COLUMN ${name} ${sqlType}`);
-      }
-    }
+  listSchemaMigrations(): SchemaMigrationRow[] {
+    return this.db
+      .prepare("SELECT version, name, applied_at FROM schema_migrations ORDER BY version ASC")
+      .all() as unknown as SchemaMigrationRow[];
   }
 
   close(): void {
@@ -301,6 +465,154 @@ export class SharedDb {
     } catch {
       // Already closed.
     }
+  }
+
+  getGroupConfigShadowSnapshot(): GroupConfigShadowSnapshotRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT source_key, snapshot_json, snapshot_hash, schema_version, group_count, synced_at
+           FROM group_config_shadow_snapshots
+          WHERE source_key = 'groups-json'`,
+      )
+      .get() as GroupConfigShadowSnapshotRow | undefined;
+  }
+
+  saveGroupConfigShadowSnapshot(input: {
+    snapshotJson: string;
+    snapshotHash: string;
+    schemaVersion: number;
+    groupCount: number;
+    syncedAt?: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO group_config_shadow_snapshots
+           (source_key, snapshot_json, snapshot_hash, schema_version, group_count, synced_at)
+         VALUES ('groups-json', ?, ?, ?, ?, ?)
+         ON CONFLICT(source_key) DO UPDATE SET
+           snapshot_json = excluded.snapshot_json,
+           snapshot_hash = excluded.snapshot_hash,
+           schema_version = excluded.schema_version,
+           group_count = excluded.group_count,
+           synced_at = excluded.synced_at`,
+      )
+      .run(
+        input.snapshotJson,
+        input.snapshotHash,
+        input.schemaVersion,
+        input.groupCount,
+        input.syncedAt ?? Date.now(),
+      );
+  }
+
+  getSystemSettingsShadowSnapshot(): SystemSettingsShadowSnapshotRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT source_key, snapshot_json, snapshot_hash, schema_version, synced_at
+           FROM system_settings_shadow_snapshots
+          WHERE source_key = 'system-settings-json'`,
+      )
+      .get() as SystemSettingsShadowSnapshotRow | undefined;
+  }
+
+  saveSystemSettingsShadowSnapshot(input: {
+    snapshotJson: string;
+    snapshotHash: string;
+    schemaVersion: number;
+    syncedAt?: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO system_settings_shadow_snapshots
+           (source_key, snapshot_json, snapshot_hash, schema_version, synced_at)
+         VALUES ('system-settings-json', ?, ?, ?, ?)
+         ON CONFLICT(source_key) DO UPDATE SET
+           snapshot_json = excluded.snapshot_json,
+           snapshot_hash = excluded.snapshot_hash,
+           schema_version = excluded.schema_version,
+           synced_at = excluded.synced_at`,
+      )
+      .run(
+        input.snapshotJson,
+        input.snapshotHash,
+        input.schemaVersion,
+        input.syncedAt ?? Date.now(),
+      );
+  }
+
+  /** Stores the current participation decision once per inbound message for audit and shadow-mode analysis. */
+  recordParticipationDecision(input: {
+    sourceRowId: number;
+    groupId: string;
+    userId: string;
+    action: string;
+    reason: string;
+    score: number;
+    policyVersion: string;
+    signals: Record<string, boolean>;
+    createdAt?: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO participation_decisions
+           (source_row_id, group_id, user_id, action, reason, score, policy_version, signals_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_row_id) DO UPDATE SET
+           action = excluded.action,
+           reason = excluded.reason,
+           score = excluded.score,
+           policy_version = excluded.policy_version,
+           signals_json = excluded.signals_json,
+           created_at = excluded.created_at`,
+      )
+      .run(
+        input.sourceRowId,
+        input.groupId,
+        input.userId,
+        input.action,
+        input.reason,
+        input.score,
+        input.policyVersion,
+        JSON.stringify(input.signals),
+        input.createdAt ?? Date.now(),
+      );
+  }
+
+  listParticipationDecisions(options: {
+    groupId?: string;
+    limit?: number;
+  } = {}): ParticipationDecisionRow[] {
+    const limit = Math.max(1, Math.min(500, options.limit ?? 100));
+    if (options.groupId) {
+      return this.db
+        .prepare(
+          `SELECT id, source_row_id, group_id, user_id, action, reason, score, policy_version, signals_json, created_at
+             FROM participation_decisions
+            WHERE group_id = ?
+            ORDER BY id DESC
+            LIMIT ?`,
+        )
+        .all(options.groupId, limit) as unknown as ParticipationDecisionRow[];
+    }
+    return this.db
+      .prepare(
+        `SELECT id, source_row_id, group_id, user_id, action, reason, score, policy_version, signals_json, created_at
+           FROM participation_decisions
+          ORDER BY id DESC
+          LIMIT ?`,
+      )
+      .all(limit) as unknown as ParticipationDecisionRow[];
+  }
+
+  /** Returns the immutable routing decision recorded for one inbound message. */
+  getParticipationDecision(sourceRowId: number): ParticipationDecisionRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, source_row_id, group_id, user_id, action, reason, score, policy_version, signals_json, created_at
+           FROM participation_decisions
+          WHERE source_row_id = ?`,
+      )
+      .get(sourceRowId) as ParticipationDecisionRow | undefined;
   }
 
   // ---- messages (written by ingress, polled by workers) ----
@@ -319,6 +631,8 @@ export class SharedDb {
     replyTo?: string;
     hasAtBot: boolean;
     isBotMsg: boolean;
+    processable?: boolean;
+    dropReason?: string;
     createdAt: number;
   }): number {
     try {
@@ -326,8 +640,8 @@ export class SharedDb {
         .prepare(
           `INSERT INTO messages
              (group_id, user_id, self_id, msg_id, msg_time, text, images_json,
-              sender_card, sender_nickname, reply_to, has_at_bot, is_bot_msg, created_at, dedup_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              sender_card, sender_nickname, reply_to, has_at_bot, is_bot_msg, processable, drop_reason, created_at, dedup_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.groupId,
@@ -342,6 +656,8 @@ export class SharedDb {
           row.replyTo ?? null,
           row.hasAtBot ? 1 : 0,
           row.isBotMsg ? 1 : 0,
+          row.processable === false ? 0 : 1,
+          row.dropReason ?? null,
           row.createdAt,
           `${row.selfId}:${row.groupId}:${row.msgId}`,
         );
@@ -352,6 +668,13 @@ export class SharedDb {
       }
       throw error;
     }
+  }
+
+  /** Marks an already-ingested event as non-processable without deleting its audit trail. */
+  markMessageDropped(messageId: number, reason: string): void {
+    this.db
+      .prepare("UPDATE messages SET processable = 0, drop_reason = ? WHERE id = ?")
+      .run(reason.slice(0, 120), messageId);
   }
 
   /** Number of messages by group within the trailing window; used for per-group token bucket. */
@@ -387,7 +710,7 @@ export class SharedDb {
       .prepare(
         `SELECT m.id, m.group_id, m.user_id, m.self_id, m.msg_id, m.msg_time, m.text,
                 m.images_json, m.sender_card, m.sender_nickname, m.reply_to,
-                m.has_at_bot, m.is_bot_msg, m.created_at,
+                m.has_at_bot, m.is_bot_msg, m.processable, m.drop_reason, m.created_at,
                 r.topic_id AS context_topic_id,
                 r.branch_id AS context_branch_id,
                 r.route_reason AS context_route_reason
@@ -597,12 +920,12 @@ export class SharedDb {
    * Atomically claims pending rows for delivery: each row is flipped to
    * 'sending' before the network call, so a crash/retry can never double-send
    * the same outbox row (plan §6 red line: duplicate_reply_rate must be 0).
-   * 'sending' rows older than `sendingTimeoutMs` are reclaimed (the sender may
-   * have died mid-flight; the message may or may not have been delivered —
-   * on reconnect the transport itself rejects in-flight actions, and the
-   * reclaim window is long enough that a double-send is avoided in practice).
+   * 'sending' rows older than one minute are quarantined as terminal failures:
+   * delivery is ambiguous after a sender crash, so retrying would risk a QQ
+   * duplicate. Operators can inspect and decide whether a new message is safe.
    */
   claimOutbox(limit: number, nowMs = Date.now()): OutboxRow[] {
+    this.recoverStaleSendingOutbox(nowMs);
     return this.withImmediateTransaction(() => {
       const candidates = this.db
         .prepare(
@@ -630,6 +953,26 @@ export class SharedDb {
         .prepare(`SELECT * FROM outbox WHERE id IN (${placeholders}) AND status = 'sending' ORDER BY id`)
         .all(...ids) as unknown as OutboxRow[];
     });
+  }
+
+  /**
+   * A stalled `sending` record is delivery-ambiguous: QQ may already have
+   * received it, so it must never be sent again automatically. Turn it into a
+   * terminal failed record for operator review instead of leaving the queue
+   * permanently wedged.
+   */
+  recoverStaleSendingOutbox(nowMs = Date.now(), staleAfterMs = 60_000): number {
+    const cutoff = nowMs - Math.max(1_000, staleAfterMs);
+    const result = this.db
+      .prepare(
+        `UPDATE outbox
+            SET status = 'failed', retry_after = NULL, updated_at = ?
+          WHERE status = 'sending'
+            AND updated_at IS NOT NULL
+            AND updated_at <= ?`,
+      )
+      .run(nowMs, cutoff);
+    return Number(result.changes);
   }
 
   markOutboxSent(id: number): void {
@@ -781,6 +1124,24 @@ export class SharedDb {
     this.db
       .prepare("INSERT OR REPLACE INTO bot_messages (group_id, msg_id, sent_at) VALUES (?, ?, ?)")
       .run(groupId, msgId, sentAtMs);
+  }
+
+  /**
+   * Confirms that a reply anchor is one of this bot's acknowledged messages.
+   * A bare OneBot reply segment is not trusted because it can quote any group
+   * member, including a message that has no relationship to the bot.
+   */
+  isKnownBotMessage(groupId: string, msgId: string | null | undefined): boolean {
+    const normalizedGroupId = groupId.trim();
+    const normalizedMessageId = msgId?.trim();
+    if (!normalizedGroupId || !normalizedMessageId) {
+      return false;
+    }
+    return Boolean(
+      this.db
+        .prepare("SELECT 1 FROM bot_messages WHERE group_id = ? AND msg_id = ? LIMIT 1")
+        .get(normalizedGroupId, normalizedMessageId),
+    );
   }
 
   pruneBotMessages(beforeMs: number): void {

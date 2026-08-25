@@ -1,9 +1,12 @@
+import { stat } from "node:fs/promises";
+
 import type { ScheduledReminderTask, ScheduledRemindersFile } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 
 export class ScheduledReminderStore {
   private cachedData?: ScheduledRemindersFile;
+  private cachedVersion?: string;
 
   constructor(private readonly filePath: string) {}
 
@@ -205,7 +208,8 @@ export class ScheduledReminderStore {
   }
 
   private async readData(): Promise<ScheduledRemindersFile> {
-    if (this.cachedData) {
+    const version = await fileVersion(this.filePath);
+    if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
     }
 
@@ -213,11 +217,13 @@ export class ScheduledReminderStore {
       this.cachedData = normalizeScheduledRemindersFile(
         await readJsonFile<ScheduledRemindersFile>(this.filePath),
       );
+      this.cachedVersion = version;
       return this.cachedData;
     } catch (error) {
       const knownError = error as NodeJS.ErrnoException;
       if (knownError.code === "ENOENT") {
         this.cachedData = { tasks: {} };
+        this.cachedVersion = "missing";
         return this.cachedData;
       }
       throw error;
@@ -225,8 +231,20 @@ export class ScheduledReminderStore {
   }
 
   private async writeData(data: ScheduledRemindersFile): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedVersion = await fileVersion(this.filePath);
+  }
+}
+
+async function fileVersion(filePath: string): Promise<string> {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch (error) {
+    const known = error as NodeJS.ErrnoException;
+    if (known.code === "ENOENT") return "missing";
+    throw error;
   }
 }
 

@@ -29,7 +29,7 @@ import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
 import type { ProfileRecordStore } from "./services/profile-record-store.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
-import type { SkillService } from "./services/skill-service.js";
+import { isRetiredLegacySkillId, type SkillService } from "./services/skill-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
@@ -45,7 +45,6 @@ import type {
   GroupMemberProfile,
   GroupMemberIdentity,
   GroupBotConfig,
-  GroupRuntimeContext,
   GroupMemory,
   MessageImageInput,
   NapcatGroupInfo,
@@ -71,6 +70,7 @@ import {
 import { classifyUpstreamFailure } from "./utils/upstream-failure.js";
 import { withTimeout } from "./utils/with-timeout.js";
 import { parseVoiceCommand } from "./utils/voice-command.js";
+import { ParticipationPolicy, type ParticipationDecision } from "./services/participation-policy.js";
 
 const SKILL_PREFIX = "#技能";
 const MODEL_PREFIX = "#模型";
@@ -267,6 +267,13 @@ export interface MessageReceipt {
 
 interface MessageInteractionContext {
   interactionTargets: AiInteractionTarget[];
+  /**
+   * Free-form candidate tokens from the source message. They are deliberately
+   * kept out of interactionTargets: they may clean a literal `@` echo from an
+   * LLM reply, but can never authorize person-specific context or an outbound
+   * platform mention.
+   */
+  plainTextMentionCandidates?: string[];
   replyContext?: AiReplyContext;
   sourceMessageId?: string;
   replyMessageId?: string;
@@ -277,6 +284,14 @@ interface MessageInteractionContext {
 interface ConversationOptions {
   allowControlledMention?: boolean;
   scenarioInstruction?: string;
+}
+
+interface HandleGroupMessageOptions {
+  /**
+   * Granted only by the worker after its receipt-table check has established
+   * that the incoming reply quotes one of this bot's own group messages.
+   */
+  allowReplyWithoutMention?: boolean;
 }
 
 type ReplyOutputMode = "text" | "voice" | "singing";
@@ -294,6 +309,7 @@ interface OpsAlertRuntimeState {
 }
 
 export class BotApplication {
+  private readonly participationPolicy = new ParticipationPolicy();
   private maintenanceTimer?: NodeJS.Timeout;
   private maintenanceTickRunning = false;
 
@@ -452,6 +468,7 @@ export class BotApplication {
     event: NapcatGroupMessageEvent,
     signal?: AbortSignal,
     conversationRoute?: ConversationRoute,
+    options: HandleGroupMessageOptions = {},
   ): Promise<void> {
     const groupId = String(event.group_id);
     const userId = String(event.user_id);
@@ -660,7 +677,7 @@ export class BotApplication {
     }
 
     const repeatText = extractRepeatableText(event.message, this.botQq);
-    if (repeatText && this.checkAndTriggerRepeat(groupId, repeatText)) {
+    if (allowsSelectedMemberParticipation(groupConfig) && repeatText && this.checkAndTriggerRepeat(groupId, repeatText)) {
       logInfo("Triggered repeat message.", { groupId, userId, text: repeatText });
       await this.sendText(groupId, repeatText);
       return;
@@ -784,7 +801,7 @@ export class BotApplication {
     await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
     this.queueMemoryCandidateMessage(groupConfig, event, parsedMessage);
 
-    if (await this.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
+    if (allowsKeywordParticipation(groupConfig) && await this.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
       const keywordMentionUserIds = this.resolveKeywordReplyMentionUserIds(
         userId,
         messageContext,
@@ -805,15 +822,19 @@ export class BotApplication {
       return;
     }
 
-    if (this.isActiveChatTrackedUser(groupConfig, userId) && shouldBufferActiveChatMessage(parsedMessage, commandText)) {
+    if (allowsSelectedMemberParticipation(groupConfig) && this.isActiveChatTrackedUser(groupConfig, userId) && shouldBufferActiveChatMessage(parsedMessage, commandText)) {
       this.liveChatService.addMessage(groupId, userId, parsedMessage.text, Date.now(), messageContext);
     }
 
-    if (!parsedMessage.hasAtBot || (!parsedMessage.text && parsedMessage.images.length === 0)) {
+    if (
+      (!parsedMessage.hasAtBot && options.allowReplyWithoutMention !== true) ||
+      (!parsedMessage.text && parsedMessage.images.length === 0)
+    ) {
       logInfo("Ignored message because bot was not mentioned or content empty.", {
         groupId,
         userId,
         hasAtBot: parsedMessage.hasAtBot,
+        allowReplyWithoutMention: options.allowReplyWithoutMention === true,
         textLength: parsedMessage.text.length,
         imageCount: parsedMessage.images.length,
       });
@@ -829,7 +850,7 @@ export class BotApplication {
         resolveDefaultReplyMode(groupConfig),
         [],
         messageContext,
-        true,
+        parsedMessage.hasAtBot,
         conversationRoute,
         signal,
       );
@@ -844,16 +865,50 @@ export class BotApplication {
     return this.botQq;
   }
 
-  /** Read-only trigger check used by the worker before it persists a route. */
-  async shouldRouteConversation(groupId: string, text: string, hasAtBot: boolean): Promise<boolean> {
-    if (hasAtBot || /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(text.trim())) {
-      return true;
-    }
+  /**
+   * Gives ingress/worker one explainable decision for every inbound message.
+   * This is deliberately conservative in its first version: it preserves the
+   * existing reply contract while making future natural participation auditable.
+   */
+  async getParticipationDecision(
+    groupId: string,
+    text: string,
+    hasAtBot: boolean,
+    options: { hasImages?: boolean; replyToBot?: boolean } = {},
+  ): Promise<ParticipationDecision> {
     const groupConfig = await this.groupConfigService.getGroup(groupId);
-    if (!groupConfig || groupConfig.enabled === false || groupConfig.botMuted === true) {
-      return false;
-    }
-    return this.shouldTriggerKeyword(groupConfig, text, false, text);
+    const normalized = text.trim();
+    const isCommand = normalized.startsWith("#");
+    const isConversationCommand = /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(normalized);
+    const keywordTriggered = groupConfig && groupConfig.enabled !== false && groupConfig.botMuted !== true && allowsKeywordParticipation(groupConfig)
+      ? await this.shouldTriggerKeyword(groupConfig, text, hasAtBot, text)
+      : false;
+
+    return this.participationPolicy.decide({
+      text,
+      hasAtBot,
+      // A bare OneBot reply segment can point at any group member. Only the
+      // worker may set this after a same-group receipt-table lookup.
+      hasReply: options.replyToBot === true,
+      hasImages: options.hasImages === true,
+      groupConfigured: Boolean(groupConfig),
+      groupEnabled: groupConfig?.enabled !== false,
+      groupMuted: groupConfig?.botMuted === true,
+      isCommand,
+      isConversationCommand,
+      keywordTriggered,
+    });
+  }
+
+  /** Read-only trigger check used by a legacy ingress before it persists a route. */
+  async shouldRouteConversation(
+    groupId: string,
+    text: string,
+    hasAtBot: boolean,
+    options: { hasImages?: boolean; replyToBot?: boolean } = {},
+  ): Promise<boolean> {
+    const decision = await this.getParticipationDecision(groupId, text, hasAtBot, options);
+    return decision.action === "reply";
   }
 
   /** Injects the LLM gate (semaphore + circuit breaker) into the reply path. */
@@ -909,6 +964,9 @@ export class BotApplication {
         // 闭嘴时实时对话/嘴臭模式不触发（生产事故：botMuted 只拦了 @ 消息，
         // 实时对话 tick 绕过闭嘴导致乱回复）。
         if (groupConfig.botMuted === true) {
+          continue;
+        }
+        if (!allowsSelectedMemberParticipation(groupConfig)) {
           continue;
         }
         const trackedUserIds = getActiveChatUserIds(groupConfig);
@@ -1201,9 +1259,13 @@ export class BotApplication {
           return;
         }
       }
-      const enabledGroupIds = (await this.getEnabledGroupConfigs()).map((group) => group.groupId);
-      const results = await this.groupMemoryCandidateService.flushAll(enabledGroupIds, {
+      const enabledGroups = await this.getEnabledGroupConfigs();
+      const results = await this.groupMemoryCandidateService.flushAll(enabledGroups.map((group) => group.groupId), {
         normalizeNonChineseCandidates: tokenCostControl.memoryCandidateNormalizationEnabled,
+        excludedSubjectUserIdsByGroup: Object.fromEntries(enabledGroups.map((group) => [
+          group.groupId,
+          group.memoryDisabledUserIds ?? [],
+        ])),
       });
       for (const result of results) {
         logInfo("Flushed buffered group memory messages.", { ...result });
@@ -1221,7 +1283,10 @@ export class BotApplication {
     }
 
     for (const summary of summaries) {
-      if (!summary.subjectUserId) {
+      if (
+        !summary.subjectUserId ||
+        (groupConfig.memoryDisabledUserIds ?? []).includes(summary.subjectUserId)
+      ) {
         continue;
       }
       try {
@@ -1246,30 +1311,29 @@ export class BotApplication {
   }
 
   private async runMemoryDedupTick(now = new Date()): Promise<void> {
-    if (!this.groupMemoryStore) {
+    if (!this.groupMemoryStore || !this.systemSettingsStore) {
       return;
     }
 
     let memoryDedupTime = "23:00";
     let memoryDedupSemanticTimeoutMs = 10 * 60 * 1000;
     let memorySemanticDedupEnabled = DEFAULT_TOKEN_COST_CONTROL.memorySemanticDedupEnabled;
-    if (this.systemSettingsStore) {
-      try {
-        const settings = await this.systemSettingsStore.get();
-        if (settings.memoryDedupEnabled === false) {
-          const dateKey = getHongKongDateKey(now);
-          this.lastMemoryDedupDateKey = dateKey;
-          logInfo("Skipped nightly memory dedup because it is disabled in system settings.", { dateKey });
-          return;
-        }
-        memoryDedupTime = settings.memoryDedupTime || memoryDedupTime;
-        memoryDedupSemanticTimeoutMs = settings.memoryDedupSemanticTimeoutMinutes * 60 * 1000;
-        memorySemanticDedupEnabled = settings.tokenCostControl.memorySemanticDedupEnabled;
-      } catch (error) {
-        logWarn("Failed to read memory dedup settings; continuing with nightly dedup.", {
-          error: (error as Error).message,
-        });
+    try {
+      const settings = await this.systemSettingsStore.get();
+      if (settings.memoryDedupEnabled !== true) {
+        const dateKey = getHongKongDateKey(now);
+        this.lastMemoryDedupDateKey = dateKey;
+        logInfo("Skipped nightly memory dedup because it is not explicitly enabled in system settings.", { dateKey });
+        return;
       }
+      memoryDedupTime = settings.memoryDedupTime || memoryDedupTime;
+      memoryDedupSemanticTimeoutMs = settings.memoryDedupSemanticTimeoutMinutes * 60 * 1000;
+      memorySemanticDedupEnabled = settings.tokenCostControl.memorySemanticDedupEnabled;
+    } catch (error) {
+      logWarn("Skipped nightly memory dedup because system settings could not be read.", {
+        error: (error as Error).message,
+      });
+      return;
     }
 
     if (!isScheduledClockMinute(now, memoryDedupTime)) {
@@ -1295,6 +1359,7 @@ export class BotApplication {
           const result = await deduplicateService.deduplicateMemberMemoriesForGroup(group.groupId, {
             useSemanticJudge: memorySemanticDedupEnabled,
             semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
+            excludedSubjectUserIds: group.memoryDisabledUserIds,
           });
           if (
             result.decisionCount > 0 ||
@@ -1305,7 +1370,7 @@ export class BotApplication {
           ) {
             logInfo("Nightly member memory dedup completed.", {
               ...result,
-              semanticJudgeEnabled: true,
+              semanticJudgeEnabled: memorySemanticDedupEnabled,
               semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
             });
           }
@@ -1349,7 +1414,7 @@ export class BotApplication {
         this.getEnabledGroupConfigs(),
         this.getTransportHealthStatus(),
       ]);
-      const enabledGroups = groups.filter((group) => group.opsAlertsEnabled !== false);
+      const enabledGroups = groups.filter((group) => group.opsAlertsEnabled === true);
 
       if (options.includeStartup && !this.opsAlertState.startupSent) {
         this.opsAlertState.startupSent = true;
@@ -1803,7 +1868,7 @@ export class BotApplication {
       await this.sendText(
         groupId,
         [
-          `运维告警：${groupConfig.opsAlertsEnabled === false ? "已关闭" : "已开启"}`,
+          `运维告警：${groupConfig.opsAlertsEnabled === true ? "已开启" : "已关闭"}`,
           `NapCat：${transportHealth.ok ? "正常" : "异常"}，${transportHealth.detail}`,
           `内存：${formatBytes(memory.used)} / ${formatBytes(memory.total)}（${memory.percent}%）`,
           `发送失败：连续 ${this.opsAlertState.consecutiveSendFailures} 次${this.opsAlertState.sendFailureAlertActive ? "，已告警" : ""}`,
@@ -1817,7 +1882,7 @@ export class BotApplication {
       const enabled = normalized === `${OPS_ALERT_PREFIX} 开启`;
       const updated = await this.groupConfigService.updateOpsAlertsEnabled(groupId, enabled);
       await this.logAdminOperation(groupId, userId, enabled ? "告警开启" : "告警关闭");
-      await this.sendText(groupId, updated.opsAlertsEnabled === false ? "已关闭当前群运维告警" : "已开启当前群运维告警");
+      await this.sendText(groupId, updated.opsAlertsEnabled === true ? "已开启当前群运维告警" : "已关闭当前群运维告警");
       return;
     }
 
@@ -2444,6 +2509,20 @@ export class BotApplication {
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
     const skill = await this.resolveSkill(groupConfig);
+    const relatedUserIds = messageContext.interactionTargets
+      .map((target) => target.userId)
+      .filter((target): target is string => Boolean(target));
+    // A model only receives the current speaker and people explicitly named by
+    // an @ or a quoted message. The stored group roster remains an admin-side
+    // data source and must not become ambient prompt context.
+    const promptManualIdentities = selectManualIdentitiesForUserIds(
+      groupConfig.manualIdentities,
+      [userId, ...relatedUserIds],
+    );
+    const promptGroupConfig: GroupBotConfig = {
+      ...groupConfig,
+      manualIdentities: promptManualIdentities,
+    };
     // Fail closed: routed production messages read only their causal branch. The
     // legacy JSON store remains a compatibility path until the cutover command
     // clears it, but is never used when a route was supplied.
@@ -2470,7 +2549,7 @@ export class BotApplication {
         groupId: groupConfig.groupId,
         role: turn.role,
         content: turn.role === "user"
-          ? formatCausalUserTurn(turn.userId, turn.content, groupConfig)
+          ? formatCausalUserTurn(turn.userId, turn.content, promptGroupConfig)
           : turn.content,
         ...(turn.userId ? { userId: turn.userId } : {}),
         timestamp: new Date(turn.createdAt).toISOString(),
@@ -2500,25 +2579,23 @@ export class BotApplication {
     const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction]
       .filter((instruction): instruction is string => Boolean(instruction))
       .join("\n\n");
-    const currentSpeaker = buildCurrentSpeaker(groupConfig, userId, messageContext);
-    const relatedUserIds = messageContext.interactionTargets
-      .map((target) => target.userId)
-      .filter((target): target is string => Boolean(target));
+    const currentSpeaker = buildCurrentSpeaker(promptGroupConfig, userId, messageContext);
     const memoryQueryText = [
       normalizedUserInput,
       messageContext.replyContext?.text ?? "",
       ...messageContext.interactionTargets.flatMap((target) => target.names),
     ].join(" ");
-    const memoryIdentityTerms = collectMemoryIdentityTerms(groupConfig, [userId, ...relatedUserIds]);
+    const memoryIdentityTerms = collectMemoryIdentityTerms(promptGroupConfig, [userId, ...relatedUserIds]);
     const realtimeLookupStartedAt = Date.now();
     // 分级超时（计划 §2.4）：记忆检索 1.5s/2s、实时查询 8s/10s——超时跳过该层，
     // 不阻塞回复生成。
-    const [groupMemories, knowledgeHits, realtimeLookup, groupRuntimeContext] = await Promise.all([
+    const [retrievedGroupMemories, knowledgeHits, realtimeLookup] = await Promise.all([
       withTimeout(
         this.groupMemoryStore?.listRelevantEnabled({
           groupId: groupConfig.groupId,
           currentUserId: userId,
           relatedUserIds,
+          excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
           queryText: memoryQueryText,
           identityTerms: memoryIdentityTerms,
           limit: 8,
@@ -2551,11 +2628,19 @@ export class BotApplication {
         return [];
       }),
       this.resolveRealtimeLookup(groupConfig, normalizedUserInput),
-      skill.id === "huixian"
-        ? this.buildGroupRuntimeContext(groupConfig)
-        : Promise.resolve(undefined),
     ]);
     const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
+    const visibleSubjectUserIds = new Set([userId, ...relatedUserIds]);
+    const memoryDisabledUserIds = new Set(groupConfig.memoryDisabledUserIds ?? []);
+    // Keep this second filter at the context boundary. It protects against a
+    // future store implementation or a test double that forgets the opt-out
+    // filter, and avoids injecting unrelated member profiles into a reply.
+    const groupMemories = retrievedGroupMemories.filter((memory) =>
+      !memory.subjectUserId || (
+        visibleSubjectUserIds.has(memory.subjectUserId) &&
+        !memoryDisabledUserIds.has(memory.subjectUserId)
+      ),
+    );
     const memorySubjectUserIds = new Set(
       groupMemories
         .map((memory) => memory.subjectUserId)
@@ -2566,7 +2651,7 @@ export class BotApplication {
       : [];
     const memberProfiles = groupMemories.length > 0
       ? buildGroupMemberProfiles({
-          groupConfig,
+          groupConfig: promptGroupConfig,
           napcatMembers,
           memories: groupMemories,
         })
@@ -2577,8 +2662,11 @@ export class BotApplication {
     ];
     // 图片两阶段（计划 §4）：Stage1 本地化（NapCat 缓存 → 内部代理）→ data URL；
     // 失败进入分级话术（L1-L4），绝不说成"思考超时"。
-    const resolvedImages = await this.resolveImagesWithPipeline(groupConfig, allImages);
-    if (allImages.length > 0 && resolvedImages.length === 0) {
+    const visionEnabled = groupConfig.visionEnabled === true;
+    const resolvedImages = visionEnabled
+      ? await this.resolveImagesWithPipeline(groupConfig, allImages)
+      : [];
+    if (visionEnabled && allImages.length > 0 && resolvedImages.length === 0) {
       const error = new ImageInputUnavailableError();
       logWarn("Skipped AI reply because attached images could not be materialized.", {
         groupId: groupConfig.groupId,
@@ -2590,6 +2678,18 @@ export class BotApplication {
       await this.persistAssistantContext(conversationRoute, failureText, failureReceipt ? [failureReceipt] : []);
       return;
     }
+    // Referenced-message image metadata is also untrusted media input. Keep it
+    // out of the model payload unless this group explicitly enabled vision.
+    const replyContextForAi = (() => {
+      if (
+        visionEnabled ||
+        !messageContext.replyContext ||
+        (messageContext.replyContext.images?.length ?? 0) === 0
+      ) {
+        return messageContext.replyContext;
+      }
+      return { ...messageContext.replyContext, images: [] };
+    })();
     const storedUserContent =
       resolvedImages.length > 0 && normalizedUserInput !== "[图片消息]"
         ? `${normalizedUserInput} [附带${resolvedImages.length}张图片]`
@@ -2599,16 +2699,15 @@ export class BotApplication {
       currentUserId: userId,
       ...(Object.keys(currentSpeaker).length > 0 ? { currentSpeaker } : {}),
       botUserId: this.botQq,
-      manualIdentities: groupConfig.manualIdentities,
+      manualIdentities: promptManualIdentities,
       ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
       ...(groupMemories.length > 0 ? { groupMemories } : {}),
       ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
       ...(messageContext.interactionTargets.length > 0
         ? { interactionTargets: messageContext.interactionTargets }
         : {}),
-      ...(messageContext.replyContext ? { replyContext: messageContext.replyContext } : {}),
+      ...(replyContextForAi ? { replyContext: replyContextForAi } : {}),
       ...(realtimeLookup ? { realtimeLookup } : {}),
-      ...(groupRuntimeContext ? { groupRuntimeContext } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
     const replyArgs = {
@@ -2630,20 +2729,34 @@ export class BotApplication {
         prefixMentionUserIds,
       );
       const replyText = appendRealtimeLookupFooterToReply(
-        sanitizeMentionEcho(reply.text, buildSanitizeTargets(messageContext)),
+        sanitizeMentionEcho(
+          reply.text,
+          buildSanitizeTargets(messageContext),
+          messageContext.plainTextMentionCandidates,
+        ),
         skill,
         realtimeLookup,
         replyFormatBudget?.maxTotalChars,
       );
+      const controlledMentionIdentities = selectManualIdentitiesForUserIds(
+        promptManualIdentities,
+        relatedUserIds,
+      );
       const controlledMentionUserId =
-        options.allowControlledMention === true && resolvedMentionUserIds.length === 0 && replyMode === "text"
+        options.allowControlledMention === true &&
+        controlledMentionIdentities.length > 0 &&
+        resolvedMentionUserIds.length === 0 &&
+        replyMode === "text"
           ? await this.resolveControlledMentionUserId({
-              groupConfig,
+              manualIdentities: controlledMentionIdentities,
               skill,
               history,
               userInput: normalizedUserInput,
               assistantReply: replyText,
-              identityContext,
+              identityContext: {
+                ...identityContext,
+                manualIdentities: controlledMentionIdentities,
+              },
             })
           : undefined;
       const outgoingMentionUserIds = controlledMentionUserId
@@ -2780,13 +2893,13 @@ export class BotApplication {
     groupConfig: GroupBotConfig,
     userInput: string,
   ): Promise<RealtimeLookupResult | undefined> {
-    if (!this.realtimeLookupService || groupConfig.onlineLookupEnabled === false) {
+    if (!this.realtimeLookupService || groupConfig.onlineLookupEnabled !== true) {
       return undefined;
     }
 
     try {
       const settings = await this.systemSettingsStore?.getInternal();
-      if (settings?.onlineLookupEnabled === false) {
+      if (settings?.onlineLookupEnabled !== true) {
         return undefined;
       }
       return await this.realtimeLookupService.lookup({ text: userInput });
@@ -2799,53 +2912,15 @@ export class BotApplication {
     }
   }
 
-  private async buildGroupRuntimeContext(groupConfig: GroupBotConfig): Promise<GroupRuntimeContext> {
-    const trackedUserIds = getActiveChatUserIds(groupConfig);
-    const delaySeconds = getLiveChatDelaySeconds(groupConfig);
-    const reminderService = this.scheduledReminderService as Partial<Pick<ScheduledReminderService, "listGroupTasks">>;
-    const tasks = reminderService.listGroupTasks
-      ? await reminderService.listGroupTasks(groupConfig.groupId, { includeDisabled: true })
-      : [];
-    const activeTasks = tasks
-      .filter((task) => task.enabled)
-      .sort((left, right) => left.nextRunAt.localeCompare(right.nextRunAt));
-    const nextTask = activeTasks[0];
-
-    return {
-      liveChat: this.liveChatService.getRuntimeState(
-        groupConfig.groupId,
-        trackedUserIds,
-        delaySeconds,
-      ),
-      scheduledReminders: {
-        enabled: groupConfig.scheduledRemindersEnabled !== false,
-        activeTaskCount: activeTasks.length,
-        ...(nextTask ? {
-          nextTask: {
-            topic: nextTask.topic,
-            nextRunAt: nextTask.nextRunAt,
-          },
-        } : {}),
-      },
-    };
-  }
-
   private async resolveControlledMentionUserId(args: {
-    groupConfig: GroupBotConfig;
+    manualIdentities: NonNullable<GroupBotConfig["manualIdentities"]>;
     skill: SkillDefinition;
     history: ConversationTurn[];
     userInput: string;
     assistantReply: string;
-    identityContext: {
-      groupId: string;
-      currentUserId: string;
-      botUserId?: string;
-      manualIdentities?: GroupBotConfig["manualIdentities"];
-      interactionTargets?: AiInteractionTarget[];
-      replyContext?: AiReplyContext;
-    };
+    identityContext: AiIdentityContext;
   }): Promise<string | undefined> {
-    if (!args.groupConfig.manualIdentities || args.groupConfig.manualIdentities.length === 0) {
+    if (args.manualIdentities.length === 0) {
       return undefined;
     }
 
@@ -2857,7 +2932,7 @@ export class BotApplication {
       identityContext: args.identityContext,
     });
 
-    const target = resolveManualIdentityTargetFromDecision(args.groupConfig, decision);
+    const target = resolveManualIdentityTargetFromDecision(args.manualIdentities, decision);
     if (!target?.userId) {
       return undefined;
     }
@@ -3250,14 +3325,6 @@ export class BotApplication {
       [
         `${label} 的昨日画像（${dateKey}）：`,
         await this.buildConfiguredProfileShortSummary(summary.content),
-        await this.buildPublicProfileShareHint({
-          groupConfig,
-          userId: target.userId,
-          type: "yesterday",
-          summary: summary.content,
-          sourceMemoryCount: 1,
-          generatedAt: summary.updatedAt ?? summary.createdAt,
-        }),
       ].join("\n"),
     );
   }
@@ -3295,51 +3362,8 @@ export class BotApplication {
       [
         `${label} 的群聊画像：`,
         await this.buildConfiguredProfileShortSummary(summary),
-        await this.buildPublicProfileShareHint({
-          groupConfig,
-          userId: target.userId,
-          type: "overall",
-          summary,
-        }),
       ].join("\n"),
     );
-  }
-
-  private async buildPublicProfileShareHint(args: {
-    groupConfig: GroupBotConfig;
-    userId: string;
-    type: "overall" | "yesterday";
-    summary: string;
-    sourceMemoryCount?: number;
-    generatedAt?: string;
-  }): Promise<string> {
-    const label = args.type === "yesterday" ? "昨日画像" : "群聊画像";
-    if (!this.profileRecordStore || !this.adminPublicBaseUrl) {
-      return `完整${label}链接生成失败，请稍后重试`;
-    }
-    try {
-      const record = await this.profileRecordStore.create({
-        groupId: args.groupConfig.groupId,
-        userId: args.userId,
-        type: args.type,
-        summary: args.summary,
-        sourceMemoryCount: args.sourceMemoryCount ?? 0,
-        generatedAt: args.generatedAt,
-        createdBy: "bot_command",
-      });
-      if (!record.shareToken) {
-        return `完整${label}链接生成失败，请稍后重试`;
-      }
-      return `完整${label}：${buildPublicProfileShareUrl(this.adminPublicBaseUrl, record.shareToken)}`;
-    } catch (error) {
-      logWarn("Failed to create public profile record.", {
-        groupId: args.groupConfig.groupId,
-        userId: args.userId,
-        type: args.type,
-        error: (error as Error).message,
-      });
-      return `完整${label}链接生成失败，请稍后重试`;
-    }
   }
 
   private async recordDailyReportMessage(
@@ -3514,10 +3538,21 @@ export class BotApplication {
 
   private async resolveSkill(groupConfig: GroupBotConfig): Promise<SkillDefinition> {
     const skill = await this.skillService.getSkill(groupConfig.currentSkillId);
-    if (!skill) {
-      throw new Error(`Skill ${groupConfig.currentSkillId} not found.`);
+    if (skill) {
+      return skill;
     }
-    return skill;
+    if (isRetiredLegacySkillId(groupConfig.currentSkillId)) {
+      const fallback = await this.skillService.getSkill("huixian");
+      if (fallback) {
+        logWarn("Retired skill configuration fell back to huixian.", {
+          groupId: groupConfig.groupId,
+          retiredSkillId: groupConfig.currentSkillId,
+        });
+        return fallback;
+      }
+      throw new Error(`Retired skill ${groupConfig.currentSkillId} cannot fall back because huixian is not available.`);
+    }
+    throw new Error(`Skill ${groupConfig.currentSkillId} not found.`);
   }
 
   private async getAllowedSkills(groupConfig: GroupBotConfig): Promise<SkillDefinition[]> {
@@ -3697,7 +3732,7 @@ export class BotApplication {
     }
 
     this.opsAlertState.sendFailureAlertActive = true;
-    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled !== false);
+    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled === true);
     await this.sendOpsAlertToGroups({
       groups,
       type: "send-failure",
@@ -3720,7 +3755,7 @@ export class BotApplication {
       return;
     }
 
-    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled !== false);
+    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled === true);
     await this.sendOpsAlertToGroups({
       groups,
       type: "send-recovered",
@@ -3894,7 +3929,7 @@ export class BotApplication {
   ): Promise<MessageInteractionContext> {
     const interactionTargets = await this.resolveInteractionTargets(
       groupConfig,
-      parsedMessage.mentionUserIds,
+      parsedMessage.verifiedMentionUserIds,
       "mention",
     );
     const replyContext = await this.resolveReplyContext(groupConfig, parsedMessage.replyMessageId);
@@ -3909,6 +3944,9 @@ export class BotApplication {
 
     return {
       interactionTargets: dedupeInteractionTargets(interactionTargets),
+      ...(parsedMessage.plainTextMentionCandidates.length > 0
+        ? { plainTextMentionCandidates: parsedMessage.plainTextMentionCandidates }
+        : {}),
       replyContext,
       sourceMessageId,
       replyMessageId: parsedMessage.replyMessageId,
@@ -3986,7 +4024,7 @@ export class BotApplication {
     groupConfig: GroupBotConfig,
     allImages: MessageImageInput[],
   ): Promise<MessageImageInput[]> {
-    if (allImages.length === 0) {
+    if (groupConfig.visionEnabled !== true || allImages.length === 0) {
       return [];
     }
     // When a pipeline is injected (worker), run Stage1 localization; otherwise
@@ -4480,8 +4518,17 @@ function prefixAtMentions(userIds: string[], message: string): string {
   return normalized ? `${prefix} ${normalized}` : prefix;
 }
 
-function sanitizeMentionEcho(text: string, targets: AiInteractionTarget[]): string {
+function sanitizeMentionEcho(
+  text: string,
+  targets: AiInteractionTarget[],
+  plainTextMentionCandidates: readonly string[] = [],
+): string {
   let sanitized = text;
+  const authoritativeCandidates = new Set(
+    targets.flatMap((target) => [target.userId, ...target.names])
+      .map((candidate) => normalizeIdentityCandidate(candidate ?? ""))
+      .filter(Boolean),
+  );
 
   for (const target of targets) {
     const replacement = getTargetDisplayName(target);
@@ -4501,6 +4548,22 @@ function sanitizeMentionEcho(text: string, targets: AiInteractionTarget[]): stri
       const escapedName = escapeRegex(normalizedName);
       sanitized = sanitized.replace(new RegExp(`@${escapedName}`, "g"), normalizedName);
     }
+  }
+
+  // This is cosmetic output hygiene only. A QQ number or name typed into a
+  // normal text segment never reaches interactionTargets, the prompt identity
+  // context, or prefixAtMentions. It merely prevents the model from echoing a
+  // literal `@` that can be confusing to readers.
+  for (const rawCandidate of plainTextMentionCandidates) {
+    const candidate = stripMentionPrefix(rawCandidate);
+    const normalizedCandidate = normalizeIdentityCandidate(candidate);
+    if (!candidate || authoritativeCandidates.has(normalizedCandidate)) {
+      continue;
+    }
+    const escapedCandidate = escapeRegex(candidate);
+    sanitized = sanitized
+      .replace(new RegExp(`\\[CQ:at,qq=${escapedCandidate}(?:,[^\\]]*)?\\]`, "gi"), candidate)
+      .replace(new RegExp(`@${escapedCandidate}(?![\\p{L}\\p{N}_])`, "gu"), candidate);
   }
 
   return sanitized
@@ -4572,7 +4635,7 @@ function findUniqueManualIdentity(
 }
 
 function resolveManualIdentityTargetFromDecision(
-  groupConfig: GroupBotConfig,
+  identities: GroupBotConfig["manualIdentities"],
   decision?: ControlledMentionDecision,
 ): AiInteractionTarget | undefined {
   const target = decision?.target?.trim();
@@ -4581,7 +4644,7 @@ function resolveManualIdentityTargetFromDecision(
   }
 
   const matches =
-    groupConfig.manualIdentities?.filter((identity) => {
+    identities?.filter((identity) => {
       const candidates = [...identity.userIds, ...identity.names].map(normalizeIdentityCandidate);
       return candidates.includes(normalizeIdentityCandidate(target));
     }) ?? [];
@@ -5009,6 +5072,15 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function allowsKeywordParticipation(groupConfig: GroupBotConfig): boolean {
+  return groupConfig.participationMode === "mentions_and_keywords" ||
+    groupConfig.participationMode === "selected_members";
+}
+
+function allowsSelectedMemberParticipation(groupConfig: GroupBotConfig): boolean {
+  return groupConfig.participationMode === "selected_members";
+}
+
 function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
   if (
     typeof groupConfig.liveChatDelaySeconds === "number" &&
@@ -5035,6 +5107,16 @@ function collectMemoryIdentityTerms(groupConfig: GroupBotConfig, userIds: string
     .flatMap((identity) => identity.names)
     .map((name) => name.trim())
     .filter((name) => name.length >= 2);
+}
+
+function selectManualIdentitiesForUserIds(
+  identities: GroupBotConfig["manualIdentities"],
+  userIds: readonly string[],
+): NonNullable<GroupBotConfig["manualIdentities"]> {
+  const visibleUserIds = new Set(userIds.map((userId) => userId.trim()).filter(Boolean));
+  return (identities ?? []).filter((identity) =>
+    identity.userIds.some((userId) => visibleUserIds.has(userId)),
+  );
 }
 
 function resolveHuixianReplyFormatBudget(
@@ -5146,14 +5228,6 @@ function buildProfileShortSummary(summary: string, maxChars = 140): string {
     return clipped.slice(0, sentenceEnd + 1).trim();
   }
   return `${normalized.slice(0, safeMaxChars).replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim()}。`;
-}
-
-function buildPublicProfileShareUrl(adminPublicBaseUrl: string, shareToken: string): string {
-  const url = new URL(adminPublicBaseUrl);
-  url.pathname = `/profile/${encodeURIComponent(shareToken)}`;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
 }
 
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {

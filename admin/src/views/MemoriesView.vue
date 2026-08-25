@@ -121,7 +121,6 @@ async function loadMemberOptions(): Promise<void> {
   if (!app.groupId) return;
   try {
     const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(`/api/groups/${encodeURIComponent(app.groupId)}/members${queryString({
-      includeNapcat: 1,
       page: 1,
       pageSize: 1000,
     })}`);

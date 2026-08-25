@@ -334,8 +334,12 @@ async function ensureOwnerMembers(options = {}) {
   const query = search
     ? new URLSearchParams({ q: search, page: '1', pageSize: String(options.pageSize || 20) })
     : new URLSearchParams({ all: '1', pageSize: String(options.pageSize || 100) });
-  if (options.refresh) query.set('refresh', '1');
-  const promise = api('/api/groups/' + encodeURIComponent(groupId) + '/members?' + query.toString())
+  const refreshUrl = '/api/groups/' + encodeURIComponent(groupId) + '/members/refresh?' + query.toString();
+  const membersUrl = '/api/groups/' + encodeURIComponent(groupId) + '/members?' + query.toString();
+  const request = options.refresh
+    ? api(refreshUrl, { method: 'POST', body: '{}' })
+    : api(membersUrl);
+  const promise = request
     .then(data => {
       if ((state.ownerMemberVersions.get(groupId) || 0) === version) {
         const members = data.members || [];
@@ -543,7 +547,7 @@ function rowGroupConfig(g) {
   const delay = g.liveChatDelaySeconds || ((g.liveChatDelayMinutes || 5) * 60);
   const summary = '<div class="group-config-summary"><div class="group-avatar">群</div><div><h3>群 ' + esc(g.groupId) + '</h3><span>技能 ' + esc(g.currentSkillId) + ' · 模型 ' + esc((g.replyModelMode || 'gpt').toUpperCase()) + '</span></div><div><span>管理员</span><b>' + esc((g.switcherUserIds || []).length) + '</b></div><div><span>实时对话</span><b>' + esc((g.liveChatUserIds || []).length) + '</b></div><div><span>黑名单</span><b>' + esc((g.blacklistedUserIds || []).length) + '</b></div><div><span>状态</span><b>' + esc(g.botMuted ? '静音' : '运行') + '</b></div></div>';
   const basic = '<section class="settings-card"><h3>基础设置</h3><div class="settings-grid"><label>当前技能<input name="currentSkillId" value="' + esc(g.currentSkillId) + '" required></label><label>回复模型<select name="replyModelMode"><option value="gpt"' + selected(g.replyModelMode || 'gpt', 'gpt') + '>GPT</option><option value="mimo"' + selected(g.replyModelMode || 'gpt', 'mimo') + '>Mimo/Profile</option></select></label><label>实时对话延迟秒数<input name="liveChatDelaySeconds" type="number" min="1" value="' + esc(delay) + '"></label><label>日报人数<input name="dailyReportTopUserCount" type="number" min="1" value="' + esc(g.dailyReportTopUserCount || 5) + '"></label></div></section>';
-  const strategy = '<section class="settings-card"><h3>回复策略</h3><div class="settings-grid"><label class="settings-wide">允许技能<textarea name="allowedSkillIds">' + esc(lines(g.allowedSkillIds)) + '</textarea></label><label><input type="checkbox" name="dailyReportEnabled"' + checked(g.dailyReportEnabled !== false) + '> 群聊日报</label><label><input type="checkbox" name="holidayCountdownEnabled"' + checked(g.holidayCountdownEnabled !== false) + '> 节日倒计时</label><label><input type="checkbox" name="scheduledRemindersEnabled"' + checked(g.scheduledRemindersEnabled !== false) + '> 定时提醒</label><label><input type="checkbox" name="opsAlertsEnabled"' + checked(g.opsAlertsEnabled !== false) + '> 运维告警</label><label><input type="checkbox" name="botMuted"' + checked(g.botMuted === true) + '> 机器人静音</label></div></section>';
+  const strategy = '<section class="settings-card"><h3>回复策略</h3><div class="settings-grid"><label class="settings-wide">允许技能<textarea name="allowedSkillIds">' + esc(lines(g.allowedSkillIds)) + '</textarea></label><label><input type="checkbox" name="dailyReportEnabled"' + checked(g.dailyReportEnabled !== false) + '> 群聊日报</label><label><input type="checkbox" name="holidayCountdownEnabled"' + checked(g.holidayCountdownEnabled !== false) + '> 节日倒计时</label><label><input type="checkbox" name="scheduledRemindersEnabled"' + checked(g.scheduledRemindersEnabled !== false) + '> 定时提醒</label><label><input type="checkbox" name="opsAlertsEnabled"' + checked(g.opsAlertsEnabled === true) + '> 运维告警</label><label><input type="checkbox" name="botMuted"' + checked(g.botMuted === true) + '> 机器人静音</label><label><input type="checkbox" name="visionEnabled"' + checked(g.visionEnabled === true) + '> 图片理解</label></div></section>';
   const members = '<section class="settings-card"><h3>群管理</h3><div class="settings-grid"><label>管理员 QQ<textarea name="switcherUserIds">' + esc(lines(g.switcherUserIds)) + '</textarea></label><label>实时对话 QQ<textarea name="liveChatUserIds">' + esc(lines(g.liveChatUserIds)) + '</textarea></label><label>黑名单 QQ<textarea name="blacklistedUserIds">' + esc(lines(g.blacklistedUserIds)) + '</textarea></label><label>日报时间<input name="dailyReportTime" type="time" value="' + esc(g.dailyReportTime || '17:59') + '"></label><label>节日倒计时<input name="holidayCountdownTime" type="time" value="' + esc(g.holidayCountdownTime || '09:00') + '"></label></div></section>';
   const identity = '<section class="settings-card settings-card-wide"><div class="settings-card-head"><h3>人工身份 JSON</h3><span>影响成员识别、画像展示和群聊称呼</span></div><textarea name="manualIdentities" spellcheck="false">' + esc(JSON.stringify(g.manualIdentities || [], null, 2)) + '</textarea></section>';
   return '<article class="group-config-card" data-group-config-id="' + esc(g.groupId) + '"><details' + open + '><summary>' + summary + '</summary><form class="settings-form groupConfigForm" data-group-id="' + esc(g.groupId) + '"><div class="settings-layout">' + basic + strategy + members + identity + '</div><div class="sticky-actions"><button type="submit">保存群配置</button><button type="button" class="ghost" data-reload-group-config="' + esc(g.groupId) + '">重新读取</button><span class="meta">保存前请确认 QQ、时间和 JSON 格式。</span></div></form></details></article>';
@@ -560,8 +564,11 @@ async function renderMembers(force = false) {
   }
   const query = new URLSearchParams({ page: String(state.memberPage), pageSize: String(state.memberPageSize) });
   if (state.memberQuery.trim()) query.set('q', state.memberQuery.trim());
-  if (force) query.set('refresh', '1');
-  const data = await apiForRender('/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + query.toString());
+  const membersUrl = '/api/groups/' + encodeURIComponent(state.groupId) + '/members?' + query.toString();
+  const data = force
+    ? await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/refresh?' + query.toString(), { method: 'POST', body: '{}' })
+    : await apiForRender(membersUrl);
+  if (force && data) renderCache.set(membersUrl, { time: Date.now(), data: cloneData(data) });
   if (!data || !isLatestRender(token)) return;
   const pageInfo = data.pagination || { page: state.memberPage, pageSize: state.memberPageSize, total: (data.members || []).length, totalPages: 1 };
   state.currentMembers = data.members || [];
@@ -993,6 +1000,7 @@ function groupConfigPayload(form) {
     scheduledRemindersEnabled: data.scheduledRemindersEnabled === 'on',
     blacklistedUserIds: splitLines(data.blacklistedUserIds),
     opsAlertsEnabled: data.opsAlertsEnabled === 'on',
+    visionEnabled: data.visionEnabled === 'on',
   };
 }
 function splitLines(value) {
@@ -1203,7 +1211,7 @@ document.addEventListener('click', async (event) => {
   if (target.dataset.jumpView) { await navigateTo(target.dataset.jumpView); }
   if (target.dataset.refreshGroups !== undefined) { await runAction(target, async () => { invalidateGroupsCache(); await loadGroups({ refresh: true }); await renderGroups(); }, '群配置已刷新'); }
   if (target.dataset.reloadGroupConfig) { await runAction(target, async () => { const group = await api('/api/groups/' + encodeURIComponent(target.dataset.reloadGroupConfig) + '/config'); replaceGroupConfigArticle(target, group); }, '群配置已重新读取'); }
-  if (target.dataset.refreshHealth !== undefined) { await runAction(target, async () => { invalidateRenderCache('/api/health'); const data = await api('/api/health?refresh=1'); renderCache.set('/api/health', { time: Date.now(), data: cloneData(data) }); await renderHealth(); }, '模型检测已刷新'); }
+  if (target.dataset.refreshHealth !== undefined) { await runAction(target, async () => { invalidateRenderCache('/api/health'); const data = await api('/api/health/probe', { method: 'POST', body: '{}' }); renderCache.set('/api/health', { time: Date.now(), data: cloneData(data) }); await renderHealth(); }, '模型检测已刷新'); }
   if (target.dataset.refreshMembers !== undefined) { await runAction(target, async () => { invalidateMemberCaches(); state.memberPage = 1; syncUrlState(); await renderMembers(true); }, '群成员已同步'); }
   if (target.dataset.viewMember) { state.view = 'memories'; clearTransientState(); state.subjectUserId = target.dataset.viewMember; state.memoryPage = 1; syncUrlState(); await render(); }
   if (target.dataset.deleteIdentity) { const deleteKey = 'identity:' + target.dataset.deleteIdentity; if (state.pendingDelete !== deleteKey) { state.pendingDelete = deleteKey; replaceArticle(target, 'member', target.dataset.deleteIdentity); return; } await runAction(target, async () => { const result = await api('/api/groups/' + encodeURIComponent(state.groupId) + '/members/' + encodeURIComponent(target.dataset.deleteIdentity) + '/identity', { method: 'DELETE' }); invalidateMemberCaches(); updateCurrentMember(result.member); state.editingMemberId = ''; state.pendingDelete = ''; replaceArticle(target, 'member', target.dataset.deleteIdentity); }, '成员备注已删除'); }

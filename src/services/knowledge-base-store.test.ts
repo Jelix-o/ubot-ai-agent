@@ -1,10 +1,46 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { KnowledgeBaseStore } from "./knowledge-base-store.js";
+
+test("knowledge base store refreshes after an external admin write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "knowledge-base-refresh-"));
+  const filePath = path.join(dir, "knowledge.json");
+  try {
+    const reader = new KnowledgeBaseStore(filePath);
+    const writer = new KnowledgeBaseStore(filePath);
+    await writer.create({
+      groupId: "67890",
+      title: "第一条 FAQ",
+      question: "第一问",
+      answer: "第一答",
+    });
+    assert.equal((await reader.list("67890")).length, 1);
+
+    const raw = JSON.parse(await readFile(filePath, "utf8")) as { entries: unknown[] };
+    raw.entries.push({
+      id: "external-faq",
+      groupId: "67890",
+      title: "外部 FAQ",
+      question: "第二问",
+      answer: "第二答",
+      keywords: ["第二"],
+      enabled: true,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    });
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(filePath);
+    await utimes(filePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal((await reader.list("67890")).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("knowledge base store persists entries and ranks keyword hits", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "knowledge-base-"));

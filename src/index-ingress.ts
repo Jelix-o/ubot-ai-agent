@@ -199,6 +199,12 @@ export class IngressApp {
       return;
     }
 
+    // Per-group token bucket: persist excess messages as non-processable audit
+    // events. The worker can then advance its normal consumer watermark without
+    // ever generating a reply, avoiding the old detached token-bucket watermark.
+    const count = this.sharedDb.countMessagesSince(groupId, Date.now() - TOKEN_BUCKET_WINDOW_MS);
+    const dropReason = count >= TOKEN_BUCKET_MAX_PER_WINDOW ? "rate_limited" : undefined;
+
     // Idempotent dedupe (plan section 2.1): (self_bot_id, group_id, msg_id).
     // self_id 缺失时用 botQq 作为 dedup key 的一部分（保证幂等键稳定）。
     const parsed = parseGroupMessage(event.message, this.options.botQq);
@@ -216,6 +222,8 @@ export class IngressApp {
       replyTo: parsed.replyMessageId,
       hasAtBot: parsed.hasAtBot,
       isBotMsg: false,
+      processable: !dropReason,
+      dropReason,
       createdAt,
     });
     if (rowId === 0) {
@@ -225,19 +233,26 @@ export class IngressApp {
     }
     this.metrics.inc("msg_ingress");
 
-    // Per-group token bucket (plan section 2.2): drop silently when a group
-    // exceeds 6 messages per 10s window.
-    const count = this.sharedDb.countMessagesSince(groupId, Date.now() - TOKEN_BUCKET_WINDOW_MS);
-    if (count > TOKEN_BUCKET_MAX_PER_WINDOW) {
+    if (dropReason) {
+      this.sharedDb.recordParticipationDecision({
+        sourceRowId: rowId,
+        groupId,
+        userId,
+        action: "ignore",
+        reason: dropReason,
+        score: 0,
+        policyVersion: "ingress-rate-limit-v1",
+        signals: { rateLimited: true },
+        createdAt,
+      });
       this.metrics.inc("token_bucket_dropped");
-      logInfo("Token bucket exceeded, dropping message.", {
+      logInfo("Token bucket exceeded; queued a non-processable message audit record.", {
         groupId,
         userId,
         msgId,
-        count,
+        count: count + 1,
         windowMs: TOKEN_BUCKET_WINDOW_MS,
       });
-      this.sharedDb.advanceWatermark(`token-bucket:${groupId}`, rowId);
       return;
     }
 
@@ -306,6 +321,11 @@ export class IngressApp {
 
   private maintain(): void {
     const now = Date.now();
+    const stalledOutbox = this.sharedDb.recoverStaleSendingOutbox(now);
+    if (stalledOutbox > 0) {
+      this.metrics.inc("outbox_stalled_delivery_quarantined", stalledOutbox);
+      logWarn("Quarantined delivery-ambiguous outbox rows after a stalled send.", { stalledOutbox });
+    }
     this.sharedDb.pruneRetracted(now - RETRACTED_TTL_MS);
     this.sharedDb.pruneBotMessages(now - BOT_MESSAGE_TTL_MS);
   }

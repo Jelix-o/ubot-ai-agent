@@ -17,6 +17,7 @@ const memberPagination = reactive<Pagination>({ page: 1, pageSize: 24, total: 0,
 const recordPagination = reactive<Pagination>({ page: 1, pageSize: 8, total: 0, totalPages: 1 });
 const query = shallowRef("");
 const loading = shallowRef(false);
+const syncing = shallowRef(false);
 const recordsLoading = shallowRef(false);
 const summaryLoading = shallowRef(false);
 const togglingMemoryUserId = shallowRef("");
@@ -41,7 +42,6 @@ async function load(): Promise<void> {
   try {
     const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(`/api/groups/${encodeURIComponent(app.groupId)}/members${queryString({
       q: query.value,
-      includeNapcat: 1,
       page: memberPagination.page,
       pageSize: memberPagination.pageSize,
     })}`);
@@ -49,6 +49,23 @@ async function load(): Promise<void> {
     Object.assign(memberPagination, data.pagination);
   } finally {
     loading.value = false;
+  }
+}
+
+async function refreshMembers(): Promise<void> {
+  if (!app.groupId || syncing.value) return;
+  syncing.value = true;
+  try {
+    await api(`/api/groups/${encodeURIComponent(app.groupId)}/members/refresh`, {
+      method: "POST",
+      body: "{}",
+    });
+    await load();
+    app.showToast("群成员已同步");
+  } catch (error) {
+    app.showToast((error as Error).message, "error");
+  } finally {
+    syncing.value = false;
   }
 }
 
@@ -238,6 +255,7 @@ watch(() => [recordPagination.page, recordPagination.pageSize], () => {
           <h2>成员管理 <span class="tag">{{ memberPagination.total }}</span></h2>
           <p>查看成员备注、长期记忆、画像记录和完整画像。</p>
         </div>
+        <button class="ghost-btn" type="button" :disabled="syncing" @click="refreshMembers">{{ syncing ? "同步中..." : "同步群成员" }}</button>
       </div>
       <div class="filter-bar">
         <input v-model="query" class="input" placeholder="搜索成员昵称、QQ、备注" @change="applyFilters" />

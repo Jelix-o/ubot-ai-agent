@@ -11,9 +11,11 @@ import { CircuitOpenError, degradedMessage, GatewayProxy } from "./services/gate
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
+import type { ParticipationDecision } from "./services/participation-policy.js";
 import { BotApplication, type MessageTransport } from "./bot.js";
 import { GroupLock } from "./services/group-lock.js";
 import { GroupConfigService } from "./services/group-config-service.js";
+import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
 import { SkillService } from "./services/skill-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
 import { AiService } from "./services/ai-service.js";
@@ -37,6 +39,7 @@ import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
+import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { ImagePipeline } from "./services/image-pipeline.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
@@ -107,22 +110,33 @@ export class WorkerApp {
 
     this.runner = new ConsumerRunner(this.sharedDb, this.options.consumerKey, {
       keyOf: async (message) => {
+        if (message.processable === 0) {
+          return `${message.group_id}:passive`;
+        }
         this.updateAtmosphere(message.group_id, message.msg_time);
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
         // 等指令全部被当成自由发言跳过，指令不生效）。
         const isCommand = message.text.trim().startsWith("#");
         if (isCommand && !isAiConversationCommand(message.text)) {
+          const decision = await this.getOrRecordParticipationDecision(message);
+          this.metrics.inc(`participation_decision_${decision.action}`);
           // Commands mutate pointers/configuration and must not create a
           // conversation branch merely by being observed by the worker.
           return `${message.group_id}:command`;
         }
-        if (!(await this.options.botApp.shouldRouteConversation(
-          message.group_id,
-          message.text,
-          Boolean(message.has_at_bot),
-        ))) {
+        const decision = await this.getOrRecordParticipationDecision(message);
+        this.metrics.inc(`participation_decision_${decision.action}`);
+        if (decision.action !== "reply") {
           return `${message.group_id}:passive`;
         }
+        logInfo("Routed group participation decision.", {
+          groupId: message.group_id,
+          sourceRowId: message.id,
+          action: decision.action,
+          reason: decision.reason,
+          score: decision.score,
+          policyVersion: decision.policyVersion,
+        });
         const route = this.resolveRoute(message);
         return `${message.group_id}:${route.branchId}`;
       },
@@ -148,17 +162,41 @@ export class WorkerApp {
       sender_nickname?: string | null;
       reply_to?: string | null;
       has_at_bot?: number;
+      processable?: number;
+      drop_reason?: string | null;
     },
     done: () => Promise<void>,
   ): Promise<void> {
+    if (message.processable === 0) {
+      this.metrics.inc("dropped_message_skipped");
+      logInfo("Skipped non-processable ingress message.", {
+        groupId: message.group_id,
+        sourceRowId: message.id,
+        msgId: message.msg_id,
+        reason: message.drop_reason ?? "unspecified",
+      });
+      await done();
+      return;
+    }
+
     // keyOf already persisted this route. Reading by source row makes retries
     // and duplicate delivery reuse the exact same result without rerouting.
     const isCommand = message.text.trim().startsWith("#") && !isAiConversationCommand(message.text);
-    const isRoutedConversation = !isCommand && await this.options.botApp.shouldRouteConversation(
-      message.group_id,
-      message.text,
-      Boolean(message.has_at_bot),
-    );
+    const participation = isCommand
+      ? undefined
+      : await this.getOrRecordParticipationDecision(message);
+    const isRoutedConversation = participation?.action === "reply";
+    if (participation) {
+      this.metrics.inc(`participation_handled_${participation.action}`);
+      logInfo("Handled group participation decision.", {
+        groupId: message.group_id,
+        sourceRowId: message.id,
+        action: participation.action,
+        reason: participation.reason,
+        score: participation.score,
+        policyVersion: participation.policyVersion,
+      });
+    }
     // Commands deliberately have no conversation route.
     const route = !isRoutedConversation
       ? undefined
@@ -237,7 +275,11 @@ export class WorkerApp {
       cancelPoll.unref();
 
       try {
-        await this.options.botApp.handleGroupMessage(event, controller.signal, route);
+        await this.options.botApp.handleGroupMessage(event, controller.signal, route, {
+          // The route alone is not authorization: the policy reason proves
+          // this was a same-group reply to an acknowledged bot message.
+          allowReplyWithoutMention: participation?.reason === "explicit_reply",
+        });
         this.metrics.inc("tasks_completed");
         completed = true;
         // 指标 #4：端到端回复延迟 p95（计划 §6）。
@@ -288,6 +330,49 @@ export class WorkerApp {
       hasImages: images.length > 0,
       nowMs: message.msg_time,
     });
+  }
+
+  /**
+   * The decision is persisted before a message enters a per-key queue. Reusing
+   * it here keeps worker retries deterministic even when group settings change
+   * while a message is waiting, and makes the audit row match actual handling.
+   */
+  private async getOrRecordParticipationDecision(message: {
+    id: number;
+    group_id: string;
+    user_id: string;
+    text: string;
+    images_json?: string;
+    reply_to?: string | null;
+    has_at_bot?: number;
+  }): Promise<ParticipationDecision> {
+    const persisted = this.sharedDb.getParticipationDecision(message.id);
+    if (persisted) {
+      return participationDecisionFromRow(persisted);
+    }
+
+    const replyToBot = this.sharedDb.isKnownBotMessage(message.group_id, message.reply_to);
+    const decision = await this.options.botApp.getParticipationDecision(
+      message.group_id,
+      message.text,
+      Boolean(message.has_at_bot),
+      {
+        hasImages: parseImages(message.images_json).length > 0,
+        replyToBot,
+      },
+    );
+    this.sharedDb.recordParticipationDecision({
+      sourceRowId: message.id,
+      groupId: message.group_id,
+      userId: message.user_id,
+      action: decision.action,
+      reason: decision.reason,
+      score: decision.score,
+      policyVersion: decision.policyVersion,
+      signals: decision.signals,
+      createdAt: Date.now(),
+    });
+    return decision;
   }
 
   private updateAtmosphere(groupId: string, nowMs: number): void {
@@ -386,19 +471,28 @@ export class WorkerApp {
   }
 }
 
-function buildBotApp(
+async function buildBotApp(
   config: ReturnType<typeof loadConfig>,
   transport: MessageTransport,
   imagePipeline?: ImagePipeline,
-): BotApplication {
+): Promise<BotApplication> {
   const dataDir = config.dataDir;
   const sharedDb = openSharedDb(dataDir);
   const contextRepository = new ConversationContextRepository(sharedDb);
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
   const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
-  const groupConfigService = new GroupConfigService(config.groupsConfigPath);
+  const groupConfigService = new GroupConfigService(
+    config.groupsConfigPath,
+    new GroupConfigSqliteShadowRepository(sharedDb),
+  );
+  await groupConfigService.syncShadowFromAuthoritative();
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
-  const systemSettingsStore = new SystemSettingsStore(config.systemSettingsPath, buildDefaultSystemModels(config));
+  const systemSettingsStore = new SystemSettingsStore(
+    config.systemSettingsPath,
+    buildDefaultSystemModels(config),
+    new SystemSettingsSqliteShadowRepository(sharedDb),
+  );
+  await systemSettingsStore.syncShadowFromAuthoritative();
   const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
   const runtimeProfileAiService = new ConfiguredAiService(profileAiService, systemSettingsStore, "profile");
   const defaultTtsService = new TtsService(
@@ -518,7 +612,7 @@ export async function main(): Promise<void> {
   const app = new WorkerApp(
     {
       dataDir: config.dataDir,
-      botApp: buildBotApp(config, transport, buildImagePipeline(transport)),
+      botApp: await buildBotApp(config, transport, buildImagePipeline(transport)),
       consumerKey: "worker:main",
     },
     transport,
@@ -569,5 +663,35 @@ function parseImages(imagesJson?: string): Array<{ url?: string; file?: string; 
     return Array.isArray(value) ? value as Array<{ url?: string; file?: string; summary?: string }> : [];
   } catch {
     return [];
+  }
+}
+
+function participationDecisionFromRow(row: {
+  action: string;
+  reason: string;
+  score: number;
+  policy_version: string;
+  signals_json: string;
+}): ParticipationDecision {
+  return {
+    action: row.action as ParticipationDecision["action"],
+    reason: row.reason as ParticipationDecision["reason"],
+    score: row.score,
+    policyVersion: row.policy_version,
+    signals: parseParticipationSignals(row.signals_json),
+  };
+}
+
+function parseParticipationSignals(value: string): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+    );
+  } catch {
+    return {};
   }
 }

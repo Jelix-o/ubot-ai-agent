@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,34 +15,78 @@ async function withStore<T>(run: (store: ProfileRecordStore) => Promise<T>): Pro
   }
 }
 
-test("ProfileRecordStore creates share tokens and finds records by token", async () => {
+test("ProfileRecordStore refreshes records after an external write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "profile-record-store-refresh-"));
+  const filePath = path.join(dir, "records.json");
+  try {
+    const reader = new ProfileRecordStore(filePath);
+    const writer = new ProfileRecordStore(filePath);
+    await writer.create({ groupId: "67890", userId: "20001", type: "overall", summary: "第一条画像" });
+    assert.equal((await reader.listPage({ page: 1, pageSize: 10 })).items.length, 1);
+
+    const raw = JSON.parse(await readFile(filePath, "utf8")) as { records: unknown[] };
+    raw.records.push({
+      id: "external-profile",
+      groupId: "67890",
+      userId: "20002",
+      type: "overall",
+      summary: "后台生成的画像",
+      sourceMemoryCount: 0,
+      generatedAt: "2026-08-24T00:00:00.000Z",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      createdBy: "admin",
+    });
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(filePath);
+    await utimes(filePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal((await reader.listPage({ page: 1, pageSize: 10 })).items.length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ProfileRecordStore creates records without public bearer-link fields", async () => {
   await withStore(async (store) => {
-    const first = await store.create({
+    const record = await store.create({
       groupId: "67890",
       userId: "20001",
       type: "overall",
       summary: "第一条画像",
     });
-    const second = await store.create({
-      groupId: "67890",
-      userId: "20001",
-      type: "yesterday",
-      summary: "第二条画像",
-    });
 
-    assert.match(first.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
-    assert.match(second.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
-    assert.notEqual(first.shareToken, second.shareToken);
-    assert.ok(first.expiresAt);
-    assert.ok(new Date(first.expiresAt).getTime() > Date.now() + 6 * 24 * 60 * 60 * 1000);
-    assert.ok(new Date(first.expiresAt).getTime() <= Date.now() + 8 * 24 * 60 * 60 * 1000);
-    assert.equal((await store.getByShareToken(first.shareToken ?? ""))?.summary, "第一条画像");
-    assert.equal(await store.getByShareToken("invalid-token"), undefined);
+    assert.deepEqual(Object.keys(record).sort(), [
+      "createdAt",
+      "createdBy",
+      "generatedAt",
+      "groupId",
+      "id",
+      "sourceMemoryCount",
+      "summary",
+      "type",
+      "userId",
+    ]);
   });
 });
 
-test("ProfileRecordStore preserves share token on update and old records without token stay private", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "profile-record-store-"));
+test("ProfileRecordStore excludes opted-out subjects before pagination and total calculation", async () => {
+  await withStore(async (store) => {
+    await store.create({ groupId: "67890", userId: "20001", type: "overall", summary: "private profile" });
+    const visible = await store.create({ groupId: "67890", userId: "20002", type: "overall", summary: "visible profile" });
+
+    const page = await store.listPage({
+      page: 1,
+      pageSize: 10,
+      excludedSubjectKeys: new Set(["67890:20001"]),
+    });
+
+    assert.equal(page.pagination.total, 1);
+    assert.deepEqual(page.items.map((record) => record.id), [visible.id]);
+  });
+});
+
+test("ProfileRecordStore drops legacy public-link fields during normalization", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "profile-record-store-legacy-"));
   try {
     const filePath = path.join(dir, "records.json");
     await writeFile(filePath, JSON.stringify({
@@ -52,68 +96,30 @@ test("ProfileRecordStore preserves share token on update and old records without
         userId: "20001",
         type: "overall",
         summary: "旧格式画像",
+        shareToken: "x".repeat(32),
+        publicEnabled: true,
+        expiresAt: "2026-12-01T00:00:00.000Z",
+        accessCount: 5,
         sourceMemoryCount: 0,
         generatedAt: "2026-06-01T00:00:00.000Z",
         createdAt: "2026-06-01T00:00:00.000Z",
         createdBy: "legacy",
       }],
     }), "utf8");
-    const store = new ProfileRecordStore(filePath);
-    assert.equal((await store.get("legacy-record"))?.shareToken, undefined);
-    assert.equal(await store.getByShareToken("legacy-record"), undefined);
 
-    const legacyShared = await store.updateShareState("legacy-record", {
-      publicEnabled: true,
-      revokedAt: null,
-    });
-    assert.match(legacyShared?.shareToken ?? "", /^[A-Za-z0-9_-]{32,}$/);
-    assert.equal((await store.getByShareToken(legacyShared?.shareToken ?? ""))?.id, "legacy-record");
-
-    const created = await store.create({
+    const record = await new ProfileRecordStore(filePath).get("legacy-record");
+    assert.deepEqual(record, {
+      id: "legacy-record",
       groupId: "67890",
       userId: "20001",
       type: "overall",
-      summary: "旧画像",
+      summary: "旧格式画像",
+      sourceMemoryCount: 0,
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      createdAt: "2026-06-01T00:00:00.000Z",
+      createdBy: "legacy",
     });
-    const updated = await store.update(created.id, { summary: "新画像" });
-
-    assert.equal(updated?.shareToken, created.shareToken);
-    assert.equal((await store.getByShareToken(created.shareToken ?? ""))?.summary, "新画像");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test("ProfileRecordStore manages public share state and access count", async () => {
-  await withStore(async (store) => {
-    const created = await store.create({
-      groupId: "67890",
-      userId: "20001",
-      type: "overall",
-      summary: "shareable profile",
-    });
-
-    assert.equal(created.publicEnabled, true);
-    assert.ok(created.expiresAt);
-    assert.equal(created.accessCount, 0);
-
-    const accessed = await store.recordShareAccess(created.id);
-    assert.equal(accessed?.accessCount, 1);
-
-    const revoked = await store.updateShareState(created.id, {
-      publicEnabled: false,
-      revokedAt: "2026-06-05T00:00:00.000Z",
-    });
-    assert.equal(revoked?.publicEnabled, false);
-    assert.equal(revoked?.revokedAt, "2026-06-05T00:00:00.000Z");
-
-    const restored = await store.updateShareState(created.id, {
-      publicEnabled: true,
-      revokedAt: null,
-      expiresAt: "2026-06-10T00:00:00.000Z",
-    });
-    assert.equal(restored?.publicEnabled, true);
-    assert.equal(restored?.revokedAt, undefined);
-    assert.equal(restored?.expiresAt, "2026-06-10T00:00:00.000Z");
-  });
 });

@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 
 import type { ProfileRecord, ProfileRecordsFile, ProfileRecordType } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
@@ -10,6 +11,7 @@ export interface ProfileRecordListArgs {
   userId?: string;
   type?: ProfileRecordType;
   query?: string;
+  excludedSubjectKeys?: ReadonlySet<string>;
   page: number;
   pageSize: number;
 }
@@ -32,12 +34,11 @@ export interface ProfileRecordInput {
   sourceMemoryCount?: number;
   generatedAt?: string;
   createdBy?: string;
-  publicEnabled?: boolean;
-  expiresAt?: string;
 }
 
 export class ProfileRecordStore {
   private cachedData?: ProfileRecordsFile;
+  private cachedVersion?: string;
 
   constructor(private readonly filePath: string) {}
 
@@ -50,6 +51,7 @@ export class ProfileRecordStore {
       .filter((record) => !args.userId || record.userId === args.userId)
       .filter((record) => !args.type || record.type === args.type)
       .filter((record) => !query || recordMatchesQuery(record, query))
+      .filter((record) => !args.excludedSubjectKeys?.has(profileRecordSubjectKey(record.groupId, record.userId)))
       .sort((left, right) => right.generatedAt.localeCompare(left.generatedAt) || right.createdAt.localeCompare(left.createdAt));
     const total = matched.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -75,28 +77,6 @@ export class ProfileRecordStore {
     return record ? cloneRecord(record) : undefined;
   }
 
-  async getByShareToken(shareToken: string): Promise<ProfileRecord | undefined> {
-    const token = normalizeShareToken(shareToken);
-    if (!token) return undefined;
-    const data = await this.readData();
-    const record = data.records.find((item) => item.shareToken === token);
-    return record ? cloneRecord(record) : undefined;
-  }
-
-  async recordShareAccess(id: string): Promise<ProfileRecord | undefined> {
-    const data = await this.readData();
-    const index = data.records.findIndex((record) => record.id === id);
-    if (index === -1) return undefined;
-    const current = data.records[index]!;
-    const record = normalizeRecord({
-      ...current,
-      accessCount: normalizeCount(current.accessCount) + 1,
-    });
-    data.records[index] = record;
-    await this.writeData(data);
-    return cloneRecord(record);
-  }
-
   async create(input: ProfileRecordInput): Promise<ProfileRecord> {
     const data = await this.readData();
     const now = new Date().toISOString();
@@ -106,10 +86,6 @@ export class ProfileRecordStore {
       userId: input.userId,
       type: input.type,
       summary: input.summary,
-      shareToken: createShareToken(),
-      publicEnabled: input.publicEnabled ?? true,
-      expiresAt: input.expiresAt ?? new Date(Date.now() + DEFAULT_SHARE_TTL_MS).toISOString(),
-      accessCount: 0,
       sourceMemoryCount: input.sourceMemoryCount ?? 0,
       generatedAt: input.generatedAt ?? now,
       createdAt: now,
@@ -134,9 +110,6 @@ export class ProfileRecordStore {
       userId: input.userId ?? current.userId,
       type: input.type ?? current.type,
       summary: input.summary ?? current.summary,
-      shareToken: current.shareToken || createShareToken(),
-      publicEnabled: input.publicEnabled ?? current.publicEnabled ?? true,
-      expiresAt: input.expiresAt ?? current.expiresAt,
       sourceMemoryCount: input.sourceMemoryCount ?? current.sourceMemoryCount,
       generatedAt: input.generatedAt ?? new Date().toISOString(),
       createdAt: current.createdAt,
@@ -158,34 +131,20 @@ export class ProfileRecordStore {
     return true;
   }
 
-  async updateShareState(id: string, input: { publicEnabled?: boolean; expiresAt?: string | null; revokedAt?: string | null }): Promise<ProfileRecord | undefined> {
-    const data = await this.readData();
-    const index = data.records.findIndex((record) => record.id === id);
-    if (index === -1) return undefined;
-    const current = data.records[index]!;
-    const record = normalizeRecord({
-      ...current,
-      shareToken: current.shareToken || (input.publicEnabled !== false ? createShareToken() : undefined),
-      publicEnabled: input.publicEnabled ?? current.publicEnabled ?? true,
-      expiresAt: input.expiresAt === null ? undefined : input.expiresAt ?? current.expiresAt,
-      revokedAt: input.revokedAt === null ? undefined : input.revokedAt ?? current.revokedAt,
-    });
-    data.records[index] = record;
-    await this.writeData(data);
-    return cloneRecord(record);
-  }
-
   private async readData(): Promise<ProfileRecordsFile> {
-    if (this.cachedData) {
+    const version = await fileVersion(this.filePath);
+    if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
     }
     try {
       this.cachedData = normalizeFile(await readJsonFile<Partial<ProfileRecordsFile>>(this.filePath));
+      this.cachedVersion = version;
       return this.cachedData;
     } catch (error) {
       const known = error as NodeJS.ErrnoException;
       if (known.code === "ENOENT") {
         this.cachedData = { records: [] };
+        this.cachedVersion = "missing";
         return this.cachedData;
       }
       throw error;
@@ -193,8 +152,24 @@ export class ProfileRecordStore {
   }
 
   private async writeData(data: ProfileRecordsFile): Promise<void> {
-    this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+    this.cachedData = data;
+    this.cachedVersion = await fileVersion(this.filePath);
+  }
+}
+
+function profileRecordSubjectKey(groupId: string, userId: string): string {
+  return `${groupId}:${userId}`;
+}
+
+async function fileVersion(filePath: string): Promise<string> {
+  try {
+    const metadata = await stat(filePath);
+    return `${metadata.mtimeMs}:${metadata.size}`;
+  } catch (error) {
+    const known = error as NodeJS.ErrnoException;
+    if (known.code === "ENOENT") return "missing";
+    throw error;
   }
 }
 
@@ -209,38 +184,17 @@ function normalizeFile(value: Partial<ProfileRecordsFile>): ProfileRecordsFile {
 function normalizeRecord(value: Partial<ProfileRecord>): ProfileRecord {
   const now = new Date().toISOString();
   const type = value.type === "yesterday" ? "yesterday" : "overall";
-  const shareToken = normalizeShareToken(value.shareToken);
   return {
     id: String(value.id || randomUUID()),
     groupId: String(value.groupId || "").trim(),
     userId: String(value.userId || "").trim(),
     type,
     summary: String(value.summary || "").trim().slice(0, 6000),
-    ...(shareToken ? { shareToken } : {}),
-    publicEnabled: value.publicEnabled !== false,
-    ...(normalizeIso(value.expiresAt) ? { expiresAt: normalizeIso(value.expiresAt) } : {}),
-    accessCount: normalizeCount(value.accessCount),
-    ...(normalizeIso(value.revokedAt) ? { revokedAt: normalizeIso(value.revokedAt) } : {}),
     sourceMemoryCount: normalizeCount(value.sourceMemoryCount),
     generatedAt: typeof value.generatedAt === "string" ? value.generatedAt : now,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     createdBy: String(value.createdBy || "system").trim().slice(0, 80),
   };
-}
-
-function normalizeIso(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
-}
-
-function createShareToken(): string {
-  return randomBytes(32).toString("base64url");
-}
-
-function normalizeShareToken(value: unknown): string | undefined {
-  const text = typeof value === "string" ? value.trim() : "";
-  return /^[A-Za-z0-9_-]{32,}$/.test(text) ? text : undefined;
 }
 
 function normalizeCount(value: unknown): number {

@@ -51,7 +51,6 @@ function blankSkill(): SkillDefinition {
     maxReplyMessages: undefined,
     preferredMaxReplyMessages: undefined,
     ttsConfig: {},
-    sourceSkillLines: [],
     exampleExchanges: [],
     stripAsterisks: true,
     singleSentencePerMessage: false,
@@ -68,7 +67,6 @@ function cloneSkill(skill: SkillDefinition): SkillDefinition {
     ...skill,
     styleRules: [...skill.styleRules],
     knowledge: [...skill.knowledge],
-    sourceSkillLines: [...(skill.sourceSkillLines || [])],
     ttsConfig: { ...(skill.ttsConfig || {}) },
     highEmotionKeywords: [...(skill.highEmotionKeywords || [])],
     exampleExchanges: (skill.exampleExchanges || []).map((item) => ({
@@ -87,7 +85,6 @@ function buildSkillPayload(): SkillDefinition {
     ...form,
     styleRules: [...form.styleRules],
     knowledge: [...form.knowledge],
-    sourceSkillLines: [...(form.sourceSkillLines || [])],
     ttsConfig: cleanTtsConfig(form.ttsConfig),
     highEmotionKeywords: [...(form.highEmotionKeywords || [])],
     exampleExchanges: (form.exampleExchanges || []).map((item) => ({ ...item })),
@@ -392,7 +389,6 @@ onMounted(() => {
           <label class="wide">系统提示词<textarea v-model="form.systemPrompt" class="textarea large" placeholder="定义这个 Skill 的身份、边界和工作方式" /></label>
           <label class="wide">风格规则<textarea class="textarea large" :value="form.styleRules.join('\n')" placeholder="一行一条风格规则" @input="form.styleRules = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
           <label class="wide">知识片段<textarea class="textarea large" :value="form.knowledge.join('\n')" placeholder="一行一条知识片段" @input="form.knowledge = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
-          <label class="wide">原始技能行<textarea class="textarea large" :value="(form.sourceSkillLines || []).join('\n')" placeholder="可选：保留迁移前的原始技能内容" @input="form.sourceSkillLines = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
         </div>
       </div>
 

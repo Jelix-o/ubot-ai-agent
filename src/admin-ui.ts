@@ -850,7 +850,7 @@ export const ADMIN_APP_HTML_V2 = `<!doctype html>
         <button data-view="health" data-icon="✓">系统状态</button>
       </nav>
       <div class="side-footer">
-        <div class="side-status"><strong>系统运行正常</strong><span>UBot v2.0.3</span></div>
+        <div class="side-status"><strong>系统运行正常</strong><span>UBot v3.0.0-rc.1</span></div>
         <div class="theme-control" aria-label="主题切换">
           <button type="button" data-theme-option="light">浅色</button>
           <button type="button" data-theme-option="dark">深色</button>

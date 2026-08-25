@@ -37,6 +37,8 @@ export interface IngressMessageRowLike {
   sender_nickname?: string | null;
   reply_to?: string | null;
   has_at_bot?: number;
+  processable?: number;
+  drop_reason?: string | null;
 }
 
 interface KeyState {

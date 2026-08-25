@@ -16,6 +16,93 @@ function tempDb(t: test.TestContext): string {
   return path.join(dir, "bot-shared.db");
 }
 
+test("participation decisions persist the latest auditable policy result per source message", (t) => {
+  const db = new SharedDb(tempDb(t));
+
+  db.recordParticipationDecision({
+    sourceRowId: 10,
+    groupId: "67890",
+    userId: "20001",
+    action: "observe",
+    reason: "ambient_observation",
+    score: 0,
+    policyVersion: "v1-conservative",
+    signals: { hasAtBot: false },
+    createdAt: 1_000,
+  });
+  db.recordParticipationDecision({
+    sourceRowId: 10,
+    groupId: "67890",
+    userId: "20001",
+    action: "reply",
+    reason: "direct_mention",
+    score: 1,
+    policyVersion: "v1-conservative",
+    signals: { hasAtBot: true },
+    createdAt: 2_000,
+  });
+  db.recordParticipationDecision({
+    sourceRowId: 11,
+    groupId: "other-group",
+    userId: "30001",
+    action: "ignore",
+    reason: "group_unavailable",
+    score: 0,
+    policyVersion: "v1-conservative",
+    signals: { hasAtBot: false },
+    createdAt: 3_000,
+  });
+
+  const rows = db.listParticipationDecisions({ groupId: "67890" });
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0] && {
+    sourceRowId: rows[0].source_row_id,
+    action: rows[0].action,
+    reason: rows[0].reason,
+    score: rows[0].score,
+    policyVersion: rows[0].policy_version,
+    signals: JSON.parse(rows[0].signals_json),
+    createdAt: rows[0].created_at,
+  }, {
+    sourceRowId: 10,
+    action: "reply",
+    reason: "direct_mention",
+    score: 1,
+    policyVersion: "v1-conservative",
+    signals: { hasAtBot: true },
+    createdAt: 2_000,
+  });
+  assert.equal(db.getParticipationDecision(10)?.reason, "direct_mention");
+  assert.equal(db.getParticipationDecision(999), undefined);
+  db.close();
+});
+
+test("dropped messages remain auditable but carry a non-processable marker", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const id = db.insertMessage({
+    groupId: "10001",
+    userId: "20001",
+    selfId: "30001",
+    msgId: "dropped-1",
+    msgTime: 1_700_000_000_000,
+    text: "burst message",
+    imagesJson: "[]",
+    hasAtBot: false,
+    isBotMsg: false,
+    processable: false,
+    dropReason: "rate_limited",
+    createdAt: 1_700_000_000_000,
+  });
+
+  const [row] = db.pollMessages("worker:main", 10);
+  assert.equal(row?.id, id);
+  assert.equal(row?.processable, 0);
+  assert.equal(row?.drop_reason, "rate_limited");
+  db.markMessageDropped(id, "manual_drop");
+  assert.equal(db.pollMessages("worker:main", 10)[0]?.drop_reason, "manual_drop");
+  db.close();
+});
+
 test("insertMessage dedupes by (self, group, msg) and returns 0 on duplicates", (t) => {
   const db = new SharedDb(tempDb(t));
   const base = {
@@ -91,6 +178,31 @@ test("old messages schema is upgraded with nullable sender identity columns", (t
   assert.equal(columns.some((column) => column.name === "sender_card"), true);
   assert.equal(columns.some((column) => column.name === "sender_nickname"), true);
   db.close();
+});
+
+test("versioned migrations are recorded once and provision configuration shadow tables", (t) => {
+  const dbPath = tempDb(t);
+  const first = new SharedDb(dbPath);
+  assert.deepEqual(
+    first.listSchemaMigrations().map((migration) => ({ version: migration.version, name: migration.name })),
+    [
+      { version: 1, name: "reconcile-pre-versioned-schema" },
+      { version: 2, name: "add-group-config-shadow-snapshots" },
+      { version: 3, name: "add-system-settings-shadow-snapshots" },
+    ],
+  );
+  const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+  assert.equal(tables.some((table) => table.name === "group_config_shadow_snapshots"), true);
+  assert.equal(tables.some((table) => table.name === "system_settings_shadow_snapshots"), true);
+  first.close();
+
+  const second = new SharedDb(dbPath);
+  assert.deepEqual(
+    second.listSchemaMigrations().map((migration) => migration.version),
+    [1, 2, 3],
+    "reopening must not apply or record the same migration twice",
+  );
+  second.close();
 });
 
 test("pollMessages uses the same monotonic id order as its watermark", (t) => {
@@ -290,10 +402,11 @@ test("outbox claims atomically to prevent double-send", (t) => {
   // Ambiguous in-flight rows are quarantined. Reclaiming them would duplicate
   // a QQ send when delivery succeeded but the acknowledgement was lost.
   assert.equal(db.claimOutbox(10, Date.now() + 60_000).length, 0);
-
-  // Mark sent → never claimed again.
-  db.markOutboxSent(claimed[0]!.id);
-  assert.equal(db.claimOutbox(10, Date.now() + 60_000).length, 0);
+  const quarantined = db.db.prepare("SELECT status, retry_after FROM outbox WHERE id = ?").get(id) as {
+    status: string;
+    retry_after: number | null;
+  };
+  assert.deepEqual({ ...quarantined }, { status: "failed", retry_after: null });
 
   // Failed with retry_after → reclaimed only after the backoff.
   const failed = db.enqueueOutbox("10001", null, "another");
@@ -516,11 +629,15 @@ test("bot messages recorded and pruned", (t) => {
   const db = new SharedDb(tempDb(t));
   db.recordBotMessage("10001", "b1", 1000);
   db.recordBotMessage("10001", "b2", 3000);
+  assert.equal(db.isKnownBotMessage("10001", "b1"), true);
+  assert.equal(db.isKnownBotMessage("other-group", "b1"), false);
+  assert.equal(db.isKnownBotMessage("10001", "missing"), false);
   db.pruneBotMessages(2000);
   // The prune only deletes rows older than the cutoff; b1 is gone.
   const rows = db.db
     .prepare("SELECT msg_id FROM bot_messages WHERE group_id = ? ORDER BY sent_at")
     .all("10001") as Array<{ msg_id: string }>;
   assert.deepEqual(rows.map((row) => row.msg_id), ["b2"]);
+  assert.equal(db.isKnownBotMessage("10001", "b1"), false);
   db.close();
 });

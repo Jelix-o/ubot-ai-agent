@@ -66,7 +66,7 @@ test("source row lookup is scoped by group", (t) => {
 });
 
 test("causal history follows parent turns and excludes sibling branches", (t) => {
-  const { repository } = fixture(t);
+  const { db, repository } = fixture(t);
   const root = repository.saveMessageRoute({
     sourceRowId: 1,
     groupId: "g1",
@@ -84,6 +84,8 @@ test("causal history follows parent turns and excludes sibling branches", (t) =>
     platformMessageId: "answer",
     createdAt: 2,
   });
+  assert.equal(db.isKnownBotMessage("g1", "answer"), true);
+  assert.equal(db.isKnownBotMessage("other-group", "answer"), false);
   const siblingA = repository.saveMessageRoute({
     sourceRowId: 2,
     groupId: "g1",

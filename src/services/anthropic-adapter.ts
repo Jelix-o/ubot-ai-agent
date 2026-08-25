@@ -34,6 +34,9 @@ export class AnthropicChatCompletions {
   ) {}
 
   async create(params: ChatCompletionCreateParams): Promise<ChatCompletion> {
+    if ((params as { stream?: boolean }).stream === true) {
+      throw new Error("anthropic_stream_unsupported");
+    }
     const { messages, model, temperature, max_tokens } = params;
 
     let systemPrompt = "";
@@ -47,10 +50,23 @@ export class AnthropicChatCompletions {
         if (typeof msg.content === "string") {
           content = msg.content;
         } else if (Array.isArray(msg.content)) {
-          content = msg.content
-            .filter((part): part is OpenAI.Chat.Completions.ChatCompletionContentPartText => part.type === "text")
-            .map((part) => part.text)
-            .join("\n");
+          const parts: Array<{ type: string; [key: string]: unknown }> = [];
+          for (const part of msg.content as Array<{
+            type?: string;
+            text?: string;
+            image_url?: { url?: string };
+          }>) {
+            if (part.type === "text" && typeof part.text === "string") {
+              parts.push({ type: "text", text: part.text });
+            } else if (part.type === "image_url" && typeof part.image_url?.url === "string") {
+              parts.push({
+                type: "image",
+                source: { type: "url", url: part.image_url.url },
+              });
+            }
+          }
+          anthropicMessages.push({ role: msg.role as "user" | "assistant", content: parts });
+          continue;
         } else {
           content = String(msg.content ?? "");
         }

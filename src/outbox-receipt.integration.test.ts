@@ -256,6 +256,9 @@ test("acknowledgement failure quarantines a successful QQ send instead of resend
   db.ackOutboxDelivery = originalAck;
   assert.equal(transport.deliveries.length, 1);
   assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 0);
-  const stored = db.db.prepare("SELECT status FROM outbox WHERE id = ?").get(id) as { status: string };
-  assert.equal(stored.status, "sending");
+  const stored = db.db.prepare("SELECT status, retry_after FROM outbox WHERE id = ?").get(id) as {
+    status: string;
+    retry_after: number | null;
+  };
+  assert.deepEqual({ ...stored }, { status: "failed", retry_after: null });
 });

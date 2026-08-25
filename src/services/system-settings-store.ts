@@ -2,7 +2,9 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import { readFile, stat } from "node:fs/promises";
 
 import type { SystemCommandConfig, SystemModelConfig, SystemSettings, TokenCostControlSettings } from "../types.js";
+import { logWarn } from "../logger.js";
 import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import {
   ENV_TTS_MODEL_ID,
   LEGACY_MIMO_TTS_BASE_URL,
@@ -24,7 +26,16 @@ export class SystemSettingsStore {
   constructor(
     private readonly filePath: string,
     private readonly defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
+    private readonly shadowWriter?: SystemSettingsShadowWriter,
   ) {}
+
+  /**
+   * Explicit startup/admin-maintenance sync for the Phase 1 SQLite shadow.
+   * Runtime reads never call this, so GET routes remain free of shadow writes.
+   */
+  async syncShadowFromAuthoritative(): Promise<boolean> {
+    return this.syncShadow(await this.readData(), "explicit_sync");
+  }
 
   async get(): Promise<SystemSettings> {
     return sanitizeSettings(await this.readData());
@@ -149,6 +160,25 @@ export class SystemSettingsStore {
     await writeJsonFileAtomic(this.filePath, data);
     this.cachedData = data;
     this.cachedFileVersion = await this.getFileVersion();
+    this.syncShadow(data, "json_write");
+  }
+
+  private syncShadow(data: SystemSettings, reason: "explicit_sync" | "json_write"): boolean {
+    if (!this.shadowWriter) {
+      return false;
+    }
+    try {
+      this.shadowWriter.syncFromAuthoritative(data);
+      return true;
+    } catch (error) {
+      // JSON remains the only authority during the shadow phase. A SQLite
+      // outage must never make model, secret, or command updates fail.
+      logWarn("System settings SQLite shadow sync failed; JSON remains authoritative.", {
+        reason,
+        errorType: error instanceof Error ? error.name : typeof error,
+      });
+      return false;
+    }
   }
 
   private async getFileVersion(): Promise<string | undefined> {
@@ -197,15 +227,15 @@ function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { api
   return {
     profileSummaryMaxChars: 1800,
     profileShortSummaryMaxChars: 140,
-    dailyProfileReviewEnabled: true,
+    dailyProfileReviewEnabled: false,
     dailyProfileReviewTime: "00:00",
-    memoryDedupEnabled: true,
+    memoryDedupEnabled: false,
     memoryDedupTime: "23:00",
     memoryDedupSemanticTimeoutMinutes: 10,
     memoryCandidateConfidenceThreshold: 60,
     memoryAutoApproveConfidenceThreshold: 80,
     memoryUnattendedModeEnabled: false,
-    onlineLookupEnabled: true,
+    onlineLookupEnabled: false,
     tokenCostControl: defaultTokenCostControlSettings(),
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
     models: normalizeModels(defaultModels, []),
@@ -237,9 +267,9 @@ function normalizeSettings(
   return {
     profileSummaryMaxChars: normalizePositiveInt(value.profileSummaryMaxChars, fallback.profileSummaryMaxChars, 100, 6000),
     profileShortSummaryMaxChars: normalizePositiveInt(value.profileShortSummaryMaxChars, fallback.profileShortSummaryMaxChars, 40, 600),
-    dailyProfileReviewEnabled: value.dailyProfileReviewEnabled !== false,
+    dailyProfileReviewEnabled: value.dailyProfileReviewEnabled === true,
     dailyProfileReviewTime: normalizeTime(value.dailyProfileReviewTime, fallback.dailyProfileReviewTime),
-    memoryDedupEnabled: value.memoryDedupEnabled !== false,
+    memoryDedupEnabled: value.memoryDedupEnabled === true,
     memoryDedupTime: normalizeTime(value.memoryDedupTime, fallback.memoryDedupTime),
     memoryDedupSemanticTimeoutMinutes: normalizePositiveInt(
       value.memoryDedupSemanticTimeoutMinutes,

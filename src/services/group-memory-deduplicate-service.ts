@@ -68,10 +68,15 @@ export class GroupMemoryDeduplicateService {
     return buildMemoryDeduplicateDecisions(memories, this.judgeMemorySemanticRelation, options);
   }
 
-  async apply(groupId: string, decisions: MemoryDedupDecision[]): Promise<MemoryDedupApplyResult> {
+  async apply(
+    groupId: string,
+    decisions: MemoryDedupDecision[],
+    options: { excludedSubjectUserIds?: readonly string[] } = {},
+  ): Promise<MemoryDedupApplyResult> {
     const applied: MemoryDedupApplyResult["applied"] = [];
     const skipped: MemoryDedupApplyResult["skipped"] = [];
     const handledDuplicateIds = new Set<string>();
+    const excludedSubjectUserIds = new Set(options.excludedSubjectUserIds ?? []);
     for (const decision of decisions) {
       if (handledDuplicateIds.has(decision.duplicateId)) {
         skipped.push({ duplicateId: decision.duplicateId, error: "duplicate_decision" });
@@ -88,6 +93,10 @@ export class GroupMemoryDeduplicateService {
         skipped.push({ duplicateId: decision.duplicateId, error: "already_disabled" });
         continue;
       }
+      if (isExcludedMemberProfileMemory(duplicate, excludedSubjectUserIds)) {
+        skipped.push({ duplicateId: decision.duplicateId, error: "memory_collection_disabled" });
+        continue;
+      }
 
       if (decision.action === "merge" && decision.targetId) {
         if (decision.targetId === decision.duplicateId) {
@@ -101,6 +110,10 @@ export class GroupMemoryDeduplicateService {
         }
         if (!target.enabled) {
           skipped.push({ duplicateId: decision.duplicateId, error: "target_disabled" });
+          continue;
+        }
+        if (isExcludedMemberProfileMemory(target, excludedSubjectUserIds)) {
+          skipped.push({ duplicateId: decision.duplicateId, error: "memory_collection_disabled" });
           continue;
         }
         await this.memoryStore.update(target.id, {
@@ -131,12 +144,15 @@ export class GroupMemoryDeduplicateService {
       useSemanticJudge?: boolean;
       semanticTimeoutMs?: number;
       onProgress?: (event: MemoryDedupProgressEvent) => Promise<void> | void;
+      excludedSubjectUserIds?: readonly string[];
     } = {},
   ): Promise<MemoryDedupPreviewBuildResult> {
+    const excludedSubjectUserIds = new Set(options.excludedSubjectUserIds ?? []);
     const memories = (await this.memoryStore.list(groupId))
       .filter((memory) => memory.enabled)
       .filter((memory) => !options.subjectUserId || memory.subjectUserId === options.subjectUserId)
-      .filter((memory) => !options.type || memory.type === options.type);
+      .filter((memory) => !options.type || memory.type === options.type)
+      .filter((memory) => !isExcludedMemberProfileMemory(memory, excludedSubjectUserIds));
     await options.onProgress?.({
       phase: "loaded",
       memoryCount: memories.length,
@@ -154,7 +170,11 @@ export class GroupMemoryDeduplicateService {
 
   async deduplicateMemberMemoriesForGroup(
     groupId: string,
-    options: { useSemanticJudge?: boolean; semanticTimeoutMs?: number } = {},
+    options: {
+      useSemanticJudge?: boolean;
+      semanticTimeoutMs?: number;
+      excludedSubjectUserIds?: readonly string[];
+    } = {},
   ): Promise<{
     groupId: string;
     subjectCount: number;
@@ -163,10 +183,12 @@ export class GroupMemoryDeduplicateService {
     skippedCount: number;
     semanticStats: MemoryDedupSemanticStats;
   }> {
+    const excludedSubjectUserIds = new Set(options.excludedSubjectUserIds ?? []);
     const memories = (await this.memoryStore.list(groupId)).filter((memory) =>
       memory.enabled &&
       memory.type === "member_profile" &&
       Boolean(memory.subjectUserId) &&
+      !excludedSubjectUserIds.has(memory.subjectUserId!) &&
       !isProfileRecordMemory(memory)
     );
     const bySubject = new Map<string, GroupMemory[]>();
@@ -192,7 +214,9 @@ export class GroupMemoryDeduplicateService {
       mergeSemanticStats(semanticStats, preview.semanticStats);
       decisionCount += preview.decisions.length;
       if (preview.decisions.length === 0) continue;
-      const result = await this.apply(groupId, preview.decisions);
+      const result = await this.apply(groupId, preview.decisions, {
+        excludedSubjectUserIds: options.excludedSubjectUserIds,
+      });
       appliedCount += result.appliedCount;
       skippedCount += result.skippedCount;
       logInfo("Deduplicated member long-term memories.", {
@@ -433,6 +457,14 @@ function chooseDedupTarget(left: GroupMemory, right: GroupMemory): [GroupMemory,
 
 function normalizeComparableText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, "").trim();
+}
+
+function isExcludedMemberProfileMemory(memory: GroupMemory, excludedSubjectUserIds: ReadonlySet<string>): boolean {
+  const subjectUserId = memory.subjectUserId;
+  return memory.type === "member_profile" &&
+    subjectUserId !== undefined &&
+    subjectUserId !== "" &&
+    excludedSubjectUserIds.has(subjectUserId);
 }
 
 function textSimilarity(left: string, right: string): number {

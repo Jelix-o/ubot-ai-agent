@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,39 @@ async function withStore<T>(run: (store: ScheduledReminderStore) => Promise<T>):
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("ScheduledReminderStore refreshes tasks after an external admin write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "scheduled-reminder-refresh-"));
+  const filePath = path.join(dir, "store.json");
+  try {
+    const workerStore = new ScheduledReminderStore(filePath);
+    const adminStore = new ScheduledReminderStore(filePath);
+    const first = await adminStore.addTask({
+      groupId: "67890",
+      creatorUserId: "20001",
+      intervalMinutes: 60,
+      topic: "第一条提醒",
+      now: new Date("2026-05-27T10:00:00.000Z"),
+    });
+    assert.equal((await workerStore.listGroupTasks("67890")).length, 1);
+
+    const raw = JSON.parse(await readFile(filePath, "utf8")) as { tasks: Record<string, unknown> };
+    raw.tasks.external = {
+      ...first,
+      id: "external",
+      topic: "后台新增提醒",
+      createdAt: "2026-05-27T10:01:00.000Z",
+      nextRunAt: "2026-05-27T11:01:00.000Z",
+    };
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
+    const metadata = await stat(filePath);
+    await utimes(filePath, metadata.atime, new Date(metadata.mtimeMs + 1_000));
+
+    assert.equal((await workerStore.listGroupTasks("67890")).length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("ScheduledReminderStore creates, lists, deletes, and advances group tasks", async () => {
   await withStore(async (store) => {

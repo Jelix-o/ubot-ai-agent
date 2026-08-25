@@ -91,7 +91,6 @@ export interface SkillDefinition {
   systemPrompt: string;
   styleRules: string[];
   knowledge: string[];
-  sourceSkillLines?: string[];
   /** @deprecated Read only for old skill JSON imports. New saves migrate it to ttsConfig.stylePrompt. */
   ttsStyleHint?: string;
   ttsConfig?: SkillTtsConfig;
@@ -268,27 +267,6 @@ export interface RecentGroupMessage {
   senderNickname?: string;
 }
 
-export interface GroupRuntimeContext {
-  liveChat: {
-    enabled: boolean;
-    trackedUserCount: number;
-    delaySeconds: number;
-    pendingUsers: Array<{
-      userId: string;
-      messageCount: number;
-      state: "waiting" | "ready";
-    }>;
-  };
-  scheduledReminders: {
-    enabled: boolean;
-    activeTaskCount: number;
-    nextTask?: {
-      topic: string;
-      nextRunAt: string;
-    };
-  };
-}
-
 export interface AiIdentityContext {
   groupId: string;
   currentUserId: string;
@@ -305,12 +283,12 @@ export interface AiIdentityContext {
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
   realtimeLookup?: RealtimeLookupResult;
-  groupRuntimeContext?: GroupRuntimeContext;
   /** 脱敏后的群氛围摘要；不得包含聊天原文或成员身份。 */
   atmosphereSummary?: string;
 }
 
 export type ReplyModelMode = string;
+export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "selected_members";
 export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
 
 export interface GroupBotConfig {
@@ -319,6 +297,7 @@ export interface GroupBotConfig {
   enabled?: boolean;
   currentSkillId: string;
   replyModelMode?: ReplyModelMode;
+  participationMode?: ParticipationMode;
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
@@ -347,6 +326,7 @@ export interface GroupBotConfig {
   defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
+  visionEnabled?: boolean;
 }
 
 export interface GroupsConfigFile {
@@ -423,7 +403,7 @@ export interface ScheduledRemindersFile {
   tasks: Record<string, ScheduledReminderTask>;
 }
 
-export type AdminRole = "super_admin" | "group_admin" | "viewer";
+export type AdminRole = "super_admin" | "group_admin";
 
 export interface AdminSession {
   role: AdminRole;
@@ -514,11 +494,6 @@ export interface ProfileRecord {
   userId: string;
   type: ProfileRecordType;
   summary: string;
-  shareToken?: string;
-  publicEnabled?: boolean;
-  expiresAt?: string;
-  accessCount?: number;
-  revokedAt?: string;
   sourceMemoryCount: number;
   generatedAt: string;
   createdAt: string;

@@ -1,5 +1,7 @@
-import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ReplyModelMode, ScheduleDateRule } from "../types.js";
+import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ParticipationMode, ReplyModelMode, ScheduleDateRule } from "../types.js";
+import { logWarn } from "../logger.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 
 export class GroupConfigValidationError extends Error {
   constructor(public readonly code: string, message = code) {
@@ -13,6 +15,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "enabled"
   | "currentSkillId"
   | "replyModelMode"
+  | "participationMode"
   | "allowedSkillIds"
   | "switcherUserIds"
   | "liveChatUserIds"
@@ -37,6 +40,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "defaultVoiceReplyEnabled"
   | "memoryDisabledUserIds"
   | "onlineLookupEnabled"
+  | "visionEnabled"
 >>;
 
 export class GroupConfigService {
@@ -45,7 +49,18 @@ export class GroupConfigService {
   // （生产事故：30s 缓存导致后台"闭嘴"不生效）。
   private readonly cacheTtlMs = 3_000;
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly shadowWriter?: GroupConfigShadowWriter,
+  ) {}
+
+  /**
+   * Explicit startup/admin-maintenance sync for the Phase 1 SQLite shadow.
+   * Runtime reads never call this, so GET routes remain free of shadow writes.
+   */
+  async syncShadowFromAuthoritative(): Promise<boolean> {
+    return this.syncShadow(await this.readConfig(), "explicit_sync");
+  }
 
   async getAll(): Promise<GroupBotConfig[]> {
     const data = await this.readConfig();
@@ -98,10 +113,11 @@ export class GroupConfigService {
         groupId,
         ...(incoming.groupName ? { groupName: incoming.groupName } : {}),
         enabled: false,
-        currentSkillId: "assistant",
-        allowedSkillIds: ["assistant"],
+        currentSkillId: "huixian",
+        allowedSkillIds: ["huixian"],
         switcherUserIds: [],
         liveChatUserIds: [],
+        opsAlertsEnabled: false,
       }));
     }
     await this.writeConfig(data);
@@ -472,6 +488,25 @@ export class GroupConfigService {
   private async writeConfig(data: GroupsConfigFile): Promise<void> {
     this.cachedConfig = { data, loadedAt: Date.now() };
     await writeJsonFileAtomic(this.filePath, data);
+    this.syncShadow(data, "json_write");
+  }
+
+  private syncShadow(data: GroupsConfigFile, reason: "explicit_sync" | "json_write"): boolean {
+    if (!this.shadowWriter) {
+      return false;
+    }
+    try {
+      this.shadowWriter.syncFromAuthoritative(data);
+      return true;
+    } catch (error) {
+      // JSON stays the only authority during the shadow phase. A SQLite
+      // outage must never make a group configuration update fail or roll back.
+      logWarn("Group config SQLite shadow sync failed; JSON remains authoritative.", {
+        reason,
+        errorType: error instanceof Error ? error.name : typeof error,
+      });
+      return false;
+    }
   }
 }
 
@@ -483,13 +518,14 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 }
 
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
-  const voiceReplyEnabled = group.voiceReplyEnabled !== false;
+  const voiceReplyEnabled = group.voiceReplyEnabled === true;
   return {
     ...group,
     groupId: String(group.groupId || "").trim(),
     groupName: normalizeOptionalText(group.groupName, 80),
     enabled: group.enabled !== false,
     replyModelMode: normalizeReplyModelMode(group.replyModelMode),
+    participationMode: normalizeParticipationMode(group.participationMode),
     allowedSkillIds: Array.from(new Set(group.allowedSkillIds ?? [])),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
@@ -497,24 +533,25 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     manualIdentities: normalizeManualIdentities(group.manualIdentities),
     liveChatDelaySeconds: normalizeDelaySeconds(group.liveChatDelaySeconds),
     liveChatDelayMinutes: normalizeDelayMinutes(group.liveChatDelayMinutes),
-    dailyReportEnabled: group.dailyReportEnabled !== false,
+    dailyReportEnabled: group.dailyReportEnabled === true,
     dailyReportTime: normalizeDailyReportTime(group.dailyReportTime),
     dailyReportDateRule: normalizeDateRule(group.dailyReportDateRule),
     dailyReportWeekdays: normalizeWeekdays(group.dailyReportWeekdays),
     dailyReportTopUserCount: normalizeDailyReportTopUserCount(group.dailyReportTopUserCount),
-    holidayCountdownEnabled: group.holidayCountdownEnabled !== false,
+    holidayCountdownEnabled: group.holidayCountdownEnabled === true,
     holidayCountdownTime: normalizeHolidayCountdownTime(group.holidayCountdownTime),
     holidayCountdownDateRule: normalizeDateRule(group.holidayCountdownDateRule),
     holidayCountdownWeekdays: normalizeWeekdays(group.holidayCountdownWeekdays),
     botMuted: group.botMuted === true,
-    scheduledRemindersEnabled: group.scheduledRemindersEnabled !== false,
+    scheduledRemindersEnabled: group.scheduledRemindersEnabled === true,
     blacklistedUserIds: normalizeUserIds(group.blacklistedUserIds),
-    opsAlertsEnabled: group.opsAlertsEnabled !== false,
+    opsAlertsEnabled: group.opsAlertsEnabled === true,
     triggerKeywords: normalizeTriggerKeywords(group.triggerKeywords),
     voiceReplyEnabled,
     defaultVoiceReplyEnabled: voiceReplyEnabled && group.defaultVoiceReplyEnabled === true,
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
-    onlineLookupEnabled: group.onlineLookupEnabled !== false,
+    onlineLookupEnabled: group.onlineLookupEnabled === true,
+    visionEnabled: group.visionEnabled === true,
   };
 }
 
@@ -536,6 +573,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("replyModelMode" in input) {
     next.replyModelMode = normalizeReplyModelModeStrict(input.replyModelMode);
+  }
+  if ("participationMode" in input) {
+    next.participationMode = normalizeParticipationModeStrict(input.participationMode);
   }
   if ("allowedSkillIds" in input) {
     next.allowedSkillIds = normalizeSkillIds(input.allowedSkillIds);
@@ -616,6 +656,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   if ("onlineLookupEnabled" in input) {
     next.onlineLookupEnabled = normalizeBoolean(input.onlineLookupEnabled, "invalid_group_config");
   }
+  if ("visionEnabled" in input) {
+    next.visionEnabled = normalizeBoolean(input.visionEnabled, "invalid_group_config");
+  }
 
   return normalizeGroupConfig(next);
 }
@@ -623,6 +666,21 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
 function normalizeOptionalText(value: unknown, limit: number): string | undefined {
   const text = typeof value === "string" ? value.trim() : "";
   return text ? text.slice(0, limit) : undefined;
+}
+
+function normalizeParticipationMode(value: unknown): ParticipationMode {
+  return value === "mentions_only" || value === "mentions_and_keywords"
+    ? value
+    : value === "selected_members"
+      ? "selected_members"
+      : "mentions_only";
+}
+
+function normalizeParticipationModeStrict(value: unknown): ParticipationMode {
+  if (value === "mentions_only" || value === "mentions_and_keywords" || value === "selected_members") {
+    return value;
+  }
+  throw new GroupConfigValidationError("invalid_group_config");
 }
 
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
