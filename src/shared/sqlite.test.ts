@@ -189,6 +189,7 @@ test("versioned migrations are recorded once and provision configuration shadow 
       { version: 1, name: "reconcile-pre-versioned-schema" },
       { version: 2, name: "add-group-config-shadow-snapshots" },
       { version: 3, name: "add-system-settings-shadow-snapshots" },
+      { version: 4, name: "add-outbox-delivery-attempts" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -199,7 +200,7 @@ test("versioned migrations are recorded once and provision configuration shadow 
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3],
+    [1, 2, 3, 4],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -408,11 +409,25 @@ test("outbox claims atomically to prevent double-send", (t) => {
   };
   assert.deepEqual({ ...quarantined }, { status: "failed", retry_after: null });
 
-  // Failed with retry_after → reclaimed only after the backoff.
+  // Failed with retry_after → reclaimed only after the backoff. A platform
+  // action gets at most three attempts total; further failures are terminal to
+  // prevent a permanent retry loop from noisy or disabled QQ targets.
   const failed = db.enqueueOutbox("10001", null, "another");
   db.markOutboxFailed(failed, 2_000);
   assert.equal(db.claimOutbox(10).length, 0, "failed row waits for retry_after");
   assert.equal(db.claimOutbox(10, Date.now() + 3_000).length, 1, "failed row retries after backoff");
+  db.markOutboxFailed(failed, 2_000);
+  assert.equal(db.claimOutbox(10, Date.now() + 6_000).length, 1, "second retry remains eligible");
+  db.markOutboxFailed(failed, 2_000);
+  assert.equal(db.claimOutbox(10, Date.now() + 9_000).length, 1, "third retry remains eligible");
+  db.markOutboxFailed(failed, 2_000);
+  const terminal = db.db.prepare("SELECT status, retry_after, attempts FROM outbox WHERE id = ?").get(failed) as {
+    status: string;
+    retry_after: number | null;
+    attempts: number;
+  };
+  assert.deepEqual({ ...terminal }, { status: "failed", retry_after: null, attempts: 3 });
+  assert.equal(db.claimOutbox(10, Date.now() + 12_000).length, 0, "third failed send must not retry forever");
   db.close();
 });
 
@@ -601,9 +616,11 @@ test("old outbox schema without retry_after is migrated without losing rows", (t
   const db = new SharedDb(dbPath);
   const columns = db.db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
   assert.equal(columns.some((column) => column.name === "retry_after"), true);
+  assert.equal(columns.some((column) => column.name === "attempts"), true);
   const row = db.claimOutbox(1)[0]!;
   assert.equal(row.text, "legacy");
   assert.equal(row.retry_after, null);
+  assert.equal(row.attempts, 1);
   assert.equal(row.topic_id, null);
   assert.equal(row.source_turn_id, null);
   assert.equal(row.platform_message_id, null);

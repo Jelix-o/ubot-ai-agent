@@ -55,6 +55,7 @@ export interface OutboxRow {
   text: string;
   status: string;
   retry_after: number | null;
+  attempts: number;
   topic_id: string | null;
   branch_id: string | null;
   source_turn_id: number | null;
@@ -299,6 +300,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   retry_after INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
   topic_id TEXT,
   branch_id TEXT,
   source_turn_id INTEGER,
@@ -374,11 +376,19 @@ function reconcileLegacyColumns(db: DatabaseSync): void {
     ["platform_message_id", "TEXT"],
     ["sent_at", "INTEGER"],
     ["retry_after", "INTEGER"],
+    ["attempts", "INTEGER NOT NULL DEFAULT 0"],
   ];
   for (const [name, sqlType] of additions) {
     if (!outboxCols.some((col) => col.name === name)) {
       db.exec(`ALTER TABLE outbox ADD COLUMN ${name} ${sqlType}`);
     }
+  }
+}
+
+function addOutboxAttemptColumn(db: DatabaseSync): void {
+  const outboxCols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  if (!outboxCols.some((col) => col.name === "attempts")) {
+    db.exec("ALTER TABLE outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -398,7 +408,14 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "add-system-settings-shadow-snapshots",
     apply: (db) => db.exec(SYSTEM_SETTINGS_SHADOW_SCHEMA),
   },
+  {
+    version: 4,
+    name: "add-outbox-delivery-attempts",
+    apply: addOutboxAttemptColumn,
+  },
 ];
+
+const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
 
 export class SharedDb {
   readonly db: DatabaseSync;
@@ -943,7 +960,7 @@ export class SharedDb {
       this.db
         .prepare(
           `UPDATE outbox
-              SET status = 'sending', updated_at = ?
+              SET status = 'sending', updated_at = ?, attempts = attempts + 1
             WHERE id IN (${placeholders})
               AND (status = 'pending'
                 OR (status = 'failed' AND retry_after IS NOT NULL AND retry_after <= ?))`,
@@ -1078,13 +1095,23 @@ export class SharedDb {
   }
 
   markOutboxFailed(id: number, retryAfterMs: number | null = 2_000): void {
+    const now = Date.now();
     if (retryAfterMs === null) {
-      this.db.prepare("UPDATE outbox SET status = 'failed', retry_after = NULL, updated_at = ? WHERE id = ?").run(Date.now(), id);
+      this.db
+        .prepare("UPDATE outbox SET status = 'failed', retry_after = NULL, updated_at = ? WHERE id = ?")
+        .run(now, id);
       return;
     }
+    const retryAfter = now + Math.max(1_000, retryAfterMs);
     this.db
-      .prepare("UPDATE outbox SET status = 'failed', retry_after = ?, updated_at = ? WHERE id = ?")
-      .run(Date.now() + retryAfterMs, Date.now(), id);
+      .prepare(
+        `UPDATE outbox
+            SET status = 'failed',
+                retry_after = CASE WHEN attempts >= ? THEN NULL ELSE ? END,
+                updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(MAX_OUTBOX_DELIVERY_ATTEMPTS, retryAfter, now, id);
   }
 
   /** Removes worker-only drafts that have never become visible to the emitter. */

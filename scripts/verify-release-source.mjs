@@ -26,6 +26,7 @@ const allowedRootNames = new Set([
   "RELEASE-v2.0.1.md",
   "RELEASE-v2.0.2.md",
   "RELEASE-v2.0.3.md",
+  "RELEASE-v3.0.0-rc.1.md",
   `RELEASE-v${version}.md`,
   "V1.0.1-LOCAL-AUDIT.md",
   "V1.0.2-LOCAL-AUDIT.md",
@@ -69,7 +70,7 @@ const forbiddenSuffixes = [".pem", ".key", ".p12", ".pfx", ".sqlite", ".db"];
 const rootEntries = await readdir(root, { withFileTypes: true });
 const unexpected = rootEntries
   .map((entry) => entry.name)
-  .filter((name) => !allowedRootNames.has(name))
+  .filter((name) => !allowedRootNames.has(name) && !/^RELEASE-v[0-9A-Za-z._-]+\.md$/.test(name))
   .sort();
 const forbidden = rootEntries
   .map((entry) => entry.name)

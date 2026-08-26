@@ -181,7 +181,7 @@ try {
 NODE
 fi
 
-# No retryable historical delivery is allowed before starting RC.1.
+# No retryable historical delivery is allowed before starting RC.2.
 if [[ -f "$DB_PATH" ]]; then
   DB_PATH="$DB_PATH" node - <<'NODE'
 const { DatabaseSync } = require("node:sqlite");
@@ -279,7 +279,7 @@ const { DatabaseSync } = require("node:sqlite");
 const db = new DatabaseSync(process.env.DB_PATH, { readOnly: true });
 try {
   const migrations = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((row) => row.version);
-  const expected = [1, 2, 3];
+  const expected = [1, 2, 3, 4];
   if (JSON.stringify(migrations) !== JSON.stringify(expected)) {
     throw new Error(`Unexpected schema migrations after startup: ${JSON.stringify(migrations)}`);
   }

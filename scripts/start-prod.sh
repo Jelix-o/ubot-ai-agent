@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UBot V3.0.0-rc.1 生产启动脚本（Linux systemd）
+# UBot V3.0.0-rc.2 生产启动脚本（Linux systemd）
 # 并行拉起 ingress / worker / admin 三个进程，日志写入 data/logs/
 set -euo pipefail
 

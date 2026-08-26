@@ -21,7 +21,7 @@ test("Linux release deployer keeps persistent state, quarantines approved Outbox
   const logPath = path.join(root, "calls.log");
   const serviceName = "ubot-test.service";
   const oldRelease = path.join(releaseRoot, "v2.0.3");
-  const newVersion = "3.0.0-rc.1";
+  const newVersion = "3.0.0-rc.2";
   const newRelease = path.join(releaseRoot, `v${newVersion}`);
   const bundleRoot = path.join(root, "bundle");
   const bundlePath = path.join(root, "bundle.tar.gz");
@@ -117,6 +117,7 @@ function createDatabase(dbPath: string): void {
       id INTEGER PRIMARY KEY,
       status TEXT NOT NULL,
       retry_after INTEGER,
+      attempts INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER
     );
     INSERT INTO outbox (id, status, retry_after) VALUES
@@ -132,7 +133,8 @@ function createDatabase(dbPath: string): void {
     INSERT INTO schema_migrations VALUES
       (1, 'reconcile-pre-versioned-schema', 1),
       (2, 'add-group-config-shadow-snapshots', 1),
-      (3, 'add-system-settings-shadow-snapshots', 1);
+      (3, 'add-system-settings-shadow-snapshots', 1),
+      (4, 'add-outbox-delivery-attempts', 1);
   `);
   db.close();
 }

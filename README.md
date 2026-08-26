@@ -1,4 +1,4 @@
-# UBot V3.0.0-rc.1
+# UBot V3.0.0-rc.2
 
 > **重构第一阶段候选版，不是完整 V3 架构的最终完成版。**
 >
@@ -8,15 +8,15 @@ UBot 是基于 `NapCat + OneBot + Node.js 22+ + TypeScript + Vue 3` 的 QQ 群�
 
 项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)
 
-当前版本：`v3.0.0-rc.1`。完整变更和已知边界见 [RELEASE-v3.0.0-rc.1.md](RELEASE-v3.0.0-rc.1.md)。
+当前版本：`v3.0.0-rc.2`。完整变更和已知边界见 [RELEASE-v3.0.0-rc.2.md](RELEASE-v3.0.0-rc.2.md)。
 
-## RC.1 已完成内容
+## RC.2 已完成内容
 
 - **安全后台边界**：移除“仅凭 QQ 号”的 viewer 登录；管理后台只接受有效管理凭据。公开画像分享入口已关闭，画像只在受保护的后台内查看。
 - **可解释的群参与决策**：每条可处理消息都会被分类为 `ignore`、`observe`、`reply`、`task` 或 `admin_command`，并写入 SQLite 审计；后台健康页可查看原因、信号与策略版本。
 - **保守的默认说话策略**：`mentions_only` 只在 `@机器人` 或引用**已确认发送的机器人消息**时回复。关键词、复读和指定成员低频参与必须由管理员在群配置中显式开启。
 - **真实 QQ 回执锚点**：Worker 只写 Outbox 草稿；Ingress 成功发送并回填真实 `platformMessageId` 后，后续同群引用才会续接因果链。引用普通成员不会让机器人擅自插话。
-- **可靠消息链路**：SQLite 消费水位、去重、撤回、速率超限审计、Outbox 原子 claim 和发送歧义隔离均保留；过期 `sending` 行会转为不可自动重试的 `failed`，避免重复 QQ 消息。
+- **可靠消息链路**：SQLite 消费水位、去重、撤回、速率超限审计、Outbox 原子 claim 和发送歧义隔离均保留；过期 `sending` 行会转为不可自动重试的 `failed`，普通投递最多自动尝试 3 次，避免重复 QQ 消息和无限重试。
 - **Skill 素材收敛**：原始素材不再默认进入模型 prompt；遗留公开人物/私人资料型 Skill 被隐藏或降级，IT 专家角色已改为短、可审计的实用风格。
 - **跨进程配置一致性**：群配置、系统设置和主要 JSON Store 能发现文件版本变化；群配置与系统设置会写入 SQLite 的**脱敏影子快照**用于迁移核验，JSON 当前仍是权威源。
 - **模型兼容性收口**：过渡 Anthropic adapter 明确拒绝不支持的流式路径，处理图片 URL 输入并走受控降级；OpenAI-compatible 模型仍是主路径。
@@ -39,7 +39,7 @@ NapCat / OneBot
 
 ## 已知架构边界
 
-RC.1 **不宣称**已经完成以下路线图：
+RC.2 **不宣称**已经完成以下路线图：
 
 1. `BotApplication` 仍是核心聚合类，尚未拆为完整领域服务。
 2. `ConversationStore` 与多数记忆、知识库、提醒、画像 JSON Store 仍在运行路径；SQLite 影子不是完整的业务主库迁移。
@@ -47,7 +47,7 @@ RC.1 **不宣称**已经完成以下路线图：
 4. Anthropic 尚未替换为官方 SDK 的原生 provider/capability 层。
 5. 独立 Ingress/Worker/Admin systemd unit、全面网络最小化和自动化发布回退尚未完成。
 
-因此请将 RC.1 当作“安全与可靠性重构第一阶段候选版”，而不是完整 V3 最终版。
+因此请将 RC.2 当作“安全与可靠性重构第一阶段候选版”，而不是完整 V3 最终版。
 
 ## 本地开发与验证
 
@@ -111,11 +111,11 @@ cp .env.example .env
 
 | 值 | 说明 |
 | --- | --- |
-| `mentions_only` | 仅在 @ 机器人，或引用已确认的机器人消息时回复。RC.1 默认且最安全。 |
+| `mentions_only` | 仅在 @ 机器人，或引用已确认的机器人消息时回复。RC.2 默认且最安全。 |
 | `mentions_and_keywords` | @ / 引用之外，允许显式配置的关键词触发。 |
 | `selected_members` | 在前项基础上，对指定成员允许受延迟和静音约束的低频参与。 |
 
-RC.1 首次部署前应运行参与方式迁移。默认命令只预览，不改文件：
+RC.2 首次部署前应运行参与方式迁移。默认命令只预览，不改文件：
 
 ```bash
 npm run migrate:participation
@@ -152,7 +152,7 @@ npm run migrate:context -- --execute
 
 该脚本会在 `data/context-backups/<timestamp>/` 创建 SQLite 和短期上下文备份，清空短期路由/话题/锚点，并保留长期记忆、知识库、系统设置、日报和消息审计表。
 
-从 v2.0.3 升级到 RC.1 不运行上下文迁移。RC.1 运行时会以**加法方式**应用 SQLite schema migration 1–3：旧列兼容、群配置影子表、系统设置脱敏影子表；不会清空现有上下文或业务数据。
+从 v2.0.3 升级到 RC.2 不运行上下文迁移。RC.2 运行时会以**加法方式**应用 SQLite schema migration 1–4：旧列兼容、群配置影子表、系统设置脱敏影子表和 Outbox 尝试计数；不会清空现有上下文或业务数据。
 
 ## Linux RC 部署
 
@@ -169,7 +169,7 @@ npm run migrate:context -- --execute
 1. 先完成本地 `npm test`、rollback smoke、admin smoke 与 `git diff --check`。
 2. 先停止 `ai-project.service`，再对 SQLite 执行 `VACUUM INTO` 备份并备份 `.env`、`data`、`skills`、`config`。
 3. 旧 Outbox 的任何 `sending`、`pending` 或可重试 `failed` 行必须先人工隔离；不得自动重发历史 QQ 消息。
-4. 新 release 只链接持久 `.env`、`data`、`skills`、`config`；不得覆盖真实群配置或模型密钥。RC.1 只会将随 release 附带、已审查的 `itexpert.json` 写入持久 skills 目录以移除旧的 source-heavy 定义；其余 owner-managed Skill 不会被替换。
+4. 新 release 只链接持久 `.env`、`data`、`skills`、`config`；不得覆盖真实群配置或模型密钥。RC.2 只会将随 release 附带、已审查的 `itexpert.json` 写入持久 skills 目录以移除旧的 source-heavy 定义；其余 owner-managed Skill 不会被替换。
 5. 迁移参与方式为 `mentions_only` 后再启动，以便首次 RC 运行保持安静。
 6. 修改 systemd release drop-in 后执行 `daemon-reload`、重启和健康检查；失败应立即恢复上一个 release drop-in。
 
@@ -200,19 +200,19 @@ npm run package:linux
 它会在 `release/` 生成 `ubot-<version>-linux.tar.gz` 和 SHA-256 文件。archive 不含运行数据、群配置或 owner-managed Skill，仅包含用于替换旧 source-heavy 定义的已审查 `managed-skills/itexpert.json`。上传 archive 到服务器后，使用 release 内的部署脚本（脚本会停服务、备份、隔离已批准的旧 Outbox 行、迁移缺失参与方式、切换 systemd drop-in，并在失败时恢复旧 release）：
 
 ```bash
-sha256sum -c ubot-3.0.0-rc.1-linux.tar.gz.sha256
+sha256sum -c ubot-3.0.0-rc.2-linux.tar.gz.sha256
 ```
 
 ```bash
-mkdir -p /tmp/ubot-3.0.0-rc.1
+mkdir -p /tmp/ubot-3.0.0-rc.2
 ```
 
 ```bash
-tar -xzf /tmp/ubot-3.0.0-rc.1-linux.tar.gz -C /tmp/ubot-3.0.0-rc.1
+tar -xzf /tmp/ubot-3.0.0-rc.2-linux.tar.gz -C /tmp/ubot-3.0.0-rc.2
 ```
 
 ```bash
-bash /tmp/ubot-3.0.0-rc.1/scripts/deploy-linux-release.sh 3.0.0-rc.1 /tmp/ubot-3.0.0-rc.1-linux.tar.gz 291,292,293,294
+bash /tmp/ubot-3.0.0-rc.2/scripts/deploy-linux-release.sh 3.0.0-rc.2 /tmp/ubot-3.0.0-rc.2-linux.tar.gz 291,292,293,294
 ```
 
 在运行前检查脚本与目标目录是否符合本地部署策略；生产 `config/groups.json`、`.env`、`data/`、`skills/` 均不会从 archive 覆盖。

@@ -248,7 +248,7 @@ test("admin shell and overview keep notification, settings, and formatted overvi
   assert.match(appShell, /searchResults/);
   assert.match(appShell, /window\.addEventListener\("keydown", onSearchKeydown\)/);
   assert.match(appShell, /class="popover-backdrop"[\s\S]*@click="closeFloating\(\); mobileNavOpen = false"/);
-  assert.match(appShell, /UBot v3\.0\.0-rc\.1/);
+  assert.match(appShell, /UBot v3\.0\.0-rc\.2/);
   assert.match(appShell, /mobileNavOpen/);
   assert.match(appShell, /class="mobile-menu-btn"/);
   assert.match(appShell, /class="nav-item"\s+rel="nofollow"/);
@@ -409,32 +409,33 @@ test("windows release package avoids local runtime group config", async () => {
   assert.match(packageScript, /if not exist config\\groups\.json copy config\\groups\.example\.json config\\groups\.json >nul/);
 });
 
-test("v3.0.0-rc.1 docs and release metadata stay current", async () => {
+test("v3.0.0-rc.2 docs and release metadata stay current", async () => {
   const [packageRaw, readmeDoc, commandsDoc, releaseNotes, startScript] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
-    readFile(path.join(repoRoot, "RELEASE-v3.0.0-rc.1.md"), "utf8"),
+    readFile(path.join(repoRoot, "RELEASE-v3.0.0-rc.2.md"), "utf8"),
     readFile(path.join(repoRoot, "scripts", "start-prod.sh"), "utf8"),
   ]);
   const packageJson = JSON.parse(packageRaw) as { version?: string; scripts?: Record<string, string> };
 
-  assert.equal(packageJson.version, "3.0.0-rc.1");
+  assert.equal(packageJson.version, "3.0.0-rc.2");
   assert.equal(packageJson.scripts?.["migrate:participation"], "node scripts/run-node22.cjs scripts/migrate-participation-mode.mjs");
   assert.equal(packageJson.scripts?.["package:linux"], "bash scripts/package-linux-release.sh");
-  assert.match(readmeDoc, /^# UBot V3\.0\.0-rc\.1/m);
-  assert.match(readmeDoc, /v3\.0\.0-rc\.1/);
-  assert.match(readmeDoc, /RELEASE-v3\.0\.0-rc\.1\.md/);
+  assert.match(readmeDoc, /^# UBot V3\.0\.0-rc\.2/m);
+  assert.match(readmeDoc, /v3\.0\.0-rc\.2/);
+  assert.match(readmeDoc, /RELEASE-v3\.0\.0-rc\.2\.md/);
   assert.match(readmeDoc, /mentions_only/);
   assert.match(readmeDoc, /migrate:participation/);
   assert.match(readmeDoc, /重构第一阶段候选版/);
-  assert.match(commandsDoc, /^# UBot V3\.0\.0-rc\.1/m);
+  assert.match(commandsDoc, /^# UBot V3\.0\.0-rc\.2/m);
   assert.match(commandsDoc, /引用普通成员/);
-  assert.match(releaseNotes, /^# UBot V3\.0\.0-rc\.1 Release Notes/m);
+  assert.match(releaseNotes, /^# UBot V3\.0\.0-rc\.2 Release Notes/m);
   assert.match(releaseNotes, /重构第一阶段候选版/);
   assert.match(releaseNotes, /ParticipationPolicy/);
-  assert.match(releaseNotes, /不自动(?:重复发送|补发)/);
-  assert.match(startScript, /UBot V3\.0\.0-rc\.1/);
+  assert.match(releaseNotes, /不(?:可|会)?自动(?:重试|重复发送|补发)/);
+  assert.match(releaseNotes, /最多自动尝试 3 次/);
+  assert.match(startScript, /UBot V3\.0\.0-rc\.2/);
 });
 
 test("local build and test scripts avoid nested npm update checks", async () => {
