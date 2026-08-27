@@ -4933,7 +4933,9 @@ test("creates scheduled reminder through natural bot mention and sends due remin
       }),
     });
 
-    await withMockedNow(Date.parse("2026-05-27T01:00:00.000Z"), async () => {
+    // The first due time must be inside 09:00-18:00 for both UTC CI runners
+    // and local UTC+8 development machines.
+    await withMockedNow(Date.parse("2026-05-27T08:00:00.000Z"), async () => {
       await app.handleGroupMessage(
         createEvent([
           { type: "at", data: { qq: "12345" } },
@@ -4946,17 +4948,17 @@ test("creates scheduled reminder through natural bot mention and sends due remin
     assert.match(transport.sent[0]?.text ?? "", /每 1 小时 提醒群友喝水/);
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T01:59:59.000Z"),
+      new Date("2026-05-27T08:59:59.000Z"),
     );
     assert.equal(transport.sent.length, 1);
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T02:00:00.000Z"),
+      new Date("2026-05-27T09:00:00.000Z"),
     );
     assert.equal(transport.sent[1]?.text, "【提醒喝水小助手】提醒：喝水");
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T03:00:00.000Z"),
+      new Date("2026-05-28T09:00:00.000Z"),
     );
     assert.equal(transport.sent[2]?.text, "【提醒喝水小助手】又到点了，继续喝水");
   });
@@ -4973,7 +4975,7 @@ test("scheduled reminder ai rewrite is disabled by default", async () => {
       groupId: "67890",
       creatorUserId: "99999",
       request: { intervalMinutes: 60, topic: "drink water" },
-      now: new Date("2026-05-27T01:00:00.000Z"),
+      now: new Date("2026-05-27T08:00:00.000Z"),
     });
     const { app, transport } = createApp({
       aiService,
@@ -4981,7 +4983,7 @@ test("scheduled reminder ai rewrite is disabled by default", async () => {
     });
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T02:00:00.000Z"),
+      new Date("2026-05-27T09:00:00.000Z"),
     );
 
     assert.equal(aiService.calls.length, 0);
