@@ -49,7 +49,6 @@ export function createCancellableTimeout(
 ): { controller: AbortController; cleanup: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  timer.unref();
   const onExternalAbort = (): void => controller.abort();
   externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   return {

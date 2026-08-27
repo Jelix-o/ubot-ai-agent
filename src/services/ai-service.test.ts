@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
 import type { AiIdentityContext, ConversationTurn, SkillDefinition } from "../types.js";
-import { AiService, buildChatMessages, buildSystemPrompt } from "./ai-service.js";
+import { AiService, buildChatMessages, buildSystemPrompt, createCancellableTimeout } from "./ai-service.js";
 
 const skill: SkillDefinition = {
   id: "leijun",
@@ -20,6 +20,19 @@ const skill: SkillDefinition = {
   temperature: 0.86,
   maxContextTurns: 12,
 };
+
+test("createCancellableTimeout aborts when its timer is the only active handle", async () => {
+  const { controller, cleanup } = createCancellableTimeout(20);
+
+  try {
+    await new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    assert.equal(controller.signal.aborted, true);
+  } finally {
+    cleanup();
+  }
+});
 
 test("buildSystemPrompt includes target examples", () => {
   const prompt = buildSystemPrompt(skill);

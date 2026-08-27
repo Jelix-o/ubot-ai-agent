@@ -19,7 +19,6 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<
     const timer = setTimeout(() => {
       reject(new TimeoutError(timeoutMs));
     }, timeoutMs);
-    timer.unref();
     promise.then(
       (value) => {
         clearTimeout(timer);

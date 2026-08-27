@@ -99,3 +99,15 @@ test("localizeDataUrl takes precedence and feeds the vision path", async (t) => 
   const [image] = await pipeline.resolveForVision([{ file: "some-napcat-file" }]);
   assert.equal(image?.dataUrl, "data:image/png;base64,cafebabe");
 });
+
+test("stage1 times out a pending local cache operation when it is the only active handle", async () => {
+  const pipeline = new ImagePipeline({
+    localizeDataUrl: async () => new Promise<never>(() => undefined),
+    localSoftTimeoutMs: 20,
+  });
+
+  await assert.rejects(
+    () => pipeline.resolveForVision([{ file: "pending-napcat-file" }]),
+    (error: unknown) => error instanceof ImagePipelineError && error.tier === "image_unavailable",
+  );
+});

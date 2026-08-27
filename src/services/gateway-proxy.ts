@@ -80,7 +80,6 @@ export class GatewayProxy {
     const controller = new AbortController();
     const timeoutMs = options.timeoutMs ?? 50_000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref();
     const onExternalAbort = (): void => controller.abort();
     options.signal?.addEventListener("abort", onExternalAbort, { once: true });
 

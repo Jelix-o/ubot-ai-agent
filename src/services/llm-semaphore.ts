@@ -38,7 +38,6 @@ export class LlmSemaphore {
         }
         reject(new LlmSemaphoreTimeoutError(this.queueTimeoutMs));
       }, this.queueTimeoutMs);
-      timer.unref();
       this.waiters.push({
         resolve: () => {
           clearTimeout(timer);

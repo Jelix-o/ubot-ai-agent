@@ -75,3 +75,15 @@ test("call respects external abort signal", async () => {
   setTimeout(() => controller.abort(), 20);
   await assert.rejects(() => promise, /aborted/);
 });
+
+test("call enforces its internal timeout when it is the only active handle", async () => {
+  const proxy = new GatewayProxy(undefined);
+  const promise = proxy.call(async (signal) => {
+    await new Promise<void>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("timed out")), { once: true });
+    });
+    return "unreachable";
+  }, { timeoutMs: 20 });
+
+  await assert.rejects(() => promise, /timed out/);
+});
