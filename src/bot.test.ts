@@ -4933,9 +4933,10 @@ test("creates scheduled reminder through natural bot mention and sends due remin
       }),
     });
 
-    // The first due time must be inside 09:00-18:00 for both UTC CI runners
-    // and local UTC+8 development machines.
-    await withMockedNow(Date.parse("2026-05-27T08:00:00.000Z"), async () => {
+    // Use local clock constructors because reminder work hours are evaluated
+    // against the process-local clock in this legacy-compatible scheduler.
+    const reminderCreatedAt = new Date(2026, 4, 27, 9, 0, 0, 0);
+    await withMockedNow(reminderCreatedAt.getTime(), async () => {
       await app.handleGroupMessage(
         createEvent([
           { type: "at", data: { qq: "12345" } },
@@ -4948,17 +4949,17 @@ test("creates scheduled reminder through natural bot mention and sends due remin
     assert.match(transport.sent[0]?.text ?? "", /每 1 小时 提醒群友喝水/);
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T08:59:59.000Z"),
+      new Date(2026, 4, 27, 9, 59, 59, 0),
     );
     assert.equal(transport.sent.length, 1);
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T09:00:00.000Z"),
+      new Date(2026, 4, 27, 10, 0, 0, 0),
     );
     assert.equal(transport.sent[1]?.text, "【提醒喝水小助手】提醒：喝水");
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-28T09:00:00.000Z"),
+      new Date(2026, 4, 28, 10, 0, 0, 0),
     );
     assert.equal(transport.sent[2]?.text, "【提醒喝水小助手】又到点了，继续喝水");
   });
@@ -4975,7 +4976,7 @@ test("scheduled reminder ai rewrite is disabled by default", async () => {
       groupId: "67890",
       creatorUserId: "99999",
       request: { intervalMinutes: 60, topic: "drink water" },
-      now: new Date("2026-05-27T08:00:00.000Z"),
+      now: new Date(2026, 4, 27, 9, 0, 0, 0),
     });
     const { app, transport } = createApp({
       aiService,
@@ -4983,7 +4984,7 @@ test("scheduled reminder ai rewrite is disabled by default", async () => {
     });
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T09:00:00.000Z"),
+      new Date(2026, 4, 27, 10, 0, 0, 0),
     );
 
     assert.equal(aiService.calls.length, 0);
@@ -5015,7 +5016,8 @@ test("disabled scheduled reminder command blocks natural bot mention creation", 
       ]),
     });
 
-    await withMockedNow(Date.parse("2026-05-27T01:00:00.000Z"), async () => {
+    const reminderCreatedAt = new Date(2026, 4, 27, 9, 0, 0, 0);
+    await withMockedNow(reminderCreatedAt.getTime(), async () => {
       await app.handleGroupMessage(
         createEvent([
           { type: "at", data: { qq: "12345" } },
@@ -5100,7 +5102,7 @@ test("scheduled reminder group switch pauses and resumes due tasks", async () =>
     await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#定时任务 关闭" } }], 99999, 67890));
 
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T02:00:00.000Z"),
+      new Date(2026, 4, 27, 10, 0, 0, 0),
     );
 
     assert.equal(groupConfigService.groups[0]?.scheduledRemindersEnabled, false);
@@ -5108,7 +5110,7 @@ test("scheduled reminder group switch pauses and resumes due tasks", async () =>
 
     await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#定时任务 开启" } }], 99999, 67890));
     await (app as unknown as { runScheduledReminderTick(now?: Date): Promise<void> }).runScheduledReminderTick(
-      new Date("2026-05-27T02:01:00.000Z"),
+      new Date(2026, 4, 27, 10, 1, 0, 0),
     );
 
     assert.equal(groupConfigService.groups[0]?.scheduledRemindersEnabled, true);
