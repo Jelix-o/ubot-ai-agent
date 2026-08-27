@@ -12,6 +12,7 @@
 - Anthropic provider 使用官方 SDK；provider capability 合约明确流式、视觉、超时和降级能力。OpenAI-compatible provider 保持可用。
 - Linux 生产改为 `ubot-ingress`、`ubot-worker`、`ubot-admin` 三个独立 unit 和 `ubot.target`，用 `/opt/ai-project-releases/current` 原子选择 release。
 - 发布流程同时生成 Windows ZIP、Linux tar.gz 和两个 SHA-256 文件；GitHub Actions 在双平台完整测试和摘要复核后创建 Release。
+- 修正 Linux 部署包对 tar 标准根目录条目 `./` 的校验，保留对绝对路径和父目录穿越条目的拒绝，确保正式归档可由部署脚本安全解包。
 - 新增独立的 [V3 迁移说明](docs/MIGRATION-v3.md)、[管理员恢复说明](docs/ADMIN-RECOVERY-v3.md)、[生产运维说明](docs/OPERATIONS-v3.md) 和 [回滚边界说明](docs/ROLLBACK-v3.md)。
 
 ## 升级要求

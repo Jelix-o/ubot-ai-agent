@@ -407,6 +407,11 @@ NODE
 validate_archive_paths() {
   local entry normalized
   while IFS= read -r entry; do
+    # `tar -C <dir> -czf archive.tar.gz .` emits this harmless root entry.
+    # It is not a filesystem path to extract outside the staging directory.
+    if [[ "$entry" == "./" ]]; then
+      continue
+    fi
     normalized="${entry#./}"
     case "$normalized" in
       ""|/*|../*|*/../*|*/..)

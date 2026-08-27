@@ -20,6 +20,7 @@ test("V3 Linux deployer verifies assets, migrates once, and atomically selects c
   assert.match(deployer, /sha256sum/);
   assert.match(deployer, /matching downloaded GitHub Release assets/);
   assert.match(deployer, /validate_archive_paths/);
+  assert.match(deployer, /\[\[ "\$entry" == "\.\/" \]\]/);
   assert.match(deployer, /verify-release-source\.mjs" "\$STAGING_DIR"/);
   assert.match(deployer, /VACUUM INTO/);
   assert.match(deployer, /persistent-files\.tar\.gz/);
