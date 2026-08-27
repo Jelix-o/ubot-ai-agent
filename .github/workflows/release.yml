@@ -96,7 +96,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node -p 'require("./package.json").version')"
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Upload Linux assets
@@ -129,7 +129,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="$(node -p \"require('./package.json').version\")"
+          VERSION="$(node -p 'require("./package.json").version')"
           test -n "$VERSION"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Only a final semantic version can create a formal GitHub Release: $VERSION" >&2
