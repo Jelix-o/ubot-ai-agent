@@ -95,7 +95,9 @@ jobs:
       - name: Read version
         id: version
         shell: bash
-        run: echo "value=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Upload Linux assets
         uses: actions/upload-artifact@v4
