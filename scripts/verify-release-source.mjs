@@ -13,32 +13,18 @@ if (!version) {
 const allowedRootNames = new Set([
   ".env.example",
   ".env.server-2022.example",
-  ".gitattributes",
-  ".github",
-  ".gitignore",
-  ".npmrc",
   "COMMANDS.md",
   "README.md",
-  "RELEASE-v1.0.1.md",
-  "RELEASE-v1.0.2.md",
-  "RELEASE-v1.1.0.md",
-  "RELEASE-v2.0.0.md",
-  "RELEASE-v2.0.1.md",
-  "RELEASE-v2.0.2.md",
-  "RELEASE-v2.0.3.md",
-  "RELEASE-v3.0.0-rc.1.md",
   `RELEASE-v${version}.md`,
-  "V1.0.1-LOCAL-AUDIT.md",
-  "V1.0.2-LOCAL-AUDIT.md",
-  "admin",
+  "assets",
+  "deploy",
   "dist",
-  "managed-skills",
+  "docs",
   "package-lock.json",
   "package.json",
-  "run.cmd",
   "scripts",
-  "src",
-  "tsconfig.json",
+  "run.cmd",
+  "install-deps.cmd",
 ]);
 const requiredPaths = [
   "package.json",
@@ -47,11 +33,53 @@ const requiredPaths = [
   "COMMANDS.md",
   `RELEASE-v${version}.md`,
   "dist/index.js",
-  "managed-skills/itexpert.json",
-  "scripts/start-prod.sh",
+  "assets/huixian-profile.json",
   "scripts/deploy-linux-release.sh",
-  "scripts/migrate-participation-mode.mjs",
+  "scripts/configure-v3-network.mjs",
+  "scripts/migrate-v3-state.mjs",
+  "deploy/systemd/ubot-ingress.service.template",
+  "deploy/systemd/ubot-worker.service.template",
+  "deploy/systemd/ubot-admin.service.template",
+  "deploy/systemd/ubot.target.template",
+  "deploy/systemd/ubot-maintenance.service.template",
+  "deploy/systemd/ubot-maintenance.timer.template",
+  "deploy/nginx/bot.9958.uk.conf",
+  "docs/OPERATIONS-v3.md",
+  "docs/ADMIN-RECOVERY-v3.md",
+  "docs/MIGRATION-v3.md",
+  "docs/ROLLBACK-v3.md",
 ];
+// Every non-dist file is enumerated deliberately.  A release is a portable
+// binary artifact, not a source checkout: accepting a broad `scripts/`,
+// `assets/`, or `docs/` directory would make it too easy to ship local state
+// or an operator-only helper by accident.
+const approvedStaticFiles = new Set([
+  ".env.example",
+  ".env.server-2022.example",
+  "COMMANDS.md",
+  "README.md",
+  `RELEASE-v${version}.md`,
+  "package-lock.json",
+  "package.json",
+  "run.cmd",
+  "install-deps.cmd",
+  "assets/huixian-profile.json",
+  "docs/OPERATIONS-v3.md",
+  "docs/ADMIN-RECOVERY-v3.md",
+  "docs/MIGRATION-v3.md",
+  "docs/ROLLBACK-v3.md",
+  "scripts/configure-v3-network.mjs",
+  "scripts/deploy-linux-release.sh",
+  "scripts/migrate-v3-state.mjs",
+  "scripts/verify-release-source.mjs",
+  "deploy/nginx/bot.9958.uk.conf",
+  "deploy/systemd/ubot-ingress.service.template",
+  "deploy/systemd/ubot-worker.service.template",
+  "deploy/systemd/ubot-admin.service.template",
+  "deploy/systemd/ubot.target.template",
+  "deploy/systemd/ubot-maintenance.service.template",
+  "deploy/systemd/ubot-maintenance.timer.template",
+]);
 const forbiddenRootNames = new Set([
   ".env",
   ".git",
@@ -65,7 +93,17 @@ const forbiddenRootNames = new Set([
   "release",
   "skills",
 ]);
-const forbiddenSuffixes = [".pem", ".key", ".p12", ".pfx", ".sqlite", ".db"];
+const forbiddenSuffixes = [
+  ".pem", ".key", ".p12", ".pfx", ".sqlite", ".db", ".sqlite3",
+  ".sqlite-wal", ".sqlite-shm", ".log", ".jsonl", ".enc", ".bak",
+];
+const forbiddenFileNames = new Set([
+  "id_rsa",
+  "id_ed25519",
+  "credentials",
+  "credentials.json",
+  "secrets.json",
+]);
 
 const rootEntries = await readdir(root, { withFileTypes: true });
 const unexpected = rootEntries
@@ -103,6 +141,10 @@ process.stdout.write(`${JSON.stringify({ root, version, requiredPaths }, null, 2
 async function scan(target) {
   const metadata = await lstat(target);
   const rel = path.relative(root, target).split(path.sep).join("/");
+  if (rel && !isApprovedReleasePath(rel, metadata.isDirectory())) {
+    leakedFiles.push(`${rel} (not an approved release path)`);
+    return;
+  }
   if (metadata.isSymbolicLink()) {
     leakedFiles.push(`${rel} (symbolic links are forbidden in release bundles)`);
     return;
@@ -116,13 +158,24 @@ async function scan(target) {
   if (!metadata.isFile()) return;
 
   const lower = path.basename(target).toLowerCase();
-  if (lower === ".env" || forbiddenSuffixes.some((suffix) => lower.endsWith(suffix))) {
+  if (
+    lower === ".env" ||
+    (lower.startsWith(".env.") && lower !== ".env.example" && lower !== ".env.server-2022.example") ||
+    forbiddenFileNames.has(lower) ||
+    forbiddenSuffixes.some((suffix) => lower.endsWith(suffix))
+  ) {
     leakedFiles.push(rel);
     return;
   }
   if (metadata.size > 16 * 1024 * 1024) {
     leakedFiles.push(`${rel} (unexpectedly large ${metadata.size} bytes)`);
   }
+}
+
+function isApprovedReleasePath(relativePath, isDirectory) {
+  if (relativePath === "dist" || relativePath.startsWith("dist/")) return true;
+  if (!isDirectory) return approvedStaticFiles.has(relativePath);
+  return [...approvedStaticFiles].some((candidate) => candidate.startsWith(`${relativePath}/`));
 }
 
 async function BunLikeRead(filePath) {

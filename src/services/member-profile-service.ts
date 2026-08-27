@@ -3,7 +3,6 @@ import type {
   GroupManualIdentity,
   GroupMemberProfile,
   GroupMemory,
-  GroupMemoryCandidate,
   NapcatGroupMember,
 } from "../types.js";
 
@@ -24,9 +23,7 @@ export function buildGroupMemberProfiles(args: {
   groupConfig: GroupBotConfig;
   napcatMembers?: NapcatGroupMember[];
   memories?: GroupMemory[];
-  candidates?: GroupMemoryCandidate[];
   memoryCounts?: SubjectCount[];
-  pendingCandidateCounts?: SubjectCount[];
 }): GroupMemberProfile[] {
   const profiles = new Map<string, GroupMemberProfile>();
   const disabledUserIds = new Set(args.groupConfig.memoryDisabledUserIds ?? []);
@@ -45,7 +42,6 @@ export function buildGroupMemberProfiles(args: {
       ...(manual?.note ? { note: manual.note } : {}),
       hasManualIdentity: Boolean(manual),
       memoryCount: 0,
-      pendingCandidateCount: 0,
       memoryDisabled: disabledUserIds.has(userId),
     });
   }
@@ -70,7 +66,6 @@ export function buildGroupMemberProfiles(args: {
           ...(identity.note ? { note: identity.note } : {}),
           hasManualIdentity: true,
           memoryCount: 0,
-          pendingCandidateCount: 0,
           memoryDisabled: disabledUserIds.has(userId),
         });
       }
@@ -91,23 +86,9 @@ export function buildGroupMemberProfiles(args: {
     ensureProfile(profiles, args.groupConfig, item.userId).memoryCount += item.count;
   }
 
-  for (const candidate of args.candidates ?? []) {
-    if (!candidate.subjectUserId || candidate.status !== "pending") {
-      continue;
-    }
-    ensureProfile(profiles, args.groupConfig, candidate.subjectUserId).pendingCandidateCount += 1;
-  }
-
-  for (const item of args.pendingCandidateCounts ?? []) {
-    if (!item.userId || item.count <= 0) {
-      continue;
-    }
-    ensureProfile(profiles, args.groupConfig, item.userId).pendingCandidateCount += item.count;
-  }
-
   return [...profiles.values()].sort((left, right) => {
-    const leftActive = left.memoryCount + left.pendingCandidateCount;
-    const rightActive = right.memoryCount + right.pendingCandidateCount;
+    const leftActive = left.memoryCount;
+    const rightActive = right.memoryCount;
     if (leftActive !== rightActive) {
       return rightActive - leftActive;
     }
@@ -161,7 +142,6 @@ function ensureProfile(
     ...(manual?.note ? { note: manual.note } : {}),
     hasManualIdentity: Boolean(manual),
     memoryCount: 0,
-    pendingCandidateCount: 0,
     memoryDisabled: (groupConfig.memoryDisabledUserIds ?? []).includes(userId),
   };
   profiles.set(userId, created);

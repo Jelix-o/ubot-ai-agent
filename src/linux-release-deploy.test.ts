@@ -1,203 +1,162 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import os from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-const scriptPath = path.resolve("scripts", "deploy-linux-release.sh");
+const deployer = readFileSync(path.resolve("scripts", "deploy-linux-release.sh"), "utf8");
+const networkConfigurator = readFileSync(path.resolve("scripts", "configure-v3-network.mjs"), "utf8");
+const ingressUnit = readFileSync(path.resolve("deploy", "systemd", "ubot-ingress.service.template"), "utf8");
+const workerUnit = readFileSync(path.resolve("deploy", "systemd", "ubot-worker.service.template"), "utf8");
+const adminUnit = readFileSync(path.resolve("deploy", "systemd", "ubot-admin.service.template"), "utf8");
+const targetUnit = readFileSync(path.resolve("deploy", "systemd", "ubot.target.template"), "utf8");
+const maintenanceUnit = readFileSync(path.resolve("deploy", "systemd", "ubot-maintenance.service.template"), "utf8");
+const maintenanceTimer = readFileSync(path.resolve("deploy", "systemd", "ubot-maintenance.timer.template"), "utf8");
+const nginx = readFileSync(path.resolve("deploy", "nginx", "bot.9958.uk.conf"), "utf8");
+const releaseWorkflow = readFileSync(path.resolve(".github", "workflows", "release.yml"), "utf8");
+const ciWorkflow = readFileSync(path.resolve(".github", "workflows", "ci.yml"), "utf8");
+const localPublisher = readFileSync(path.resolve("scripts", "publish-github-release.ps1"), "utf8");
 
-test("Linux release deployer keeps persistent state, quarantines approved Outbox rows, and switches release atomically", (t) => {
-  if (process.platform === "win32") {
-    t.skip("Linux deployment execution requires POSIX symlink semantics");
-    return;
+test("V3 Linux deployer verifies assets, migrates once, and atomically selects current", () => {
+  assert.match(deployer, /sha256sum/);
+  assert.match(deployer, /matching downloaded GitHub Release assets/);
+  assert.match(deployer, /validate_archive_paths/);
+  assert.match(deployer, /verify-release-source\.mjs" "\$STAGING_DIR"/);
+  assert.match(deployer, /VACUUM INTO/);
+  assert.match(deployer, /persistent-files\.tar\.gz/);
+  assert.match(deployer, /migrate-v3-state\.mjs" --execute/);
+  assert.match(deployer, /UBOT_STATE_ENCRYPTION_KEY/);
+  assert.doesNotMatch(deployer, /ADMIN_TOTP_ENCRYPTION_KEY/);
+  assert.doesNotMatch(deployer, /ADMIN_SESSION_SECRET/);
+  assert.match(deployer, /UBOT_HUIXIAN_PROFILE_PATH/);
+  assert.match(deployer, /cutover_may_have_started=1/);
+  assert.match(deployer, /Do not restart the legacy service/);
+  assert.match(deployer, /restore_napcat_config/);
+  assert.match(deployer, /restore_persistent_env/);
+  assert.match(deployer, /restore_nginx_config/);
+  assert.match(deployer, /mv -Tf .*CURRENT_LINK/);
+  assert.match(deployer, /systemctl disable "\$LEGACY_SERVICE"/);
+  assert.match(deployer, /systemctl start ubot\.target/);
+  assert.match(deployer, /systemctl start ubot-maintenance\.timer/);
+  assert.match(deployer, /UBOT_NGINX_CONFIG/);
+  assert.match(deployer, /onebot11_428881701\.json/);
+  assert.match(deployer, /network\.websocketClients\.0\.url/);
+  assert.match(deployer, /NAPCAT_URL_PATH="network\.websocketClients\.0\.url"/);
+  assert.match(deployer, /NAPCAT_REVERSE_URL" != "ws:\/\/172\.21\.0\.1:6199\/onebot\/ws"/);
+  assert.match(deployer, /UBOT_NAPCAT_CONTAINER/);
+  assert.match(deployer, /preflight_napcat_container/);
+  assert.match(deployer, /docker inspect --type container --format '\{\{\.State\.Running\}\}'/);
+  assert.match(deployer, /docker restart --time 30 "\$NAPCAT_CONTAINER"/);
+  assert.match(deployer, /verify_updated_network_env/);
+  assert.match(deployer, /ADMIN_HTTP_ENABLED.*true/);
+  assert.match(deployer, /nginx -t/);
+  assert.match(deployer, /status" != "401/);
+});
+
+test("V3 Linux deployer rejects inaccessible mutable state before stopping writers", () => {
+  assert.match(deployer, /preflight_cutover_write_access\(\)/);
+  assert.match(deployer, /require_mutable_directory/);
+  assert.match(deployer, /require_atomically_replaceable_file/);
+  assert.match(deployer, /require_sudo_mutable_directory/);
+  assert.match(deployer, /require_sudo_atomically_replaceable_file/);
+  assert.match(deployer, /PERSISTENT_ENV/);
+  assert.match(deployer, /NAPCAT_CONFIG/);
+  assert.match(deployer, /DB_PATH/);
+  assert.match(deployer, /ROLLBACK_DIR/);
+  assert.match(deployer, /LEGACY_SOURCE_PATHS/);
+  assert.match(deployer, /preflight_legacy_skills_access/);
+  assert.match(deployer, /Release root/);
+
+  const preflightCall = deployer.lastIndexOf("preflight_cutover_write_access\n");
+  const stopWriters = deployer.indexOf("# Stop all writers before backing up SQLite or reading legacy JSON files.");
+  const cutover = deployer.indexOf("cutover_may_have_started=1");
+  const rollbackArm = deployer.indexOf("rollback_armed=1", stopWriters);
+  assert.ok(preflightCall >= 0, "deployer must invoke the mutable-path preflight");
+  assert.ok(preflightCall < stopWriters, "mutable-path preflight must run before stopping writers");
+  assert.ok(preflightCall < cutover, "mutable-path preflight must run before V3 cutover can start");
+  assert.ok(rollbackArm > stopWriters && rollbackArm < cutover, "rollback must be armed before either writer is stopped");
+});
+
+test("V3 deployer safely updates a root-owned NapCat JSON through a validated staging copy", () => {
+  assert.match(deployer, /NAPCAT_CONFIG_STAGING="\$BACKUP_DIR\/napcat-config\.v3\.json"/);
+  assert.match(deployer, /cp "\$NAPCAT_CONFIG" "\$NAPCAT_CONFIG_STAGING"/);
+  assert.match(deployer, /--napcat-config "\$NAPCAT_CONFIG_STAGING"/);
+  assert.match(deployer, /install_napcat_config_atomically/);
+  assert.match(deployer, /stat -c '%u:%g:%a' "\$NAPCAT_CONFIG"/);
+  assert.match(deployer, /install -m "\$file_mode" -o "\$owner_id" -g "\$group_id"/);
+  assert.match(deployer, /sudo -n mv -f "\$root_staging" "\$NAPCAT_CONFIG"/);
+  assert.match(deployer, /napcat_restart_attempted=1/);
+  assert.match(deployer, /restart_napcat_container \|\| echo "NapCat restart after configuration restore failed/);
+
+  const v3Start = deployer.lastIndexOf("sudo systemctl start ubot.target");
+  const napcatRestart = deployer.lastIndexOf("restart_napcat_container");
+  assert.ok(v3Start >= 0 && napcatRestart > v3Start, "NapCat restarts only after V3 is started");
+});
+
+test("V3 infrastructure keeps process ownership and network exposure narrow", () => {
+  for (const unit of [ingressUnit, workerUnit, adminUnit]) {
+    assert.match(unit, /WorkingDirectory=\/opt\/ai-project-releases\/current/);
+    assert.match(unit, /EnvironmentFile=\/opt\/ai-project\/\.env/);
+    assert.match(unit, /ExecStart=\/usr\/bin\/env node dist\/index\.js/);
+    assert.match(unit, /Restart=on-failure/);
+    assert.match(unit, /NoNewPrivileges=true/);
   }
-  const root = mkdtempSync(path.join(os.tmpdir(), "ubot-linux-deploy-"));
-  const appRoot = path.join(root, "app");
-  const releaseRoot = path.join(root, "releases");
-  const systemdRoot = path.join(root, "systemd");
-  const fakeBin = path.join(root, "bin");
-  const logPath = path.join(root, "calls.log");
-  const serviceName = "ubot-test.service";
-  const oldRelease = path.join(releaseRoot, "v2.0.3");
-  const newVersion = "3.0.0-rc.2";
-  const newRelease = path.join(releaseRoot, `v${newVersion}`);
-  const bundleRoot = path.join(root, "bundle");
-  const bundlePath = path.join(root, "bundle.tar.gz");
-  const dbPath = path.join(appRoot, "data", "shared", "bot-shared.db");
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-
-  mkdirSync(path.join(appRoot, "data", "shared"), { recursive: true });
-  mkdirSync(path.join(appRoot, "skills"), { recursive: true });
-  mkdirSync(path.join(oldRelease, "config"), { recursive: true });
-  mkdirSync(path.join(releaseRoot), { recursive: true });
-  mkdirSync(path.join(systemdRoot, `${serviceName}.d`), { recursive: true });
-  mkdirSync(fakeBin, { recursive: true });
-  writeFileSync(path.join(appRoot, ".env"), "BOT_QQ=12345\n");
-  writeFileSync(path.join(oldRelease, "config", "groups.json"), JSON.stringify({
-    groups: [group("10001"), { ...group("10002"), participationMode: "selected_members" }],
-  }, null, 2));
-  writeFileSync(path.join(appRoot, "skills", "owner-skill.json"), "{\"ownerManaged\":true}\n");
-  writeFileSync(path.join(systemdRoot, `${serviceName}.d`, "release-v2.0.3.conf"), "[Service]\nWorkingDirectory=old\n");
-  symlinkSync(oldRelease, path.join(releaseRoot, "current"));
-  createDatabase(dbPath);
-  createBundle(bundleRoot, bundlePath, newVersion, root);
-  writeFakeSystemctl(path.join(fakeBin, "systemctl"), logPath, oldRelease, serviceName);
-  writeFakeSudo(path.join(fakeBin, "sudo"));
-  writeFakePgrep(path.join(fakeBin, "pgrep"));
-  writeFakeCurl(path.join(fakeBin, "curl"));
-
-  execFileSync("bash", [scriptPath, newVersion, bundlePath, "291,292,293,294"], {
-    cwd: root,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
-      UBOT_APP_ROOT: appRoot,
-      UBOT_RELEASE_ROOT: releaseRoot,
-      UBOT_SYSTEMD_ROOT: systemdRoot,
-      UBOT_SERVICE_NAME: serviceName,
-    },
-  });
-
-  assert.equal(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8").includes("mentions_only"), true);
-  const migrated = JSON.parse(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8"));
-  assert.deepEqual(migrated.groups.map((item: { participationMode: string }) => item.participationMode), [
-    "mentions_only",
-    "selected_members",
-  ]);
-  assert.equal(readFileSync(path.join(appRoot, "skills", "owner-skill.json"), "utf8"), "{\"ownerManaged\":true}\n");
-  assert.equal(readFileSync(path.join(newRelease, ".env"), "utf8"), "BOT_QQ=12345\n");
-  assert.equal(readFileSync(path.join(newRelease, "config", "groups.json"), "utf8").includes("mentions_only"), true);
-  assert.equal(readFileSync(path.join(newRelease, "skills", "owner-skill.json"), "utf8"), "{\"ownerManaged\":true}\n");
-  assert.equal(readlinkSync(path.join(releaseRoot, "current")), newRelease);
-  assert.match(readFileSync(path.join(systemdRoot, `${serviceName}.d`, "release.conf"), "utf8"), new RegExp(`WorkingDirectory=${escapeRegex(newRelease)}`));
-  assert.equal(readdirSync(path.join(appRoot, "release-backups")).length, 1);
-
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  assert.deepEqual(
-    db.prepare("SELECT id, status, retry_after FROM outbox ORDER BY id").all(),
-    [
-      { id: 291, status: "failed", retry_after: null },
-      { id: 292, status: "failed", retry_after: null },
-      { id: 293, status: "failed", retry_after: null },
-      { id: 294, status: "failed", retry_after: null },
-    ],
-  );
-  db.close();
-  const calls = readFileSync(logPath, "utf8");
-  assert.match(calls, /stop ubot-test\.service/);
-  assert.match(calls, /daemon-reload/);
-  assert.match(calls, /start ubot-test\.service/);
+  assert.match(ingressUnit, /BOT_ROLE=ingress/);
+  assert.match(workerUnit, /BOT_ROLE=worker/);
+  assert.match(adminUnit, /BOT_ROLE=admin/);
+  assert.match(targetUnit, /Wants=ubot-ingress\.service ubot-worker\.service ubot-admin\.service/);
+  assert.match(maintenanceUnit, /migrate-v3-state\.mjs --maintenance --execute/);
+  assert.match(maintenanceTimer, /Description=Run UBot V3 retention maintenance hourly/);
+  assert.match(maintenanceTimer, /OnCalendar=\*-\*-\* \*:17:00 UTC/);
+  assert.match(networkConfigurator, /172\.21\.0\.1:6199/);
+  assert.match(networkConfigurator, /approvedNapcatUrlPath/);
+  assert.match(networkConfigurator, /network\.websocketClients\.0\.url/);
+  assert.match(networkConfigurator, /writeAtomic/);
 });
 
-test("Linux release deployer preserves the declared release safety gates", () => {
-  const source = readFileSync(scriptPath, "utf8");
+test("V3 release source verification restricts artifacts to the audited runtime allow-list", () => {
+  const verifier = readFileSync(path.resolve("scripts", "verify-release-source.mjs"), "utf8");
+  const linuxPackager = readFileSync(path.resolve("scripts", "package-linux-release.sh"), "utf8");
+  const windowsPackager = readFileSync(path.resolve("scripts", "package-win.ps1"), "utf8");
 
-  assert.match(source, /VACUUM INTO/);
-  assert.match(source, /persistent-files\.tar\.gz/);
-  assert.match(source, /status = 'failed', retry_after = NULL/);
-  assert.match(source, /managed-skills\/itexpert\.json/);
-  assert.match(source, /migrate-participation-mode\.mjs/);
-  assert.match(source, /--mode mentions_only/);
-  assert.match(source, /ln -s "\$PERSISTENT_ENV"/);
-  assert.match(source, /ln -s "\$PERSISTENT_DATA"/);
-  assert.match(source, /ln -s "\$PERSISTENT_SKILLS"/);
-  assert.match(source, /ln -s "\$PERSISTENT_CONFIG"/);
-  assert.match(source, /schema_migrations/);
-  assert.match(source, /rollback\(\)/);
-  assert.match(source, /rm -f "\$CONTROLLED_DROPIN"/);
+  assert.match(verifier, /approvedStaticFiles/);
+  assert.match(verifier, /not an approved release path/);
+  assert.match(verifier, /\.sqlite-wal/);
+  assert.match(linuxPackager, /npm ci --omit=dev --ignore-scripts/);
+  assert.match(windowsPackager, /npm ci --omit=dev --ignore-scripts/);
+  assert.match(windowsPackager, /set "NODE_ENV=production"/);
+  for (const document of ["MIGRATION-v3.md", "ROLLBACK-v3.md"]) {
+    const pathPattern = new RegExp(`docs/${document.replace(".", "\\.")}`);
+    assert.match(verifier, pathPattern);
+    assert.match(linuxPackager, pathPattern);
+    assert.match(windowsPackager, pathPattern);
+  }
 });
 
-function createDatabase(dbPath: string): void {
-  const db = new DatabaseSync(dbPath);
-  db.exec(`
-    CREATE TABLE outbox (
-      id INTEGER PRIMARY KEY,
-      status TEXT NOT NULL,
-      retry_after INTEGER,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER
-    );
-    INSERT INTO outbox (id, status, retry_after) VALUES
-      (291, 'failed', 1),
-      (292, 'failed', 1),
-      (293, 'failed', 1),
-      (294, 'failed', 1);
-    CREATE TABLE schema_migrations (
-      version INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      applied_at INTEGER NOT NULL
-    );
-    INSERT INTO schema_migrations VALUES
-      (1, 'reconcile-pre-versioned-schema', 1),
-      (2, 'add-group-config-shadow-snapshots', 1),
-      (3, 'add-system-settings-shadow-snapshots', 1),
-      (4, 'add-outbox-delivery-attempts', 1);
-  `);
-  db.close();
-}
+test("formal release publication is gated to the matching final tag", () => {
+  assert.match(releaseWorkflow, /needs: \[package-windows, package-linux\]/);
+  assert.match(releaseWorkflow, /!contains\(github\.ref_name, '-'\)/);
+  assert.match(releaseWorkflow, /matching v\$VERSION tag/);
+  assert.match(releaseWorkflow, /verify-release-assets\.mjs/);
+  assert.match(localPublisher, /Only a final semantic package version/);
+  assert.match(localPublisher, /Formal GitHub Release tag must match package\.json exactly/);
+  assert.match(localPublisher, /Current checkout must be the exact \$Tag commit/);
+});
 
-function createBundle(bundleRoot: string, bundlePath: string, version: string, root: string): void {
-  mkdirSync(path.join(bundleRoot, "dist"), { recursive: true });
-  mkdirSync(path.join(bundleRoot, "scripts"), { recursive: true });
-  writeFileSync(path.join(bundleRoot, "package.json"), JSON.stringify({ name: "ubot", version }));
-  writeFileSync(path.join(bundleRoot, "package-lock.json"), JSON.stringify({ name: "ubot", version, lockfileVersion: 1, requires: true }));
-  writeFileSync(path.join(bundleRoot, "dist", "index.js"), "export {};\n");
-  writeFileSync(path.join(bundleRoot, "scripts", "start-prod.sh"), "#!/usr/bin/env bash\nexit 0\n");
-  writeFileSync(path.join(bundleRoot, "scripts", "migrate-participation-mode.mjs"), readFileSync(path.resolve("scripts", "migrate-participation-mode.mjs")));
-  writeFileSync(path.join(bundleRoot, "scripts", "deploy-linux-release.sh"), readFileSync(scriptPath));
-  execFileSync("tar", ["-C", bundleRoot, "-czf", bundlePath, "."], { cwd: root });
-}
+test("continuous integration validates the complete suite on Windows and Linux", () => {
+  assert.match(ciWorkflow, /pull_request:/);
+  assert.match(ciWorkflow, /ubuntu-latest/);
+  assert.match(ciWorkflow, /windows-latest/);
+  assert.match(ciWorkflow, /node-version: "22"/);
+  assert.match(ciWorkflow, /npm ci/);
+  assert.match(ciWorkflow, /npm test/);
+});
 
-function writeFakeSystemctl(filePath: string, logPath: string, oldRelease: string, serviceName: string): void {
-  writeFileSync(filePath, `#!/usr/bin/env bash
-set -euo pipefail
-echo "$*" >> ${shellQuote(logPath)}
-if [[ "$1" == "is-active" ]]; then echo active; exit 0; fi
-if [[ "$1" == "show" && "$*" == *"WorkingDirectory"* ]]; then echo ${shellQuote(oldRelease)}; exit 0; fi
-if [[ "$1" == "show" && "$*" == *"MainPID"* ]]; then echo 4242; exit 0; fi
-if [[ "$1" == "start" && "$2" == ${shellQuote(serviceName)} ]]; then exit 0; fi
-exit 0
-`);
-  chmodSync(filePath, 0o755);
-}
-
-function writeFakeSudo(filePath: string): void {
-  writeFileSync(filePath, `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "-n" && $# -eq 2 && "$2" == "true" ]]; then exit 0; fi
-if [[ "$1" == "-n" ]]; then shift; fi
-exec "$@"
-`);
-  chmodSync(filePath, 0o755);
-}
-
-function writeFakePgrep(filePath: string): void {
-  writeFileSync(filePath, "#!/usr/bin/env bash\nprintf '5001\\n5002\\n5003\\n'\n");
-  chmodSync(filePath, 0o755);
-}
-
-function writeFakeCurl(filePath: string): void {
-  writeFileSync(filePath, "#!/usr/bin/env bash\nprintf '401'\n");
-  chmodSync(filePath, 0o755);
-}
-
-function group(groupId: string): Record<string, unknown> {
-  return {
-    groupId,
-    currentSkillId: "huixian",
-    allowedSkillIds: ["huixian"],
-    switcherUserIds: [],
-    liveChatUserIds: [],
-  };
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+test("V3 Nginx terminates HTTPS and does not trust client forwarded protocol", () => {
+  assert.match(nginx, /return 301 https:\/\/\$host\$request_uri/);
+  assert.match(nginx, /proxy_pass http:\/\/127\.0\.0\.1:6200/);
+  assert.match(nginx, /proxy_set_header X-Forwarded-Proto https/);
+  assert.doesNotMatch(nginx, /\$http_x_forwarded_proto/);
+  assert.match(nginx, /Content-Security-Policy/);
+  assert.match(nginx, /location ~ \^\/\(\?:\\\.env/);
+  assert.doesNotMatch(nginx, /assets\(\?:\/\|\$\)/);
+});

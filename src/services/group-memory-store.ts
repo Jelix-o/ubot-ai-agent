@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 
 import type { GroupMemory, GroupMemoryEvidence, GroupMemoryType } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 const EVIDENCE_SUMMARY_LIMIT = 2400;
 const MEMORY_CONTENT_LIMIT = 1800;
@@ -17,7 +18,6 @@ export interface GroupMemoryListPageArgs {
   type?: GroupMemoryType;
   enabled?: boolean;
   query?: string;
-  excludeProfileRecords?: boolean;
   page: number;
   pageSize: number;
 }
@@ -70,7 +70,10 @@ export class GroupMemoryStore {
   private cachedData?: GroupMemoryFile;
   private cachedVersion?: string;
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async list(groupId?: string): Promise<GroupMemory[]> {
     const data = await this.readData();
@@ -93,7 +96,6 @@ export class GroupMemoryStore {
       .filter((memory) => !args.subjectUserId || memory.subjectUserId === args.subjectUserId)
       .filter((memory) => !args.type || memory.type === args.type)
       .filter((memory) => args.enabled === undefined || memory.enabled === args.enabled)
-      .filter((memory) => !args.excludeProfileRecords || !isProfileRecordMemory(memory))
       .filter((memory) => !query || memoryMatchesQuery(memory, query))
       .sort(compareMemoriesNewestFirst);
     const total = matched.length;
@@ -187,6 +189,35 @@ export class GroupMemoryStore {
   }
 
   async create(input: GroupMemoryInput): Promise<GroupMemory> {
+    if (this.v3State) {
+      const state = this.v3State;
+      return this.v3State.runAtomically(() => {
+        const now = new Date().toISOString();
+        const createdAt = input.createdAt ?? now;
+        const memory = normalizeMemory({
+          id: randomUUID(),
+          groupId: input.groupId,
+          type: input.type,
+          ...(input.subjectUserId ? { subjectUserId: input.subjectUserId } : {}),
+          title: input.title,
+          content: input.content,
+          confidence: input.confidence ?? 0.7,
+          source: input.source ?? "admin",
+          createdAt,
+          updatedAt: createdAt,
+          enabled: input.enabled ?? true,
+          ...(input.evidence ? { evidence: input.evidence } : {}),
+        });
+        state.saveMemory(memory);
+        if (input.supersedes) {
+          const superseded = state.getMemory(input.supersedes);
+          if (superseded) {
+            state.saveMemory({ ...superseded, supersededBy: memory.id, updatedAt: now });
+          }
+        }
+        return cloneMemory(memory);
+      });
+    }
     const data = await this.readData();
     const now = new Date().toISOString();
     const createdAt = input.createdAt ?? now;
@@ -221,6 +252,21 @@ export class GroupMemoryStore {
   }
 
   async update(id: string, patch: Partial<GroupMemoryInput> & { enabled?: boolean }): Promise<GroupMemory | undefined> {
+    if (this.v3State) {
+      return this.v3State.runAtomically(() => {
+        const current = this.v3State!.getMemory(id);
+        if (!current) return undefined;
+        const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
+        const updated = normalizeMemory({
+          ...current,
+          ...patch,
+          subjectUserId: hasSubjectUserId ? patch.subjectUserId : current.subjectUserId,
+          updatedAt: new Date().toISOString(),
+        });
+        this.v3State!.saveMemory(updated);
+        return cloneMemory(updated);
+      });
+    }
     const data = await this.readData();
     const index = data.memories.findIndex((memory) => memory.id === id);
     if (index === -1) {
@@ -241,6 +287,7 @@ export class GroupMemoryStore {
   }
 
   async remove(id: string): Promise<boolean> {
+    if (this.v3State) return this.v3State.deleteMemory(id);
     const data = await this.readData();
     const next = data.memories.filter((memory) => memory.id !== id);
     if (next.length === data.memories.length) {
@@ -253,6 +300,7 @@ export class GroupMemoryStore {
   }
 
   async removeMany(ids: string[]): Promise<number> {
+    if (this.v3State) return this.v3State.deleteMemories(ids);
     const idSet = new Set(ids);
     if (idSet.size === 0) {
       return 0;
@@ -268,6 +316,9 @@ export class GroupMemoryStore {
   }
 
   private async readData(): Promise<GroupMemoryFile> {
+    if (this.v3State) {
+      return { memories: this.v3State.listMemories().map(cloneMemory) };
+    }
     const version = await fileVersion(this.filePath);
     if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
@@ -289,6 +340,9 @@ export class GroupMemoryStore {
   }
 
   private async writeData(data: GroupMemoryFile): Promise<void> {
+    if (this.v3State) {
+      throw new Error("v3_state_repository_requires_operation_level_writes");
+    }
     await writeJsonFileAtomic(this.filePath, data);
     this.cachedData = data;
     this.cachedVersion = await fileVersion(this.filePath);
@@ -402,14 +456,6 @@ function normalizeMemory(value: Partial<GroupMemory>): GroupMemory {
       ? { supersededBy: value.supersededBy.trim().slice(0, 80) }
       : {}),
   };
-}
-
-function isProfileRecordMemory(memory: GroupMemory): boolean {
-  return memory.source.startsWith("daily_profile_review:") ||
-    memory.source.startsWith("profile_record:") ||
-    memory.title.includes("画像总结") ||
-    memory.title.includes("昨日画像") ||
-    memory.title.includes("群聊画像");
 }
 
 function compareMemoriesNewestFirst(left: GroupMemory, right: GroupMemory): number {

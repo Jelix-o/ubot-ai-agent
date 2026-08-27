@@ -4,20 +4,16 @@ import { logError, logInfo, logWarn } from "./logger.js";
 import type { AiService } from "./services/ai-service.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
-import type { ConversationStore } from "./services/conversation-store.js";
 import type {
   ConversationContextTurn,
   ConversationContextRepository,
   ConversationRoute,
 } from "./services/conversation-context-repository.js";
 import type { ConversationContextRouter } from "./services/conversation-context-router.js";
-import type { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
-import { getYesterdayDateKey } from "./services/daily-profile-review-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupLock } from "./services/group-lock.js";
-import type { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
-import { GroupMemoryDeduplicateService } from "./services/group-memory-deduplicate-service.js";
+import { ExplicitMemoryService } from "./services/explicit-memory-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ImagePipelineError, type ImagePipeline } from "./services/image-pipeline.js";
@@ -26,10 +22,10 @@ import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
-import type { ProfileRecordStore } from "./services/profile-record-store.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
-import { isRetiredLegacySkillId, type SkillService } from "./services/skill-service.js";
+import type { SkillService } from "./services/skill-service.js";
+import type { CharacterProfileService } from "./services/character-profile-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
@@ -72,7 +68,6 @@ import { withTimeout } from "./utils/with-timeout.js";
 import { parseVoiceCommand } from "./utils/voice-command.js";
 import { ParticipationPolicy, type ParticipationDecision } from "./services/participation-policy.js";
 
-const SKILL_PREFIX = "#技能";
 const MODEL_PREFIX = "#模型";
 const VOICE_PREFIX = "#语音";
 const VOICE_REPLY_PREFIX = "#语音回复";
@@ -95,17 +90,12 @@ const SERVER_PREFIX = "#服务器";
 const OPS_ALERT_PREFIX = "#告警";
 const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
-const YESTERDAY_PROFILE_PREFIX = "#昨日画像";
-const GROUP_PROFILE_PREFIX = "#群聊画像";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const LIVE_CHAT_TICK_MS = 15 * 1000;
 const DAILY_REPORT_TICK_MS = 30 * 1000;
 const HOLIDAY_COUNTDOWN_TICK_MS = 30 * 1000;
 const SCHEDULED_REMINDER_TICK_MS = 30 * 1000;
 const OPS_ALERT_TICK_MS = 30 * 1000;
-const DAILY_PROFILE_REVIEW_TICK_MS = 30 * 1000;
-const MEMORY_CANDIDATE_FLUSH_TICK_MS = 2 * 60 * 1000;
-const MEMORY_DEDUP_TICK_MS = 30 * 1000;
 const DAILY_REPORT_CLEANUP_TICK_MS = 60 * 1000;
 const MAINTENANCE_TICK_MS = 10_000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
@@ -119,10 +109,6 @@ const MEMORY_PERCENT_ALERT_THRESHOLD = 85;
 const MEMORY_PERCENT_RECOVERY_THRESHOLD = 75;
 const PROCESS_RSS_ALERT_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_TOKEN_COST_CONTROL: TokenCostControlSettings = {
-  memoryCandidateExtractionEnabled: false,
-  memoryCandidateNormalizationEnabled: false,
-  memorySemanticDedupEnabled: false,
-  dailyProfileReviewAiEnabled: false,
   dailyReportAiQuipEnabled: false,
   chatSummaryAiEnabled: false,
   scheduledReminderAiRewriteEnabled: false,
@@ -171,12 +157,9 @@ const RUNTIME_COMMAND_SPECS = {
   mute: { builtinPrefix: MUTE_COMMAND, builtinAliases: [UNMUTE_COMMAND] },
   operation_log: { builtinPrefix: OPERATION_LOG_PREFIX, builtinAliases: [] },
   ops_alert: { builtinPrefix: OPS_ALERT_PREFIX, builtinAliases: [] },
-  profile_overall: { builtinPrefix: GROUP_PROFILE_PREFIX, builtinAliases: [] },
-  profile_yesterday: { builtinPrefix: YESTERDAY_PROFILE_PREFIX, builtinAliases: [] },
   scheduled_reminder: { builtinPrefix: SCHEDULED_REMINDER_PREFIX, builtinAliases: [] },
   server: { builtinPrefix: SERVER_PREFIX, builtinAliases: [] },
   status: { builtinPrefix: STATUS_PREFIX, builtinAliases: [] },
-  skill: { builtinPrefix: SKILL_PREFIX, builtinAliases: [] },
   sing: { builtinPrefix: SING_PREFIX, builtinAliases: [] },
   voice: { builtinPrefix: VOICE_PREFIX, builtinAliases: [] },
   voice_reply: { builtinPrefix: VOICE_REPLY_PREFIX, builtinAliases: [] },
@@ -231,13 +214,6 @@ class CausalContextPersistenceError extends Error {
   }
 }
 
-interface ProfileTargetResolution {
-  status: "ok" | "ambiguous" | "not_found";
-  userId?: string;
-  label?: string;
-  matches?: string[];
-}
-
 export interface TransportHealthStatus {
   ok: boolean;
   detail: string;
@@ -286,6 +262,17 @@ interface ConversationOptions {
   scenarioInstruction?: string;
 }
 
+/**
+ * The bot only clears and flushes conversation context. Keeping this
+ * dependency narrow lets the V3 SQLite adapter replace the retired JSON store
+ * without exposing either storage implementation to orchestration logic.
+ */
+export interface ConversationRuntimeStore {
+  clearUser(groupId: string, userId: string): Promise<void>;
+  clearGroup(groupId: string): Promise<void>;
+  flush(): Promise<void>;
+}
+
 interface HandleGroupMessageOptions {
   /**
    * Granted only by the worker after its receipt-table check has established
@@ -310,6 +297,7 @@ interface OpsAlertRuntimeState {
 
 export class BotApplication {
   private readonly participationPolicy = new ParticipationPolicy();
+  private readonly explicitMemoryService?: ExplicitMemoryService;
   private maintenanceTimer?: NodeJS.Timeout;
   private maintenanceTickRunning = false;
 
@@ -319,11 +307,7 @@ export class BotApplication {
   private lastHolidayCountdownTick = 0;
   private lastScheduledReminderTick = 0;
   private lastOpsAlertTick = 0;
-  private lastDailyProfileReviewTick = 0;
-  private lastMemoryCandidateFlushTick = 0;
-  private lastMemoryDedupTick = 0;
   private lastDailyReportCleanupTick = 0;
-  private lastMemoryDedupDateKey?: string;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -336,8 +320,8 @@ export class BotApplication {
   constructor(
     private readonly transport: MessageTransport,
     private readonly groupConfigService: GroupConfigService,
-    private readonly skillService: SkillService,
-    private readonly conversationStore: ConversationStore,
+    private readonly skillService: Pick<SkillService | CharacterProfileService, "getSkill">,
+    private readonly conversationStore: ConversationRuntimeStore,
     private readonly aiService: RuntimeAiService,
     private readonly ttsService: RuntimeTtsService,
     private readonly dailyReportService: DailyReportService,
@@ -350,13 +334,15 @@ export class BotApplication {
     private readonly allowNapCatAiVoiceFallback = false,
     private readonly groupMemoryStore?: GroupMemoryStore,
     private readonly knowledgeBaseStore?: KnowledgeBaseStore,
-    private readonly groupMemoryCandidateService?: GroupMemoryCandidateService,
-    private readonly dailyProfileReviewService?: DailyProfileReviewService,
+    // Retired V1/V2 constructor slots remain so external embeddings do not
+    // silently shift subsequent dependencies. V3 never invokes them.
+    _retiredCandidateService?: unknown,
+    _retiredProfileService?: unknown,
     private readonly adminPublicBaseUrl?: string,
-    private readonly profileReplyAiService?: RuntimeAiService,
+    _retiredProfileAiService?: unknown,
     private readonly replyModelLabels: Partial<Record<ReplyModelMode, string>> = {},
     private readonly systemSettingsStore?: SystemSettingsStore,
-    private readonly profileRecordStore?: ProfileRecordStore,
+    _retiredProfileRecordStore?: unknown,
     private readonly realtimeLookupService?: Pick<RealtimeLookupService, "lookup">,
     private readonly groupTranscriptService = new GroupTranscriptService(),
     private readonly atmosphereSummarizer?: Pick<AtmosphereSummarizer, "getSummary" | "summarizeNow">,
@@ -366,7 +352,11 @@ export class BotApplication {
     private startupAlertsEnabled = true,
     private readonly conversationContextRepository?: ConversationContextRepository,
     private readonly conversationContextRouter?: ConversationContextRouter,
-  ) {}
+  ) {
+    if (this.groupMemoryStore) {
+      this.explicitMemoryService = new ExplicitMemoryService(this.groupMemoryStore);
+    }
+  }
 
   start(): void {
     if (this.maintenanceTimer) {
@@ -420,21 +410,6 @@ export class BotApplication {
       if (now - this.lastOpsAlertTick >= OPS_ALERT_TICK_MS) {
         this.lastOpsAlertTick = now;
         await this.runOpsAlertTick();
-      }
-
-      if (now - this.lastDailyProfileReviewTick >= DAILY_PROFILE_REVIEW_TICK_MS) {
-        this.lastDailyProfileReviewTick = now;
-        await this.runDailyProfileReviewTick();
-      }
-
-      if (now - this.lastMemoryCandidateFlushTick >= MEMORY_CANDIDATE_FLUSH_TICK_MS) {
-        this.lastMemoryCandidateFlushTick = now;
-        await this.runMemoryCandidateFlushTick();
-      }
-
-      if (now - this.lastMemoryDedupTick >= MEMORY_DEDUP_TICK_MS) {
-        this.lastMemoryDedupTick = now;
-        await this.runMemoryDedupTick();
       }
 
       if (now - this.lastDailyReportCleanupTick >= DAILY_REPORT_CLEANUP_TICK_MS) {
@@ -498,6 +473,11 @@ export class BotApplication {
     const commandText = extractCommandText(event.message);
     const runtimeCommands = await this.getRuntimeCommands();
 
+    if (isRetiredPersonaCommand(commandText)) {
+      await this.sendText(groupId, "会仙人格是唯一固定角色；人格市场已退休，角色切换已关闭。");
+      return;
+    }
+
     const blacklistCommand = matchRuntimeCommand(commandText, runtimeCommands, "blacklist");
     if (blacklistCommand) {
       const handled = await this.handleBlacklistCommand(groupConfig, event, blacklistCommand.rewrittenText);
@@ -545,25 +525,13 @@ export class BotApplication {
 
     const memoryCommand = matchRuntimeCommand(commandText, runtimeCommands, "memory");
     if (memoryCommand) {
-      await this.handleMemoryStatusCommand(groupConfig, event);
+      await this.handleMemoryCommand(groupConfig, event, memoryCommand.rewrittenText);
       return;
     }
 
     const knowledgeCommand = matchRuntimeCommand(commandText, runtimeCommands, "knowledge");
     if (knowledgeCommand) {
       await this.handleKnowledgeStatusCommand(groupConfig, event);
-      return;
-    }
-
-    const yesterdayProfileCommand = matchRuntimeCommand(commandText, runtimeCommands, "profile_yesterday");
-    if (yesterdayProfileCommand) {
-      await this.handleYesterdayProfileCommand(groupConfig, event, yesterdayProfileCommand.rewrittenText);
-      return;
-    }
-
-    const overallProfileCommand = matchRuntimeCommand(commandText, runtimeCommands, "profile_overall");
-    if (overallProfileCommand) {
-      await this.handleGroupProfileCommand(groupConfig, event, overallProfileCommand.rewrittenText);
       return;
     }
 
@@ -643,12 +611,6 @@ export class BotApplication {
       } else {
         await this.handleConversationCommand(groupConfig, event, conversationCommand.rewrittenText);
       }
-      return;
-    }
-
-    const skillCommand = matchRuntimeCommand(commandText, runtimeCommands, "skill");
-    if (skillCommand) {
-      await this.handleSkillCommand(groupConfig, event, skillCommand.rewrittenText);
       return;
     }
 
@@ -799,7 +761,15 @@ export class BotApplication {
     }
 
     await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
-    this.queueMemoryCandidateMessage(groupConfig, event, parsedMessage);
+
+    const explicitMemoryRequest = parseExplicitMemoryRequest(parsedMessage.text);
+    if (
+      explicitMemoryRequest &&
+      (parsedMessage.hasAtBot || options.allowReplyWithoutMention === true)
+    ) {
+      await this.handleExplicitMemoryRequest(groupConfig, event, explicitMemoryRequest);
+      return;
+    }
 
     if (allowsKeywordParticipation(groupConfig) && await this.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
       const keywordMentionUserIds = this.resolveKeywordReplyMentionUserIds(
@@ -879,6 +849,7 @@ export class BotApplication {
     const groupConfig = await this.groupConfigService.getGroup(groupId);
     const normalized = text.trim();
     const isCommand = normalized.startsWith("#");
+    const isExplicitMemoryRequest = Boolean(parseExplicitMemoryRequest(normalized));
     const isConversationCommand = /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(normalized);
     const keywordTriggered = groupConfig && groupConfig.enabled !== false && groupConfig.botMuted !== true && allowsKeywordParticipation(groupConfig)
       ? await this.shouldTriggerKeyword(groupConfig, text, hasAtBot, text)
@@ -895,6 +866,7 @@ export class BotApplication {
       groupEnabled: groupConfig?.enabled !== false,
       groupMuted: groupConfig?.botMuted === true,
       isCommand,
+      isExplicitMemoryRequest,
       isConversationCommand,
       keywordTriggered,
     });
@@ -1166,225 +1138,6 @@ export class BotApplication {
       }
     } catch (error) {
       logError("Scheduled reminder scheduler failed.", {
-        error: (error as Error).message,
-      });
-    }
-  }
-
-  private async runDailyProfileReviewTick(now = new Date()): Promise<void> {
-    if (!this.dailyProfileReviewService) {
-      return;
-    }
-
-    let dailyProfileReviewTime = "00:00";
-    let dailyProfileReviewAiEnabled = DEFAULT_TOKEN_COST_CONTROL.dailyProfileReviewAiEnabled;
-    if (this.systemSettingsStore) {
-      try {
-        const settings = await this.systemSettingsStore.get();
-        if (settings.dailyProfileReviewEnabled === false) {
-          return;
-        }
-        dailyProfileReviewTime = settings.dailyProfileReviewTime || dailyProfileReviewTime;
-        dailyProfileReviewAiEnabled = settings.tokenCostControl.dailyProfileReviewAiEnabled;
-      } catch (error) {
-        logWarn("Failed to read daily profile review settings; continuing with default schedule.", {
-          error: (error as Error).message,
-        });
-      }
-    }
-    if (!dailyProfileReviewAiEnabled) {
-      return;
-    }
-
-    if (!isScheduledClockMinute(now, dailyProfileReviewTime)) {
-      return;
-    }
-
-    const dateKey = getYesterdayDateKey(now);
-
-    try {
-      const groups = await this.getEnabledGroupConfigs();
-      for (const groupConfig of groups) {
-        try {
-          const members = await this.buildMemberProfiles(groupConfig);
-          const result = await this.dailyProfileReviewService.reviewGroup({
-            groupConfig,
-            dateKey,
-            members,
-          });
-          await this.createDailyProfileRecords(groupConfig, result.createdSummaries ?? []);
-          if (result.createdCount > 0) {
-            logInfo("Reviewed daily member profiles.", {
-              groupId: groupConfig.groupId,
-              dateKey,
-              createdCount: result.createdCount,
-            });
-          }
-        } catch (error) {
-          logError("Daily profile review tick failed.", {
-            groupId: groupConfig.groupId,
-            dateKey,
-            error: (error as Error).message,
-          });
-        }
-      }
-    } catch (error) {
-      logError("Daily profile review scheduler failed.", {
-        dateKey,
-        error: (error as Error).message,
-      });
-    }
-  }
-
-  private async runMemoryCandidateFlushTick(): Promise<void> {
-    if (!this.groupMemoryCandidateService) {
-      return;
-    }
-
-    try {
-      const tokenCostControl = await this.getTokenCostControl();
-      if (!tokenCostControl.memoryCandidateExtractionEnabled) {
-        return;
-      }
-      if (this.profileReplyAiService) {
-        const health = await this.profileReplyAiService.checkHealth();
-        if (!health.ok) {
-          logWarn("Skipped group memory candidate flush because profile AI is unhealthy.", {
-            detail: health.detail,
-            model: health.model,
-            baseUrl: health.baseUrl,
-            checkedAt: health.checkedAt,
-            cached: health.cached,
-          });
-          return;
-        }
-      }
-      const enabledGroups = await this.getEnabledGroupConfigs();
-      const results = await this.groupMemoryCandidateService.flushAll(enabledGroups.map((group) => group.groupId), {
-        normalizeNonChineseCandidates: tokenCostControl.memoryCandidateNormalizationEnabled,
-        excludedSubjectUserIdsByGroup: Object.fromEntries(enabledGroups.map((group) => [
-          group.groupId,
-          group.memoryDisabledUserIds ?? [],
-        ])),
-      });
-      for (const result of results) {
-        logInfo("Flushed buffered group memory messages.", { ...result });
-      }
-    } catch (error) {
-      logWarn("Memory candidate flush tick failed.", {
-        error: (error as Error).message,
-      });
-    }
-  }
-
-  private async createDailyProfileRecords(groupConfig: GroupBotConfig, summaries: GroupMemory[]): Promise<void> {
-    if (!this.profileRecordStore || summaries.length === 0) {
-      return;
-    }
-
-    for (const summary of summaries) {
-      if (
-        !summary.subjectUserId ||
-        (groupConfig.memoryDisabledUserIds ?? []).includes(summary.subjectUserId)
-      ) {
-        continue;
-      }
-      try {
-        await this.profileRecordStore.create({
-          groupId: groupConfig.groupId,
-          userId: summary.subjectUserId,
-          type: "yesterday",
-          summary: summary.content,
-          sourceMemoryCount: 1,
-          generatedAt: summary.updatedAt,
-          createdBy: "daily_profile_review",
-        });
-      } catch (error) {
-        logWarn("Failed to create daily profile public record.", {
-          groupId: groupConfig.groupId,
-          userId: summary.subjectUserId,
-          memoryId: summary.id,
-          error: (error as Error).message,
-        });
-      }
-    }
-  }
-
-  private async runMemoryDedupTick(now = new Date()): Promise<void> {
-    if (!this.groupMemoryStore || !this.systemSettingsStore) {
-      return;
-    }
-
-    let memoryDedupTime = "23:00";
-    let memoryDedupSemanticTimeoutMs = 10 * 60 * 1000;
-    let memorySemanticDedupEnabled = DEFAULT_TOKEN_COST_CONTROL.memorySemanticDedupEnabled;
-    try {
-      const settings = await this.systemSettingsStore.get();
-      if (settings.memoryDedupEnabled !== true) {
-        const dateKey = getHongKongDateKey(now);
-        this.lastMemoryDedupDateKey = dateKey;
-        logInfo("Skipped nightly memory dedup because it is not explicitly enabled in system settings.", { dateKey });
-        return;
-      }
-      memoryDedupTime = settings.memoryDedupTime || memoryDedupTime;
-      memoryDedupSemanticTimeoutMs = settings.memoryDedupSemanticTimeoutMinutes * 60 * 1000;
-      memorySemanticDedupEnabled = settings.tokenCostControl.memorySemanticDedupEnabled;
-    } catch (error) {
-      logWarn("Skipped nightly memory dedup because system settings could not be read.", {
-        error: (error as Error).message,
-      });
-      return;
-    }
-
-    if (!isScheduledClockMinute(now, memoryDedupTime)) {
-      return;
-    }
-
-    const dateKey = getHongKongDateKey(now);
-    if (this.lastMemoryDedupDateKey === dateKey) {
-      return;
-    }
-
-    this.lastMemoryDedupDateKey = dateKey;
-    try {
-      const enabledGroups = await this.getEnabledGroupConfigs();
-      const deduplicateService = new GroupMemoryDeduplicateService(
-        this.groupMemoryStore,
-        this.profileReplyAiService && memorySemanticDedupEnabled
-          ? (args) => this.profileReplyAiService!.judgeMemorySemanticRelation(args)
-          : undefined,
-      );
-      for (const group of enabledGroups) {
-        try {
-          const result = await deduplicateService.deduplicateMemberMemoriesForGroup(group.groupId, {
-            useSemanticJudge: memorySemanticDedupEnabled,
-            semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
-            excludedSubjectUserIds: group.memoryDisabledUserIds,
-          });
-          if (
-            result.decisionCount > 0 ||
-            result.appliedCount > 0 ||
-            result.skippedCount > 0 ||
-            result.semanticStats.called > 0 ||
-            result.semanticStats.timedOut > 0
-          ) {
-            logInfo("Nightly member memory dedup completed.", {
-              ...result,
-              semanticJudgeEnabled: memorySemanticDedupEnabled,
-              semanticTimeoutMs: memoryDedupSemanticTimeoutMs,
-            });
-          }
-        } catch (error) {
-          logWarn("Nightly member memory dedup failed for group.", {
-            groupId: group.groupId,
-            dateKey,
-            error: (error as Error).message,
-          });
-        }
-      }
-    } catch (error) {
-      logWarn("Nightly member memory dedup scheduler failed.", {
-        dateKey,
         error: (error as Error).message,
       });
     }
@@ -1715,10 +1468,7 @@ export class BotApplication {
       this.scheduledReminderService.listGroupTasks(groupId),
       this.getTransportHealthStatus(),
     ]);
-    const [profileHealth, modelSummary] = await Promise.all([
-      this.getProfileHealthSummary(),
-      this.getSystemModelSummary(),
-    ]);
+    const modelSummary = await this.getSystemModelSummary();
     const missingAllowedSkillIds = groupConfig.allowedSkillIds.filter((_, index) => !allowedSkills[index]);
     const nextTask = scheduledTasks
       .filter((task) => task.enabled !== false)
@@ -1729,7 +1479,6 @@ export class BotApplication {
       [
         `健康检查：群 ${groupId}`,
         `NapCat：${transportHealth.ok ? "正常" : "异常"}，${transportHealth.detail}`,
-        profileHealth ? `画像/记忆模型：${profileHealth}` : "画像/记忆模型：未配置健康检查",
         modelSummary ? `系统模型配置：${modelSummary}` : "系统模型配置：未启用后台模型配置",
         `当前技能：${currentSkill ? `正常（${currentSkill.id} / ${currentSkill.name}）` : `异常，找不到 ${groupConfig.currentSkillId}`}`,
         `允许技能：${missingAllowedSkillIds.length === 0 ? `正常（${groupConfig.allowedSkillIds.length} 个）` : `异常，缺失 ${missingAllowedSkillIds.join("、")}`}`,
@@ -1739,21 +1488,6 @@ export class BotApplication {
         `管理员配置：本群 ${groupConfig.switcherUserIds.length} 人，黑名单 ${(groupConfig.blacklistedUserIds ?? []).length} 人`,
       ].join("\n"),
     );
-  }
-
-  private async getProfileHealthSummary(): Promise<string | undefined> {
-    if (!this.profileReplyAiService) {
-      return undefined;
-    }
-    try {
-      const health = await this.profileReplyAiService.checkHealth({ cacheTtlMs: 60 * 1000 });
-      const status = health.ok ? "正常" : "异常";
-      const failure = health.failureKind ? `，类型 ${formatFailureKind(health.failureKind)}` : "";
-      const latency = Number.isFinite(health.latencyMs) ? `，${health.latencyMs}ms` : "";
-      return `${status}${failure}${latency}，${health.model}`;
-    } catch (error) {
-      return `异常，健康检查失败：${error instanceof Error ? error.message : String(error)}`;
-    }
   }
 
   private async getSystemModelSummary(): Promise<string | undefined> {
@@ -3143,57 +2877,6 @@ export class BotApplication {
     }
   }
 
-  private async handleSkillCommand(
-    groupConfig: GroupBotConfig,
-    event: NapcatGroupMessageEvent,
-    commandText: string,
-  ): Promise<void> {
-    const userId = String(event.user_id);
-    const normalized = commandText.replace(/\s+/g, " ").trim();
-
-    if (normalized === SKILL_PREFIX || normalized === `${SKILL_PREFIX} 列表`) {
-      const allowedSkills = await this.getAllowedSkills(groupConfig);
-      const lines = allowedSkills.map((skill) => {
-        const activeMark = skill.id === groupConfig.currentSkillId ? " [当前]" : "";
-        return `- ${skill.id}: ${skill.name}${activeMark}`;
-      });
-      await this.sendText(groupConfig.groupId, `可用技能列表：\n${lines.join("\n")}`);
-      return;
-    }
-
-    const switchRegex = new RegExp(`^${escapeRegex(SKILL_PREFIX)}\\s*切换\\s+(.+)$`);
-    const match = normalized.match(switchRegex);
-    if (!match) {
-      await this.sendText(groupConfig.groupId, "技能命令格式：#技能 列表 或 #技能 切换 <skillId>");
-      return;
-    }
-
-    if (!(await this.isAdmin(groupConfig, userId))) {
-      await this.sendText(groupConfig.groupId, "你没有切换技能的权限");
-      return;
-    }
-
-    const targetSkillId = match[1].trim();
-    if (!groupConfig.allowedSkillIds.includes(targetSkillId)) {
-      await this.sendText(groupConfig.groupId, `当前群不允许切换到技能 ${targetSkillId}`);
-      return;
-    }
-
-    const skill = await this.skillService.getSkill(targetSkillId);
-    if (!skill) {
-      await this.sendText(groupConfig.groupId, `技能 ${targetSkillId} 不存在`);
-      return;
-    }
-
-    await this.groupConfigService.updateCurrentSkill(groupConfig.groupId, targetSkillId);
-    await this.clearGroupConversationContext(groupConfig.groupId);
-    await this.logAdminOperation(groupConfig.groupId, userId, "技能切换", targetSkillId, skill.name);
-    await this.sendText(
-      groupConfig.groupId,
-      `已切换到技能 ${skill.name}（${skill.id}），并清空当前群上下文`,
-    );
-  }
-
   private async handleModelCommand(
     groupConfig: GroupBotConfig,
     event: NapcatGroupMessageEvent,
@@ -3243,29 +2926,94 @@ export class BotApplication {
     );
   }
 
-  private async handleMemoryStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
+  private async handleMemoryCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    commandText: string,
+  ): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
+    const suffix = commandText.slice(MEMORY_PREFIX.length).trim();
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
-      await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
+    if (!suffix || ["状态", "查看"].includes(suffix)) {
+      if (!(await this.isAdmin(groupConfig, userId))) {
+        await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
+        return;
+      }
+      const memories = this.groupMemoryStore ? await this.groupMemoryStore.list(groupId) : [];
+      const enabledCount = memories.filter((memory) => memory.enabled).length;
+      await this.sendText(
+        groupId,
+        [
+          `群记忆状态：群 ${groupId}`,
+          `记忆：${enabledCount}/${memories.length} 条启用`,
+          `写入方式：${MEMORY_PREFIX} <内容> 或 @我 请记住 <内容>`,
+          `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
+        ].join("\n"),
+      );
       return;
     }
 
-    const memories = this.groupMemoryStore ? await this.groupMemoryStore.list(groupId) : [];
-    const pendingCandidates = this.groupMemoryCandidateService
-      ? await this.groupMemoryCandidateService.list({ groupId, status: "pending" })
-      : [];
-    const enabledCount = memories.filter((memory) => memory.enabled).length;
-    await this.sendText(
-      groupId,
-      [
-        `群记忆状态：群 ${groupId}`,
-        `长期记忆：${enabledCount}/${memories.length} 条启用`,
-        `候选记忆：${pendingCandidates.length} 条待审核`,
-        `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
-      ].join("\n"),
-    );
+    const content = stripExplicitMemoryLead(suffix);
+    await this.captureExplicitMemory(groupConfig, event, content, "explicit_command");
+  }
+
+  private async handleExplicitMemoryRequest(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    content: string,
+  ): Promise<void> {
+    await this.captureExplicitMemory(groupConfig, event, content, "explicit_request");
+  }
+
+  private async captureExplicitMemory(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    content: string,
+    source: "explicit_command" | "explicit_request",
+  ): Promise<void> {
+    if (!this.explicitMemoryService) {
+      await this.sendText(groupConfig.groupId, "记忆功能未启用");
+      return;
+    }
+
+    const userId = String(event.user_id);
+    try {
+      const result = await this.explicitMemoryService.capture({
+        groupId: groupConfig.groupId,
+        userId,
+        userName: resolveSenderName(event),
+        content,
+        source,
+      }, {
+        memoryDisabled: (groupConfig.memoryDisabledUserIds ?? []).includes(userId),
+      });
+      if (result.status === "created") {
+        await this.sendText(groupConfig.groupId, "好，我记下了。之后我会在这个群里按这条信息更好地回应你。");
+        return;
+      }
+      if (result.status === "duplicate") {
+        await this.sendText(groupConfig.groupId, "这条我已经记下了，不会重复存一遍。");
+        return;
+      }
+      if (result.status === "disabled") {
+        await this.sendText(groupConfig.groupId, "你的记忆收集目前已关闭，所以这条我不会保存。");
+        return;
+      }
+      if (result.status === "unsafe") {
+        await this.sendText(groupConfig.groupId, "这类凭据或敏感信息别交给我保存；请放进可信的密码管理器里。 ");
+        return;
+      }
+      await this.sendText(groupConfig.groupId, `记忆内容不能为空。用法：${MEMORY_PREFIX} <内容>`);
+    } catch (error) {
+      logWarn("Failed to save explicit member memory.", {
+        groupId: groupConfig.groupId,
+        userId,
+        source,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.sendText(groupConfig.groupId, "这条记忆暂时没有保存成功，稍后再试一次。 ");
+    }
   }
 
   private async handleKnowledgeStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
@@ -3286,82 +3034,6 @@ export class BotApplication {
         `FAQ：${enabledCount}/${entries.length} 条启用`,
         `检索方式：关键词 Top 3`,
         `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
-      ].join("\n"),
-    );
-  }
-
-  private async handleYesterdayProfileCommand(
-    groupConfig: GroupBotConfig,
-    event: NapcatGroupMessageEvent,
-    commandText: string,
-  ): Promise<void> {
-    if (!this.dailyProfileReviewService || !this.groupMemoryStore) {
-      await this.sendText(groupConfig.groupId, "画像功能未启用");
-      return;
-    }
-
-    const requesterUserId = String(event.user_id);
-    const target = await this.resolveProfileCommandTarget(groupConfig, requesterUserId, commandText, YESTERDAY_PROFILE_PREFIX);
-    if (!target.userId) {
-      await this.sendText(groupConfig.groupId, target.label ?? "没有找到这个成员，请用 QQ 号查询");
-      return;
-    }
-    const members = await this.buildMemberProfiles(groupConfig);
-    const dateKey = getYesterdayDateKey(new Date());
-    const summary = await this.dailyProfileReviewService.getOrCreateYesterdaySummary({
-      groupConfig,
-      userId: target.userId,
-      dateKey,
-      members,
-    });
-    const label = buildProfileDisplayLabel(groupConfig, target.userId, members);
-    if (!summary) {
-      await this.sendText(groupConfig.groupId, `${label} 昨日没有新增画像记忆`);
-      return;
-    }
-
-    await this.sendText(
-      groupConfig.groupId,
-      [
-        `${label} 的昨日画像（${dateKey}）：`,
-        await this.buildConfiguredProfileShortSummary(summary.content),
-      ].join("\n"),
-    );
-  }
-
-  private async handleGroupProfileCommand(
-    groupConfig: GroupBotConfig,
-    event: NapcatGroupMessageEvent,
-    commandText: string,
-  ): Promise<void> {
-    if (!this.dailyProfileReviewService || !this.groupMemoryStore) {
-      await this.sendText(groupConfig.groupId, "画像功能未启用");
-      return;
-    }
-
-    const requesterUserId = String(event.user_id);
-    const target = await this.resolveProfileCommandTarget(groupConfig, requesterUserId, commandText, GROUP_PROFILE_PREFIX);
-    if (!target.userId) {
-      await this.sendText(groupConfig.groupId, target.label ?? "没有找到这个成员，请用 QQ 号查询");
-      return;
-    }
-    const members = await this.buildMemberProfiles(groupConfig);
-    const label = buildProfileDisplayLabel(groupConfig, target.userId, members);
-    const summary = await this.dailyProfileReviewService.summarizeOverallProfile({
-      groupConfig,
-      userId: target.userId,
-      members,
-    });
-    if (!summary) {
-      await this.sendText(groupConfig.groupId, `${label} 暂无群聊画像`);
-      return;
-    }
-
-    await this.sendText(
-      groupConfig.groupId,
-      [
-        `${label} 的群聊画像：`,
-        await this.buildConfiguredProfileShortSummary(summary),
       ].join("\n"),
     );
   }
@@ -3412,25 +3084,6 @@ export class BotApplication {
       senderCard: event.sender?.card,
       senderNickname: event.sender?.nickname,
     });
-  }
-
-  private async buildConfiguredProfileShortSummary(summary: string): Promise<string> {
-    return buildProfileShortSummary(summary, await this.getProfileShortSummaryMaxChars());
-  }
-
-  private async getProfileShortSummaryMaxChars(): Promise<number> {
-    if (!this.systemSettingsStore) {
-      return 140;
-    }
-    try {
-      const settings = await this.systemSettingsStore.get();
-      return settings.profileShortSummaryMaxChars;
-    } catch (error) {
-      logWarn("Failed to load profile short summary limit; using default.", {
-        error: (error as Error).message,
-      });
-      return 140;
-    }
   }
 
   private isLiveChatUser(groupConfig: GroupBotConfig, userId: string): boolean {
@@ -3487,31 +3140,6 @@ export class BotApplication {
     return (groupConfig.blacklistedUserIds ?? []).includes(userId);
   }
 
-  private queueMemoryCandidateMessage(
-    groupConfig: GroupBotConfig,
-    event: NapcatGroupMessageEvent,
-    parsedMessage: ReturnType<typeof parseGroupMessage>,
-  ): void {
-    const userId = String(event.user_id);
-    if (
-      !this.groupMemoryCandidateService ||
-      groupConfig.enabled === false ||
-      (groupConfig.memoryDisabledUserIds ?? []).includes(userId) ||
-      !parsedMessage.text ||
-      parsedMessage.images.length > 0
-    ) {
-      return;
-    }
-
-    this.groupMemoryCandidateService.queueMessage({
-      groupId: groupConfig.groupId,
-      userId,
-      userName: resolveSenderName(event),
-      text: parsedMessage.text,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
   private checkAndTriggerRepeat(groupId: string, text: string): boolean {
     const now = Date.now();
     const state = this.groupRepeatStates.get(groupId);
@@ -3537,29 +3165,30 @@ export class BotApplication {
   }
 
   private async resolveSkill(groupConfig: GroupBotConfig): Promise<SkillDefinition> {
-    const skill = await this.skillService.getSkill(groupConfig.currentSkillId);
-    if (skill) {
-      return skill;
+    // Production SkillService only returns huixian. Querying the configured id
+    // first keeps compatibility with test and third-party in-memory adapters;
+    // any persisted legacy id naturally falls back to huixian in production.
+    const configured = await this.skillService.getSkill(groupConfig.currentSkillId);
+    if (configured) {
+      return configured;
     }
-    if (isRetiredLegacySkillId(groupConfig.currentSkillId)) {
-      const fallback = await this.skillService.getSkill("huixian");
-      if (fallback) {
-        logWarn("Retired skill configuration fell back to huixian.", {
-          groupId: groupConfig.groupId,
-          retiredSkillId: groupConfig.currentSkillId,
-        });
-        return fallback;
-      }
-      throw new Error(`Retired skill ${groupConfig.currentSkillId} cannot fall back because huixian is not available.`);
+    const huixian = await this.skillService.getSkill("huixian");
+    if (huixian) {
+      logWarn("Legacy persona configuration fell back to huixian.", {
+        groupId: groupConfig.groupId,
+        configuredSkillId: groupConfig.currentSkillId,
+      });
+      return huixian;
     }
-    throw new Error(`Skill ${groupConfig.currentSkillId} not found.`);
+    throw new Error("Huixian persona is not available.");
   }
 
   private async getAllowedSkills(groupConfig: GroupBotConfig): Promise<SkillDefinition[]> {
-    const skills = await Promise.all(
-      groupConfig.allowedSkillIds.map((skillId) => this.skillService.getSkill(skillId)),
-    );
-    return skills.filter((skill): skill is SkillDefinition => Boolean(skill));
+    const configured = await Promise.all(groupConfig.allowedSkillIds.map((skillId) => this.skillService.getSkill(skillId)));
+    const visible = configured.filter((skill): skill is SkillDefinition => Boolean(skill));
+    if (visible.length > 0) return visible;
+    const huixian = await this.skillService.getSkill("huixian");
+    return huixian ? [huixian] : [];
   }
 
   private async getTransportHealthStatus(): Promise<TransportHealthStatus> {
@@ -3605,48 +3234,6 @@ export class BotApplication {
     }
     const groups = await this.groupConfigService.getAll();
     return groups.filter((group) => group.enabled !== false);
-  }
-
-  private async buildMemberProfiles(groupConfig: GroupBotConfig) {
-    const [napcatMembers, memories, candidates] = await Promise.all([
-      this.safeListGroupMembers(groupConfig.groupId),
-      this.groupMemoryStore ? this.groupMemoryStore.list(groupConfig.groupId) : Promise.resolve([]),
-      this.groupMemoryCandidateService ? this.groupMemoryCandidateService.list({ groupId: groupConfig.groupId }) : Promise.resolve([]),
-    ]);
-    return buildGroupMemberProfiles({
-      groupConfig,
-      napcatMembers,
-      memories,
-      candidates,
-    });
-  }
-
-  private async resolveProfileCommandTarget(
-    groupConfig: GroupBotConfig,
-    requesterUserId: string,
-    commandText: string,
-    prefix: string,
-  ): Promise<ProfileTargetResolution> {
-    const rawTarget = commandText.slice(prefix.length).trim();
-    if (!rawTarget) {
-      return { status: "ok", userId: requesterUserId };
-    }
-
-    const members = await this.buildMemberProfiles(groupConfig);
-    const resolution = resolveProfileTarget(groupConfig, members, rawTarget);
-    if (resolution.status === "ambiguous") {
-      return {
-        ...resolution,
-        label: `匹配到多个人：${(resolution.matches ?? []).join("、")}，请用 QQ 号查询`,
-      };
-    }
-    if (resolution.status === "not_found") {
-      return {
-        ...resolution,
-        label: "没有找到这个成员，请用 QQ 号查询",
-      };
-    }
-    return resolution;
   }
 
   private async logAdminOperation(
@@ -4273,6 +3860,10 @@ function isHelpCommand(commandText: string): boolean {
   return HELP_PREFIXES.some((prefix) => new RegExp(`^${escapeRegex(prefix)}(?:\\s+.+)?$`).test(normalized));
 }
 
+function isRetiredPersonaCommand(commandText: string): boolean {
+  return /^(?:#技能|#人格|#角色)(?:\s|$)/u.test(commandText.trim());
+}
+
 function isStatusCommand(commandText: string): boolean {
   const normalized = commandText.replace(/\s+/g, " ").trim();
   return normalized === STATUS_PREFIX || normalized === `${STATUS_PREFIX} 查看`;
@@ -4298,98 +3889,19 @@ function isMemoryStatusCommand(commandText: string): boolean {
   return normalized === MEMORY_PREFIX || normalized === `${MEMORY_PREFIX} 状态` || normalized === `${MEMORY_PREFIX} 查看`;
 }
 
+function parseExplicitMemoryRequest(text: string): string | undefined {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const match = normalized.match(/^(?:请(?:帮我)?|麻烦(?:你)?|帮我)?\s*(?:记住|记忆)(?:一下)?\s*[:：,，]?\s*(.+)$/u);
+  return match?.[1]?.trim() || undefined;
+}
+
+function stripExplicitMemoryLead(text: string): string {
+  return parseExplicitMemoryRequest(text) ?? text.trim();
+}
+
 function isKnowledgeStatusCommand(commandText: string): boolean {
   const normalized = commandText.replace(/\s+/g, " ").trim();
   return normalized === KNOWLEDGE_PREFIX || normalized === `${KNOWLEDGE_PREFIX} 状态` || normalized === `${KNOWLEDGE_PREFIX} 查看`;
-}
-
-function resolveProfileTarget(
-  groupConfig: GroupBotConfig,
-  members: GroupMemberProfile[],
-  target: string,
-): ProfileTargetResolution {
-  const normalized = normalizeProfileQuery(target);
-  if (!normalized) {
-    return { status: "not_found" };
-  }
-
-  const userIds = new Set<string>();
-  for (const member of members) {
-    userIds.add(member.userId);
-  }
-  for (const identity of groupConfig.manualIdentities ?? []) {
-    for (const userId of identity.userIds) {
-      userIds.add(userId);
-    }
-  }
-
-  if (/^\d+$/.test(target.trim()) && userIds.has(target.trim())) {
-    return { status: "ok", userId: target.trim() };
-  }
-
-  const candidates = [...userIds].map((userId) => {
-    const member = members.find((item) => item.userId === userId);
-    const identities = (groupConfig.manualIdentities ?? []).filter((identity) => identity.userIds.includes(userId));
-    const texts = [
-      userId,
-      member?.displayName,
-      member?.card,
-      member?.nickname,
-      member?.note,
-      ...(member?.aliases ?? []),
-      ...identities.flatMap((identity) => [identity.note, ...identity.names]),
-    ].filter((value): value is string => Boolean(value?.trim()));
-    return {
-      userId,
-      label: member ? buildMemberDisplayLabel(member) : `QQ ${userId}`,
-      normalizedTexts: Array.from(new Set(texts.map(normalizeProfileQuery).filter(Boolean))),
-    };
-  });
-
-  const exactMatches = candidates.filter((candidate) => candidate.normalizedTexts.includes(normalized));
-  if (exactMatches.length === 1) {
-    return { status: "ok", userId: exactMatches[0]!.userId };
-  }
-  if (exactMatches.length > 1) {
-    return { status: "ambiguous", matches: exactMatches.map((match) => match.label) };
-  }
-
-  const fuzzyMatches = candidates.filter((candidate) =>
-    candidate.normalizedTexts.some((text) => text.includes(normalized) || normalized.includes(text)),
-  );
-  if (fuzzyMatches.length === 1) {
-    return { status: "ok", userId: fuzzyMatches[0]!.userId };
-  }
-  if (fuzzyMatches.length > 1) {
-    return { status: "ambiguous", matches: fuzzyMatches.slice(0, 5).map((match) => match.label) };
-  }
-
-  return { status: "not_found" };
-}
-
-function buildProfileDisplayLabel(
-  groupConfig: GroupBotConfig,
-  userId: string,
-  members: GroupMemberProfile[],
-): string {
-  const member = members.find((item) => item.userId === userId);
-  if (member) {
-    return buildMemberDisplayLabel(member);
-  }
-
-  const identity = groupConfig.manualIdentities?.find((item) => item.userIds.includes(userId));
-  const name = identity?.names[0] ?? userId;
-  return identity?.note ? `${name}（QQ ${userId}，备注：${identity.note}）` : `${name}（QQ ${userId}）`;
-}
-
-function buildMemberDisplayLabel(member: GroupMemberProfile): string {
-  return member.note
-    ? `${member.displayName}（QQ ${member.userId}，备注：${member.note}）`
-    : `${member.displayName}（QQ ${member.userId}）`;
-}
-
-function normalizeProfileQuery(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
 function formatOpsAlertMentions(userIds: string[]): string {
@@ -4866,7 +4378,7 @@ function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig
     return [
       `没找到“${topic}”这个帮助分类`,
       "",
-      "可用分类：对话、语音、技能、实时对话、定时任务、日报、节假日、管理员、权限",
+      "可用分类：对话、语音、会仙、实时对话、定时任务、日报、节假日、管理员、权限",
       `示例：${helper("help")} 技能`,
       "",
       buildHelpOverviewMessage(sections, helper),
@@ -4929,15 +4441,6 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
         `3. ${command("voice_reply")} 状态 / 开启 / 关闭（管理员）`,
         `4. ${command("sing")} <内容>`,
         "作用：一次性语音会先生成回复再转成语音；默认语音回复会让普通 AI 回复优先发送语音条；唱歌使用 MiMo 唱歌模式",
-      ],
-    },
-    {
-      title: "技能",
-      aliases: ["技能", "skill", "skills"],
-      lines: [
-        `1. ${command("skill")} 列表`,
-        `2. ${command("skill")} 切换 <skillId>`,
-        "权限：切换技能需要群管理员或超级管理员",
       ],
     },
     {
@@ -5017,18 +4520,17 @@ function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpF
   return [
     "系统功能总览：",
     "1. 对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
-    `2. 技能：${command("skill")} 列表、${command("skill")} 切换 <skillId>`,
-    `3. 语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
-    `4. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
-    `5. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
-    `6. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
-    `7. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
-    `8. 管理员：${command("admin")} 列表、添加 <QQ号>、移除 <QQ号>`,
-    `9. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（管理员）`,
-    `10. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（管理员）`,
-    `11. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
-    `12. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
-    `分类帮助：${command("help")} 对话 / 语音 / 技能 / 实时对话 / 定时任务 / 日报 / 节假日 / 管理员 / 权限`,
+    `2. 语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
+    `3. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
+    `4. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
+    `5. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
+    `6. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
+    `7. 管理员：${command("admin")} 列表、添加 <QQ号>、移除 <QQ号>`,
+    `8. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（管理员）`,
+    `9. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（管理员）`,
+    `10. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
+    `11. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+    `分类帮助：${command("help")} 对话 / 语音 / 实时对话 / 定时任务 / 日报 / 节假日 / 管理员 / 权限`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
     "权限说明：普通成员可用对话、语音、唱歌、帮助和部分查询；群管理员可用全部系统指令；超级管理员额外可管理管理员",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,
@@ -5207,27 +4709,6 @@ function resolveDefaultReplyMode(groupConfig: GroupBotConfig): ReplyOutputMode {
   return groupConfig.defaultVoiceReplyEnabled === true && groupConfig.voiceReplyEnabled !== false
     ? "voice"
     : "text";
-}
-
-function buildProfileShortSummary(summary: string, maxChars = 140): string {
-  const normalized = summary.replace(/\s+/g, " ").trim();
-  const safeMaxChars = Math.max(40, Math.min(600, Math.floor(maxChars)));
-  if (normalized.length <= safeMaxChars) {
-    return normalized;
-  }
-  const clipped = normalized.slice(0, safeMaxChars);
-  const sentenceEnd = Math.max(
-    clipped.lastIndexOf("。"),
-    clipped.lastIndexOf("！"),
-    clipped.lastIndexOf("？"),
-    clipped.lastIndexOf("."),
-    clipped.lastIndexOf("!"),
-    clipped.lastIndexOf("?"),
-  );
-  if (sentenceEnd >= Math.min(60, safeMaxChars)) {
-    return clipped.slice(0, sentenceEnd + 1).trim();
-  }
-  return `${normalized.slice(0, safeMaxChars).replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim()}。`;
 }
 
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {

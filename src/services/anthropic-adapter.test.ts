@@ -60,3 +60,59 @@ test("AnthropicChatCompletions explicitly declines OpenAI-style streaming", asyn
     /anthropic_stream_unsupported/,
   );
 });
+
+test("AnthropicChatCompletions sends cancellation and data URLs through the Messages SDK boundary", async () => {
+  let received: Record<string, unknown> | undefined;
+  let receivedSignal: AbortSignal | undefined;
+  const controller = new AbortController();
+  const adapter = new AnthropicChatCompletions("https://example.invalid/v1", "test-key", {
+    client: {
+      messages: {
+        async create(request: unknown, options?: { signal?: AbortSignal }) {
+          received = request as Record<string, unknown>;
+          receivedSignal = options?.signal;
+          return {
+            id: "msg_sdk",
+            model: "claude-test",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: "已完成" }],
+            usage: { input_tokens: 3, output_tokens: 2 },
+          } as never;
+        },
+      } as never,
+    },
+  });
+
+  const response = await adapter.create({
+    model: "claude-test",
+    max_tokens: 32,
+    temperature: 0.2,
+    signal: controller.signal,
+    messages: [
+      { role: "system", content: "system instruction" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "看一下" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+        ],
+      },
+    ],
+  } as never);
+
+  assert.equal(response.choices[0]?.message.content, "已完成");
+  assert.equal(receivedSignal, controller.signal);
+  assert.deepEqual(received, {
+    model: "claude-test",
+    max_tokens: 32,
+    temperature: 0.2,
+    system: "system instruction",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "看一下" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+      ],
+    }],
+  });
+});

@@ -14,33 +14,16 @@ const allGroups = shallowRef<GroupConfig[]>([]);
 const activePurpose = shallowRef<SystemModelPurpose>("reply");
 const modelSettingsDirty = shallowRef(false);
 const modelHealthById = shallowRef<Record<string, ModelHealthStatus>>({});
-const secretForm = reactive({ adminSecret: "", groupAdminSecret: "" });
 const modelRowKeys = new WeakMap<SystemModelConfig, string>();
 let modelRowKeySeed = 0;
 const settings = reactive<SystemSettings>({
-  profileSummaryMaxChars: 1800,
-  profileShortSummaryMaxChars: 140,
-  dailyProfileReviewEnabled: false,
-  dailyProfileReviewTime: "00:00",
-  memoryDedupEnabled: false,
-  memoryDedupTime: "23:00",
-  memoryDedupSemanticTimeoutMinutes: 10,
-  memoryCandidateConfidenceThreshold: 60,
-  memoryAutoApproveConfidenceThreshold: 80,
-  memoryUnattendedModeEnabled: false,
   onlineLookupEnabled: false,
   tokenCostControl: {
-    memoryCandidateExtractionEnabled: false,
-    memoryCandidateNormalizationEnabled: false,
-    memorySemanticDedupEnabled: false,
-    dailyProfileReviewAiEnabled: false,
     dailyReportAiQuipEnabled: false,
     chatSummaryAiEnabled: false,
     scheduledReminderAiRewriteEnabled: false,
     modelHealthAutoProbeEnabled: false,
   },
-  adminSecretConfigured: false,
-  groupAdminSecretConfigured: false,
   defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
   models: [],
   selectedModelIds: {},
@@ -55,9 +38,6 @@ const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; det
 const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
 const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
   reply: "Reply Model",
-  profile: "Profile Model",
-  memory: "Memory Model",
-  dedup: "Dedup Model",
   summary: "Summary Model",
   knowledge: "Knowledge Model",
   tts: "TTS Model",
@@ -138,17 +118,11 @@ function markModelsDirty(): void {
 
 function applyLowTokenPreset(): void {
   settings.tokenCostControl = {
-    memoryCandidateExtractionEnabled: false,
-    memoryCandidateNormalizationEnabled: false,
-    memorySemanticDedupEnabled: false,
-    dailyProfileReviewAiEnabled: false,
     dailyReportAiQuipEnabled: false,
     chatSummaryAiEnabled: false,
     scheduledReminderAiRewriteEnabled: false,
     modelHealthAutoProbeEnabled: false,
   };
-  settings.dailyProfileReviewEnabled = false;
-  settings.memoryDedupEnabled = false;
   app.showToast("已应用低 Token 配置，保存后生效");
 }
 
@@ -213,20 +187,6 @@ async function save(): Promise<void> {
 }
 
 function validateMemoryPolicyBeforeSave(): boolean {
-  const candidateThreshold = settings.memoryCandidateConfidenceThreshold;
-  const autoApproveThreshold = settings.memoryAutoApproveConfidenceThreshold;
-  if (!Number.isInteger(candidateThreshold) || candidateThreshold < 0 || candidateThreshold > 100) {
-    app.showToast("候选记忆阈值必须是 0-100 的整数百分比", "error");
-    return false;
-  }
-  if (!Number.isInteger(autoApproveThreshold) || autoApproveThreshold < 0 || autoApproveThreshold > 100) {
-    app.showToast("长期记忆阈值必须是 0-100 的整数百分比", "error");
-    return false;
-  }
-  if (candidateThreshold >= autoApproveThreshold) {
-    app.showToast("候选记忆阈值必须低于长期记忆阈值", "error");
-    return false;
-  }
   return true;
 }
 
@@ -271,26 +231,6 @@ function validateModelsBeforeSave(): boolean {
     }
   }
   return true;
-}
-
-async function resetSecret(kind: "admin" | "group"): Promise<void> {
-  const secret = kind === "admin" ? secretForm.adminSecret : secretForm.groupAdminSecret;
-  if (secret.trim().length < 6) {
-    app.showToast("秘钥至少 6 位", "error");
-    return;
-  }
-  try {
-    const next = await api<SystemSettings>(kind === "admin" ? "/api/system-settings/admin-secret" : "/api/system-settings/group-admin-secret", {
-      method: "POST",
-      body: JSON.stringify({ secret }),
-    });
-    Object.assign(settings, next);
-    if (kind === "admin") secretForm.adminSecret = "";
-    else secretForm.groupAdminSecret = "";
-    app.showToast(kind === "admin" ? "超级管理员秘钥已更新" : "管理员秘钥已更新");
-  } catch (error) {
-    app.showToast((error as Error).message, "error");
-  }
 }
 
 async function syncGroups(): Promise<void> {
@@ -422,47 +362,6 @@ function visibleGroups(): GroupConfig[] {
   });
 }
 
-const summaryGroupId = shallowRef("");
-const summaryUserId = shallowRef("");
-const summarizing = shallowRef(false);
-const summaryMembers = shallowRef<Array<{ userId: string; displayName: string }>>([]);
-
-async function loadSummaryMembers(): Promise<void> {
-  if (!summaryGroupId.value) {
-    summaryMembers.value = [];
-    return;
-  }
-  try {
-    const data = await api<{ members: Array<{ userId: string; displayName: string }> }>(
-      `/api/groups/${encodeURIComponent(summaryGroupId.value)}/members`,
-    );
-    summaryMembers.value = data.members;
-  } catch {
-    summaryMembers.value = [];
-  }
-}
-
-async function triggerMemorySummary(): Promise<void> {
-  if (!summaryGroupId.value) {
-    app.showToast("请选择群", "error");
-    return;
-  }
-  if (!summaryUserId.value) {
-    app.showToast("请选择成员", "error");
-    return;
-  }
-  summarizing.value = true;
-  try {
-    const { summarizeMemories } = await import("../services/api");
-    const result = await summarizeMemories(summaryGroupId.value, summaryUserId.value);
-    app.showToast(`汇总完成，已将 ${result.originalMemoryCount} 条记忆合并为 1 条综合画像`);
-  } catch (error) {
-    app.showToast((error as Error).message, "error");
-  } finally {
-    summarizing.value = false;
-  }
-}
-
 onMounted(() => {
   void load();
 });
@@ -474,7 +373,7 @@ onMounted(() => {
       <div class="section-head">
         <div>
           <h2>系统管理</h2>
-          <p>统一管理群启用状态、登录秘钥、模型配置和记忆画像策略。</p>
+          <p>统一管理群启用状态、联网策略和模型配置。</p>
         </div>
         <div class="toolbar">
           <button class="ghost-btn" type="button" @click="syncGroups">同步群聊</button>
@@ -499,33 +398,13 @@ onMounted(() => {
         </div>
 
         <div class="card setting-card policy-card">
-          <h3>记忆与画像策略</h3>
+          <h3>运行策略</h3>
           <div class="policy-grid">
-            <label>完整画像字数上限<input v-model.number="settings.profileSummaryMaxChars" class="input" type="number" min="100" max="6000" /></label>
-            <label>群内短摘要字数上限<input v-model.number="settings.profileShortSummaryMaxChars" class="input" type="number" min="40" max="600" /></label>
-            <div class="policy-row policy-wide">
-              <label class="policy-toggle"><span>自动生成昨日画像</span><input v-model="settings.dailyProfileReviewEnabled" type="checkbox" /></label>
-              <label>昨日画像触发时间<input v-model="settings.dailyProfileReviewTime" class="input" type="time" /></label>
-            </div>
-            <div class="policy-row policy-wide">
-              <label class="policy-toggle"><span>自动成员记忆去重</span><input v-model="settings.memoryDedupEnabled" type="checkbox" /></label>
-              <label>记忆去重触发时间<input v-model="settings.memoryDedupTime" class="input" type="time" /></label>
-              <label>去重模型单次判断超时（分钟）<input v-model.number="settings.memoryDedupSemanticTimeoutMinutes" class="input" type="number" min="1" max="60" /></label>
-            </div>
-            <div class="policy-row policy-wide memory-policy-row">
-              <label>候选记忆阈值（%）<input v-model.number="settings.memoryCandidateConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
-              <label>长期记忆阈值（%）<input v-model.number="settings.memoryAutoApproveConfidenceThreshold" class="input" type="number" min="0" max="100" step="1" /></label>
-              <label class="policy-toggle"><span>无人值守候选入库</span><input v-model="settings.memoryUnattendedModeEnabled" type="checkbox" /></label>
-            </div>
             <div class="policy-row policy-wide token-control-row">
               <div class="token-control-head">
                 <strong>Token 消耗控制</strong>
                 <button class="ghost-btn" type="button" @click="applyLowTokenPreset">一键省 Token</button>
               </div>
-              <label class="policy-toggle"><span>自动提取候选记忆</span><input v-model="settings.tokenCostControl.memoryCandidateExtractionEnabled" type="checkbox" /></label>
-              <label class="policy-toggle"><span>候选记忆 AI 中文化</span><input v-model="settings.tokenCostControl.memoryCandidateNormalizationEnabled" type="checkbox" /></label>
-              <label class="policy-toggle"><span>记忆语义去重</span><input v-model="settings.tokenCostControl.memorySemanticDedupEnabled" type="checkbox" /></label>
-              <label class="policy-toggle"><span>自动生成昨日画像</span><input v-model="settings.tokenCostControl.dailyProfileReviewAiEnabled" type="checkbox" /></label>
               <label class="policy-toggle"><span>日报/倒计时 AI 文案</span><input v-model="settings.tokenCostControl.dailyReportAiQuipEnabled" type="checkbox" /></label>
               <label class="policy-toggle"><span>群聊总结调用 AI</span><input v-model="settings.tokenCostControl.chatSummaryAiEnabled" type="checkbox" /></label>
               <label class="policy-toggle"><span>定时提醒 AI 润色</span><input v-model="settings.tokenCostControl.scheduledReminderAiRewriteEnabled" type="checkbox" /></label>
@@ -535,45 +414,9 @@ onMounted(() => {
               <label class="policy-toggle"><span>全局启用自动实时查询</span><input v-model="settings.onlineLookupEnabled" type="checkbox" /></label>
               <p class="muted">已启用群会按需查询天气、A 股和时效信息；单群可单独关闭。</p>
             </div>
-            <div class="policy-row policy-wide memory-summary-row">
-              <label>压缩为长期画像记忆
-                <select v-model="summaryGroupId" class="input" @change="loadSummaryMembers">
-                  <option value="">选择群</option>
-                  <option v-for="group in allGroups" :key="group.groupId" :value="group.groupId">
-                    {{ group.groupName || group.groupId }}
-                  </option>
-                </select>
-              </label>
-              <label>选择成员
-                <select v-model="summaryUserId" class="input" :disabled="!summaryGroupId">
-                  <option value="">选择成员</option>
-                  <option v-for="member in summaryMembers" :key="member.userId" :value="member.userId">
-                    {{ member.displayName }}
-                  </option>
-                </select>
-              </label>
-              <button class="btn" type="button" :disabled="summarizing || !summaryGroupId || !summaryUserId" @click="triggerMemorySummary">
-                {{ summarizing ? "压缩中..." : "生成画像并清理旧记忆" }}
-              </button>
-              <p class="muted memory-summary-note">成功生成画像后，会物理删除该成员原有长期记忆，仅保留新的画像记忆。</p>
-            </div>
           </div>
         </div>
 
-        <div class="card setting-card secret-card">
-          <h3>管理员秘钥</h3>
-          <p class="muted">admin + 超级管理员秘钥登录超级管理员；群管理员 QQ + 管理员秘钥登录群管理员账号。</p>
-          <div class="secret-grid">
-            <label>超级管理员秘钥
-              <input v-model="secretForm.adminSecret" class="input" type="password" :placeholder="settings.adminSecretConfigured ? '已配置，输入新秘钥后更新' : '未配置'" />
-            </label>
-            <button class="ghost-btn" type="button" @click="resetSecret('admin')">更新超级管理员秘钥</button>
-            <label>管理员秘钥
-              <input v-model="secretForm.groupAdminSecret" class="input" type="password" :placeholder="settings.groupAdminSecretConfigured ? '已配置，输入新秘钥后更新' : '未配置'" />
-            </label>
-            <button class="ghost-btn" type="button" @click="resetSecret('group')">更新管理员秘钥</button>
-          </div>
-        </div>
       </div>
     </section>
 
@@ -664,10 +507,6 @@ onMounted(() => {
   padding: 16px;
 }
 
-.secret-card {
-  grid-column: 1 / -1;
-}
-
 .compact-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -714,10 +553,6 @@ onMounted(() => {
   gap: 12px;
 }
 
-.memory-policy-row {
-  grid-template-columns: repeat(3, minmax(150px, 1fr));
-}
-
 .token-control-row {
   grid-template-columns: repeat(4, minmax(150px, 1fr));
 }
@@ -730,25 +565,6 @@ onMounted(() => {
   gap: 12px;
 }
 
-.memory-summary-row {
-  grid-template-columns: 1fr 1fr auto;
-  gap: 12px;
-}
-
-.memory-summary-note {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.memory-summary-row select {
-  min-height: 36px;
-}
-
-.memory-summary-row button {
-  align-self: end;
-  white-space: nowrap;
-}
-
 .policy-toggle {
   display: flex !important;
   align-items: center;
@@ -757,20 +573,6 @@ onMounted(() => {
 
 .policy-toggle input[type="checkbox"] {
   justify-self: end;
-}
-
-.secret-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
-  gap: 12px;
-  align-items: end;
-}
-
-.secret-grid label {
-  display: grid;
-  gap: 8px;
-  color: var(--muted);
-  font-weight: 700;
 }
 
 .purpose-tabs {

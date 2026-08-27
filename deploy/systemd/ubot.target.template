@@ -1,0 +1,7 @@
+[Unit]
+Description=UBot V3 application target
+Wants=ubot-ingress.service ubot-worker.service ubot-admin.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

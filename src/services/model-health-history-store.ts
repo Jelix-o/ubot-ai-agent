@@ -1,5 +1,6 @@
 import type { AiHealthStatus, SystemModelPurpose } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 export interface ModelHealthHistoryEntry extends AiHealthStatus {
   id: string;
@@ -15,19 +16,30 @@ interface ModelHealthHistoryFile {
 }
 
 const MAX_MODEL_HEALTH_HISTORY = 200;
+const V3_MODEL_HEALTH_DOCUMENT_TYPE = "model-health";
 
 export class ModelHealthHistoryStore {
   private cachedData?: ModelHealthHistoryFile;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async list(): Promise<ModelHealthHistoryEntry[]> {
+    if (this.v3State) {
+      return this.listV3();
+    }
     const data = await this.readData();
     return Object.values(data.models).map(cloneEntry).sort((left, right) => left.purpose.localeCompare(right.purpose) || left.id.localeCompare(right.id));
   }
 
   async get(id: string): Promise<ModelHealthHistoryEntry | undefined> {
+    if (this.v3State) {
+      const item = this.v3State.getDocument<Partial<ModelHealthHistoryEntry>>(V3_MODEL_HEALTH_DOCUMENT_TYPE, id, {});
+      return item.id ? cloneEntry(normalizeEntry(item)) : undefined;
+    }
     const data = await this.readData();
     const entry = data.models[id];
     return entry ? cloneEntry(entry) : undefined;
@@ -35,6 +47,11 @@ export class ModelHealthHistoryStore {
 
   async record(entry: ModelHealthHistoryEntry): Promise<ModelHealthHistoryEntry> {
     const normalized = normalizeEntry(entry);
+    if (this.v3State) {
+      this.v3State.saveDocument(V3_MODEL_HEALTH_DOCUMENT_TYPE, normalized.id, normalized);
+      this.pruneV3();
+      return cloneEntry(normalized);
+    }
     return await this.enqueueWrite(async () => {
       const data = await this.readData();
       data.models[normalized.id] = normalized;
@@ -55,6 +72,27 @@ export class ModelHealthHistoryStore {
         return this.cachedData;
       }
       throw error;
+    }
+  }
+
+  private listV3(): ModelHealthHistoryEntry[] {
+    return this.v3State!.listDocuments<Partial<ModelHealthHistoryEntry>>(V3_MODEL_HEALTH_DOCUMENT_TYPE)
+      .map((document) => normalizeEntry(document.value))
+      .filter((entry) => Boolean(entry.id))
+      .map(cloneEntry)
+      .sort((left, right) => left.purpose.localeCompare(right.purpose) || left.id.localeCompare(right.id));
+  }
+
+  private pruneV3(): void {
+    const entries = this.v3State!.listDocuments<Partial<ModelHealthHistoryEntry>>(V3_MODEL_HEALTH_DOCUMENT_TYPE)
+      .map((document) => ({ document, entry: normalizeEntry(document.value) }))
+      .filter(({ entry }) => Boolean(entry.id))
+      .sort((left, right) => {
+        if (left.entry.selected !== right.entry.selected) return left.entry.selected ? -1 : 1;
+        return right.entry.checkedAt.localeCompare(left.entry.checkedAt) || left.entry.id.localeCompare(right.entry.id);
+      });
+    for (const { document } of entries.slice(MAX_MODEL_HEALTH_HISTORY)) {
+      this.v3State!.deleteDocument(V3_MODEL_HEALTH_DOCUMENT_TYPE, document.key);
     }
   }
 
@@ -105,9 +143,6 @@ function normalizeEntry(value: Partial<ModelHealthHistoryEntry>): ModelHealthHis
 
 function normalizePurpose(value: unknown): SystemModelPurpose {
   return value === "reply" ||
-    value === "profile" ||
-    value === "memory" ||
-    value === "dedup" ||
     value === "summary" ||
     value === "knowledge" ||
     value === "tts" ||

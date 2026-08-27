@@ -59,12 +59,8 @@ function applyFilters(): void {
 function actionLabel(action: string): string {
   const known = ({
     memory_dedup_apply: "记忆去重",
-    candidate_bulk_approve: "批量审核",
-    profile_generate: "画像生成",
-    profile_refresh: "画像刷新",
+    candidate_bulk_approve: "历史候选审核（已退休）",
     group_config_update: "群行为设置",
-    profile_share_revoke: "撤销公开",
-    profile_share_update: "公开链接",
     model_check: "模型检测",
   } as Record<string, string>)[action];
   if (known) return known;
@@ -84,15 +80,7 @@ function detailLabel(entry: AdminOperationLogEntry): string {
       .replace(/^applied=(\d+);\s*skipped=(\d+)$/i, "已处理 $1 条，跳过 $2 条。")
       .replace(/^(\d+) decisions$/i, "$1 条去重建议");
   }
-  if (entry.action === "profile_share_revoke") return "已撤销画像公开链接。";
-  if (entry.action === "profile_share_update") return "已更新画像公开链接。";
-  if (entry.action === "profile_generate") return `生成画像：${profileTypeText(detail)}`;
-  if (entry.action === "profile_refresh") return `刷新画像：${profileTypeText(detail)}`;
   return translateDetailText(detail);
-}
-
-function profileTypeText(value: string): string {
-  return value === "yesterday" ? "昨日画像" : value === "overall" ? "群聊画像" : value || "未指定类型";
 }
 
 function humanizeActionCode(value: string): string {
@@ -118,8 +106,8 @@ function translateDetailText(value: string): string {
     .replace(/\btarget_disabled\b/gi, "目标已停用")
     .replace(/\bduplicate_decision\b/gi, "重复处理建议")
     .replace(/\binvalid_target\b/gi, "目标无效")
-    .replace(/\byesterday\b/gi, "昨日画像")
-    .replace(/\boverall\b/gi, "群聊画像");
+    .replace(/\byesterday\b/gi, "历史数据")
+    .replace(/\boverall\b/gi, "历史数据");
 }
 
 function resetFilters(): void {
@@ -186,7 +174,7 @@ watch(() => app.role, () => {
           <input v-model="filters.q" class="input" placeholder="操作者、动作、目标或详情" @keyup.enter="applyFilters" />
         </label>
         <label>动作
-          <input v-model="filters.action" class="input" placeholder="例如 profile、model、dedup" @keyup.enter="applyFilters" />
+          <input v-model="filters.action" class="input" placeholder="例如 memory、model、dedup" @keyup.enter="applyFilters" />
         </label>
         <label>范围
           <select v-model="filters.scope" class="select" :disabled="!canUseAllGroups" @change="applyFilters">

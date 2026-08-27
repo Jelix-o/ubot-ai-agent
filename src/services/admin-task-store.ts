@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AdminTaskRecord, AdminTasksFile, AdminTaskStatus, AdminTaskType } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 export interface AdminTaskListArgs {
   type?: AdminTaskType;
@@ -30,12 +31,16 @@ const STALE_TASK_MS_BY_TYPE: Partial<Record<AdminTaskType, number>> = {
   "memory-dedup": 12 * 60 * 1000,
   "model-check": 10 * 60 * 1000,
 };
+const V3_ADMIN_TASK_DOCUMENT_TYPE = "admin-task";
 
 export class AdminTaskStore {
   private cachedData?: AdminTasksFile;
   private readonly activeTaskStartedAt = new Map<string, number>();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async listPage(args: AdminTaskListArgs): Promise<{
     tasks: AdminTaskRecord[];
@@ -74,6 +79,25 @@ export class AdminTaskStore {
   }
 
   async create(input: AdminTaskCreateInput): Promise<AdminTaskRecord> {
+    if (this.v3State) {
+      const now = new Date().toISOString();
+      const task = normalizeTask({
+        id: randomUUID(),
+        type: input.type,
+        status: "queued",
+        title: input.title,
+        groupId: input.groupId,
+        subjectUserId: input.subjectUserId,
+        operatorUserId: input.operatorUserId,
+        progress: 0,
+        detail: input.detail,
+        createdAt: now,
+        updatedAt: now,
+      });
+      this.v3State.saveDocument(V3_ADMIN_TASK_DOCUMENT_TYPE, task.id, task);
+      this.pruneV3Tasks();
+      return cloneTask(task);
+    }
     const data = await this.readData();
     const now = new Date().toISOString();
     const task = normalizeTask({
@@ -96,6 +120,20 @@ export class AdminTaskStore {
   }
 
   async update(id: string, input: Partial<AdminTaskRecord>): Promise<AdminTaskRecord | undefined> {
+    if (this.v3State) {
+      const current = await this.getV3Task(id);
+      if (!current) return undefined;
+      const next = normalizeTask({
+        ...current,
+        ...input,
+        id: current.id,
+        type: current.type,
+        createdAt: current.createdAt,
+        updatedAt: new Date().toISOString(),
+      });
+      this.v3State.saveDocument(V3_ADMIN_TASK_DOCUMENT_TYPE, id, next);
+      return cloneTask(next);
+    }
     const data = await this.readData();
     const index = data.tasks.findIndex((task) => task.id === id);
     if (index === -1) return undefined;
@@ -187,6 +225,28 @@ export class AdminTaskStore {
   }
 
   private async failStaleTasks(now = new Date()): Promise<void> {
+    if (this.v3State) {
+      const nowTime = now.getTime();
+      for (const task of await this.listV3Tasks()) {
+        if (task.status !== "queued" && task.status !== "running") continue;
+        const activeStartedAt = this.activeTaskStartedAt.get(task.id);
+        const baseTime = activeStartedAt ?? new Date(task.startedAt ?? task.updatedAt ?? task.createdAt).getTime();
+        if (!Number.isFinite(baseTime) || nowTime - baseTime < (STALE_TASK_MS_BY_TYPE[task.type] ?? DEFAULT_STALE_TASK_MS)) continue;
+        if (activeStartedAt !== undefined) this.activeTaskStartedAt.delete(task.id);
+        const finishedAt = now.toISOString();
+        const updated = normalizeTask({
+          ...task,
+          status: "failed",
+          progress: 100,
+          error: `任务执行超时，已自动标记失败。最后状态：${task.status}`,
+          updatedAt: finishedAt,
+          finishedAt,
+          durationMs: Math.max(0, nowTime - new Date(task.startedAt ?? task.createdAt).getTime()),
+        });
+        this.v3State.saveDocument(V3_ADMIN_TASK_DOCUMENT_TYPE, updated.id, updated);
+      }
+      return;
+    }
     const data = await this.readData();
     let changed = false;
     const nowTime = now.getTime();
@@ -225,6 +285,9 @@ export class AdminTaskStore {
   }
 
   private async readData(): Promise<AdminTasksFile> {
+    if (this.v3State) {
+      return { tasks: await this.listV3Tasks() };
+    }
     if (this.cachedData) return this.cachedData;
     try {
       this.cachedData = normalizeFile(await readJsonFile<Partial<AdminTasksFile>>(this.filePath));
@@ -240,8 +303,36 @@ export class AdminTaskStore {
   }
 
   private async writeData(data: AdminTasksFile): Promise<void> {
+    if (this.v3State) {
+      throw new Error("v3_state_repository_requires_operation_level_writes");
+    }
     this.cachedData = data;
     await writeJsonFileAtomic(this.filePath, data);
+  }
+
+  private async getV3Task(id: string): Promise<AdminTaskRecord | undefined> {
+    const value = this.v3State!.getDocument<Partial<AdminTaskRecord>>(V3_ADMIN_TASK_DOCUMENT_TYPE, id, {});
+    return parsePersistedTask(value, id);
+  }
+
+  private async listV3Tasks(): Promise<AdminTaskRecord[]> {
+    return this.v3State!.listDocuments<Partial<AdminTaskRecord>>(V3_ADMIN_TASK_DOCUMENT_TYPE)
+      .flatMap((document) => {
+        const task = parsePersistedTask(document.value, document.key);
+        return task ? [task] : [];
+      });
+  }
+
+  private pruneV3Tasks(): void {
+    const documents = this.v3State!.listDocuments<Partial<AdminTaskRecord>>(V3_ADMIN_TASK_DOCUMENT_TYPE)
+      .flatMap((document) => {
+        const task = parsePersistedTask(document.value, document.key);
+        return task ? [{ document, task }] : [];
+      })
+      .sort((left, right) => right.task.createdAt.localeCompare(left.task.createdAt));
+    for (const { document } of documents.slice(MAX_TASKS)) {
+      this.v3State!.deleteDocument(V3_ADMIN_TASK_DOCUMENT_TYPE, document.key);
+    }
   }
 }
 
@@ -251,6 +342,30 @@ function normalizeFile(value: Partial<AdminTasksFile>): AdminTasksFile {
       ? value.tasks.map(normalizeTask).filter((task): task is AdminTaskRecord => Boolean(task)).slice(0, MAX_TASKS)
       : [],
   };
+}
+
+/**
+ * V3 document rows are untrusted persisted input.  Never run malformed rows
+ * through normalizeTask here: it synthesizes a new UUID for create paths,
+ * which would make a corrupt document appear as a real task on every read.
+ */
+function parsePersistedTask(value: Partial<AdminTaskRecord>, documentKey: string): AdminTaskRecord | undefined {
+  if (
+    typeof value.id !== "string" ||
+    value.id !== documentKey ||
+    !value.id.trim() ||
+    !isAdminTaskType(value.type) ||
+    !isAdminTaskStatus(value.status) ||
+    typeof value.title !== "string" ||
+    !value.title.trim() ||
+    typeof value.operatorUserId !== "string" ||
+    !value.operatorUserId.trim() ||
+    !normalizeIso(value.createdAt) ||
+    !normalizeIso(value.updatedAt)
+  ) {
+    return undefined;
+  }
+  return normalizeTask(value);
 }
 
 function normalizeTask(value: Partial<AdminTaskRecord>): AdminTaskRecord {
@@ -279,11 +394,19 @@ function normalizeTask(value: Partial<AdminTaskRecord>): AdminTaskRecord {
 }
 
 function normalizeType(value: unknown): AdminTaskType {
-  return value === "profile-generate" || value === "model-check" || value === "bulk-review" ? value : "memory-dedup";
+  return isAdminTaskType(value) ? value : "memory-dedup";
 }
 
 function normalizeStatus(value: unknown): AdminTaskStatus {
-  return value === "queued" || value === "running" || value === "failed" || value === "cancelled" ? value : "succeeded";
+  return isAdminTaskStatus(value) ? value : "succeeded";
+}
+
+function isAdminTaskType(value: unknown): value is AdminTaskType {
+  return value === "memory-dedup" || value === "model-check" || value === "bulk-review";
+}
+
+function isAdminTaskStatus(value: unknown): value is AdminTaskStatus {
+  return value === "queued" || value === "running" || value === "failed" || value === "cancelled" || value === "succeeded";
 }
 
 function normalizeProgress(value: unknown): number {

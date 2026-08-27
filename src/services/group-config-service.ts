@@ -2,6 +2,9 @@ import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, Participati
 import { logWarn } from "../logger.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
+
+const HUIXIAN_PERSONA_ID = "huixian";
 
 export class GroupConfigValidationError extends Error {
   constructor(public readonly code: string, message = code) {
@@ -52,6 +55,7 @@ export class GroupConfigService {
   constructor(
     private readonly filePath: string,
     private readonly shadowWriter?: GroupConfigShadowWriter,
+    private readonly v3State?: V3StateRepository,
   ) {}
 
   /**
@@ -59,6 +63,10 @@ export class GroupConfigService {
    * Runtime reads never call this, so GET routes remain free of shadow writes.
    */
   async syncShadowFromAuthoritative(): Promise<boolean> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return true;
+    }
     return this.syncShadow(await this.readConfig(), "explicit_sync");
   }
 
@@ -124,7 +132,7 @@ export class GroupConfigService {
     return data.groups.map((group) => normalizeGroupConfig(group));
   }
 
-  async updateCurrentSkill(groupId: string, skillId: string): Promise<GroupBotConfig> {
+  async updateCurrentSkill(groupId: string, _skillId: string): Promise<GroupBotConfig> {
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
     if (index === -1) {
@@ -133,7 +141,7 @@ export class GroupConfigService {
 
     data.groups[index] = normalizeGroupConfig({
       ...data.groups[index],
-      currentSkillId: skillId,
+      currentSkillId: HUIXIAN_PERSONA_ID,
     });
 
     await this.writeConfig(data);
@@ -476,6 +484,10 @@ export class GroupConfigService {
   }
 
   private async readConfig(): Promise<GroupsConfigFile> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return normalizeGroupsConfigFile(this.v3State.getGroups());
+    }
     if (this.cachedConfig && Date.now() - this.cachedConfig.loadedAt < this.cacheTtlMs) {
       return this.cachedConfig.data;
     }
@@ -486,6 +498,13 @@ export class GroupConfigService {
   }
 
   private async writeConfig(data: GroupsConfigFile): Promise<void> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      const normalized = normalizeGroupsConfigFile(data);
+      this.v3State.saveGroups(normalized);
+      this.cachedConfig = { data: normalized, loadedAt: Date.now() };
+      return;
+    }
     this.cachedConfig = { data, loadedAt: Date.now() };
     await writeJsonFileAtomic(this.filePath, data);
     this.syncShadow(data, "json_write");
@@ -523,10 +542,11 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     ...group,
     groupId: String(group.groupId || "").trim(),
     groupName: normalizeOptionalText(group.groupName, 80),
+    currentSkillId: HUIXIAN_PERSONA_ID,
+    allowedSkillIds: [HUIXIAN_PERSONA_ID],
     enabled: group.enabled !== false,
     replyModelMode: normalizeReplyModelMode(group.replyModelMode),
     participationMode: normalizeParticipationMode(group.participationMode),
-    allowedSkillIds: Array.from(new Set(group.allowedSkillIds ?? [])),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
     roastModeUserIds: normalizeUserIds(group.roastModeUserIds),
@@ -568,17 +588,11 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   if ("enabled" in input) {
     next.enabled = normalizeBoolean(input.enabled, "invalid_group_config");
   }
-  if ("currentSkillId" in input) {
-    next.currentSkillId = normalizeRequiredString(input.currentSkillId, "invalid_group_config");
-  }
   if ("replyModelMode" in input) {
     next.replyModelMode = normalizeReplyModelModeStrict(input.replyModelMode);
   }
   if ("participationMode" in input) {
     next.participationMode = normalizeParticipationModeStrict(input.participationMode);
-  }
-  if ("allowedSkillIds" in input) {
-    next.allowedSkillIds = normalizeSkillIds(input.allowedSkillIds);
   }
   if ("switcherUserIds" in input) {
     next.switcherUserIds = normalizeUserIdsStrict(input.switcherUserIds);

@@ -6,7 +6,6 @@ export interface Pagination {
 }
 
 export type MemoryType = "member_profile" | "group_fact";
-export type CandidateStatus = "pending" | "approved" | "rejected";
 export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
 export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "selected_members";
 
@@ -47,22 +46,6 @@ export interface GroupConfig {
 export interface SubjectLabel {
   label: string;
   kind?: string;
-}
-
-export interface Candidate {
-  id: string;
-  groupId: string;
-  type: MemoryType;
-  subjectUserId?: string;
-  subjectLabel?: SubjectLabel;
-  title: string;
-  content: string;
-  confidence: number;
-  source: string;
-  status: CandidateStatus;
-  createdAt: string;
-  updatedAt: string;
-  evidence?: EvidencePreview | EvidenceFull;
 }
 
 export interface Memory {
@@ -118,21 +101,7 @@ export interface MemberProfile {
   note?: string;
   hasManualIdentity: boolean;
   memoryCount: number;
-  pendingCandidateCount: number;
   memoryDisabled?: boolean;
-}
-
-export interface MemberProfileSummary {
-  groupId: string;
-  userId: string;
-  type: "overall" | "yesterday";
-  subjectLabel?: SubjectLabel;
-  summary: string;
-  generatedAt?: string;
-  memoryCount?: number;
-  sourceMemoryCount?: number;
-  cached?: boolean;
-  record?: ProfileRecord;
 }
 
 export interface HealthStatus {
@@ -167,16 +136,13 @@ export interface OverviewData {
   stats: {
     groupCount: number;
     memoryCount: number;
-    pendingCandidateCount: number;
     knowledgeCount: number;
   };
   recent: {
-    candidates: Candidate[];
     memories: Memory[];
     knowledge: KnowledgeEntry[];
   };
   transportHealth: HealthStatus;
-  profileAiHealth: HealthStatus;
   modelStatuses?: ModelHealthStatus[];
   abnormalModelStatuses?: ModelHealthStatus[];
   modelStatusSummary?: {
@@ -214,7 +180,6 @@ export interface ServerStatus {
 
 export interface SystemHealthData {
   transportHealth: HealthStatus;
-  profileAiHealth: HealthStatus;
   modelStatuses: ModelHealthStatus[];
   abnormalModelStatuses: ModelHealthStatus[];
   modelStatusSummary: {
@@ -239,24 +204,28 @@ export interface AdminSession {
   publicBaseUrl: string;
 }
 
-export interface NotificationData {
-  pendingCandidateCount: number;
-  latestCandidates: Candidate[];
+export interface AdminAccount {
+  id: string;
+  username: string;
+  role: "super_admin" | "group_admin";
+  groupIds: string[];
+  totpEnabled: boolean;
+  disabledAt?: string;
+  createdAt: string;
+  lastLoginAt?: string;
 }
 
-export interface CandidateStatusCounts {
-  pending: number;
-  approved: number;
-  rejected: number;
+export interface AdminInvite {
+  id: string;
+  role: "super_admin" | "group_admin";
+  groupIds: string[];
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+  usedAt?: string;
 }
 
-export interface CandidateListResponse {
-  candidates: Candidate[];
-  pagination: Pagination;
-  statusCounts: CandidateStatusCounts;
-}
-
-export type SystemModelPurpose = "reply" | "profile" | "memory" | "dedup" | "summary" | "knowledge" | "tts" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "custom";
 export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {
@@ -302,29 +271,13 @@ export interface SystemCommandConfig {
 }
 
 export interface SystemSettings {
-  profileSummaryMaxChars: number;
-  profileShortSummaryMaxChars: number;
-  dailyProfileReviewEnabled: boolean;
-  dailyProfileReviewTime: string;
-  memoryDedupEnabled: boolean;
-  memoryDedupTime: string;
-  memoryDedupSemanticTimeoutMinutes: number;
-  memoryCandidateConfidenceThreshold: number;
-  memoryAutoApproveConfidenceThreshold: number;
-  memoryUnattendedModeEnabled: boolean;
   onlineLookupEnabled: boolean;
   tokenCostControl: {
-    memoryCandidateExtractionEnabled: boolean;
-    memoryCandidateNormalizationEnabled: boolean;
-    memorySemanticDedupEnabled: boolean;
-    dailyProfileReviewAiEnabled: boolean;
     dailyReportAiQuipEnabled: boolean;
     chatSummaryAiEnabled: boolean;
     scheduledReminderAiRewriteEnabled: boolean;
     modelHealthAutoProbeEnabled: boolean;
   };
-  adminSecretConfigured?: boolean;
-  groupAdminSecretConfigured?: boolean;
   defaultTriggerKeywords: Array<{ keyword: string; enabled: boolean }>;
   models: SystemModelConfig[];
   removedDefaultModelIds?: string[];
@@ -362,21 +315,8 @@ export interface SkillTtsConfig {
   personaTone?: string;
 }
 
-export interface ProfileRecord {
-  id: string;
-  groupId: string;
-  userId: string;
-  type: "overall" | "yesterday";
-  summary: string;
-  sourceMemoryCount: number;
-  generatedAt: string;
-  createdAt: string;
-  createdBy: string;
-}
-
 export type AdminTaskType =
   | "memory-dedup"
-  | "profile-generate"
   | "model-check"
   | "bulk-review";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -421,7 +361,7 @@ export interface SchedulePreviewDay {
 }
 
 export interface GlobalSearchResult {
-  type: "group" | "member" | "memory" | "candidate" | "knowledge" | "profile" | "page";
+  type: "group" | "member" | "memory" | "knowledge" | "page";
   title: string;
   subtitle: string;
   path: string;
@@ -445,22 +385,6 @@ export interface ScheduledReminderTask {
   nextRunAt: string;
   enabled: boolean;
   recentMessages?: string[];
-}
-
-export interface SkillOption {
-  id: string;
-  name: string;
-}
-
-export interface BulkApproveResult {
-  approved: Array<{ candidate: Candidate; memory: Memory }>;
-  alreadyApproved: Array<{ id: string; candidate: Candidate }>;
-  skipped: Array<{ id: string; error: string }>;
-  errors: Array<{ id: string; error: string }>;
-  approvedCount: number;
-  alreadyApprovedCount: number;
-  skippedCount: number;
-  errorCount: number;
 }
 
 let csrfToken = "";
@@ -526,7 +450,7 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
     throw new Error(message || "请求失败");
   }
   const data = await res.json() as T;
-  if (url === "/api/session" || url === "/api/login") {
+  if (url === "/api/session" || url.startsWith("/api/auth/")) {
     const session = (data as { session?: AdminSession; csrfToken?: string });
     setCsrfToken(session.session?.csrfToken ?? session.csrfToken);
     setReadonlySession(session.session ?? data as AdminSession);
@@ -542,19 +466,4 @@ export function queryString(params: Record<string, string | number | boolean | u
   }
   const text = search.toString();
   return text ? `?${text}` : "";
-}
-
-export interface MemorySummaryResult {
-  groupId: string;
-  subjectUserId?: string;
-  summary: string;
-  originalMemoryCount: number;
-  newMemoryId: string;
-}
-
-export async function summarizeMemories(groupId: string, subjectUserId?: string): Promise<MemorySummaryResult> {
-  return api<MemorySummaryResult>("/api/memories/summarize", {
-    method: "POST",
-    body: JSON.stringify({ groupId, subjectUserId }),
-  });
 }

@@ -1,0 +1,28 @@
+[Unit]
+Description=UBot V3 worker (conversation, schedules and model orchestration)
+After=network-online.target ubot-ingress.service
+Wants=network-online.target
+PartOf=ubot.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ai-project-releases/current
+EnvironmentFile=/opt/ai-project/.env
+Environment=BOT_ROLE=worker
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node dist/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/ai-project /opt/ai-project-releases
+
+[Install]
+WantedBy=ubot.target

@@ -167,9 +167,6 @@ function serverMetricStatus(title: "load" | "memory" | "host" | "process"): Heal
 function purposeLabel(purpose: ModelHealthHistoryEntry["purpose"]): string {
   return ({
     reply: "回复模型",
-    profile: "画像模型",
-    memory: "记忆模型",
-    dedup: "去重模型",
     summary: "总结模型",
     knowledge: "知识库模型",
     tts: "语音模型",

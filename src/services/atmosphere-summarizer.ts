@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 
 import { logWarn } from "../logger.js";
 import type { RecentGroupMessage } from "../types.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 /**
  * L5 group-atmosphere summarizer (plan section 3/5).
@@ -131,6 +132,7 @@ export class AtmosphereSummarizer {
   constructor(
     private readonly dataDir: string,
     options: SummarizerOptions = {},
+    private readonly v3State?: V3StateRepository,
   ) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
     this.store = this.loadStore();
@@ -203,15 +205,23 @@ export class AtmosphereSummarizer {
   }
 
   private loadStore(): AtmosphereStore {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return normalizeAtmosphereStore(this.v3State.getDocument("atmosphere", "default", { summaries: {} }));
+    }
     try {
-      const parsed = JSON.parse(readFileSync(this.storePath(), "utf8")) as AtmosphereStore;
-      return { summaries: parsed.summaries ?? {} };
+      return normalizeAtmosphereStore(JSON.parse(readFileSync(this.storePath(), "utf8")) as AtmosphereStore);
     } catch {
       return { summaries: {} };
     }
   }
 
   private persistStore(): void {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      this.v3State.saveDocument("atmosphere", "default", this.store);
+      return;
+    }
     try {
       mkdirSync(dirname(this.storePath()), { recursive: true });
       writeFileSync(this.storePath(), `${JSON.stringify(this.store, null, 2)}\n`, "utf8");
@@ -221,4 +231,9 @@ export class AtmosphereSummarizer {
       });
     }
   }
+}
+
+function normalizeAtmosphereStore(value: unknown): AtmosphereStore {
+  const record = value && typeof value === "object" ? value as Partial<AtmosphereStore> : {};
+  return { summaries: record.summaries && typeof record.summaries === "object" ? record.summaries : {} };
 }

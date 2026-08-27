@@ -221,10 +221,10 @@ test("group config updates full editable config with validation", async () => {
         visionEnabled: true,
       });
 
-      assert.equal(updated.currentSkillId, "zxp");
+      assert.equal(updated.currentSkillId, "huixian");
       assert.equal(updated.replyModelMode, "mimo");
       assert.equal(updated.participationMode, "mentions_only");
-      assert.deepEqual(updated.allowedSkillIds, ["zxp", "assistant"]);
+      assert.deepEqual(updated.allowedSkillIds, ["huixian"]);
       assert.deepEqual(updated.switcherUserIds, ["10001"]);
       assert.deepEqual(updated.liveChatUserIds, ["20001"]);
       assert.deepEqual(updated.roastModeUserIds, ["20002"]);

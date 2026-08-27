@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
-# UBot V3.0.0-rc.2 生产启动脚本（Linux systemd）
-# 并行拉起 ingress / worker / admin 三个进程，日志写入 data/logs/
+# UBot V3 production process launcher.
+# Systemd launches one independent role per unit.  This script intentionally
+# does not fork children, so service supervision and restart behaviour remain
+# attributable to the owning unit.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-mkdir -p data/logs
+ROLE="${BOT_ROLE:-}"
 
-ROLE="${BOT_ROLE:-ingress,worker,admin}"
+case "$ROLE" in
+  ingress|worker|admin|legacy)
+    ;;
+  *)
+    echo "BOT_ROLE must be one of ingress, worker, admin, or legacy." >&2
+    exit 2
+    ;;
+esac
 
-if [ "$ROLE" = "legacy" ]; then
-  exec node dist/index.js
-fi
-
-IFS=',' read -ra ROLES <<< "$ROLE"
-PIDS=()
-for r in "${ROLES[@]}"; do
-  BOT_ROLE="$r" node dist/index.js >> "data/logs/$r.log" 2>&1 &
-  PIDS+=($!)
-  echo "started $r (pid $!)"
-done
-
-# 子进程退出时联动退出（systemd 能感知并重启）
-trap 'kill ${PIDS[@]} 2>/dev/null || true' EXIT
-wait
+exec node dist/index.js

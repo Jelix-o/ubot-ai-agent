@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 interface HolidayCountdownStoreFile {
   lastSentDateByGroup: Record<string, string>;
@@ -10,14 +11,22 @@ export class HolidayCountdownStore {
   private cachedData?: HolidayCountdownStoreFile;
   private cachedVersion?: string;
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async getLastSentDate(groupId: string): Promise<string | undefined> {
+    if (this.v3State) return this.v3State.getHolidayCountdownLastSent(groupId);
     const data = await this.readData();
     return data.lastSentDateByGroup[groupId];
   }
 
   async markSent(groupId: string, dayKey: string): Promise<void> {
+    if (this.v3State) {
+      this.v3State.markHolidayCountdownSent(groupId, dayKey);
+      return;
+    }
     const data = await this.readData();
     data.lastSentDateByGroup[groupId] = dayKey;
     await this.writeData(data);

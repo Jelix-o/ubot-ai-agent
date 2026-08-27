@@ -12,7 +12,6 @@ import { formatDateTime } from "../utils/format";
 const app = useAppStore();
 const data = shallowRef<OverviewData>();
 const loading = shallowRef(false);
-const recentCandidates = computed(() => data.value?.recent.candidates.slice(0, 10) || []);
 const recentMemories = computed(() => data.value?.recent.memories.slice(0, 10) || []);
 const modelDetectionStatus = computed(() => ({
   ok: (data.value?.modelStatusSummary?.abnormal ?? 0) === 0,
@@ -33,10 +32,6 @@ async function load(): Promise<void> {
   }
 }
 
-function typeLabel(type: string): string {
-  return type === "member_profile" ? "成员画像" : "群内事实";
-}
-
 function onRefresh(): void {
   void load().catch((error) => app.showToast(error.message, "error"));
 }
@@ -52,8 +47,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   <section class="overview-page">
     <div class="metric-grid">
       <MetricCard title="已配置群" :value="data?.stats.groupCount ?? '-'" icon="users" tone="green" />
-      <MetricCard title="当前群待审记忆" :value="data?.stats.pendingCandidateCount ?? '-'" icon="health" tone="orange" />
-      <MetricCard title="当前群长期记忆" :value="data?.stats.memoryCount ?? '-'" icon="memory" tone="blue" />
+      <MetricCard title="当前群记忆" :value="data?.stats.memoryCount ?? '-'" icon="memory" tone="blue" />
       <MetricCard title="当前群 FAQ" :value="data?.stats.knowledgeCount ?? '-'" icon="knowledge" tone="purple" />
     </div>
 
@@ -61,36 +55,13 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
       <section class="panel overview-list-panel">
         <div class="section-head">
           <div>
-            <h2>待处理候选记忆 <span class="tag">{{ data?.stats.pendingCandidateCount ?? 0 }}</span></h2>
-            <p>优先处理待审候选，避免有价值的信息堆积。</p>
+            <h2>最近保存的记忆 <span class="tag">{{ data?.stats.memoryCount ?? 0 }}</span></h2>
+            <p>仅展示成员或管理员明确要求保存的信息。</p>
           </div>
-          <RouterLink class="ghost-btn" to="/candidates">进入审核</RouterLink>
+          <RouterLink class="ghost-btn" to="/memories">管理记忆</RouterLink>
         </div>
         <div v-if="loading" class="empty">正在加载...</div>
-        <div v-else-if="!recentCandidates.length" class="empty compact-empty">当前群没有待审候选。</div>
-        <div v-else class="list overview-scroll-list">
-          <article v-for="item in recentCandidates" :key="item.id" class="list-row candidate-row">
-            <input type="checkbox" disabled />
-            <div>
-              <div class="row-top">
-                <h3 class="row-title">{{ item.title }}</h3>
-                <span class="tag warn">{{ typeLabel(item.type) }}</span>
-              </div>
-              <p class="row-content">{{ item.content }}</p>
-              <span class="row-meta">来源：{{ item.subjectLabel?.label || item.subjectUserId || "群整体" }}</span>
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section class="panel overview-list-panel">
-        <div class="section-head">
-          <div>
-            <h2>最新长期记忆 <span class="tag">{{ data?.stats.memoryCount ?? 0 }}</span></h2>
-          </div>
-          <RouterLink class="ghost-btn" to="/memories">查看全部</RouterLink>
-        </div>
-        <div v-if="!recentMemories.length" class="empty compact-empty">暂无长期记忆。</div>
+        <div v-else-if="!recentMemories.length" class="empty compact-empty">当前群暂无记忆。</div>
         <div v-else class="list overview-scroll-list">
           <article v-for="item in recentMemories" :key="item.id" class="list-row">
             <div class="row-top">
@@ -102,6 +73,17 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
           </article>
         </div>
       </section>
+
+      <section class="panel overview-list-panel persona-summary">
+        <div class="section-head">
+          <div>
+            <h2>会仙人格</h2>
+            <p>当前群统一使用会仙。她会自然参与、认真帮忙，也会对真人照片、线下见面等问题保持诚实边界。</p>
+          </div>
+          <RouterLink v-if="app.role === 'super_admin'" class="ghost-btn" to="/persona">编辑人格</RouterLink>
+        </div>
+        <div class="empty compact-empty">会仙通过成员明确保存的记忆维持对话连续性；不会从普通聊天自动收集个人信息。</div>
+      </section>
     </div>
 
     <div class="overview-side-grid">
@@ -109,9 +91,9 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>系统状态</h2>
-            <p>模型、传输层和服务器异常会影响画像、记忆或消息收发。</p>
+            <p>模型、传输层和服务器异常会影响消息收发与排程任务。</p>
           </div>
-          <RouterLink class="ghost-btn" to="/health">查看系统状态</RouterLink>
+          <RouterLink v-if="app.role === 'super_admin'" class="ghost-btn" to="/health">查看系统状态</RouterLink>
         </div>
         <div class="health-mini">
           <StatusCard title="NapCat 连接" :status="data?.transportHealth" />
@@ -177,11 +159,6 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 
 .compact-empty {
   min-height: 100%;
-}
-
-.candidate-row {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
 }
 
 .health-mini {

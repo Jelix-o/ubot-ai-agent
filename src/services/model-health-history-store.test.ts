@@ -13,14 +13,14 @@ test("ModelHealthHistoryStore serializes concurrent records", async () => {
     const store = new ModelHealthHistoryStore(path.join(dir, "model-health.json"));
     await Promise.all([
       store.record(makeEntry("reply-main", "reply")),
-      store.record(makeEntry("profile-main", "profile")),
+      store.record(makeEntry("knowledge-main", "knowledge")),
       store.record(makeEntry("tts-main", "tts")),
     ]);
 
     const entries = await store.list();
     assert.deepEqual(new Set(entries.map((entry) => entry.id)), new Set([
       "reply-main",
-      "profile-main",
+      "knowledge-main",
       "tts-main",
     ]));
   } finally {

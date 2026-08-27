@@ -4,7 +4,7 @@ import test from "node:test";
 import { loadConfig } from "./config.js";
 import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL } from "./services/mimo-tts-config.js";
 
-test("profile ai config falls back to openai config and supports overrides", () => {
+test("profile AI environment variables are not part of the V3 runtime configuration", () => {
   const originalEnv = { ...process.env };
   try {
     process.env = {
@@ -15,33 +15,15 @@ test("profile ai config falls back to openai config and supports overrides", () 
       OPENAI_MODEL: "reply-model",
       BOT_QQ: "12345",
     };
-    delete process.env.PROFILE_AI_BASE_URL;
-    delete process.env.PROFILE_AI_API_KEY;
-    delete process.env.PROFILE_AI_MODEL;
-
-    const fallback = loadConfig();
-    assert.equal(fallback.profileAiBaseUrl, "https://reply.example/v1");
-    assert.equal(fallback.profileAiApiKey, "reply-key");
-    assert.equal(fallback.profileAiModel, "reply-model");
-
-    process.env.PROFILE_AI_BASE_URL = "";
-    process.env.PROFILE_AI_API_KEY = " ";
-    process.env.PROFILE_AI_MODEL = "";
-
-    const emptyFallback = loadConfig();
-    assert.equal(emptyFallback.profileAiBaseUrl, "https://reply.example/v1");
-    assert.equal(emptyFallback.profileAiApiKey, "reply-key");
-    assert.equal(emptyFallback.profileAiModel, "reply-model");
-
     process.env.PROFILE_AI_BASE_URL = "https://profile.example/v1";
     process.env.PROFILE_AI_API_KEY = "profile-key";
     process.env.PROFILE_AI_MODEL = "profile-model";
 
     const configured = loadConfig();
     assert.equal(configured.openAiModel, "reply-model");
-    assert.equal(configured.profileAiBaseUrl, "https://profile.example/v1");
-    assert.equal(configured.profileAiApiKey, "profile-key");
-    assert.equal(configured.profileAiModel, "profile-model");
+    assert.equal("profileAiBaseUrl" in configured, false);
+    assert.equal("profileAiApiKey" in configured, false);
+    assert.equal("profileAiModel" in configured, false);
   } finally {
     process.env = originalEnv;
   }

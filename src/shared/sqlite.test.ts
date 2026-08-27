@@ -180,7 +180,7 @@ test("old messages schema is upgraded with nullable sender identity columns", (t
   db.close();
 });
 
-test("versioned migrations are recorded once and provision configuration shadow tables", (t) => {
+test("versioned migrations are recorded once and provision V3 authority tables", (t) => {
   const dbPath = tempDb(t);
   const first = new SharedDb(dbPath);
   assert.deepEqual(
@@ -190,17 +190,25 @@ test("versioned migrations are recorded once and provision configuration shadow 
       { version: 2, name: "add-group-config-shadow-snapshots" },
       { version: 3, name: "add-system-settings-shadow-snapshots" },
       { version: 4, name: "add-outbox-delivery-attempts" },
+      { version: 5, name: "add-v3-control-and-character-authority" },
+      { version: 6, name: "add-v3-content-and-schedule-authority" },
+      { version: 7, name: "add-v3-admin-account-authentication" },
+      { version: 8, name: "add-v3-retention-and-cutover-metadata" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
   assert.equal(tables.some((table) => table.name === "group_config_shadow_snapshots"), true);
   assert.equal(tables.some((table) => table.name === "system_settings_shadow_snapshots"), true);
+  assert.equal(tables.some((table) => table.name === "v3_character_profiles"), true);
+  assert.equal(tables.some((table) => table.name === "v3_memories"), true);
+  assert.equal(tables.some((table) => table.name === "admin_accounts"), true);
+  assert.equal(tables.some((table) => table.name === "v3_rollback_archives"), true);
   first.close();
 
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4],
+    [1, 2, 3, 4, 5, 6, 7, 8],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -627,13 +635,13 @@ test("old outbox schema without retry_after is migrated without losing rows", (t
   db.close();
 });
 
-test("token bucket counting uses msg_time window", (t) => {
+test("token bucket counting uses received-time window", (t) => {
   const db = new SharedDb(tempDb(t));
   const now = 1_700_000_000_000;
   for (let i = 0; i < 5; i += 1) {
     db.insertMessage({
       groupId: "10001", userId: "20001", selfId: "30001", msgId: `m${i}`,
-      msgTime: now - i * 1000, text: "x", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: now,
+      msgTime: now + 365 * 24 * 60 * 60 * 1000, text: "x", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: now - i * 1000,
     });
   }
   assert.equal(db.countMessagesSince("10001", now - 10_000), 5);

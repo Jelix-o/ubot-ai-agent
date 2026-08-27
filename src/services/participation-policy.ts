@@ -10,6 +10,7 @@ export type ParticipationReason =
   | "group_unavailable"
   | "empty_message"
   | "administrative_command"
+  | "explicit_memory_request"
   | "conversation_command"
   | "direct_mention"
   | "explicit_reply"
@@ -26,6 +27,7 @@ export interface ParticipationInput {
   groupEnabled: boolean;
   groupMuted: boolean;
   isCommand: boolean;
+  isExplicitMemoryRequest: boolean;
   isConversationCommand: boolean;
   keywordTriggered: boolean;
 }
@@ -53,6 +55,7 @@ export class ParticipationPolicy {
       hasReply: input.hasReply,
       hasImages: input.hasImages,
       isCommand: input.isCommand,
+      ...(input.isExplicitMemoryRequest ? { isExplicitMemoryRequest: true } : {}),
       isConversationCommand: input.isConversationCommand,
       groupMuted: input.groupMuted,
       keywordTriggered: input.keywordTriggered,
@@ -69,6 +72,9 @@ export class ParticipationPolicy {
       return input.isConversationCommand
         ? this.result("reply", "conversation_command", 1, signals)
         : this.result("admin_command", "administrative_command", 1, signals);
+    }
+    if (input.isExplicitMemoryRequest && (input.hasAtBot || input.hasReply)) {
+      return this.result("task", "explicit_memory_request", 1, signals);
     }
     if (input.hasAtBot) {
       return this.result("reply", "direct_mention", 1, signals);

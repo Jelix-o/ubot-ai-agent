@@ -57,7 +57,6 @@ export interface AiHealthStatus {
 
 export type AdminTaskType =
   | "memory-dedup"
-  | "profile-generate"
   | "model-check"
   | "bulk-review";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -85,7 +84,13 @@ export interface AdminTasksFile {
   tasks: AdminTaskRecord[];
 }
 
-export interface SkillDefinition {
+/**
+ * The one persistent assistant identity supported by V3.
+ *
+ * `SkillDefinition` remains an alias below solely so archived V1/V2 JSON can
+ * be read during migration. Runtime code should refer to CharacterProfile.
+ */
+export interface CharacterProfile {
   id: string;
   name: string;
   systemPrompt: string;
@@ -111,6 +116,9 @@ export interface SkillDefinition {
   allowBurstOnHighEmotion?: boolean;
   highEmotionKeywords?: string[];
 }
+
+/** @deprecated Use CharacterProfile. Retained for legacy JSON compatibility. */
+export type SkillDefinition = CharacterProfile;
 
 export interface SkillTtsConfig {
   stylePrompt?: string;
@@ -178,23 +186,6 @@ export interface GroupMemory {
   supersededBy?: string;
 }
 
-export type GroupMemoryCandidateStatus = "pending" | "approved" | "rejected";
-
-export interface GroupMemoryCandidate {
-  id: string;
-  groupId: string;
-  type: GroupMemoryType;
-  subjectUserId?: string;
-  title: string;
-  content: string;
-  confidence: number;
-  source: string;
-  status: GroupMemoryCandidateStatus;
-  createdAt: string;
-  updatedAt: string;
-  evidence?: GroupMemoryEvidence;
-}
-
 export interface KnowledgeBaseEntry {
   id: string;
   groupId: string;
@@ -202,6 +193,18 @@ export interface KnowledgeBaseEntry {
   question: string;
   answer: string;
   keywords: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * The durable, per-group container for approved knowledge entries.  V3 keeps
+ * one pack per group rather than treating a JSON file as the knowledge
+ * authority; entries remain independently addressable within the pack.
+ */
+export interface KnowledgePack {
+  groupId: string;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -222,7 +225,7 @@ export interface GroupMemberProfile {
   note?: string;
   hasManualIdentity: boolean;
   memoryCount: number;
-  pendingCandidateCount: number;
+  /** @deprecated Candidate memory is no longer populated. */
   memoryDisabled?: boolean;
 }
 
@@ -414,8 +417,24 @@ export interface AdminSession {
   expiresAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "profile" | "memory" | "dedup" | "summary" | "knowledge" | "tts" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "custom";
+/**
+ * Values accepted only while importing pre-V3 settings. They are never
+ * selected by V3 runtime services.
+ */
+export type LegacySystemModelPurpose = "profile" | "memory" | "dedup";
 export type ReasoningEffort = "high" | "xhigh";
+
+export interface ModelProviderCapabilities {
+  /** The configured model may accept image input for ordinary replies. */
+  vision: boolean;
+  /** V3's request/reply path is non-streaming even if an upstream can stream. */
+  streaming: false;
+  /** OpenAI-compatible reasoning effort is intentionally not sent to Anthropic. */
+  reasoningEffort: boolean;
+  /** The provider has an independently configurable request timeout. */
+  requestTimeout: true;
+}
 
 export interface SystemModelConfig {
   id: string;
@@ -423,11 +442,13 @@ export interface SystemModelConfig {
   shortName: string;
   baseUrl: string;
   model: string;
-  purpose: SystemModelPurpose;
+  purpose: SystemModelPurpose | LegacySystemModelPurpose;
   apiKey?: string;
   hasApiKey: boolean;
   enabled: boolean;
   apiProtocol?: "openai" | "anthropic";
+  /** Persisted capability policy; omitted values use protocol-safe defaults. */
+  capabilities?: Partial<ModelProviderCapabilities>;
   supportsVision?: boolean;
   reasoningEffort?: ReasoningEffort;
   maxCompletionTokens?: number;
@@ -448,10 +469,6 @@ export interface SystemCommandConfig {
 }
 
 export interface TokenCostControlSettings {
-  memoryCandidateExtractionEnabled: boolean;
-  memoryCandidateNormalizationEnabled: boolean;
-  memorySemanticDedupEnabled: boolean;
-  dailyProfileReviewAiEnabled: boolean;
   dailyReportAiQuipEnabled: boolean;
   chatSummaryAiEnabled: boolean;
   scheduledReminderAiRewriteEnabled: boolean;
@@ -459,22 +476,8 @@ export interface TokenCostControlSettings {
 }
 
 export interface SystemSettings {
-  profileSummaryMaxChars: number;
-  profileShortSummaryMaxChars: number;
-  dailyProfileReviewEnabled: boolean;
-  dailyProfileReviewTime: string;
-  memoryDedupEnabled: boolean;
-  memoryDedupTime: string;
-  memoryDedupSemanticTimeoutMinutes: number;
-  memoryCandidateConfidenceThreshold: number;
-  memoryAutoApproveConfidenceThreshold: number;
-  memoryUnattendedModeEnabled: boolean;
   onlineLookupEnabled: boolean;
   tokenCostControl: TokenCostControlSettings;
-  adminSecretHash?: string;
-  groupAdminSecretHash?: string;
-  adminSecretConfigured?: boolean;
-  groupAdminSecretConfigured?: boolean;
   defaultTriggerKeywords: Array<{
     keyword: string;
     enabled: boolean;
@@ -484,24 +487,6 @@ export interface SystemSettings {
   selectedModelIds: Partial<Record<SystemModelPurpose, string>>;
   commands: SystemCommandConfig[];
   updatedAt: string;
-}
-
-export type ProfileRecordType = "overall" | "yesterday";
-
-export interface ProfileRecord {
-  id: string;
-  groupId: string;
-  userId: string;
-  type: ProfileRecordType;
-  summary: string;
-  sourceMemoryCount: number;
-  generatedAt: string;
-  createdAt: string;
-  createdBy: string;
-}
-
-export interface ProfileRecordsFile {
-  records: ProfileRecord[];
 }
 
 export interface AppConfig {
@@ -516,9 +501,6 @@ export interface AppConfig {
   openAiApiKey: string;
   openAiModel: string;
   realtimeSearchUrl: string;
-  profileAiBaseUrl: string;
-  profileAiApiKey: string;
-  profileAiModel: string;
   ttsBaseUrl: string;
   ttsApiKey: string;
   ttsModel: string;
@@ -537,11 +519,8 @@ export interface AppConfig {
   scheduledReminderStorePath: string;
   adminOperationLogPath: string;
   groupMemoryPath: string;
-  groupMemoryCandidatesPath: string;
-  dailyProfileReviewPath: string;
   knowledgeBasePath: string;
   systemSettingsPath: string;
-  profileRecordsPath: string;
   adminTasksPath: string;
   modelHealthHistoryPath: string;
   adminHttpEnabled: boolean;
@@ -550,6 +529,6 @@ export interface AppConfig {
   adminPublicBaseUrl: string;
   adminUsername?: string;
   adminPassword?: string;
-  adminGroupPassword?: string;
-  adminSessionSecret?: string;
+  /** 32-byte base64/base64url/hex key shared by all V3 state protectors. */
+  stateEncryptionKey?: string;
 }

@@ -13,7 +13,6 @@ const router = useRouter();
 const app = useAppStore();
 
 const globalQuery = shallowRef("");
-const notificationsOpen = shallowRef(false);
 const commandOpen = shallowRef(false);
 const commandQuery = shallowRef("");
 const searchResults = shallowRef<GlobalSearchResult[]>([]);
@@ -42,28 +41,24 @@ function iconFor(name: unknown): string {
     overview: "overview",
     groups: "settings",
     members: "users",
-    candidates: "candidate",
     memories: "memory",
-    profiles: "users",
     knowledge: "knowledge",
     tasks: "tasks",
     audit: "audit",
     health: "health",
     settings: "settings",
-    skills: "candidate",
+    persona: "users",
     commands: "memory",
   } as Record<string, string>)[String(name)] || "overview";
 }
 
 function closeFloating(): void {
-  notificationsOpen.value = false;
   themeOpen.value = false;
   userOpen.value = false;
 }
 
 function refreshCurrent(): void {
   dispatchRefreshCurrent();
-  void app.loadNotifications();
 }
 
 function go(path: string): void {
@@ -99,10 +94,8 @@ function searchTypeLabel(type: GlobalSearchResult["type"]): string {
   return ({
     group: "群聊",
     member: "成员",
-    memory: "长期记忆",
-    candidate: "候选记忆",
+    memory: "记忆",
     knowledge: "FAQ",
-    profile: "画像",
     page: "页面",
   } as Record<GlobalSearchResult["type"], string>)[type];
 }
@@ -112,9 +105,7 @@ function resultIcon(type: GlobalSearchResult["type"]): string {
     group: "users",
     member: "users",
     memory: "memory",
-    candidate: "candidate",
     knowledge: "knowledge",
-    profile: "users",
     page: "overview",
   } as Record<GlobalSearchResult["type"], string>)[type] || "search";
 }
@@ -127,15 +118,6 @@ function runFirstCommandResult(): void {
   }
   const firstPage = pageCommandItems.value[0];
   if (firstPage) go(String(firstPage.path));
-}
-
-async function openNotifications(): Promise<void> {
-  const next = !notificationsOpen.value;
-  closeFloating();
-  notificationsOpen.value = next;
-  if (next) {
-    await app.loadNotifications();
-  }
 }
 
 function openTheme(): void {
@@ -178,7 +160,6 @@ onMounted(async () => {
   if (!isLogin.value) {
     await app.loadSession();
     void app.loadGroups();
-    void app.loadNotifications();
   }
 });
 
@@ -242,7 +223,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span /> 系统运行中</strong>
-          <small>UBot v3.0.0-rc.2</small>
+          <small>UBot v3.0.0</small>
         </div>
       </div>
     </aside>
@@ -276,24 +257,6 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
             <AppIcon name="refresh" />
           </button>
 
-          <div class="popover-wrap">
-            <button class="icon-btn notify-btn" type="button" title="Notifications" @click="openNotifications">
-              <AppIcon name="bell" />
-              <span v-if="app.notifications.pendingCandidateCount > 0">{{ app.notifications.pendingCandidateCount }}</span>
-            </button>
-            <div v-if="notificationsOpen" class="top-popover notify-popover">
-              <strong>候选记忆提醒</strong>
-              <p>{{ app.notifications.pendingCandidateCount }} 条候选等待处理</p>
-              <button class="btn" type="button" data-smoke="review-candidates" @click="go('/candidates')">去审核</button>
-              <div class="notify-list">
-                <div v-for="item in app.notifications.latestCandidates" :key="item.id" class="notify-item">
-                  <span>{{ item.title }}</span>
-                  <small>{{ item.groupId }}</small>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <button v-if="app.role === 'super_admin'" class="icon-btn" type="button" title="Settings" @click="router.push('/settings')">
             <AppIcon name="settings" />
           </button>
@@ -324,7 +287,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
         </div>
       </header>
 
-      <button v-if="notificationsOpen || themeOpen || userOpen || mobileNavOpen" class="popover-backdrop" type="button" aria-label="Close popover" @click="closeFloating(); mobileNavOpen = false" />
+      <button v-if="themeOpen || userOpen || mobileNavOpen" class="popover-backdrop" type="button" aria-label="Close popover" @click="closeFloating(); mobileNavOpen = false" />
 
       <section class="content-scroll">
         <RouterView />

@@ -110,7 +110,6 @@ function statusLabel(status: AdminTaskStatus): string {
 function typeLabel(type: AdminTaskType): string {
   return ({
     "memory-dedup": "记忆去重",
-    "profile-generate": "画像生成",
     "model-check": "模型检测",
     "bulk-review": "批量审核",
   } as Record<AdminTaskType, string>)[type];
@@ -208,7 +207,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       <div class="section-head">
         <div>
           <h2>任务中心 <span class="tag">{{ pagination.total }}</span></h2>
-          <p>追踪去重、画像生成、模型检测和批量审核等耗时管理任务。</p>
+          <p>追踪显式记忆去重、模型检测和批量运营等耗时管理任务。</p>
         </div>
         <button class="btn" type="button" :disabled="loading" @click="load">
           {{ loading ? "刷新中..." : "刷新" }}
@@ -248,7 +247,6 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <select v-model="filters.type" class="select" @change="applyFilters">
             <option value="">全部类型</option>
             <option value="memory-dedup">记忆去重</option>
-            <option value="profile-generate">画像生成</option>
             <option value="model-check">模型检测</option>
             <option value="bulk-review">批量审核</option>
           </select>

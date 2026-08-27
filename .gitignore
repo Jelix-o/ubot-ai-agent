@@ -24,5 +24,9 @@ NUL
 # 本地部署辅助文件（不进入仓库）
 .deploy-*.tar.gz
 .mimocode/
-deploy/
+deploy/*
+!deploy/nginx/
+!deploy/nginx/bot.9958.uk.conf
+!deploy/systemd/
+!deploy/systemd/*.template
 交付文件/

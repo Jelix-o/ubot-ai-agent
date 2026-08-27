@@ -3,12 +3,17 @@ import { stat } from "node:fs/promises";
 import type { ScheduledReminderTask, ScheduledRemindersFile } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 export class ScheduledReminderStore {
   private cachedData?: ScheduledRemindersFile;
   private cachedVersion?: string;
+  private readonly claimedLeases = new Map<string, string>();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async addTask(args: {
     groupId: string;
@@ -64,12 +69,20 @@ export class ScheduledReminderStore {
       recentMessages: [],
     };
 
+    if (this.v3State) {
+      this.v3State.saveScheduledReminder(task);
+      return task;
+    }
     data.tasks[task.id] = task;
     await this.writeData(data);
     return task;
   }
 
   async listGroupTasks(groupId: string, options: { includeDisabled?: boolean } = {}): Promise<ScheduledReminderTask[]> {
+    if (this.v3State) {
+      return this.v3State.listScheduledReminders(groupId, options.includeDisabled === true)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    }
     const data = await this.readData();
     return Object.values(data.tasks)
       .filter((task) => task.groupId === groupId && (options.includeDisabled || task.enabled))
@@ -92,6 +105,14 @@ export class ScheduledReminderStore {
       weekdays?: number[];
     },
   ): Promise<ScheduledReminderTask | undefined> {
+    if (this.v3State) {
+      const task = this.v3State.getScheduledReminder(taskId);
+      if (!task) return undefined;
+      const updated = buildUpdatedTask(task, updates);
+      this.v3State.saveScheduledReminder(updated);
+      this.claimedLeases.delete(taskId);
+      return updated;
+    }
     const data = await this.readData();
     const task = data.tasks[taskId];
     if (!task) {
@@ -147,6 +168,10 @@ export class ScheduledReminderStore {
   }
 
   async removeGroupTask(groupId: string, taskId: string): Promise<boolean> {
+    if (this.v3State) {
+      this.claimedLeases.delete(taskId);
+      return this.v3State.deleteScheduledReminder(taskId, groupId);
+    }
     const data = await this.readData();
     const task = data.tasks[taskId];
     if (!task || task.groupId !== groupId) {
@@ -159,6 +184,11 @@ export class ScheduledReminderStore {
   }
 
   async getDueTasks(now = new Date()): Promise<ScheduledReminderTask[]> {
+    if (this.v3State) {
+      const claimed = this.v3State.claimDueScheduledReminders(now.getTime());
+      for (const item of claimed) this.claimedLeases.set(item.task.id, item.leaseToken);
+      return claimed.map((item) => item.task);
+    }
     const data = await this.readData();
     const nowMs = now.getTime();
     return Object.values(data.tasks)
@@ -167,6 +197,15 @@ export class ScheduledReminderStore {
   }
 
   async markSent(taskId: string, message: string, now = new Date()): Promise<ScheduledReminderTask | undefined> {
+    if (this.v3State) {
+      const task = this.v3State.getScheduledReminder(taskId);
+      if (!task) return undefined;
+      const updated = buildSentTask(task, message, now);
+      const leaseToken = this.claimedLeases.get(taskId);
+      const finalized = this.v3State.finalizeScheduledReminder(updated, leaseToken);
+      this.claimedLeases.delete(taskId);
+      return finalized ? updated : undefined;
+    }
     const data = await this.readData();
     const task = data.tasks[taskId];
     if (!task) {
@@ -207,7 +246,18 @@ export class ScheduledReminderStore {
     return updated;
   }
 
+  async releaseClaim(taskId: string): Promise<void> {
+    const leaseToken = this.claimedLeases.get(taskId);
+    this.claimedLeases.delete(taskId);
+    if (this.v3State && leaseToken) {
+      this.v3State.releaseScheduledReminderLease(taskId, leaseToken);
+    }
+  }
+
   private async readData(): Promise<ScheduledRemindersFile> {
+    if (this.v3State) {
+      return { tasks: Object.fromEntries(this.v3State.listScheduledReminders(undefined, true).map((task) => [task.id, task])) };
+    }
     const version = await fileVersion(this.filePath);
     if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
@@ -231,10 +281,106 @@ export class ScheduledReminderStore {
   }
 
   private async writeData(data: ScheduledRemindersFile): Promise<void> {
+    if (this.v3State) {
+      throw new Error("v3_state_repository_requires_operation_level_writes");
+    }
     await writeJsonFileAtomic(this.filePath, data);
     this.cachedData = data;
     this.cachedVersion = await fileVersion(this.filePath);
   }
+}
+
+function buildUpdatedTask(
+  task: ScheduledReminderTask,
+  updates: {
+    intervalMinutes?: number;
+    topic?: string;
+    executionStartTime?: string;
+    executionEndTime?: string;
+    executionIntervalMinutes?: number;
+    scheduledTime?: string;
+    advanceMinutes?: number;
+    nextRunAt?: string;
+    enabled?: boolean;
+    dateRule?: ScheduledReminderTask["dateRule"];
+    weekdays?: number[];
+  },
+): ScheduledReminderTask {
+  const scheduleChanged = updates.intervalMinutes !== undefined ||
+    updates.executionStartTime !== undefined ||
+    updates.executionEndTime !== undefined ||
+    updates.executionIntervalMinutes !== undefined ||
+    updates.scheduledTime !== undefined ||
+    updates.advanceMinutes !== undefined ||
+    updates.dateRule !== undefined ||
+    updates.weekdays !== undefined;
+  const schedule = normalizeReminderSchedule({
+    intervalMinutes: updates.intervalMinutes ?? task.intervalMinutes,
+    executionStartTime: updates.executionStartTime ?? task.executionStartTime,
+    executionEndTime: updates.executionEndTime ?? task.executionEndTime,
+    executionIntervalMinutes: updates.executionIntervalMinutes ?? task.executionIntervalMinutes,
+    scheduledTime: updates.scheduledTime ?? task.scheduledTime,
+    advanceMinutes: updates.advanceMinutes ?? task.advanceMinutes,
+  });
+  const updated: ScheduledReminderTask = {
+    ...task,
+    intervalMinutes: schedule.intervalMinutes,
+    ...(schedule.executionStartTime !== undefined ? { executionStartTime: schedule.executionStartTime } : {}),
+    ...(schedule.executionEndTime !== undefined ? { executionEndTime: schedule.executionEndTime } : {}),
+    ...(schedule.executionIntervalMinutes !== undefined ? { executionIntervalMinutes: schedule.executionIntervalMinutes } : {}),
+    ...(updates.topic !== undefined ? { topic: normalizeTopic(updates.topic) } : {}),
+    ...(schedule.scheduledTime !== undefined ? { scheduledTime: schedule.scheduledTime } : {}),
+    ...(schedule.advanceMinutes !== undefined ? { advanceMinutes: schedule.advanceMinutes } : {}),
+    ...(updates.nextRunAt !== undefined ? { nextRunAt: updates.nextRunAt } : {}),
+    ...(updates.enabled !== undefined ? { enabled: updates.enabled } : {}),
+    ...(updates.dateRule !== undefined ? { dateRule: normalizeDateRule(updates.dateRule) } : {}),
+    ...(updates.weekdays !== undefined ? { weekdays: normalizeWeekdays(updates.weekdays) } : {}),
+  };
+  if (scheduleChanged && updates.nextRunAt === undefined) {
+    updated.nextRunAt = calculateNextRunAt({
+      now: new Date(),
+      intervalMinutes: schedule.intervalMinutes,
+      executionStartTime: schedule.executionStartTime,
+      executionEndTime: schedule.executionEndTime,
+      executionIntervalMinutes: schedule.executionIntervalMinutes,
+      scheduledTime: schedule.scheduledTime,
+      advanceMinutes: schedule.advanceMinutes,
+      dateRule: updated.dateRule,
+      weekdays: updated.weekdays,
+    }).toISOString();
+  }
+  return updated;
+}
+
+function buildSentTask(task: ScheduledReminderTask, message: string, now: Date): ScheduledReminderTask {
+  const nextRunAt = task.scheduledTime
+    ? calculateNextRunAt({
+      now: new Date(now.getTime() + 60 * 1000),
+      intervalMinutes: task.intervalMinutes,
+      executionStartTime: task.executionStartTime,
+      executionEndTime: task.executionEndTime,
+      executionIntervalMinutes: task.executionIntervalMinutes,
+      scheduledTime: task.scheduledTime,
+      advanceMinutes: task.advanceMinutes,
+      dateRule: task.dateRule,
+      weekdays: task.weekdays,
+    }).toISOString()
+    : !task.executionStartTime
+      ? calculateIntervalNextRunAt(task, now).toISOString()
+      : calculateNextRunAt({
+        now: new Date(now.getTime() + 60 * 1000),
+        intervalMinutes: task.intervalMinutes,
+        executionStartTime: task.executionStartTime,
+        executionEndTime: task.executionEndTime,
+        executionIntervalMinutes: task.executionIntervalMinutes,
+        dateRule: task.dateRule,
+        weekdays: task.weekdays,
+      }).toISOString();
+  return {
+    ...task,
+    nextRunAt,
+    recentMessages: [...(task.recentMessages ?? []), message].slice(-5),
+  };
 }
 
 async function fileVersion(filePath: string): Promise<string> {

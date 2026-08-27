@@ -1,10 +1,17 @@
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 
-import type { SystemCommandConfig, SystemModelConfig, SystemSettings, TokenCostControlSettings } from "../types.js";
+import type {
+  SystemCommandConfig,
+  SystemModelConfig,
+  SystemModelPurpose,
+  SystemSettings,
+  TokenCostControlSettings,
+} from "../types.js";
 import { logWarn } from "../logger.js";
 import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 import {
   ENV_TTS_MODEL_ID,
   LEGACY_MIMO_TTS_BASE_URL,
@@ -27,6 +34,7 @@ export class SystemSettingsStore {
     private readonly filePath: string,
     private readonly defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
     private readonly shadowWriter?: SystemSettingsShadowWriter,
+    private readonly v3State?: V3StateRepository,
   ) {}
 
   /**
@@ -34,6 +42,10 @@ export class SystemSettingsStore {
    * Runtime reads never call this, so GET routes remain free of shadow writes.
    */
   async syncShadowFromAuthoritative(): Promise<boolean> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return true;
+    }
     return this.syncShadow(await this.readData(), "explicit_sync");
   }
 
@@ -46,7 +58,6 @@ export class SystemSettingsStore {
     if (input.models !== undefined) {
       validateModelUpdateInput(input.models);
     }
-    validateMemoryConfidenceThresholdUpdateInput(input);
     const removedDefaultModelIds = input.models === undefined
       ? current.removedDefaultModelIds ?? []
       : reconcileRemovedDefaultModelIds(current.removedDefaultModelIds, input.models, this.defaultModels);
@@ -56,8 +67,6 @@ export class SystemSettingsStore {
     const next = normalizeSettings({
       ...current,
       ...input,
-      adminSecretHash: current.adminSecretHash,
-      groupAdminSecretHash: current.groupAdminSecretHash,
       removedDefaultModelIds,
       models: nextModels,
       selectedModelIds: input.selectedModelIds === undefined
@@ -74,44 +83,24 @@ export class SystemSettingsStore {
     return cloneSettings(await this.readData());
   }
 
-  async resetAdminSecret(secret: string): Promise<SystemSettings> {
-    const current = await this.readData();
-    const next = normalizeSettings({
-      ...current,
-      adminSecretHash: hashSecret(secret),
-      updatedAt: new Date().toISOString(),
-    }, this.defaultModels);
-    await this.writeData(next);
-    return sanitizeSettings(next);
-  }
-
-  async resetGroupAdminSecret(secret: string): Promise<SystemSettings> {
-    const current = await this.readData();
-    const next = normalizeSettings({
-      ...current,
-      groupAdminSecretHash: hashSecret(secret),
-      updatedAt: new Date().toISOString(),
-    }, this.defaultModels);
-    await this.writeData(next);
-    return sanitizeSettings(next);
-  }
-
-  async verifyAdminSecret(secret: string, fallback?: string): Promise<boolean> {
-    const settings = await this.readData();
-    return verifyConfiguredOrFallback(settings.adminSecretHash, secret, fallback);
-  }
-
-  async verifyGroupAdminSecret(secret: string, fallback?: string): Promise<boolean> {
-    const settings = await this.readData();
-    return verifyConfiguredOrFallback(settings.groupAdminSecretHash, secret, fallback);
-  }
-
   invalidateCache(): void {
     this.cachedData = undefined;
     this.cachedFileVersion = undefined;
   }
 
   private async readData(): Promise<SystemSettings> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      const stored = this.v3State.getSystemSettings<SystemSettings>();
+      if (stored) {
+        this.cachedData = normalizeSettings(stored, this.defaultModels);
+        return this.cachedData;
+      }
+      const initial = defaultSettings(this.defaultModels);
+      this.v3State.saveSystemSettings(initial);
+      this.cachedData = initial;
+      return initial;
+    }
     const fileVersion = await this.getFileVersion();
     if (this.cachedData && fileVersion === this.cachedFileVersion) {
       return this.cachedData;
@@ -157,6 +146,12 @@ export class SystemSettingsStore {
   }
 
   private async writeData(data: SystemSettings): Promise<void> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      this.v3State.saveSystemSettings(data);
+      this.cachedData = data;
+      return;
+    }
     await writeJsonFileAtomic(this.filePath, data);
     this.cachedData = data;
     this.cachedFileVersion = await this.getFileVersion();
@@ -225,16 +220,6 @@ function recoverSettingsWithDefaultCommands(raw: string): Partial<SystemSettings
 function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = []): SystemSettings {
   const now = new Date().toISOString();
   return {
-    profileSummaryMaxChars: 1800,
-    profileShortSummaryMaxChars: 140,
-    dailyProfileReviewEnabled: false,
-    dailyProfileReviewTime: "00:00",
-    memoryDedupEnabled: false,
-    memoryDedupTime: "23:00",
-    memoryDedupSemanticTimeoutMinutes: 10,
-    memoryCandidateConfidenceThreshold: 60,
-    memoryAutoApproveConfidenceThreshold: 80,
-    memoryUnattendedModeEnabled: false,
     onlineLookupEnabled: false,
     tokenCostControl: defaultTokenCostControlSettings(),
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
@@ -253,37 +238,9 @@ function normalizeSettings(
   const fallback = defaultSettings(defaultModels);
   const removedDefaultModelIds = normalizeRemovedDefaultModelIds(value.removedDefaultModelIds, defaultModels);
   const models = normalizeModels(value.models, defaultModels, removedDefaultModelIds);
-  const memoryCandidateConfidenceThreshold = normalizeConfidenceThreshold(
-    value.memoryCandidateConfidenceThreshold,
-    fallback.memoryCandidateConfidenceThreshold,
-  );
-  const memoryAutoApproveConfidenceThreshold = normalizeConfidenceThreshold(
-    value.memoryAutoApproveConfidenceThreshold,
-    fallback.memoryAutoApproveConfidenceThreshold,
-  );
-  if (memoryCandidateConfidenceThreshold >= memoryAutoApproveConfidenceThreshold) {
-    throw new Error("invalid_memory_confidence_thresholds");
-  }
   return {
-    profileSummaryMaxChars: normalizePositiveInt(value.profileSummaryMaxChars, fallback.profileSummaryMaxChars, 100, 6000),
-    profileShortSummaryMaxChars: normalizePositiveInt(value.profileShortSummaryMaxChars, fallback.profileShortSummaryMaxChars, 40, 600),
-    dailyProfileReviewEnabled: value.dailyProfileReviewEnabled === true,
-    dailyProfileReviewTime: normalizeTime(value.dailyProfileReviewTime, fallback.dailyProfileReviewTime),
-    memoryDedupEnabled: value.memoryDedupEnabled === true,
-    memoryDedupTime: normalizeTime(value.memoryDedupTime, fallback.memoryDedupTime),
-    memoryDedupSemanticTimeoutMinutes: normalizePositiveInt(
-      value.memoryDedupSemanticTimeoutMinutes,
-      fallback.memoryDedupSemanticTimeoutMinutes,
-      1,
-      60,
-    ),
-    memoryCandidateConfidenceThreshold,
-    memoryAutoApproveConfidenceThreshold,
-    memoryUnattendedModeEnabled: value.memoryUnattendedModeEnabled === true,
     onlineLookupEnabled: normalizeBoolean(value.onlineLookupEnabled, fallback.onlineLookupEnabled),
     tokenCostControl: normalizeTokenCostControl(value.tokenCostControl),
-    ...(normalizeSecretHash(value.adminSecretHash) ? { adminSecretHash: normalizeSecretHash(value.adminSecretHash) } : {}),
-    ...(normalizeSecretHash(value.groupAdminSecretHash) ? { groupAdminSecretHash: normalizeSecretHash(value.groupAdminSecretHash) } : {}),
     defaultTriggerKeywords: normalizeTriggerKeywords(value.defaultTriggerKeywords),
     models,
     removedDefaultModelIds,
@@ -293,38 +250,8 @@ function normalizeSettings(
   };
 }
 
-function normalizeTime(value: unknown, fallback: string): string {
-  if (value === undefined || value === null || value === "") {
-    return fallback;
-  }
-  if (typeof value !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.trim())) {
-    throw new Error("invalid_time");
-  }
-  return value.trim();
-}
-
-function normalizePositiveInt(value: unknown, fallback: number, min: number, max: number): number {
-  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  if (!Number.isInteger(numberValue)) {
-    return fallback;
-  }
-  return Math.max(min, Math.min(max, numberValue));
-}
-
-function normalizeConfidenceThreshold(value: unknown, fallback: number): number {
-  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  if (!Number.isInteger(numberValue)) {
-    return fallback;
-  }
-  return Math.max(0, Math.min(100, numberValue));
-}
-
 export function defaultTokenCostControlSettings(): TokenCostControlSettings {
   return {
-    memoryCandidateExtractionEnabled: false,
-    memoryCandidateNormalizationEnabled: false,
-    memorySemanticDedupEnabled: false,
-    dailyProfileReviewAiEnabled: false,
     dailyReportAiQuipEnabled: false,
     chatSummaryAiEnabled: false,
     scheduledReminderAiRewriteEnabled: false,
@@ -339,10 +266,6 @@ function normalizeTokenCostControl(value: unknown): TokenCostControlSettings {
   }
   const record = value as Partial<Record<keyof TokenCostControlSettings, unknown>>;
   return {
-    memoryCandidateExtractionEnabled: normalizeBoolean(record.memoryCandidateExtractionEnabled, fallback.memoryCandidateExtractionEnabled),
-    memoryCandidateNormalizationEnabled: normalizeBoolean(record.memoryCandidateNormalizationEnabled, fallback.memoryCandidateNormalizationEnabled),
-    memorySemanticDedupEnabled: normalizeBoolean(record.memorySemanticDedupEnabled, fallback.memorySemanticDedupEnabled),
-    dailyProfileReviewAiEnabled: normalizeBoolean(record.dailyProfileReviewAiEnabled, fallback.dailyProfileReviewAiEnabled),
     dailyReportAiQuipEnabled: normalizeBoolean(record.dailyReportAiQuipEnabled, fallback.dailyReportAiQuipEnabled),
     chatSummaryAiEnabled: normalizeBoolean(record.chatSummaryAiEnabled, fallback.chatSummaryAiEnabled),
     scheduledReminderAiRewriteEnabled: normalizeBoolean(record.scheduledReminderAiRewriteEnabled, fallback.scheduledReminderAiRewriteEnabled),
@@ -415,7 +338,7 @@ function validateModelUpdateInput(value: unknown): void {
       throw new Error("duplicate_model_id");
     }
     seenIds.add(id);
-    if (!isSystemModelPurpose(record.purpose)) {
+    if (!isRuntimeModelPurpose(record.purpose)) {
       throw new Error("invalid_model_purpose");
     }
     const name = String(record.name ?? "").trim();
@@ -426,23 +349,6 @@ function validateModelUpdateInput(value: unknown): void {
       throw new Error("invalid_model_config");
     }
   }
-}
-
-function validateMemoryConfidenceThresholdUpdateInput(value: SystemSettingsUpdateInput): void {
-  if (
-    !isValidConfidenceThresholdUpdateValue(value.memoryCandidateConfidenceThreshold) ||
-    !isValidConfidenceThresholdUpdateValue(value.memoryAutoApproveConfidenceThreshold)
-  ) {
-    throw new Error("invalid_memory_confidence_thresholds");
-  }
-}
-
-function isValidConfidenceThresholdUpdateValue(value: unknown): boolean {
-  if (value === undefined) {
-    return true;
-  }
-  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  return Number.isInteger(numberValue) && numberValue >= 0 && numberValue <= 100;
 }
 
 function reconcileRemovedDefaultModelIds(
@@ -507,6 +413,9 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     return undefined;
   }
   const purpose = normalizeModelPurpose(value.purpose);
+  if (!purpose) {
+    return undefined;
+  }
   const apiProtocol = value.apiProtocol === "anthropic" ? "anthropic" : "openai";
   const isDefaultGptReply = id === "gpt" && purpose === "reply";
   const reasoningEffort = normalizeReasoningEffort(value.reasoningEffort);
@@ -523,6 +432,9 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     hasApiKey: value.hasApiKey === true || Boolean(value.apiKey),
     enabled: value.enabled !== false,
     apiProtocol,
+    ...(normalizeModelCapabilities(value.capabilities, apiProtocol) ? {
+      capabilities: normalizeModelCapabilities(value.capabilities, apiProtocol),
+    } : {}),
     supportsVision: value.supportsVision === true || (value.supportsVision === undefined && isDefaultGptReply),
     ...(reasoningEffort || isDefaultGptReply ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
     ...(maxCompletionTokens || isDefaultGptReply ? { maxCompletionTokens: maxCompletionTokens ?? 8_192 } : {}),
@@ -560,21 +472,29 @@ function sameUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, "").toLowerCase() === right.replace(/\/+$/, "").toLowerCase();
 }
 
-function normalizeModelPurpose(value: unknown): SystemModelConfig["purpose"] {
-  return isSystemModelPurpose(value)
-    ? value
-    : "custom";
+function normalizeModelPurpose(value: unknown): SystemModelPurpose | undefined {
+  return isRuntimeModelPurpose(value) ? value : undefined;
 }
 
-function isSystemModelPurpose(value: unknown): value is SystemModelConfig["purpose"] {
+function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
   return value === "reply" ||
-    value === "profile" ||
-    value === "memory" ||
-    value === "dedup" ||
     value === "summary" ||
     value === "knowledge" ||
     value === "tts" ||
     value === "custom";
+}
+
+function normalizeModelCapabilities(
+  value: SystemModelConfig["capabilities"],
+  protocol: "openai" | "anthropic",
+): SystemModelConfig["capabilities"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  return {
+    ...(typeof value.vision === "boolean" ? { vision: value.vision } : {}),
+    streaming: false,
+    reasoningEffort: protocol === "openai" && value.reasoningEffort === true,
+    requestTimeout: true,
+  };
 }
 
 function normalizeModelId(value: string): string {
@@ -587,6 +507,7 @@ function normalizeSelectedModelIds(value: unknown, models: SystemModelConfig[]):
   if (value && typeof value === "object") {
     for (const [purposeValue, modelIdValue] of Object.entries(value as Record<string, unknown>)) {
       const purpose = normalizeModelPurpose(purposeValue);
+      if (!purpose) continue;
       const modelId = typeof modelIdValue === "string" ? normalizeModelId(modelIdValue.trim()) : "";
       const model = modelId ? modelById.get(modelId) : undefined;
       if (model && model.purpose === purpose) {
@@ -595,6 +516,7 @@ function normalizeSelectedModelIds(value: unknown, models: SystemModelConfig[]):
     }
   }
   for (const model of models) {
+    if (!isRuntimeModelPurpose(model.purpose)) continue;
     if (!selected[model.purpose] && model.enabled && model.hasApiKey) {
       selected[model.purpose] = model.id;
     }
@@ -672,7 +594,6 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "voice_reply", title: "默认语音回复", primary: "#语音回复", permission: "group_admin", help: "查看或开关普通 AI 回复默认发送语音条" },
     { id: "sing", title: "唱歌", primary: "#唱歌", permission: "member", help: "让机器人用唱歌模式生成语音回复" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
-    { id: "skill", title: "技能", primary: "#技能", permission: "group_admin", help: "查看或切换当前群技能" },
     { id: "model", title: "模型", primary: "#模型", permission: "group_admin", help: "查看或切换当前群回复模型" },
     { id: "mute", title: "静默模式", primary: "#闭嘴", aliases: ["#说话"], permission: "group_admin", help: "让机器人进入或退出静默模式" },
     { id: "live_chat", title: "实时对话", primary: "#实时对话", permission: "group_admin", help: "管理主动接话名单和倒计时" },
@@ -685,8 +606,6 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "ops_alert", title: "告警", primary: "#告警", permission: "group_admin", help: "管理运维告警开关" },
     { id: "memory", title: "记忆", primary: "#记忆", permission: "group_admin", help: "查看记忆状态" },
     { id: "knowledge", title: "知识库", primary: "#知识库", permission: "group_admin", help: "查看知识库状态" },
-    { id: "profile_yesterday", title: "昨日画像", primary: "#昨日画像", permission: "member", help: "生成成员昨日画像摘要" },
-    { id: "profile_overall", title: "群聊画像", primary: "#群聊画像", permission: "member", help: "生成成员群聊画像摘要" },
     { id: "admin", title: "管理员", primary: "#管理员", permission: "super_admin", help: "管理群管理员" },
     { id: "blacklist", title: "拉黑", primary: "#拉黑", permission: "group_admin", help: "管理黑名单" },
     { id: "health", title: "健康检查", primary: "#健康检查", aliases: ["#健康"], permission: "group_admin", help: "查看服务健康状态" },
@@ -719,10 +638,6 @@ function cloneSettings(settings: SystemSettings): SystemSettings {
 
 function sanitizeSettings(settings: SystemSettings): SystemSettings {
   const cloned = cloneSettings(settings);
-  cloned.adminSecretConfigured = Boolean(cloned.adminSecretHash);
-  cloned.groupAdminSecretConfigured = Boolean(cloned.groupAdminSecretHash);
-  delete cloned.adminSecretHash;
-  delete cloned.groupAdminSecretHash;
   cloned.models = cloned.models.map((model) => {
     const { apiKey: _apiKey, ...safeModel } = model;
     return {
@@ -731,41 +646,4 @@ function sanitizeSettings(settings: SystemSettings): SystemSettings {
     };
   });
   return cloned;
-}
-
-function hashSecret(secret: string): string {
-  const text = String(secret ?? "").trim();
-  if (text.length < 6) {
-    throw new Error("secret_too_short");
-  }
-  const salt = randomBytes(16).toString("base64url");
-  const hash = scryptSync(text, salt, 32).toString("base64url");
-  return `scrypt:${salt}:${hash}`;
-}
-
-function verifyConfiguredOrFallback(hash: string | undefined, secret: string, fallback?: string): boolean {
-  const text = String(secret ?? "");
-  if (hash) {
-    return verifySecretHash(hash, text);
-  }
-  return Boolean(fallback) && safeTextEqual(text, fallback ?? "");
-}
-
-function verifySecretHash(hash: string, secret: string): boolean {
-  const [, salt, expected] = hash.split(":");
-  if (!salt || !expected) return false;
-  const actual = scryptSync(secret, salt, 32);
-  const expectedBuffer = Buffer.from(expected, "base64url");
-  return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer);
-}
-
-function safeTextEqual(left: string, right: string): boolean {
-  const leftHash = createHash("sha256").update(left).digest();
-  const rightHash = createHash("sha256").update(right).digest();
-  return timingSafeEqual(leftHash, rightHash);
-}
-
-function normalizeSecretHash(value: unknown): string | undefined {
-  const text = typeof value === "string" ? value.trim() : "";
-  return /^scrypt:[A-Za-z0-9_-]{16,}:[A-Za-z0-9_-]{32,}$/.test(text) ? text : undefined;
 }

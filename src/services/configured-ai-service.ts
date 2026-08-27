@@ -1,7 +1,8 @@
 import { logWarn } from "../logger.js";
-import type { SystemModelConfig } from "../types.js";
+import type { SystemModelConfig, SystemModelPurpose } from "../types.js";
 import type { AiService } from "./ai-service.js";
 import { AiService as OpenAiService } from "./ai-service.js";
+import { resolveProviderCapabilities } from "./ai-provider.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 
@@ -11,11 +12,6 @@ export type RuntimeAiService = Pick<
   | "generateReply"
   | "evaluateReplyDesire"
   | "evaluateControlledMention"
-  | "extractGroupMemoryCandidates"
-  | "normalizeMemoryCandidateLanguage"
-  | "judgeMemorySemanticRelation"
-  | "summarizeDailyMemberProfile"
-  | "summarizeOverallMemberProfile"
   | "generateDailyReportInsights"
   | "generateBroadcastQuip"
   | "generateScheduledReminderText"
@@ -24,7 +20,7 @@ export type RuntimeAiService = Pick<
 
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
-  "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
+  "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "capabilities" | "supportsVision" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
 >) => RuntimeAiService;
 
 export class ConfiguredAiService implements RuntimeAiService {
@@ -36,20 +32,25 @@ export class ConfiguredAiService implements RuntimeAiService {
   constructor(
     private readonly fallback: RuntimeAiService,
     private readonly systemSettingsStore: SystemSettingsStore,
-    private readonly purpose: SystemModelConfig["purpose"],
+    private readonly purpose: SystemModelPurpose,
     private readonly factory: RuntimeAiFactory = (model) => {
+      const providerCapabilities = resolveProviderCapabilities(model);
       if (model.apiProtocol === "anthropic") {
-        const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "");
+        const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "", {
+          timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
+        });
         return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, client as any, {
           reasoningEffort: model.reasoningEffort,
           maxCompletionTokens: model.maxCompletionTokens,
           timeoutMs: model.requestTimeoutMs,
+          providerCapabilities,
         });
       }
       return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
         reasoningEffort: model.reasoningEffort,
         maxCompletionTokens: model.maxCompletionTokens,
         timeoutMs: model.requestTimeoutMs,
+        providerCapabilities,
       });
     },
     private readonly selectedModelId?: string,
@@ -78,36 +79,6 @@ export class ConfiguredAiService implements RuntimeAiService {
     return (await this.resolveService()).evaluateControlledMention(args);
   }
 
-  async extractGroupMemoryCandidates(
-    args: Parameters<AiService["extractGroupMemoryCandidates"]>[0],
-  ): ReturnType<AiService["extractGroupMemoryCandidates"]> {
-    return (await this.resolveService("memory")).extractGroupMemoryCandidates(args);
-  }
-
-  async normalizeMemoryCandidateLanguage(
-    args: Parameters<AiService["normalizeMemoryCandidateLanguage"]>[0],
-  ): ReturnType<AiService["normalizeMemoryCandidateLanguage"]> {
-    return (await this.resolveService("memory")).normalizeMemoryCandidateLanguage(args);
-  }
-
-  async judgeMemorySemanticRelation(
-    args: Parameters<AiService["judgeMemorySemanticRelation"]>[0],
-  ): ReturnType<AiService["judgeMemorySemanticRelation"]> {
-    return (await this.resolveService("dedup")).judgeMemorySemanticRelation(args);
-  }
-
-  async summarizeDailyMemberProfile(
-    args: Parameters<AiService["summarizeDailyMemberProfile"]>[0],
-  ): ReturnType<AiService["summarizeDailyMemberProfile"]> {
-    return (await this.resolveService()).summarizeDailyMemberProfile(args);
-  }
-
-  async summarizeOverallMemberProfile(
-    args: Parameters<AiService["summarizeOverallMemberProfile"]>[0],
-  ): ReturnType<AiService["summarizeOverallMemberProfile"]> {
-    return (await this.resolveService()).summarizeOverallMemberProfile(args);
-  }
-
   async generateDailyReportInsights(
     args: Parameters<AiService["generateDailyReportInsights"]>[0],
   ): ReturnType<AiService["generateDailyReportInsights"]> {
@@ -132,7 +103,7 @@ export class ConfiguredAiService implements RuntimeAiService {
     return (await this.resolveService("summary")).generateChatPeriodSummary(input);
   }
 
-  private async resolveService(preferredPurpose?: SystemModelConfig["purpose"]): Promise<RuntimeAiService> {
+  private async resolveService(preferredPurpose?: SystemModelPurpose): Promise<RuntimeAiService> {
     const model = await this.getActiveModel(preferredPurpose);
     if (!model) {
       return this.fallback;
@@ -144,6 +115,8 @@ export class ConfiguredAiService implements RuntimeAiService {
       model.model,
       model.apiKey,
       model.apiProtocol,
+      JSON.stringify(model.capabilities ?? {}),
+      model.supportsVision,
       model.reasoningEffort,
       model.maxCompletionTokens,
       model.requestTimeoutMs,
@@ -167,13 +140,15 @@ export class ConfiguredAiService implements RuntimeAiService {
     }
   }
 
-  private async getActiveModel(preferredPurpose?: SystemModelConfig["purpose"]): Promise<SystemModelConfig | undefined> {
+  private async getActiveModel(preferredPurpose?: SystemModelPurpose): Promise<SystemModelConfig | undefined> {
     const settings = await this.systemSettingsStore.getInternal();
     if (this.selectedModelId) {
       return settings.models.find((model) => model.id === this.selectedModelId && isUsableModel(model));
     }
     for (const purpose of this.resolvePurposeOrder(preferredPurpose)) {
-      const selectedModelId = settings.selectedModelIds[purpose];
+      const selectedModelId = isSelectableModelPurpose(purpose)
+        ? settings.selectedModelIds[purpose]
+        : undefined;
       if (selectedModelId) {
         const selectedModel = settings.models.find((item) =>
           item.id === selectedModelId &&
@@ -192,9 +167,9 @@ export class ConfiguredAiService implements RuntimeAiService {
     return undefined;
   }
 
-  private resolvePurposeOrder(preferredPurpose?: SystemModelConfig["purpose"]): SystemModelConfig["purpose"][] {
-    const order: SystemModelConfig["purpose"][] = [];
-    const push = (purpose: SystemModelConfig["purpose"] | undefined): void => {
+  private resolvePurposeOrder(preferredPurpose?: SystemModelPurpose): SystemModelPurpose[] {
+    const order: SystemModelPurpose[] = [];
+    const push = (purpose: SystemModelPurpose | undefined): void => {
       if (purpose && !order.includes(purpose)) {
         order.push(purpose);
       }
@@ -202,9 +177,6 @@ export class ConfiguredAiService implements RuntimeAiService {
 
     push(preferredPurpose);
     push(this.purpose);
-    if (this.purpose === "profile" || preferredPurpose === "memory" || preferredPurpose === "dedup" || preferredPurpose === "summary") {
-      push("profile");
-    }
     return order;
   }
 }
@@ -214,4 +186,8 @@ function isUsableModel(model: SystemModelConfig): boolean {
     Boolean(model.baseUrl.trim()) &&
     Boolean(model.model.trim()) &&
     Boolean(model.apiKey?.trim());
+}
+
+function isSelectableModelPurpose(purpose: SystemModelPurpose): boolean {
+  return purpose === "reply" || purpose === "summary" || purpose === "knowledge" || purpose === "tts" || purpose === "custom";
 }

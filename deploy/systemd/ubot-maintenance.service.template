@@ -1,0 +1,20 @@
+[Unit]
+Description=UBot V3 retention maintenance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ai-project-releases/current
+EnvironmentFile=/opt/ai-project/.env
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node scripts/migrate-v3-state.mjs --maintenance --execute
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/ai-project /opt/ai-project-releases

@@ -2,6 +2,12 @@ import OpenAI from "openai";
 
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
+import {
+  OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES,
+  mergeProviderCapabilities,
+  type AiProviderCapabilities,
+  type ProviderCapabilitiesCarrier,
+} from "./ai-provider.js";
 import type {
   AiHealthStatus,
   ControlledMentionDecision,
@@ -9,8 +15,6 @@ import type {
   AiReply,
   ConversationTurn,
   GroupMemory,
-  GroupMemoryCandidate,
-  GroupMemoryType,
   MessageImageInput,
   ReasoningEffort,
   SkillDefinition,
@@ -19,16 +23,8 @@ import type { BufferedMessage } from "./live-chat-service.js";
 import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
-type ChatCompletionsClient = Pick<OpenAI.Chat.Completions, "create">;
+type ChatCompletionsClient = Pick<OpenAI.Chat.Completions, "create"> & ProviderCapabilitiesCarrier;
 
-const PROFILE_EXTRACTION_MAX_TOKENS = 8000;
-const DAILY_PROFILE_SUMMARY_MAX_TOKENS = 4000;
-const OVERALL_PROFILE_SUMMARY_MAX_TOKENS = 6000;
-const DAILY_PROFILE_MEMORY_LIMIT = 200;
-const OVERALL_PROFILE_MEMORY_LIMIT = 500;
-const PROFILE_EXTRACTION_EXISTING_MEMORY_LIMIT = 1000;
-const PROFILE_EXTRACTION_EXISTING_CANDIDATE_LIMIT = 1000;
-const PROFILE_SUMMARY_MAX_CHARS = 1800;
 const DEFAULT_REPLY_REQUEST_TIMEOUT_MS = 45_000;
 const DEFAULT_REPLY_MAX_TOKENS = 600;
 const MAX_REPLY_REQUEST_TIMEOUT_MS = 300_000;
@@ -38,6 +34,7 @@ export interface AiReplyRequestOptions {
   timeoutMs?: number;
   maxCompletionTokens?: number;
   reasoningEffort?: ReasoningEffort;
+  providerCapabilities?: Partial<AiProviderCapabilities>;
 }
 
 /**
@@ -130,24 +127,9 @@ export interface ChatPeriodSummaryInput {
   }>;
 }
 
-export interface MemoryCandidateExtractionMessage {
-  userId: string;
-  userName: string;
-  text: string;
-  timestamp: string;
-}
-
-export interface ExtractedGroupMemoryCandidate {
-  type: GroupMemoryType;
-  subjectUserId?: string;
-  title: string;
-  content: string;
-  confidence: number;
-}
-
 export interface MemorySemanticJudgeInput {
-  candidate: Pick<ExtractedGroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence">;
-  existing: Pick<GroupMemory | GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence">;
+  candidate: Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence">;
+  existing: Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence">;
 }
 
 export interface MemorySemanticJudgeResult {
@@ -157,18 +139,12 @@ export interface MemorySemanticJudgeResult {
   reason?: string;
 }
 
-export interface MemberProfileMemoryInput {
-  title: string;
-  content: string;
-  createdAt?: string;
-  confidence?: number;
-}
-
 export class AiService {
   private readonly client: OpenAI;
   private readonly chatCompletions: ChatCompletionsClient;
   private readonly replyRequestOptions: Required<Pick<AiReplyRequestOptions, "timeoutMs" | "maxCompletionTokens">> &
     Pick<AiReplyRequestOptions, "reasoningEffort">;
+  private readonly providerCapabilities: AiProviderCapabilities;
   private negotiatedReasoningEffort?: ReasoningEffort;
   private cachedHealth?: AiHealthStatus;
 
@@ -191,6 +167,21 @@ export class AiService {
       maxRetries: 0,
     });
     this.chatCompletions = chatCompletions ?? this.client.chat.completions;
+    const configuredCapabilities = mergeProviderCapabilities(
+      OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES,
+      requestOptions.providerCapabilities,
+    );
+    // A concrete provider adapter is the final authority: callers may narrow
+    // generic OpenAI defaults, but cannot enable a transport feature the
+    // provider boundary has explicitly ruled out.
+    this.providerCapabilities = mergeProviderCapabilities(
+      configuredCapabilities,
+      chatCompletions?.providerCapabilities,
+    );
+  }
+
+  getProviderCapabilities(): AiProviderCapabilities {
+    return { ...this.providerCapabilities };
   }
 
   async checkHealth(options: { refresh?: boolean; cacheOnly?: boolean; cacheTtlMs?: number } = {}): Promise<AiHealthStatus> {
@@ -206,7 +197,7 @@ export class AiService {
     if (options.cacheOnly) {
       return {
         ok: true,
-        detail: "尚未手动检测画像/记忆模型。",
+        detail: "尚未手动检测模型。",
         model: this.model,
         baseUrl: this.baseURL,
         checkedAt: new Date().toISOString(),
@@ -230,7 +221,7 @@ export class AiService {
       const content = completion.choices[0]?.message?.content?.trim() ?? "";
       const status: AiHealthStatus = {
         ok: true,
-        detail: content ? "画像/记忆模型可用" : "画像/记忆模型接口可用（空内容响应）",
+        detail: content ? "模型可用" : "模型接口可用（空内容响应）",
         model: completion.model ?? this.model,
         baseUrl: this.baseURL,
         checkedAt: new Date().toISOString(),
@@ -243,7 +234,7 @@ export class AiService {
       const failureKind = classifyUpstreamFailure({ error });
       const status: AiHealthStatus = {
         ok: false,
-        detail: `画像/记忆模型不可用：${(error as Error).message}`,
+        detail: `模型不可用：${(error as Error).message}`,
         model: this.model,
         baseUrl: this.baseURL,
         checkedAt: new Date().toISOString(),
@@ -399,145 +390,6 @@ export class AiService {
     }
   }
 
-  async extractGroupMemoryCandidates(args: {
-    groupId: string;
-    messages: MemoryCandidateExtractionMessage[];
-    existingMemories?: Array<Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence" | "source" | "updatedAt">>;
-    existingCandidates?: Array<Pick<GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence" | "status" | "updatedAt">>;
-    confidencePolicy?: {
-      candidateThreshold: number;
-      autoApproveThreshold: number;
-      unattendedModeEnabled: boolean;
-    };
-  }): Promise<ExtractedGroupMemoryCandidate[]> {
-    if (args.messages.length === 0) {
-      return [];
-    }
-
-    const messageLines = args.messages
-      .map((message, index) =>
-        `${index + 1}. [${message.timestamp}] ${message.userName}(${message.userId}): ${message.text}`,
-      )
-      .join("\n");
-    const existingMemoryLines = formatExistingMemoryContext(args.existingMemories ?? []);
-    const existingCandidateLines = formatExistingCandidateContext(args.existingCandidates ?? []);
-    const confidencePolicy = formatMemoryConfidencePolicy(args.confidencePolicy);
-    const extractionSystemPrompt = [
-      "你是 QQ 群长期记忆候选提炼器。",
-      "只提炼稳定、耐久、能长期帮助机器人理解成员或群聊的信息。",
-      "允许类型：member_profile 表示成员稳定画像、偏好、习惯、身份或互动方式；group_fact 表示群规则、固定梗、长期事实或共享约定。",
-      "member_profile 的 subjectUserId 必须来自最近群聊行里真实出现的 QQ userId；如果不能确认归属到某个 QQ，就改为 group_fact。",
-      "不要记录短期情绪、临时闲聊、隐私敏感信息、辱骂攻击、未确认的严重指控。",
-      "必须仔细对照已有长期记忆和候选记忆。含义相同或高度相似时不要新增，即使标题、措辞或语言不同。",
-      "如果新聊天对已有记忆有实质补充，只输出同一 subject、同一主题的更完整中文候选，内容要合并旧含义和新细节。",
-      "优先输出少量高价值候选；同一 subject 的紧密相关事实合并成一条，互不相关的稳定主题才拆开。",
-      "title 和 content 必须使用简体中文。不要输出英文标题或英文内容，除非英文是专有名词、产品名或原文称呼。",
-      `置信度策略：低于 ${confidencePolicy.candidatePercent}% 的事实不要输出；${confidencePolicy.candidatePercent}%-${confidencePolicy.autoApprovePercent - 1}% 只作为候选审核；达到 ${confidencePolicy.autoApprovePercent}% 及以上才是高置信长期记忆。${confidencePolicy.unattendedModeEnabled ? `当前无人值守已开启，程序会把达到 ${confidencePolicy.candidatePercent}% 且归属明确、中文合格的候选直接入库。` : ""}`,
-      "只返回 JSON，不要 markdown。",
-      'Schema: {"candidates":[{"type":"member_profile","subjectUserId":"123","title":"简短中文标题","content":"中文稳定事实","confidence":0.7}]}',
-      "如果没有值得记录的内容，返回 {\"candidates\":[]}。",
-    ].join("\n");
-    const extractionUserContent = [
-      `Group ID: ${args.groupId}`,
-      "Existing approved long-term memories:",
-      existingMemoryLines,
-      "Existing memory candidates:",
-      existingCandidateLines,
-      "Recent group chat:",
-      messageLines,
-      "Extract non-duplicate candidate memories from the recent chat.",
-    ].join("\n\n");
-    const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: [
-          "你是 QQ 群长期记忆候选提炼器。",
-          "只提炼稳定、可长期帮助机器人理解群聊的信息。",
-          "允许类型：member_profile 表示成员画像、偏好、稳定身份；group_fact 表示群规则、固定梗、长期事实。",
-          "member_profile 必须使用聊天记录行里真实出现的 QQ 作为 subjectUserId；如果无法确认归属到某个 QQ，就改为 group_fact。",
-          "不要记录短期情绪、临时闲聊、隐私敏感信息、辱骂攻击、未经确认的严重指控。",
-          "只输出 JSON，不要输出 markdown。",
-          '格式：{"candidates":[{"type":"member_profile","subjectUserId":"123","title":"简短标题","content":"稳定事实","confidence":0.7}]}',
-          "如果没有值得记录的内容，输出 {\"candidates\":[]}",
-        ].join("\n"),
-      },
-      {
-        role: "user",
-        content: [
-          `群号：${args.groupId}`,
-          "近期群聊：",
-          messageLines,
-          "请提炼候选记忆。",
-        ].join("\n\n"),
-      },
-    ];
-    messages[0] = { role: "system", content: extractionSystemPrompt };
-    messages[1] = { role: "user", content: extractionUserContent };
-
-    try {
-      const completion = await this.chatCompletions.create({
-        model: this.model,
-        temperature: 0.1,
-        messages,
-        max_tokens: PROFILE_EXTRACTION_MAX_TOKENS,
-      });
-      const text = completion.choices[0]?.message?.content?.trim() ?? "";
-      return parseMemoryCandidateExtraction(text);
-    } catch {
-      return [];
-    }
-  }
-
-  async normalizeMemoryCandidateLanguage(
-    candidate: ExtractedGroupMemoryCandidate,
-  ): Promise<ExtractedGroupMemoryCandidate | null> {
-    if (isMostlyChinese(`${candidate.title} ${candidate.content}`)) {
-      return candidate;
-    }
-
-    try {
-      const completion = await this.chatCompletions.create({
-        model: this.model,
-        temperature: 0,
-        max_tokens: 600,
-        messages: [
-          {
-            role: "system",
-            content: [
-              "你是长期记忆中文化助手。",
-              "把输入的记忆标题和内容改写为简体中文，保留原事实，不新增事实。",
-              "保留 QQ、产品名、模型名、英文专有名词。",
-              "只返回 JSON，不要 markdown。",
-              'Schema: {"title":"中文标题","content":"中文内容"}',
-            ].join("\n"),
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              type: candidate.type,
-              subjectUserId: candidate.subjectUserId,
-              title: candidate.title,
-              content: candidate.content,
-            }),
-          },
-        ],
-      });
-      const jsonText = extractJsonObject(completion.choices[0]?.message?.content ?? "");
-      if (!jsonText) {
-        return null;
-      }
-      const parsed = JSON.parse(jsonText) as { title?: unknown; content?: unknown };
-      const title = typeof parsed.title === "string" ? parsed.title.trim().slice(0, 80) : "";
-      const content = typeof parsed.content === "string" ? parsed.content.trim().slice(0, 600) : "";
-      if (!title || !content || !isMostlyChinese(`${title} ${content}`)) {
-        return null;
-      }
-      return { ...candidate, title, content };
-    } catch {
-      return null;
-    }
-  }
-
   async judgeMemorySemanticRelation(args: MemorySemanticJudgeInput): Promise<MemorySemanticJudgeResult | null> {
     try {
       const completion = await this.chatCompletions.create({
@@ -581,107 +433,6 @@ export class AiService {
         ...(typeof parsed.content === "string" && parsed.content.trim() ? { content: parsed.content.trim().slice(0, 600) } : {}),
         ...(typeof parsed.reason === "string" && parsed.reason.trim() ? { reason: parsed.reason.trim().slice(0, 160) } : {}),
       };
-    } catch {
-      return null;
-    }
-  }
-
-  async summarizeDailyMemberProfile(args: {
-    groupId: string;
-    userId: string;
-    displayName: string;
-    dateKey: string;
-    memories: MemberProfileMemoryInput[];
-  }): Promise<string | null> {
-    if (args.memories.length === 0) {
-      return null;
-    }
-
-    const memoryLines = args.memories
-      .slice(0, DAILY_PROFILE_MEMORY_LIMIT)
-      .map((memory, index) => `${index + 1}. ${memory.title}：${memory.content}`)
-      .join("\n");
-    const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: [
-          "你是 QQ 群成员画像审查助手。",
-          "只能根据提供的新增长期记忆总结，不要编造新事实。",
-          "输出 3 到 8 句完整中文，尽量覆盖昨日新增画像中的偏好、行为习惯、互动方式和稳定事实。",
-          "不要 markdown，不要编号，不要标题，不要提到置信度。",
-        ].join("\n"),
-      },
-      {
-        role: "user",
-        content: [
-          `群号：${args.groupId}`,
-          `成员：${args.displayName}（QQ ${args.userId}）`,
-          `日期：${args.dateKey}`,
-          "昨日新增长期画像记忆：",
-          memoryLines,
-          "请汇总成几句完整的话。",
-        ].join("\n\n"),
-      },
-    ];
-
-    try {
-      const completion = await this.chatCompletions.create({
-        model: this.model,
-        temperature: 0.2,
-        messages,
-        max_tokens: DAILY_PROFILE_SUMMARY_MAX_TOKENS,
-      });
-      return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
-    } catch {
-      return null;
-    }
-  }
-
-  async summarizeOverallMemberProfile(args: {
-    groupId: string;
-    userId: string;
-    displayName: string;
-    memories: MemberProfileMemoryInput[];
-  }): Promise<string | null> {
-    if (args.memories.length === 0) {
-      return null;
-    }
-
-    const memoryLines = args.memories
-      .slice(0, OVERALL_PROFILE_MEMORY_LIMIT)
-      .map((memory, index) => `${index + 1}. ${memory.title}：${memory.content}`)
-      .join("\n");
-    const messages: ChatMessage[] = [
-      {
-        role: "system",
-        content: [
-          "你是 QQ 群成员整体画像汇总助手。",
-          "只能根据提供的长期记忆总结，不要编造不存在的身份、关系、性格或事件。",
-          "输出一段或数段完整中文，概括这个成员在群里的稳定画像、偏好、互动特点、常见话题和可被长期记住的事实。",
-          "语气自然客观，不要为了省字数丢失关键细节。",
-          "不要 markdown，不要编号，不要标题。",
-        ].join("\n"),
-      },
-      {
-        role: "user",
-        content: [
-          `群号：${args.groupId}`,
-          `成员：${args.displayName}（QQ ${args.userId}）`,
-          "长期画像记忆：",
-          memoryLines,
-          "请汇总成一段整体画像。",
-        ].join("\n\n"),
-      },
-    ];
-
-    try {
-      const completion = await this.chatCompletions.create({
-        model: this.model,
-        temperature: 0.2,
-        messages,
-        max_tokens: OVERALL_PROFILE_SUMMARY_MAX_TOKENS,
-      });
-      return normalizeProfileSummary(completion.choices[0]?.message?.content ?? "");
     } catch {
       return null;
     }
@@ -945,6 +696,9 @@ export class AiService {
     images: MessageImageInput[],
     signal?: AbortSignal,
   ): Promise<ImageInspection> {
+    if (!this.providerCapabilities.vision) {
+      throw new ImageInspectionError("The configured model does not support image input.");
+    }
     const messages: ChatMessage[] = [
       {
         role: "system",
@@ -969,6 +723,9 @@ export class AiService {
     signal?: AbortSignal,
   ): Promise<{ text: string; model: string; reasoningEffort?: ReasoningEffort }> {
     const response = await this.withReasoningEffort(async (reasoningEffort) => {
+      if (!this.providerCapabilities.streaming) {
+        return this.tryNonStreamingReply(messages, temperature, reasoningEffort, signal);
+      }
       // Some OpenAI-compatible gateways only provide text through stream chunks.
       try {
         return await this.tryStreamReply(messages, temperature, reasoningEffort, signal);
@@ -988,7 +745,9 @@ export class AiService {
   private async withReasoningEffort<T>(
     request: (reasoningEffort?: ReasoningEffort) => Promise<T>,
   ): Promise<{ value: T; reasoningEffort?: ReasoningEffort }> {
-    const requested = this.negotiatedReasoningEffort ?? this.replyRequestOptions.reasoningEffort;
+    const requested = this.providerCapabilities.reasoningEffort
+      ? this.negotiatedReasoningEffort ?? this.replyRequestOptions.reasoningEffort
+      : undefined;
     if (!requested) {
       return { value: await request() };
     }
@@ -1078,7 +837,7 @@ export class AiService {
       messages,
       max_tokens: this.replyRequestOptions.maxCompletionTokens,
       stream,
-      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+      ...(reasoningEffort && this.providerCapabilities.reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       ...(signal ? { signal } : {}),
     };
   }
@@ -1370,101 +1129,6 @@ function normalizeChatPeriodSummary(text: string): string {
     .slice(0, 220);
 }
 
-function normalizeProfileSummary(text: string): string | null {
-  const normalized = text
-    .replace(/\r/g, "")
-    .replace(/```(?:text)?|```/gi, "")
-    .replace(/^#+\s*/gm, "")
-    .replace(/^[\s-]*画像总结[:：]\s*/i, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
-  return trimToCompleteSentence(normalized, PROFILE_SUMMARY_MAX_CHARS) || null;
-}
-
-function trimToCompleteSentence(value: string, maxChars: number): string {
-  const text = value.trim();
-  if (text.length <= maxChars) {
-    return text;
-  }
-  const clipped = text.slice(0, maxChars);
-  const sentenceEnd = Math.max(
-    clipped.lastIndexOf("。"),
-    clipped.lastIndexOf("！"),
-    clipped.lastIndexOf("？"),
-    clipped.lastIndexOf("."),
-    clipped.lastIndexOf("!"),
-    clipped.lastIndexOf("?"),
-  );
-  if (sentenceEnd >= Math.floor(maxChars * 0.6)) {
-    return clipped.slice(0, sentenceEnd + 1).trim();
-  }
-  return clipped.replace(/[，,、；;：:\s]+[^，,、；;：:\s]*$/, "").trim();
-}
-
-function isMostlyChinese(value: string): boolean {
-  const letters = value.match(/\p{L}/gu) ?? [];
-  if (letters.length === 0) {
-    return true;
-  }
-  const han = value.match(/\p{Script=Han}/gu) ?? [];
-  const asciiWords = value.match(/[A-Za-z]{4,}/g) ?? [];
-  return han.length >= Math.max(2, letters.length * 0.25) || asciiWords.length <= 1;
-}
-
-function formatExistingMemoryContext(
-  memories: Array<Pick<GroupMemory, "type" | "subjectUserId" | "title" | "content" | "confidence" | "source" | "updatedAt">>,
-): string {
-  if (memories.length === 0) {
-    return "None";
-  }
-
-  return memories
-    .slice(0, PROFILE_EXTRACTION_EXISTING_MEMORY_LIMIT)
-    .map((memory, index) => {
-      const subject = memory.type === "member_profile" ? `subject=${memory.subjectUserId ?? "unassigned"}` : "subject=group";
-      return `${index + 1}. [${memory.type} ${subject} confidence=${memory.confidence} source=${memory.source} updatedAt=${memory.updatedAt}] ${memory.title}: ${memory.content}`;
-    })
-    .join("\n");
-}
-
-function formatExistingCandidateContext(
-  candidates: Array<Pick<GroupMemoryCandidate, "type" | "subjectUserId" | "title" | "content" | "confidence" | "status" | "updatedAt">>,
-): string {
-  if (candidates.length === 0) {
-    return "None";
-  }
-
-  return candidates
-    .slice(0, PROFILE_EXTRACTION_EXISTING_CANDIDATE_LIMIT)
-    .map((candidate, index) => {
-      const subject = candidate.type === "member_profile" ? `subject=${candidate.subjectUserId ?? "unassigned"}` : "subject=group";
-      return `${index + 1}. [${candidate.status} ${candidate.type} ${subject} confidence=${candidate.confidence} updatedAt=${candidate.updatedAt}] ${candidate.title}: ${candidate.content}`;
-    })
-    .join("\n");
-}
-
-function formatMemoryConfidencePolicy(policy: {
-  candidateThreshold: number;
-  autoApproveThreshold: number;
-  unattendedModeEnabled: boolean;
-} | undefined): { candidatePercent: number; autoApprovePercent: number; unattendedModeEnabled: boolean } {
-  const candidatePercent = confidenceToPercent(policy?.candidateThreshold, 60);
-  const autoApprovePercent = confidenceToPercent(policy?.autoApproveThreshold, 80);
-  return {
-    candidatePercent: Math.min(candidatePercent, Math.max(0, autoApprovePercent - 1)),
-    autoApprovePercent,
-    unattendedModeEnabled: policy?.unattendedModeEnabled === true,
-  };
-}
-
-function confidenceToPercent(value: number | undefined, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.max(0, Math.min(100, Math.round(value * 100)));
-}
-
 export function buildSystemPrompt(
   skill: SkillDefinition,
   identityContext?: AiIdentityContext,
@@ -1520,53 +1184,6 @@ export function buildSystemPrompt(
     scenarioInstruction ? ["", "Current one-shot scenario:", scenarioInstruction].join("\n") : "",
     examples,
   ].join("\n");
-}
-
-function parseMemoryCandidateExtraction(text: string): ExtractedGroupMemoryCandidate[] {
-  const jsonText = extractJsonObject(text);
-  if (!jsonText) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(jsonText) as {
-      candidates?: Array<Partial<ExtractedGroupMemoryCandidate>>;
-    };
-    if (!Array.isArray(parsed.candidates)) {
-      return [];
-    }
-
-    return parsed.candidates
-      .map((candidate) => {
-        const type = candidate.type === "member_profile" ? "member_profile" : candidate.type === "group_fact" ? "group_fact" : undefined;
-        const title = typeof candidate.title === "string" ? candidate.title.trim() : "";
-        const content = typeof candidate.content === "string" ? candidate.content.trim() : "";
-        if (!type || !title || !content) {
-          return undefined;
-        }
-
-        const confidence =
-          typeof candidate.confidence === "number" && Number.isFinite(candidate.confidence)
-            ? Math.max(0, Math.min(1, candidate.confidence))
-            : 0.6;
-        const subjectUserId =
-          typeof candidate.subjectUserId === "string" && /^\d+$/.test(candidate.subjectUserId.trim())
-            ? candidate.subjectUserId.trim()
-            : undefined;
-
-        return {
-          type,
-          ...(subjectUserId ? { subjectUserId } : {}),
-          title: title.slice(0, 80),
-          content: content.slice(0, 600),
-          confidence,
-        };
-      })
-      .filter((candidate): candidate is ExtractedGroupMemoryCandidate => Boolean(candidate))
-      .slice(0, 5);
-  } catch {
-    return [];
-  }
 }
 
 function buildManualIdentityContext(identityContext?: AiIdentityContext): string {

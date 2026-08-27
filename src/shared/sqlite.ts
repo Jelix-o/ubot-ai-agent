@@ -348,6 +348,259 @@ CREATE TABLE IF NOT EXISTS system_settings_shadow_snapshots (
 `;
 
 /**
+ * V3 turns SQLite from an ingress ledger plus configuration shadow into the
+ * authoritative application store.  The JSON-shaped columns deliberately
+ * preserve the established validation contracts while each domain receives a
+ * stable primary key, timestamps and indexes for cross-process writes.
+ */
+const V3_CONTROL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS v3_groups (
+  group_id TEXT PRIMARY KEY,
+  config_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_system_settings (
+  settings_key TEXT PRIMARY KEY CHECK (settings_key = 'default'),
+  settings_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_system_secrets (
+  secret_key TEXT PRIMARY KEY,
+  ciphertext TEXT NOT NULL,
+  key_version INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_character_profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  profile_json TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v3_character_profiles_one_active
+  ON v3_character_profiles (active) WHERE active = 1;
+CREATE TABLE IF NOT EXISTS v3_character_profile_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_id TEXT NOT NULL REFERENCES v3_character_profiles(id) ON DELETE CASCADE,
+  profile_json TEXT NOT NULL,
+  changed_at INTEGER NOT NULL,
+  changed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_v3_character_profile_revisions_profile
+  ON v3_character_profile_revisions (profile_id, changed_at DESC);
+CREATE TABLE IF NOT EXISTS v3_capability_policies (
+  policy_key TEXT PRIMARY KEY,
+  policy_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
+
+const V3_CONTENT_AND_SCHEDULE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS v3_memories (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('member_profile', 'group_fact')),
+  subject_user_id TEXT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  source TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  evidence_json TEXT,
+  superseded_by TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v3_memories_group_updated
+  ON v3_memories (group_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_v3_memories_subject
+  ON v3_memories (group_id, subject_user_id, enabled);
+CREATE TABLE IF NOT EXISTS v3_knowledge_packs (
+  group_id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_knowledge_entries (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  keywords_json TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v3_knowledge_group_updated
+  ON v3_knowledge_entries (group_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS v3_scheduled_reminders (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  task_json TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at INTEGER NOT NULL,
+  lease_token TEXT,
+  lease_expires_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v3_scheduled_reminders_due
+  ON v3_scheduled_reminders (enabled, next_run_at, lease_expires_at);
+CREATE TABLE IF NOT EXISTS v3_daily_report_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  user_name TEXT NOT NULL,
+  text TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v3_daily_report_messages_group_day
+  ON v3_daily_report_messages (group_id, day_key, occurred_at);
+CREATE TABLE IF NOT EXISTS v3_daily_report_runs (
+  group_id TEXT PRIMARY KEY,
+  last_sent_day TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_holiday_countdown_runs (
+  group_id TEXT PRIMARY KEY,
+  last_sent_day TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_state_documents (
+  document_type TEXT NOT NULL,
+  document_key TEXT NOT NULL,
+  document_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (document_type, document_key)
+);
+CREATE INDEX IF NOT EXISTS idx_v3_state_documents_type_updated
+  ON v3_state_documents (document_type, updated_at DESC);
+`;
+
+const V3_ADMIN_AUTH_SCHEMA = `
+CREATE TABLE IF NOT EXISTS admin_accounts (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('super_admin','group_admin')),
+  totp_secret_ciphertext TEXT,
+  totp_enabled_at INTEGER,
+  mfa_last_counter INTEGER NOT NULL DEFAULT -1,
+  disabled_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_login_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS admin_group_grants (
+  account_id TEXT NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
+  group_id TEXT NOT NULL,
+  created_by TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(account_id,group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_group_grants_group ON admin_group_grants(group_id);
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  csrf_token_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  mfa_verified_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  ip_hash TEXT,
+  user_agent_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_admin_sessions_account ON admin_sessions(account_id, expires_at);
+CREATE TABLE IF NOT EXISTS admin_login_rate_limits (
+  scope TEXT NOT NULL,
+  key_hash TEXT NOT NULL,
+  window_started_at INTEGER NOT NULL,
+  failures INTEGER NOT NULL DEFAULT 0,
+  locked_until INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(scope,key_hash)
+);
+CREATE TABLE IF NOT EXISTS admin_auth_challenges (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  account_id TEXT NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('login_totp','totp_enroll')),
+  secret_ciphertext TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  ip_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_admin_auth_challenges_account ON admin_auth_challenges(account_id,expires_at);
+CREATE TABLE IF NOT EXISTS admin_invites (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL CHECK(role IN ('super_admin','group_admin')),
+  group_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_by TEXT NOT NULL REFERENCES admin_accounts(id),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  revoked_at INTEGER,
+  accepted_account_id TEXT REFERENCES admin_accounts(id)
+);
+CREATE TABLE IF NOT EXISTS admin_recovery_codes (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_admin_recovery_codes_account ON admin_recovery_codes(account_id,used_at);
+CREATE TABLE IF NOT EXISTS admin_auth_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id TEXT,
+  action TEXT NOT NULL,
+  target_account_id TEXT,
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  ip_hash TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admin_auth_audit_created ON admin_auth_audit(created_at DESC);
+`;
+
+const V3_RETENTION_AND_CUTOVER_SCHEMA = `
+CREATE TABLE IF NOT EXISTS v3_state_meta (
+  meta_key TEXT PRIMARY KEY,
+  meta_value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_state_imports (
+  source_key TEXT PRIMARY KEY,
+  source_sha256 TEXT NOT NULL,
+  row_count INTEGER NOT NULL,
+  imported_at INTEGER NOT NULL,
+  importer_version TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS v3_rollback_archives (
+  id TEXT PRIMARY KEY,
+  archive_path TEXT NOT NULL,
+  archive_sha256 TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  purged_at INTEGER,
+  manifest_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_v3_rollback_archives_expiry
+  ON v3_rollback_archives (expires_at, purged_at);
+CREATE TABLE IF NOT EXISTS v3_maintenance_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_name TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+`;
+
+/**
  * Reconciles schemas produced by pre-migration releases. Keep this as the
  * first tracked migration so an existing installation has an auditable
  * baseline before new domain tables are added.
@@ -413,6 +666,26 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "add-outbox-delivery-attempts",
     apply: addOutboxAttemptColumn,
   },
+  {
+    version: 5,
+    name: "add-v3-control-and-character-authority",
+    apply: (db) => db.exec(V3_CONTROL_SCHEMA),
+  },
+  {
+    version: 6,
+    name: "add-v3-content-and-schedule-authority",
+    apply: (db) => db.exec(V3_CONTENT_AND_SCHEDULE_SCHEMA),
+  },
+  {
+    version: 7,
+    name: "add-v3-admin-account-authentication",
+    apply: (db) => db.exec(V3_ADMIN_AUTH_SCHEMA),
+  },
+  {
+    version: 8,
+    name: "add-v3-retention-and-cutover-metadata",
+    apply: (db) => db.exec(V3_RETENTION_AND_CUTOVER_SCHEMA),
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
@@ -423,6 +696,7 @@ export class SharedDb {
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
+    this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA synchronous = NORMAL");
@@ -694,10 +968,10 @@ export class SharedDb {
       .run(reason.slice(0, 120), messageId);
   }
 
-  /** Number of messages by group within the trailing window; used for per-group token bucket. */
+  /** Number of messages received within the trailing window; used for the per-group token bucket. */
   countMessagesSince(groupId: string, sinceMs: number): number {
     const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM messages WHERE group_id = ? AND msg_time >= ?")
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE group_id = ? AND created_at >= ?")
       .get(groupId, sinceMs) as { n: number } | undefined;
     return Number(row?.n ?? 0);
   }

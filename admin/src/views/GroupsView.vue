@@ -5,7 +5,7 @@ import AppIcon from "../components/AppIcon.vue";
 import DateRulePicker from "../components/DateRulePicker.vue";
 import MultiTagSelect from "../components/MultiTagSelect.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
-import { api, queryString, type GroupConfig, type MemberProfile, type ModelOption, type Pagination, type ScheduleDateRule, type SchedulePreviewDay, type ScheduledReminderTask, type SkillOption } from "../services/api";
+import { api, queryString, type GroupConfig, type MemberProfile, type ModelOption, type Pagination, type ScheduleDateRule, type SchedulePreviewDay, type ScheduledReminderTask } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
@@ -13,11 +13,9 @@ const app = useAppStore();
 const loading = shallowRef(false);
 const saving = shallowRef(false);
 const remindersLoading = shallowRef(false);
-const manualIdentitiesText = shallowRef("[]");
 const reminders = shallowRef<ScheduledReminderTask[]>([]);
 const schedulePreview = shallowRef<SchedulePreviewDay[]>([]);
 const replyModels = shallowRef<ModelOption[]>([]);
-const skillOptions = shallowRef<SkillOption[]>([]);
 const memberOptions = shallowRef<MemberProfile[]>([]);
 const editingReminderId = shallowRef<string | null>(null);
 let loadSerial = 0;
@@ -33,13 +31,9 @@ const reminderForm = reactive({
 });
 const form = reactive<GroupConfig>(defaultGroupConfig());
 
-const identityCount = computed(() => form.manualIdentities?.length || 0);
+const canManageQqAdministrators = computed(() => app.role === "super_admin");
 const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === form.replyModelMode)?.label || form.replyModelMode || "-");
 const hasReplyModels = computed(() => replyModels.value.length > 0);
-const skillSelectOptions = computed(() => skillOptions.value.map((skill) => ({
-  value: skill.id,
-  label: `${skill.name} / ${skill.id}`,
-})));
 const memberSelectOptions = computed(() => memberOptions.value.map((member) => ({
   value: member.userId,
   label: `${member.displayName} / ${member.userId}`,
@@ -66,7 +60,6 @@ function defaultGroupConfig(): GroupConfig {
     switcherUserIds: [],
     liveChatUserIds: [],
     roastModeUserIds: [],
-    manualIdentities: [],
     liveChatDelaySeconds: 30,
     dailyReportEnabled: false,
     dailyReportTime: "10:00",
@@ -84,7 +77,6 @@ function defaultGroupConfig(): GroupConfig {
     triggerKeywords: [{ keyword: "乘风", enabled: true }],
     voiceReplyEnabled: false,
     defaultVoiceReplyEnabled: false,
-    memoryDisabledUserIds: [],
     onlineLookupEnabled: false,
     visionEnabled: false,
   };
@@ -96,10 +88,8 @@ function resetForm(data: GroupConfig): void {
     switcherUserIds: [...(data.switcherUserIds || [])],
     liveChatUserIds: [...(data.liveChatUserIds || [])],
     roastModeUserIds: [...(data.roastModeUserIds || [])],
-    manualIdentities: [...(data.manualIdentities || [])],
     blacklistedUserIds: [...(data.blacklistedUserIds || [])],
     triggerKeywords: [...(data.triggerKeywords || [])],
-    memoryDisabledUserIds: [...(data.memoryDisabledUserIds || [])],
     dailyReportDateRule: data.dailyReportDateRule || "all",
     dailyReportWeekdays: [...(data.dailyReportWeekdays || [])],
     holidayCountdownDateRule: data.holidayCountdownDateRule || "all",
@@ -117,12 +107,10 @@ async function load(): Promise<void> {
     const [data] = await Promise.all([
       api<GroupConfig>(`/api/groups/${encodeURIComponent(groupId)}/config`),
       loadModelOptions(),
-      loadSkillOptions(),
       loadMemberOptions(groupId),
     ]);
     if (serial !== loadSerial || groupId !== app.groupId) return;
     resetForm(data);
-    manualIdentitiesText.value = JSON.stringify(data.manualIdentities || [], null, 2);
     await loadReminders(groupId, serial);
     await loadSchedulePreview(groupId, serial);
   } finally {
@@ -147,11 +135,6 @@ function reconcileReplyModelSelection(): void {
   if (!replyModels.value.some((model) => model.id === form.replyModelMode)) {
     form.replyModelMode = replyModels.value[0]?.id || "";
   }
-}
-
-async function loadSkillOptions(): Promise<void> {
-  const data = await api<{ skills: SkillOption[] }>("/api/skill-options");
-  skillOptions.value = data.skills;
 }
 
 async function loadMemberOptions(groupId = app.groupId): Promise<void> {
@@ -182,17 +165,10 @@ async function save(): Promise<void> {
   }
   saving.value = true;
   try {
-    let manualIdentities: GroupConfig["manualIdentities"];
-    try {
-      manualIdentities = JSON.parse(manualIdentitiesText.value || "[]") as GroupConfig["manualIdentities"];
-      if (!Array.isArray(manualIdentities)) throw new Error("not_array");
-    } catch {
-      app.showToast("人工身份 JSON 格式不正确", "error");
-      return;
-    }
+    const { manualIdentities: _manualIdentities, memoryDisabledUserIds: _privacyOptOuts, ...operationalConfig } = form;
     const payload = {
-      ...form,
-      manualIdentities,
+      ...operationalConfig,
+      ...(canManageQqAdministrators.value ? {} : { switcherUserIds: undefined }),
       triggerKeywords: (form.triggerKeywords || []).filter((item) => item.keyword.trim()),
     };
     await api<GroupConfig>(`/api/groups/${encodeURIComponent(app.groupId)}/config`, {
@@ -437,8 +413,8 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           <p>当前技能 {{ form.currentSkillId || "-" }} · 回复模型 {{ currentReplyModelLabel }}</p>
         </div>
         <dl>
-          <div><dt>人工身份</dt><dd>{{ identityCount }} 条</dd></div>
-          <div><dt>管理员</dt><dd>{{ form.switcherUserIds.length }} 人</dd></div>
+          <div><dt>成员备注</dt><dd>在成员管理中维护</dd></div>
+          <div v-if="canManageQqAdministrators"><dt>管理员</dt><dd>{{ form.switcherUserIds.length }} 人</dd></div>
           <div><dt>日报时间</dt><dd>{{ form.dailyReportTime || "-" }}</dd></div>
           <div><dt>触发词</dt><dd>{{ form.triggerKeywords?.filter((item) => item.enabled).length || 0 }} 个</dd></div>
         </dl>
@@ -450,13 +426,9 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
         <h3>基础设置</h3>
         <div class="field-grid">
           <label class="switch-line"><input v-model="form.enabled" :disabled="readonly" type="checkbox" /> 显示并启用该群</label>
-          <label>当前技能
-            <select v-model="form.currentSkillId" class="select" :disabled="readonly">
-              <option value="">未选择</option>
-              <option v-for="skill in skillOptions" :key="skill.id" :value="skill.id">
-                {{ skill.name }} / {{ skill.id }}
-              </option>
-            </select>
+          <label>当前人格
+            <div class="fixed-persona">会仙 / huixian</div>
+            <small class="muted">所有群统一使用会仙人格；人格细节由超级管理员在“会仙人格”页面维护。</small>
           </label>
           <label>回复模型
             <select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels">
@@ -484,9 +456,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
 
       <section class="panel group-config-card">
         <h3>回复策略</h3>
-        <label>允许技能 ID
-          <MultiTagSelect v-model="form.allowedSkillIds" :options="skillSelectOptions" :disabled="readonly" placeholder="搜索技能名称或 ID" />
-        </label>
+        <p class="muted">当前群固定使用会仙人格。群级配置仍可控制参与方式、模型、语音和功能开关。</p>
         <div class="switch-grid">
           <label><input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" /> 群聊日报</label>
           <label><input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" /> 节日倒计时</label>
@@ -517,7 +487,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
       <section class="panel group-config-card">
         <h3>群管理</h3>
         <div class="field-grid">
-          <label>管理员 QQ
+          <label v-if="canManageQqAdministrators">管理员 QQ
             <MultiTagSelect v-model="form.switcherUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
           <label>实时对话 QQ
@@ -528,9 +498,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           </label>
           <label class="wide">黑名单 QQ
             <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-          </label>
-          <label class="wide">禁用记忆收集成员 QQ
-            <MultiTagSelect v-model="form.memoryDisabledUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
           </label>
         </div>
       </section>
@@ -559,7 +526,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           <section class="schedule-column schedule-abilities">
             <h4>启用能力</h4>
             <label class="ability-card">
-              <AppIcon name="candidate" />
+              <AppIcon name="tasks" />
               <span><strong>群聊日报</strong><small>按规则定时发送群聊日报</small></span>
               <input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" />
             </label>
@@ -713,16 +680,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
         </div>
       </section>
 
-      <section class="panel json-card">
-        <div class="section-head">
-          <div>
-            <h3>人工身份 JSON</h3>
-            <p>配置机器人理解成员身份的信息，影响回复风格与画像归属。</p>
-          </div>
-        </div>
-        <textarea v-model="manualIdentitiesText" class="textarea json-editor" spellcheck="false" :readonly="readonly" />
-      </section>
-
       <div class="save-bar">
         <button class="btn" type="submit" :disabled="readonly || loading || saving">{{ readonly ? "只读模式不可保存" : saving ? "保存中..." : "保存群配置" }}</button>
         <button class="ghost-btn" type="button" :disabled="loading || saving" @click="load">重新读取</button>
@@ -848,6 +805,18 @@ dd {
 
 .switch-grid .voice-child.disabled {
   opacity: 0.58;
+}
+
+.fixed-persona {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--accent-strong);
+  padding: 0 12px;
+  font-weight: 800;
 }
 
 .multi-select {

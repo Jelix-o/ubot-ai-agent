@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 export interface DailyReportMessageRecord {
   groupId: string;
@@ -21,16 +22,23 @@ export class DailyReportStore {
   private cachedData?: DailyReportStoreFile;
   private cachedVersion?: string;
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async appendMessage(record: DailyReportMessageRecord): Promise<void> {
-    const data = await this.readData();
     const dayKey = toLocalDateKey(record.timestamp);
     const nextRecord: DailyReportMessageRecord = {
       ...record,
       text: record.text.trim().slice(0, 300),
       userName: record.userName.trim().slice(0, 60) || record.userId,
     };
+    if (this.v3State) {
+      this.v3State.appendDailyReportMessage({ ...nextRecord, dayKey });
+      return;
+    }
+    const data = await this.readData();
 
     if (!data.days[dayKey]) {
       data.days[dayKey] = {};
@@ -45,16 +53,24 @@ export class DailyReportStore {
   }
 
   async getMessages(groupId: string, dayKey: string): Promise<DailyReportMessageRecord[]> {
+    if (this.v3State) {
+      return this.v3State.getDailyReportMessages(groupId, dayKey).map(({ dayKey: _dayKey, ...record }) => record);
+    }
     const data = await this.readData();
     return data.days[dayKey]?.[groupId] ?? [];
   }
 
   async getLastSentDate(groupId: string): Promise<string | undefined> {
+    if (this.v3State) return this.v3State.getDailyReportLastSent(groupId);
     const data = await this.readData();
     return data.lastSentDateByGroup[groupId];
   }
 
   async markSent(groupId: string, dayKey: string): Promise<void> {
+    if (this.v3State) {
+      this.v3State.markDailyReportSent(groupId, dayKey);
+      return;
+    }
     const data = await this.readData();
     data.lastSentDateByGroup[groupId] = dayKey;
     pruneStoreDays(data);
@@ -62,6 +78,10 @@ export class DailyReportStore {
   }
 
   async clearAll(): Promise<void> {
+    if (this.v3State) {
+      this.v3State.clearDailyReportMessages();
+      return;
+    }
     const data = await this.readData();
     data.days = {};
     await this.writeData(data);

@@ -16,8 +16,8 @@ import { BotApplication, type MessageTransport } from "./bot.js";
 import { GroupLock } from "./services/group-lock.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
-import { SkillService } from "./services/skill-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
+import { SqliteConversationStore } from "./services/conversation-store-v3.js";
 import { AiService } from "./services/ai-service.js";
 import { ConfiguredAiService } from "./services/configured-ai-service.js";
 import { TtsService } from "./services/tts-service.js";
@@ -31,16 +31,15 @@ import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
-import { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
-import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
-import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
-import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { ImagePipeline } from "./services/image-pipeline.js";
+import { CharacterProfileService } from "./services/character-profile-service.js";
+import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
+import { SkillService } from "./services/skill-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
@@ -70,6 +69,7 @@ export class WorkerApp {
       dataDir: string;
       botApp: BotApplication;
       consumerKey: string;
+      stateEncryptionKey?: string;
     },
     private readonly transport: MessageTransport,
   ) {
@@ -81,7 +81,11 @@ export class WorkerApp {
     this.inflight = new InflightManager(this.sharedDb);
     this.contextRepository = new ConversationContextRepository(this.sharedDb);
     this.contextRouter = new ConversationContextRouter(this.contextRepository);
-    this.atmosphere = new AtmosphereSummarizer(this.options.dataDir);
+    this.atmosphere = new AtmosphereSummarizer(
+      this.options.dataDir,
+      {},
+      resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey),
+    );
     this.gateway = new GatewayProxy(undefined, this.metrics, {
       tripAfterFailures: 5,
       slowThresholdMs: 40_000,
@@ -278,7 +282,8 @@ export class WorkerApp {
         await this.options.botApp.handleGroupMessage(event, controller.signal, route, {
           // The route alone is not authorization: the policy reason proves
           // this was a same-group reply to an acknowledged bot message.
-          allowReplyWithoutMention: participation?.reason === "explicit_reply",
+          allowReplyWithoutMention: participation?.reason === "explicit_reply" ||
+            participation?.reason === "explicit_memory_request",
         });
         this.metrics.inc("tasks_completed");
         completed = true;
@@ -478,23 +483,24 @@ async function buildBotApp(
 ): Promise<BotApplication> {
   const dataDir = config.dataDir;
   const sharedDb = openSharedDb(dataDir);
+  const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
   const contextRepository = new ConversationContextRepository(sharedDb);
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
-  const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
   const groupConfigService = new GroupConfigService(
     config.groupsConfigPath,
-    new GroupConfigSqliteShadowRepository(sharedDb),
+    v3State ? undefined : new GroupConfigSqliteShadowRepository(sharedDb),
+    v3State,
   );
   await groupConfigService.syncShadowFromAuthoritative();
-  const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
+  const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath, v3State);
   const systemSettingsStore = new SystemSettingsStore(
     config.systemSettingsPath,
     buildDefaultSystemModels(config),
-    new SystemSettingsSqliteShadowRepository(sharedDb),
+    v3State ? undefined : new SystemSettingsSqliteShadowRepository(sharedDb),
+    v3State,
   );
   await systemSettingsStore.syncShadowFromAuthoritative();
   const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
-  const runtimeProfileAiService = new ConfiguredAiService(profileAiService, systemSettingsStore, "profile");
   const defaultTtsService = new TtsService(
     config.ttsBaseUrl,
     config.ttsApiKey,
@@ -510,41 +516,33 @@ async function buildBotApp(
     cacheDir: config.ttsCacheDir,
     globalStyleHint: config.ttsStyleHint,
   });
-  const dailyProfileReviewService = new DailyProfileReviewService(
-    config.dailyProfileReviewPath,
-    groupMemoryStore,
-    runtimeProfileAiService,
-  );
-  const groupMemoryCandidateService = new GroupMemoryCandidateService(
-    new GroupMemoryCandidateStore(config.groupMemoryCandidatesPath),
-    groupMemoryStore,
-    runtimeProfileAiService,
-    8,
-    systemSettingsStore,
-  );
-  const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath);
-  const skillService = new SkillService(config.skillsDir);
+  const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath, v3State);
+  const skillService = v3State
+    ? new CharacterProfileService(v3State)
+    : new SkillService(config.skillsDir);
+  if (v3State && !await skillService.getHuixianProfile()) {
+    throw new Error("v3_huixian_profile_missing");
+  }
   const scheduledReminderService = new ScheduledReminderService(
-    new ScheduledReminderStore(config.scheduledReminderStorePath),
+    new ScheduledReminderStore(config.scheduledReminderStorePath, v3State),
     runtimeReplyAiService,
   );
-  const profileRecordStore = new ProfileRecordStore(config.profileRecordsPath);
-  const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath);
-  const atmosphere = new AtmosphereSummarizer(dataDir);
+  const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath, v3State);
+  const atmosphere = new AtmosphereSummarizer(dataDir, {}, v3State);
 
   return new BotApplication(
     transport,
     groupConfigService,
     skillService,
-    new ConversationStore(config.conversationsPath),
+    v3State ? new SqliteConversationStore(contextRepository) : new ConversationStore(config.conversationsPath),
     runtimeReplyAiService,
     runtimeTtsService,
     new DailyReportService(
-      new DailyReportStore(config.dailyReportStorePath),
+      new DailyReportStore(config.dailyReportStorePath, v3State),
       runtimeReplyAiService,
     ),
     new HolidayCountdownService(
-      new HolidayCountdownStore(config.holidayCountdownStorePath),
+      new HolidayCountdownStore(config.holidayCountdownStorePath, v3State),
       runtimeReplyAiService,
     ),
     scheduledReminderService,
@@ -555,16 +553,15 @@ async function buildBotApp(
     config.ttsAllowNapCatAiFallback,
     groupMemoryStore,
     knowledgeBaseStore,
-    groupMemoryCandidateService,
-    dailyProfileReviewService,
+    undefined,
+    undefined,
     config.adminPublicBaseUrl,
-    runtimeProfileAiService,
+    undefined,
     {
       gpt: config.openAiModel,
-      mimo: config.profileAiModel,
     },
     systemSettingsStore,
-    profileRecordStore,
+    undefined,
     new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl }),
     new GroupTranscriptService(),
     atmosphere,
@@ -614,6 +611,7 @@ export async function main(): Promise<void> {
       dataDir: config.dataDir,
       botApp: await buildBotApp(config, transport, buildImagePipeline(transport)),
       consumerKey: "worker:main",
+      stateEncryptionKey: config.stateEncryptionKey,
     },
     transport,
   );

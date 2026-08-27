@@ -10,9 +10,110 @@ permissions:
   contents: write
 
 jobs:
-  github-release:
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run complete test suite
+        run: npm test
+
+  package-windows:
+    name: Package Windows
+    needs: verify
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows release
+        run: npm run package:win
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          "value=$($package.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          if-no-files-found: error
+          path: |
+            release/ubot-${{ steps.version.outputs.value }}-win.zip
+            release/ubot-${{ steps.version.outputs.value }}-win.zip.sha256
+
+  package-linux:
+    name: Package Linux
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux release
+        run: npm run package:linux
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: echo "value=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          if-no-files-found: error
+          path: |
+            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz
+            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz.sha256
+
+  github-release:
+    name: Publish GitHub Release
+    needs: [package-windows, package-linux]
+    # Candidate tags still receive the cross-platform verification and package
+    # gates above, but only a final tag may publish a formal GitHub Release.
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,34 +123,41 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Read release version
+      - name: Validate tag and release metadata
         id: version
-        shell: pwsh
+        shell: bash
         run: |
-          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
-          if ([string]::IsNullOrWhiteSpace($package.version)) {
-            throw "package.json is missing version"
-          }
-          "value=$($package.version)" >> $env:GITHUB_OUTPUT
+          VERSION="$(node -p \"require('./package.json').version\")"
+          test -n "$VERSION"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Only a final semantic version can create a formal GitHub Release: $VERSION" >&2
+            exit 1
+          fi
+          test -f "RELEASE-v$VERSION.md"
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "Formal release must run from the matching v$VERSION tag." >&2
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Validate release metadata
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.value }}"
-          if (-not (Test-Path -LiteralPath "RELEASE-v$version.md")) {
-            throw "Release notes are missing for v$version"
-          }
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: release
+          merge-multiple: true
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build release package
-        run: npm run package:win
+      - name: Verify all assets and checksums
+        run: node scripts/verify-release-assets.mjs --directory release --version ${{ steps.version.outputs.value }}
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: UBot V${{ steps.version.outputs.value }}
           body_path: RELEASE-v${{ steps.version.outputs.value }}.md
-          prerelease: ${{ contains(steps.version.outputs.value, '-rc.') }}
-          files: release/ubot-${{ steps.version.outputs.value }}-win.zip
+          prerelease: false
+          files: |
+            release/ubot-${{ steps.version.outputs.value }}-win.zip
+            release/ubot-${{ steps.version.outputs.value }}-win.zip.sha256
+            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz
+            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz.sha256

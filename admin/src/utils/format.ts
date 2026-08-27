@@ -17,10 +17,6 @@ export function formatDateTime(value?: string): string {
   return `${parts.join("-")} ${timeParts.join(":")}`;
 }
 
-export function profileTypeLabel(type?: "overall" | "yesterday"): string {
-  return type === "yesterday" ? "昨日画像" : "群聊画像";
-}
-
 export function evidenceSummary(evidence?: EvidenceFull | EvidencePreview): string {
   if (!evidence) return "暂无来源证据";
   if ("summary" in evidence) return evidence.summary || "暂无来源摘要";

@@ -6,20 +6,18 @@ import { BotApplication } from "./bot.js";
 import { AiService } from "./services/ai-service.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { AdminTaskStore } from "./services/admin-task-store.js";
-import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
+import { ConfiguredAiService } from "./services/configured-ai-service.js";
 import { ConfiguredTtsService } from "./services/configured-tts-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
+import { SqliteConversationStore } from "./services/conversation-store-v3.js";
 import { ConversationContextRepository } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
-import { DailyProfileReviewService } from "./services/daily-profile-review-service.js";
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
 import { GroupLock } from "./services/group-lock.js";
-import { GroupMemoryCandidateService } from "./services/group-memory-candidate-service.js";
-import { GroupMemoryCandidateStore } from "./services/group-memory-candidate-store.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
@@ -28,10 +26,10 @@ import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
+import { CharacterProfileService } from "./services/character-profile-service.js";
 import { SkillService } from "./services/skill-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
-import { ProfileRecordStore } from "./services/profile-record-store.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
 import { TtsService } from "./services/tts-service.js";
@@ -40,6 +38,7 @@ import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageTransport } from "./bot.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { openSharedDb } from "./shared/sqlite.js";
+import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { extractImagesFromMessage, parseGroupMessage } from "./utils/message-parser.js";
 
 type NapCatRuntime = MessageTransport & {
@@ -59,24 +58,21 @@ let shuttingDown = false;
 async function startLegacyBot(): Promise<BotApplication> {
   const config = loadConfig();
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
-  const profileAiService = new AiService(config.profileAiBaseUrl, config.profileAiApiKey, config.profileAiModel);
   logInfo("AI services configured.", {
     replyBaseUrl: config.openAiBaseUrl,
     replyModel: config.openAiModel,
-    profileBaseUrl: config.profileAiBaseUrl,
-    profileModel: config.profileAiModel,
-    profileAiConfigured: config.profileAiBaseUrl !== config.openAiBaseUrl || config.profileAiModel !== config.openAiModel,
   });
-  const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath);
   const sharedDb = openSharedDb(config.dataDir);
+  const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
+  const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath, v3State);
   const systemSettingsStore = new SystemSettingsStore(
     config.systemSettingsPath,
     buildDefaultSystemModels(config),
-    new SystemSettingsSqliteShadowRepository(sharedDb),
+    v3State ? undefined : new SystemSettingsSqliteShadowRepository(sharedDb),
+    v3State,
   );
   await systemSettingsStore.syncShadowFromAuthoritative();
   const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
-  const runtimeProfileAiService = new ConfiguredAiService(profileAiService, systemSettingsStore, "profile");
   const defaultTtsService = new TtsService(
     config.ttsBaseUrl,
     config.ttsApiKey,
@@ -92,37 +88,29 @@ async function startLegacyBot(): Promise<BotApplication> {
     cacheDir: config.ttsCacheDir,
     globalStyleHint: config.ttsStyleHint,
   });
-  const dailyProfileReviewService = new DailyProfileReviewService(
-    config.dailyProfileReviewPath,
-    groupMemoryStore,
-    runtimeProfileAiService,
-  );
-  const groupMemoryCandidateService = new GroupMemoryCandidateService(
-    new GroupMemoryCandidateStore(config.groupMemoryCandidatesPath),
-    groupMemoryStore,
-    runtimeProfileAiService,
-    8,
-    systemSettingsStore,
-  );
-  const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath);
-  const skillService = new SkillService(config.skillsDir);
+  const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath, v3State);
+  const characterProfileService = v3State ? new CharacterProfileService(v3State) : undefined;
+  const skillService = characterProfileService ?? new SkillService(config.skillsDir);
+  if (characterProfileService && !await characterProfileService.getHuixianProfile()) {
+    throw new Error("v3_huixian_profile_missing");
+  }
   const scheduledReminderService = new ScheduledReminderService(
-    new ScheduledReminderStore(config.scheduledReminderStorePath),
+    new ScheduledReminderStore(config.scheduledReminderStorePath, v3State),
     runtimeReplyAiService,
   );
-  const profileRecordStore = new ProfileRecordStore(config.profileRecordsPath);
-  const adminTaskStore = new AdminTaskStore(config.adminTasksPath);
+  const adminTaskStore = new AdminTaskStore(config.adminTasksPath, v3State);
   await sweepAdminTasksOnStartup(adminTaskStore);
-  const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath);
-  const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath);
+  const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath, v3State);
+  const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath, v3State);
   const groupConfigService = new GroupConfigService(
     config.groupsConfigPath,
-    new GroupConfigSqliteShadowRepository(sharedDb),
+    v3State ? undefined : new GroupConfigSqliteShadowRepository(sharedDb),
+    v3State,
   );
   await groupConfigService.syncShadowFromAuthoritative();
   const contextRepository = new ConversationContextRepository(sharedDb);
   const contextRouter = new ConversationContextRouter(contextRepository);
-  const atmosphere = new AtmosphereSummarizer(config.dataDir);
+  const atmosphere = new AtmosphereSummarizer(config.dataDir, {}, v3State);
   const napcatRuntime: NapCatRuntime =
     config.napcatMode === "reverse"
       ? new NapCatReverseServer({
@@ -140,15 +128,15 @@ async function startLegacyBot(): Promise<BotApplication> {
     napcatRuntime,
     groupConfigService,
     skillService,
-    new ConversationStore(config.conversationsPath),
+    v3State ? new SqliteConversationStore(contextRepository) : new ConversationStore(config.conversationsPath),
     runtimeReplyAiService,
     runtimeTtsService,
     new DailyReportService(
-      new DailyReportStore(config.dailyReportStorePath),
+      new DailyReportStore(config.dailyReportStorePath, v3State),
       runtimeReplyAiService,
     ),
     new HolidayCountdownService(
-      new HolidayCountdownStore(config.holidayCountdownStorePath),
+      new HolidayCountdownStore(config.holidayCountdownStorePath, v3State),
       runtimeReplyAiService,
     ),
     scheduledReminderService,
@@ -161,16 +149,15 @@ async function startLegacyBot(): Promise<BotApplication> {
     config.ttsAllowNapCatAiFallback,
     groupMemoryStore,
     knowledgeBaseStore,
-    groupMemoryCandidateService,
-    dailyProfileReviewService,
+    undefined,
+    undefined,
     config.adminPublicBaseUrl,
-    runtimeProfileAiService,
+    undefined,
     {
       gpt: config.openAiModel,
-      mimo: config.profileAiModel,
     },
     systemSettingsStore,
-    profileRecordStore,
+    undefined,
     new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl }),
     new GroupTranscriptService(),
     atmosphere,
@@ -187,19 +174,16 @@ async function startLegacyBot(): Promise<BotApplication> {
         config,
         groupConfigService,
         groupMemoryStore,
-        groupMemoryCandidateService,
-        dailyProfileReviewService,
         knowledgeBaseStore,
         scheduledReminderService,
-        skillService,
+        characterProfileService,
         systemSettingsStore,
-        profileRecordStore,
         adminTaskStore,
         modelHealthHistoryStore,
         adminOperationLogService,
         app,
         napcatRuntime,
-        runtimeProfileAiService,
+        sharedDb,
       )
     : undefined;
 
@@ -325,22 +309,19 @@ function createAdminHttpServer(
   config: ReturnType<typeof loadConfig>,
   groupConfigService: GroupConfigService,
   groupMemoryStore: GroupMemoryStore,
-  groupMemoryCandidateService: GroupMemoryCandidateService,
-  dailyProfileReviewService: DailyProfileReviewService,
   knowledgeBaseStore: KnowledgeBaseStore,
   scheduledReminderService: ScheduledReminderService,
-  skillService: SkillService,
+  characterProfileService: CharacterProfileService | undefined,
   systemSettingsStore: SystemSettingsStore,
-  profileRecordStore: ProfileRecordStore,
   adminTaskStore: AdminTaskStore,
   modelHealthHistoryStore: ModelHealthHistoryStore,
   adminOperationLogService: AdminOperationLogService,
   app: BotApplication,
   napcatRuntime: NapCatRuntime,
-  profileAiService: RuntimeAiService,
+  sharedDb: ReturnType<typeof openSharedDb>,
 ): AdminHttpServer {
-  if (!config.adminUsername || !config.adminPassword || !config.adminSessionSecret) {
-    throw new Error("ADMIN_USERNAME, ADMIN_PASSWORD and ADMIN_SESSION_SECRET are required when ADMIN_HTTP_ENABLED=true.");
+  if (!config.stateEncryptionKey) {
+    throw new Error("UBOT_STATE_ENCRYPTION_KEY is required when ADMIN_HTTP_ENABLED=true.");
   }
 
   return new AdminHttpServer({
@@ -349,25 +330,20 @@ function createAdminHttpServer(
     publicBaseUrl: config.adminPublicBaseUrl,
     username: config.adminUsername,
     password: config.adminPassword,
-    sessionSecret: config.adminSessionSecret,
+    stateEncryptionKey: config.stateEncryptionKey,
     groupConfigService,
     groupMemoryStore,
-    groupMemoryCandidateService,
-    dailyProfileReviewService,
     knowledgeBaseStore,
     scheduledReminderService,
-    skillService,
+    characterProfileService,
     systemSettingsStore,
-    profileRecordStore,
     adminTaskStore,
     modelHealthHistoryStore,
     adminOperationLogService,
     getTransportHealthStatus: () => app.getPublicTransportHealthStatus(),
-    getProfileAiHealthStatus: (options) => profileAiService.checkHealth(options),
-    judgeMemorySemanticRelation: (args) => profileAiService.judgeMemorySemanticRelation(args),
-    summarizeOverallMemberProfile: (args) => profileAiService.summarizeOverallMemberProfile(args),
     listGroupMembers: (groupId) => napcatRuntime.listGroupMembers ? napcatRuntime.listGroupMembers(groupId) : Promise.resolve([]),
     listGroups: () => napcatRuntime.listGroups ? napcatRuntime.listGroups() : Promise.resolve([]),
+    sharedDb,
   });
 }
 

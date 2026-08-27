@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, reactive, shallowRef } from "vue";
 
-import { api, type AdminSession, type GroupConfig, type NotificationData } from "../services/api";
+import { api, type AdminSession, type GroupConfig } from "../services/api";
 
 export type ThemeMode = "light" | "dark" | "system";
 
@@ -15,7 +15,6 @@ export const useAppStore = defineStore("app", () => {
   const allowedGroupIds = shallowRef<string[]>([]);
   const publicBaseUrl = shallowRef("");
   const sessionLoaded = shallowRef(false);
-  const notifications = shallowRef<NotificationData>({ pendingCandidateCount: 0, latestCandidates: [] });
   const toast = reactive({ message: "", type: "ok" as "ok" | "error", visible: false });
   const themeMode = shallowRef<ThemeMode>((localStorage.getItem(themeStorageKey) as ThemeMode) || "system");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -66,10 +65,6 @@ export const useAppStore = defineStore("app", () => {
     sessionLoaded.value = true;
   }
 
-  async function loadNotifications(): Promise<void> {
-    notifications.value = await api<NotificationData>("/api/notifications");
-  }
-
   async function loadGroups(options: { includeDisabled?: boolean } = {}): Promise<void> {
     const data = await api<{ groups: GroupConfig[] }>(options.includeDisabled ? "/api/groups?includeDisabled=1" : "/api/groups");
     groups.value = data.groups;
@@ -82,7 +77,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function logout(): Promise<void> {
-    await api("/api/logout", { method: "POST", body: "{}" });
+    await api("/api/auth/logout", { method: "POST", body: "{}" });
     sessionLoaded.value = false;
     sessionPromise = undefined;
     username.value = "";
@@ -99,7 +94,6 @@ export const useAppStore = defineStore("app", () => {
     allowedGroupIds,
     publicBaseUrl,
     sessionLoaded,
-    notifications,
     toast,
     themeMode,
     currentGroup,
@@ -109,7 +103,6 @@ export const useAppStore = defineStore("app", () => {
     loadSession,
     refreshSession,
     loadGroups,
-    loadNotifications,
     logout,
   };
 });

@@ -1,6 +1,6 @@
 {
   "name": "ubot",
-  "version": "3.0.0-rc.2",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -17,11 +17,16 @@
     "test": "node scripts/test.cjs",
     "migrate:context": "node scripts/run-node22.cjs scripts/migrate-context-isolation.mjs",
     "migrate:participation": "node scripts/run-node22.cjs scripts/migrate-participation-mode.mjs",
+    "migrate:v3": "node scripts/run-node22.cjs scripts/migrate-v3-state.mjs",
+    "maintenance:v3": "node scripts/run-node22.cjs scripts/migrate-v3-state.mjs --maintenance --execute",
     "package:linux": "bash scripts/package-linux-release.sh",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1",
+    "package:all": "npm run package:win && npm run package:linux && node scripts/verify-release-assets.mjs",
+    "verify:release": "node scripts/verify-release-assets.mjs",
     "release:github": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
     "dotenv": "^16.4.5",
     "openai": "^4.104.0",
     "pinia": "^3.0.4",

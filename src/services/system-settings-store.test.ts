@@ -4,730 +4,236 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { SystemSettingsStore } from "./system-settings-store.js";
+import { SharedDb } from "../shared/sqlite.js";
 import type { SystemSettings } from "../types.js";
-import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import {
   LEGACY_MIMO_TTS_BASE_URL,
   LEGACY_MIMO_TTS_MODEL,
   MIMO_TTS_BASE_URL,
   MIMO_TTS_MODEL,
 } from "./mimo-tts-config.js";
+import { SystemSettingsStore } from "./system-settings-store.js";
+import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
+import { V3StateRepository } from "./v3-state-repository.js";
 
-test("SystemSettingsStore seeds existing environment models and never returns api keys from public get", async () => {
-  const store = await createStore([
-    {
-      id: "gpt",
-      name: "Env Reply Model",
-      shortName: "gpt-env",
-      baseUrl: "https://reply-env.example/v1",
-      model: "gpt-env-model",
-      purpose: "reply",
-      apiKey: "env-reply-key",
-      hasApiKey: true,
-      enabled: true,
-    },
-    {
-      id: "mimo",
-      name: "Env Profile Model",
-      shortName: "mimo-env",
-      baseUrl: "https://profile-env.example/v1",
-      model: "mimo-env-model",
-      purpose: "profile",
-      apiKey: "env-profile-key",
-      hasApiKey: true,
-      enabled: true,
-    },
-  ]);
+const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-  const settings = await store.get();
-  const gpt = settings.models.find((model) => model.id === "gpt");
-  const mimo = settings.models.find((model) => model.id === "mimo");
-  assert.equal(gpt?.model, "gpt-env-model");
-  assert.equal(gpt?.hasApiKey, true);
-  assert.equal(gpt?.apiKey, undefined);
-  assert.equal(mimo?.model, "mimo-env-model");
-  assert.equal(mimo?.hasApiKey, true);
-  assert.equal(mimo?.apiKey, undefined);
-
-  const internal = await store.getInternal();
-  assert.equal(internal.models.find((model) => model.id === "gpt")?.apiKey, "env-reply-key");
-  assert.equal(internal.models.find((model) => model.id === "mimo")?.apiKey, "env-profile-key");
-});
-
-test("SystemSettingsStore keeps default models when they remain in incoming settings", async () => {
-  const store = await createStore([
-    {
-      id: "gpt",
-      name: "Env Reply Model",
-      shortName: "gpt-env",
-      baseUrl: "https://reply-env.example/v1",
-      model: "gpt-env-model",
-      purpose: "reply",
-      apiKey: "env-reply-key",
-      hasApiKey: true,
-      enabled: true,
-    },
-  ]);
-
-  const next = await store.update({
-    models: [
-      {
-        id: "gpt",
-        name: "Env Reply Model",
-        shortName: "gpt-env",
-        baseUrl: "https://reply-env.example/v1",
-        model: "gpt-env-model",
-        purpose: "reply",
-        apiKey: "",
-        hasApiKey: true,
-        enabled: true,
-      },
-      {
-        id: "reply-pro",
-        name: "Reply Pro",
-        shortName: "reply-pro",
-        baseUrl: "https://reply-pro.example/v1",
-        model: "reply-pro-model",
-        purpose: "reply",
-        apiKey: "reply-pro-key",
-        enabled: true,
-      },
-    ],
-  });
-
-  assert.equal(next.models.some((model) => model.id === "gpt"), true);
-  assert.equal(next.models.some((model) => model.id === "reply-pro"), true);
-  assert.equal(next.models.every((model) => model.apiKey === undefined), true);
-  assert.equal(next.models.find((model) => model.id === "reply-pro")?.hasApiKey, true);
-
-  const internal = await store.getInternal();
-  assert.equal(internal.models.find((model) => model.id === "gpt")?.apiKey, "env-reply-key");
-  assert.equal(internal.models.find((model) => model.id === "reply-pro")?.apiKey, "reply-pro-key");
-});
-
-test("SystemSettingsStore remembers deleted default models", async () => {
-  const store = await createStore([
-    {
-      id: "gpt",
-      name: "Env Reply Model",
-      shortName: "gpt-env",
-      baseUrl: "https://reply-env.example/v1",
-      model: "gpt-env-model",
-      purpose: "reply",
-      apiKey: "env-reply-key",
-      hasApiKey: true,
-      enabled: true,
-    },
-    {
-      id: "mimo",
-      name: "Env Profile Model",
-      shortName: "mimo-env",
-      baseUrl: "https://profile-env.example/v1",
-      model: "mimo-env-model",
-      purpose: "profile",
-      apiKey: "env-profile-key",
-      hasApiKey: true,
-      enabled: true,
-    },
-  ]);
-
-  const first = await store.get();
-  assert.equal(first.models.some((model) => model.id === "gpt"), true);
-  assert.equal(first.models.some((model) => model.id === "mimo"), true);
-
-  const next = await store.update({
-    models: first.models.filter((model) => model.id !== "gpt"),
-  });
-  assert.equal(next.models.some((model) => model.id === "gpt"), false);
-  assert.equal(next.models.some((model) => model.id === "mimo"), true);
-
-  const internal = await store.getInternal();
-  assert.deepEqual(internal.removedDefaultModelIds, ["gpt"]);
-  assert.equal(internal.models.some((model) => model.id === "gpt"), false);
-
-  const afterAnotherUpdate = await store.update({
-    profileSummaryMaxChars: 1200,
-  });
-  assert.equal(afterAnotherUpdate.models.some((model) => model.id === "gpt"), false);
-  assert.equal(afterAnotherUpdate.models.some((model) => model.id === "mimo"), true);
-});
-
-test("SystemSettingsStore preserves an existing model api key when editing with blank key", async () => {
-  const store = await createStore();
-  await store.update({
-    models: [{
-      id: "reply-pro",
-      name: "Reply Pro",
-      shortName: "reply-pro",
-      baseUrl: "https://reply-pro.example/v1",
-      model: "reply-pro-model",
-      purpose: "reply",
-      apiKey: "reply-pro-key",
-      enabled: true,
-    }],
-  });
-
-  await store.update({
-    models: [{
-      id: "reply-pro",
-      name: "Reply Pro Renamed",
-      shortName: "reply-pro",
-      baseUrl: "https://reply-pro.example/v1",
-      model: "reply-pro-model-v2",
-      purpose: "reply",
-      apiKey: "",
-      enabled: true,
-    }],
-  });
-
-  const internal = await store.getInternal();
-  const model = internal.models.find((item) => item.id === "reply-pro");
-  assert.equal(model?.name, "Reply Pro Renamed");
-  assert.equal(model?.model, "reply-pro-model-v2");
-  assert.equal(model?.apiKey, "reply-pro-key");
-  assert.equal(model?.hasApiKey, true);
-});
-
-test("SystemSettingsStore reloads model changes written by another process instance", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-shared-"));
-  const filePath = path.join(dir, "system-settings.json");
-  const adminStore = new SystemSettingsStore(filePath);
-  const workerStore = new SystemSettingsStore(filePath);
-  const model = {
-    id: "ds",
-    name: "DeepSeek",
-    shortName: "deepseek",
-    baseUrl: "https://deepseek.example/v1",
-    purpose: "reply" as const,
-    apiKey: "deepseek-key",
+function model(id: string, purpose: "reply" | "summary" | "knowledge" | "tts" | "custom", apiKey = `${id}-key`) {
+  return {
+    id,
+    name: `${id} model`,
+    shortName: id,
+    baseUrl: `https://${id}.example/v1`,
+    model: `${id}-model`,
+    purpose,
+    apiKey,
+    hasApiKey: true,
     enabled: true,
   };
+}
 
-  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-flash" }] });
-  assert.equal((await workerStore.getInternal()).models[0]?.model, "deepseek-v4-flash");
-
-  await adminStore.update({ models: [{ ...model, model: "deepseek-v4-pro" }] });
-  assert.equal((await workerStore.getInternal()).models[0]?.model, "deepseek-v4-pro");
-
-  await rm(dir, { recursive: true, force: true });
-});
-
-test("SystemSettingsStore rejects incomplete and duplicate model updates", async () => {
-  const store = await createStore();
-
-  await assert.rejects(
-    store.update({
-      models: [{
-        id: "memory-model",
-        name: "Memory Model",
-        shortName: "memory",
-        baseUrl: "",
-        model: "gpt-5.5",
-        purpose: "memory",
-        apiKey: "memory-key",
-        enabled: true,
-      }],
-    }),
-    /invalid_model_config/,
-  );
-
-  await assert.rejects(
-    store.update({
-      models: [
-        {
-          id: "gpt",
-          name: "Profile GPT",
-          shortName: "gpt",
-          baseUrl: "https://example.test/v1",
-          model: "gpt-5.5",
-          purpose: "profile",
-          apiKey: "profile-key",
-          enabled: true,
-        },
-        {
-          id: "gpt",
-          name: "Memory GPT",
-          shortName: "gpt",
-          baseUrl: "https://example.test/v1",
-          model: "gpt-5.5",
-          purpose: "memory",
-          apiKey: "memory-key",
-          enabled: true,
-        },
-      ],
-    }),
-    /duplicate_model_id/,
-  );
-});
-
-test("SystemSettingsStore normalizes scheduler switches and times", async () => {
-  const store = await createStore();
-  const next = await store.update({
-    dailyProfileReviewEnabled: false,
-    dailyProfileReviewTime: "01:30",
-    memoryDedupEnabled: false,
-    memoryDedupTime: "22:15",
-    memoryDedupSemanticTimeoutMinutes: 10,
-  });
-
-  assert.equal(next.dailyProfileReviewEnabled, false);
-  assert.equal(next.dailyProfileReviewTime, "01:30");
-  assert.equal(next.memoryDedupEnabled, false);
-  assert.equal(next.memoryDedupTime, "22:15");
-  assert.equal(next.memoryDedupSemanticTimeoutMinutes, 10);
-});
-
-test("SystemSettingsStore normalizes memory dedup semantic timeout minutes", async () => {
-  const store = await createStore();
-
-  assert.equal((await store.get()).memoryDedupSemanticTimeoutMinutes, 10);
-  assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: 0 })).memoryDedupSemanticTimeoutMinutes, 1);
-  assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: 99 })).memoryDedupSemanticTimeoutMinutes, 60);
-  assert.equal((await store.update({ memoryDedupSemanticTimeoutMinutes: "bad" as never })).memoryDedupSemanticTimeoutMinutes, 10);
-});
-
-test("SystemSettingsStore manages memory confidence thresholds", async () => {
-  const store = await createStore();
-
-  const defaults = await store.get();
-  assert.equal(defaults.memoryCandidateConfidenceThreshold, 60);
-  assert.equal(defaults.memoryAutoApproveConfidenceThreshold, 80);
-  assert.equal(defaults.memoryUnattendedModeEnabled, false);
-
-  const next = await store.update({
-    memoryCandidateConfidenceThreshold: 55,
-    memoryAutoApproveConfidenceThreshold: 88,
-    memoryUnattendedModeEnabled: true,
-  });
-  assert.equal(next.memoryCandidateConfidenceThreshold, 55);
-  assert.equal(next.memoryAutoApproveConfidenceThreshold, 88);
-  assert.equal(next.memoryUnattendedModeEnabled, true);
-});
-
-test("SystemSettingsStore backfills and persists token cost controls", async () => {
+async function withDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
-  const filePath = path.join(dir, "system-settings.json");
-  await writeFile(filePath, JSON.stringify({
-    profileSummaryMaxChars: 1800,
-    profileShortSummaryMaxChars: 140,
-    dailyProfileReviewEnabled: true,
-    dailyProfileReviewTime: "00:00",
-    memoryDedupEnabled: true,
-    memoryDedupTime: "23:00",
-    memoryDedupSemanticTimeoutMinutes: 10,
-    memoryCandidateConfidenceThreshold: 60,
-    memoryAutoApproveConfidenceThreshold: 80,
-    memoryUnattendedModeEnabled: false,
-    defaultTriggerKeywords: [],
-    models: [],
-    selectedModelIds: {},
-    commands: [],
-    updatedAt: "2026-06-07T16:48:04.112Z",
-  }), "utf8");
-
-  const store = new SystemSettingsStore(filePath);
-  const defaults = await store.get();
-  assert.deepEqual(defaults.tokenCostControl, {
-    memoryCandidateExtractionEnabled: false,
-    memoryCandidateNormalizationEnabled: false,
-    memorySemanticDedupEnabled: false,
-    dailyProfileReviewAiEnabled: false,
-    dailyReportAiQuipEnabled: false,
-    chatSummaryAiEnabled: false,
-    scheduledReminderAiRewriteEnabled: false,
-    modelHealthAutoProbeEnabled: false,
-  });
-
-  const updated = await store.update({
-    tokenCostControl: {
-      ...defaults.tokenCostControl,
-      memoryCandidateExtractionEnabled: false,
-      chatSummaryAiEnabled: true,
-      modelHealthAutoProbeEnabled: true,
-    },
-  });
-  assert.equal(updated.tokenCostControl.memoryCandidateExtractionEnabled, false);
-  assert.equal(updated.tokenCostControl.chatSummaryAiEnabled, true);
-  assert.equal(updated.tokenCostControl.modelHealthAutoProbeEnabled, true);
-
-  const reloaded = await new SystemSettingsStore(filePath).get();
-  assert.equal(reloaded.tokenCostControl.memoryCandidateExtractionEnabled, false);
-  assert.equal(reloaded.tokenCostControl.chatSummaryAiEnabled, true);
-  assert.equal(reloaded.tokenCostControl.dailyReportAiQuipEnabled, false);
-});
-
-test("SystemSettingsStore requires explicit opt-in for daily profiles, memory dedup, and online lookup", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-online-"));
-  const filePath = path.join(dir, "system-settings.json");
   try {
-    await writeFile(filePath, "{}", "utf8");
-    const store = new SystemSettingsStore(filePath);
-    const defaults = await store.get();
-    assert.equal(defaults.dailyProfileReviewEnabled, false);
-    assert.equal(defaults.memoryDedupEnabled, false);
-    assert.equal(defaults.onlineLookupEnabled, false);
-
-    const enabled = await store.update({
-      dailyProfileReviewEnabled: true,
-      memoryDedupEnabled: true,
-      onlineLookupEnabled: true,
-    });
-    assert.equal(enabled.dailyProfileReviewEnabled, true);
-    assert.equal(enabled.memoryDedupEnabled, true);
-    assert.equal(enabled.onlineLookupEnabled, true);
-
-    const reloaded = await new SystemSettingsStore(filePath).get();
-    assert.equal(reloaded.dailyProfileReviewEnabled, true);
-    assert.equal(reloaded.memoryDedupEnabled, true);
-    assert.equal(reloaded.onlineLookupEnabled, true);
+    return await run(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}
 
-test("SystemSettingsStore rejects invalid memory confidence thresholds", async () => {
-  const store = await createStore();
+test("SystemSettingsStore redacts provider keys from public reads", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"), [
+      model("reply", "reply", "reply-secret"),
+      model("tts", "tts", "tts-secret"),
+    ]);
 
-  await assert.rejects(
-    store.update({ memoryCandidateConfidenceThreshold: -1 }),
-    /invalid_memory_confidence_thresholds/,
-  );
-
-  await assert.rejects(
-    store.update({ memoryAutoApproveConfidenceThreshold: 101 }),
-    /invalid_memory_confidence_thresholds/,
-  );
-
-  await assert.rejects(
-    store.update({
-      memoryCandidateConfidenceThreshold: 80,
-      memoryAutoApproveConfidenceThreshold: 80,
-    }),
-    /invalid_memory_confidence_thresholds/,
-  );
-
-  await assert.rejects(
-    store.update({
-      memoryCandidateConfidenceThreshold: 90,
-      memoryAutoApproveConfidenceThreshold: 70,
-    }),
-    /invalid_memory_confidence_thresholds/,
-  );
-});
-
-test("SystemSettingsStore backfills memory confidence thresholds for legacy files", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
-  const filePath = path.join(dir, "system-settings.json");
-  await writeFile(filePath, JSON.stringify({
-    profileSummaryMaxChars: 1800,
-    profileShortSummaryMaxChars: 140,
-    dailyProfileReviewEnabled: true,
-    dailyProfileReviewTime: "00:00",
-    memoryDedupEnabled: true,
-    memoryDedupTime: "23:00",
-    memoryDedupSemanticTimeoutMinutes: 10,
-    defaultTriggerKeywords: [{ keyword: "trigger", enabled: true }],
-    models: [],
-    selectedModelIds: {},
-    commands: [],
-    updatedAt: "2026-06-07T16:48:04.112Z",
-  }), "utf8");
-
-  const settings = await new SystemSettingsStore(filePath).get();
-  assert.equal(settings.memoryCandidateConfidenceThreshold, 60);
-  assert.equal(settings.memoryAutoApproveConfidenceThreshold, 80);
-  assert.equal(settings.memoryUnattendedModeEnabled, false);
-});
-
-test("SystemSettingsStore rejects invalid scheduler time", async () => {
-  const store = await createStore();
-  await assert.rejects(
-    store.update({ memoryDedupTime: "24:00" }),
-    /invalid_time/,
-  );
-});
-
-test("SystemSettingsStore accepts all system model purposes without exposing api keys", async () => {
-  const store = await createStore();
-  const purposes = ["reply", "profile", "memory", "dedup", "summary", "knowledge", "tts", "custom"] as const;
-
-  const next = await store.update({
-    models: purposes.map((purpose) => ({
-      id: `${purpose}-model`,
-      name: `${purpose} Model`,
-      shortName: purpose,
-      baseUrl: `https://${purpose}.example/v1`,
-      model: `${purpose}-model-name`,
-      purpose,
-      apiKey: `${purpose}-key`,
-      enabled: true,
-    })),
+    const publicSettings = await store.get();
+    assert.equal(publicSettings.models.every((item) => item.apiKey === undefined), true);
+    assert.equal(publicSettings.models.every((item) => item.hasApiKey), true);
+    const internal = await store.getInternal();
+    assert.equal(internal.models.find((item) => item.id === "reply")?.apiKey, "reply-secret");
+    assert.equal(internal.models.find((item) => item.id === "tts")?.apiKey, "tts-secret");
   });
-
-  assert.deepEqual(new Set(next.models.map((model) => model.purpose)), new Set(purposes));
-  assert.equal(next.models.every((model) => model.apiKey === undefined), true);
-
-  const internal = await store.getInternal();
-  for (const purpose of purposes) {
-    const model = internal.models.find((item) => item.purpose === purpose);
-    assert.equal(model?.apiKey, `${purpose}-key`);
-    assert.equal(model?.hasApiKey, true);
-  }
 });
 
-test("SystemSettingsStore rejects unsafe model ids before they reach reply switching", async () => {
-  const store = await createStore();
-  await assert.rejects(
-    store.update({
+test("SystemSettingsStore preserves an existing API key for blank-key edits", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    await store.update({ models: [model("reply", "reply", "reply-secret")] });
+    const visible = (await store.get()).models[0]!;
+    await store.update({ models: [{ ...visible, apiKey: "" }] });
+
+    assert.equal((await store.getInternal()).models[0]?.apiKey, "reply-secret");
+  });
+});
+
+test("SystemSettingsStore accepts only V3 model purposes and safe identifiers", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    await assert.rejects(
+      store.update({ models: [{ ...model("legacy", "reply"), purpose: "profile" as never }] }),
+      /invalid_model_purpose/,
+    );
+    await assert.rejects(
+      store.update({ models: [{ ...model("../bad", "reply") }] }),
+      /invalid_model_id/,
+    );
+    await assert.rejects(
+      store.update({ models: [{ ...model("reply", "reply") }, { ...model("reply", "reply") }] }),
+      /duplicate_model_id/,
+    );
+  });
+});
+
+test("SystemSettingsStore persists retained cost controls and online lookup", async () => {
+  await withDir(async (dir) => {
+    const file = path.join(dir, "settings.json");
+    const store = new SystemSettingsStore(file);
+    const next = await store.update({
+      onlineLookupEnabled: true,
+      tokenCostControl: {
+        dailyReportAiQuipEnabled: true,
+        chatSummaryAiEnabled: true,
+        scheduledReminderAiRewriteEnabled: false,
+        modelHealthAutoProbeEnabled: true,
+      },
+    });
+    assert.equal(next.onlineLookupEnabled, true);
+    assert.deepEqual(next.tokenCostControl, {
+      dailyReportAiQuipEnabled: true,
+      chatSummaryAiEnabled: true,
+      scheduledReminderAiRewriteEnabled: false,
+      modelHealthAutoProbeEnabled: true,
+    });
+    assert.deepEqual((await new SystemSettingsStore(file).get()).tokenCostControl, next.tokenCostControl);
+  });
+});
+
+test("SystemSettingsStore migrates built-in MiMo TTS configuration only", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    await store.update({
       models: [
         {
-          id: "reply-pro",
-          name: "Reply Pro",
-          shortName: "reply-pro",
-          baseUrl: "https://reply-pro.example/v1",
-          model: "reply-pro-model",
-          purpose: "reply",
-          apiKey: "reply-pro-key",
-          enabled: true,
+          ...model("tts-mimo-v25", "tts", "tts-key"),
+          baseUrl: `${LEGACY_MIMO_TTS_BASE_URL}/`,
+          model: LEGACY_MIMO_TTS_MODEL,
         },
         {
-          id: "../bad",
-          name: "Bad",
-          shortName: "bad",
-          baseUrl: "https://bad.example/v1",
-          model: "bad-model",
-          purpose: "reply",
-          apiKey: "bad-key",
-          enabled: true,
+          ...model("custom-tts", "tts", "custom-key"),
+          baseUrl: LEGACY_MIMO_TTS_BASE_URL,
+          model: LEGACY_MIMO_TTS_MODEL,
         },
       ],
-    }),
-    /invalid_model_id/,
-  );
-
-  const internal = await store.getInternal();
-  assert.equal(internal.models.some((model) => model.id === "reply-pro"), false);
-  assert.equal(internal.models.some((model) => model.id === "../bad"), false);
-});
-
-test("SystemSettingsStore migrates only built-in MiMo TTS models to current endpoint and model", async () => {
-  const store = await createStore();
-  await store.update({
-    models: [
-      {
-        id: "tts-mimo-v25",
-        name: "MiMo V2.5 TTS",
-        shortName: "mimo-v2.5-tts",
-        baseUrl: `${LEGACY_MIMO_TTS_BASE_URL}/`,
-        model: MIMO_TTS_MODEL,
-        purpose: "tts",
-        apiKey: "tts-key",
-        enabled: true,
-      },
-      {
-        id: "tts",
-        name: "Env TTS",
-        shortName: LEGACY_MIMO_TTS_MODEL,
-        baseUrl: "https://env-tts.example/v1",
-        model: LEGACY_MIMO_TTS_MODEL,
-        purpose: "tts",
-        apiKey: "env-tts-key",
-        enabled: true,
-      },
-      {
-        id: "custom-tts",
-        name: "Custom TTS",
-        shortName: "custom",
-        baseUrl: LEGACY_MIMO_TTS_BASE_URL,
-        model: LEGACY_MIMO_TTS_MODEL,
-        purpose: "tts",
-        apiKey: "custom-key",
-        enabled: true,
-      },
-    ],
-    selectedModelIds: { tts: "tts-mimo-v25" },
+      selectedModelIds: { tts: "tts-mimo-v25" },
+    });
+    const internal = await store.getInternal();
+    assert.equal(internal.models.find((item) => item.id === "tts-mimo-v25")?.baseUrl, MIMO_TTS_BASE_URL);
+    assert.equal(internal.models.find((item) => item.id === "tts-mimo-v25")?.model, MIMO_TTS_MODEL);
+    assert.equal(internal.models.find((item) => item.id === "custom-tts")?.baseUrl, LEGACY_MIMO_TTS_BASE_URL);
+    assert.equal(internal.models.find((item) => item.id === "custom-tts")?.model, LEGACY_MIMO_TTS_MODEL);
   });
-
-  const internal = await store.getInternal();
-  const builtInMimo = internal.models.find((model) => model.id === "tts-mimo-v25");
-  const envTts = internal.models.find((model) => model.id === "tts");
-  const customTts = internal.models.find((model) => model.id === "custom-tts");
-
-  assert.equal(builtInMimo?.baseUrl, MIMO_TTS_BASE_URL);
-  assert.equal(builtInMimo?.model, MIMO_TTS_MODEL);
-  assert.equal(envTts?.baseUrl, "https://env-tts.example/v1");
-  assert.equal(envTts?.model, MIMO_TTS_MODEL);
-  assert.equal(customTts?.baseUrl, LEGACY_MIMO_TTS_BASE_URL);
-  assert.equal(customTts?.model, LEGACY_MIMO_TTS_MODEL);
-  assert.equal(internal.selectedModelIds.tts, "tts-mimo-v25");
 });
 
-test("SystemSettingsStore keeps command permissions immutable and ignores unknown commands", async () => {
-  const store = await createStore();
-  const before = await store.get();
-  const profileCommand = before.commands.find((item) => item.id === "profile_yesterday");
-  assert.ok(profileCommand);
-
-  const next = await store.update({
-    commands: [
-      {
-        ...profileCommand,
-        title: "Yesterday Profile",
-        primary: "#昨日报告",
-        aliases: ["#昨日画像", "#昨天画像", "#昨日画像"],
-        permission: "super_admin",
-        help: "Updated help text",
-        enabled: true,
-      },
-      {
-        id: "unknown_dangerous_command",
-        title: "Danger",
-        primary: "#danger",
-        aliases: [],
-        permission: "super_admin",
-        enabled: true,
-        help: "Must be ignored",
-        updatedAt: new Date().toISOString(),
-      },
-    ],
+test("SystemSettingsStore permits command copy changes but not permission escalation", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    const before = await store.get();
+    const conversation = before.commands.find((item) => item.id === "conversation");
+    assert.ok(conversation);
+    const next = await store.update({
+      commands: [
+        { ...conversation, title: "Conversation", primary: "#chat", permission: "super_admin" },
+        { id: "unknown", title: "unknown", primary: "#unknown", aliases: [], permission: "super_admin", enabled: true, help: "", updatedAt: "2026-01-01T00:00:00.000Z" },
+      ],
+    });
+    const updated = next.commands.find((item) => item.id === "conversation");
+    assert.equal(updated?.title, "Conversation");
+    assert.equal(updated?.primary, "#chat");
+    assert.equal(updated?.permission, conversation.permission);
+    assert.equal(next.commands.some((item) => item.id === "unknown"), false);
   });
-
-  const updatedProfileCommand = next.commands.find((item) => item.id === "profile_yesterday");
-  assert.equal(updatedProfileCommand?.title, "Yesterday Profile");
-  assert.equal(updatedProfileCommand?.primary, "#昨日报告");
-  assert.deepEqual(updatedProfileCommand?.aliases, ["#昨日画像", "#昨天画像"]);
-  assert.equal(updatedProfileCommand?.permission, profileCommand.permission);
-  assert.equal(updatedProfileCommand?.help, "Updated help text");
-  assert.equal(next.commands.some((item) => item.id === "unknown_dangerous_command"), false);
-  assert.equal(next.commands.some((item) => item.id === "model"), true);
-  assert.equal(next.commands.some((item) => item.id === "voice_reply" && item.primary === "#语音回复"), true);
-  assert.equal(next.commands.some((item) => item.id === "sing" && item.primary === "#唱歌"), true);
 });
 
-test("SystemSettingsStore recovers settings when commands are corrupt without losing model keys", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
-  const filePath = path.join(dir, "system-settings.json");
-  await writeFile(filePath, `{
-  "profileSummaryMaxChars": 1800,
-  "profileShortSummaryMaxChars": 140,
-  "dailyProfileReviewEnabled": true,
-  "dailyProfileReviewTime": "00:00",
-  "memoryDedupEnabled": true,
-  "memoryDedupTime": "23:00",
-  "memoryDedupSemanticTimeoutMinutes": 10,
-  "defaultTriggerKeywords": [{ "keyword": "trigger", "enabled": true }],
-  "models": [
-    {
-      "id": "memory-gpt-55",
-      "name": "GPT 5.5 Memory",
-      "shortName": "gpt",
-      "baseUrl": "https://sub.9958.uk/v1",
-      "model": "gpt-5.5",
-      "purpose": "memory",
-      "apiKey": "memory-key",
-      "hasApiKey": true,
-      "enabled": true,
-      "createdAt": "2026-06-07T16:48:04.111Z",
-      "updatedAt": "2026-06-07T16:48:04.111Z"
+test("SystemSettingsStore discards legacy profile and automatic-memory fields from JSON", async () => {
+  await withDir(async (dir) => {
+    const file = path.join(dir, "settings.json");
+    await writeFile(file, JSON.stringify({
+      profileSummaryMaxChars: 1800,
+      dailyProfileReviewEnabled: true,
+      memoryDedupEnabled: true,
+      memoryCandidateConfidenceThreshold: 90,
+      memoryUnattendedModeEnabled: true,
+      tokenCostControl: {
+        memoryCandidateExtractionEnabled: true,
+        memoryCandidateNormalizationEnabled: true,
+        memorySemanticDedupEnabled: true,
+        dailyProfileReviewAiEnabled: true,
+        chatSummaryAiEnabled: true,
+      },
+      onlineLookupEnabled: true,
+      models: [
+        { ...model("legacy-profile", "reply"), purpose: "profile" },
+        model("reply", "reply", "reply-secret"),
+      ],
+      selectedModelIds: { reply: "reply" },
+      commands: [],
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    }), "utf8");
+
+    const settings = await new SystemSettingsStore(file).get();
+    const record = settings as unknown as Record<string, unknown>;
+    for (const key of [
+      "profileSummaryMaxChars",
+      "dailyProfileReviewEnabled",
+      "memoryDedupEnabled",
+      "memoryCandidateConfidenceThreshold",
+      "memoryUnattendedModeEnabled",
+    ]) {
+      assert.equal(Object.hasOwn(record, key), false);
     }
-  ],
-  "removedDefaultModelIds": [],
-  "selectedModelIds": { "memory": "memory-gpt-55" },
-  "commands": [
-    {
-      "id": "conversation",
-      "title": "Broken",
-      "help": "unterminated
-    }
-  ],
-  "updatedAt": "2026-06-07T16:48:04.112Z"
-}
-`, "utf8");
-
-  const store = new SystemSettingsStore(filePath);
-  const publicSettings = await store.get();
-  assert.equal(publicSettings.models.find((model) => model.id === "memory-gpt-55")?.apiKey, undefined);
-  assert.equal(publicSettings.selectedModelIds.memory, "memory-gpt-55");
-  assert.equal(publicSettings.commands.some((command) => command.id === "model"), true);
-
-  const updated = await store.update({
-    models: [
-      ...publicSettings.models,
-      {
-        id: "knowledge-gpt-55",
-        name: "GPT 5.5 Knowledge",
-        shortName: "gpt",
-        baseUrl: "https://sub.9958.uk/v1",
-        model: "gpt-5.5",
-        purpose: "knowledge",
-        apiKey: "knowledge-key",
-        enabled: true,
-      },
-    ],
-    selectedModelIds: {
-      ...publicSettings.selectedModelIds,
-      knowledge: "knowledge-gpt-55",
-    },
+    assert.equal(settings.models.some((item) => item.id === "legacy-profile"), false);
+    assert.equal(settings.tokenCostControl.chatSummaryAiEnabled, true);
+    assert.equal(Object.hasOwn(settings.tokenCostControl as unknown as Record<string, unknown>, "memoryCandidateExtractionEnabled"), false);
   });
-  assert.equal(updated.models.find((model) => model.id === "knowledge-gpt-55")?.hasApiKey, true);
-  assert.equal(updated.selectedModelIds.knowledge, "knowledge-gpt-55");
-
-  const internal = await store.getInternal();
-  assert.equal(internal.models.find((model) => model.id === "memory-gpt-55")?.apiKey, "memory-key");
-  assert.equal(internal.models.find((model) => model.id === "knowledge-gpt-55")?.apiKey, "knowledge-key");
-  const repairedRaw = await readFile(filePath, "utf8");
-  const repaired = JSON.parse(repairedRaw) as { commands: Array<{ id: string }> };
-  assert.equal(repaired.commands.some((command) => command.id === "model"), true);
 });
 
-test("SystemSettingsStore mirrors only after an explicit sync or a successful JSON write", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-shadow-store-"));
-  const filePath = path.join(dir, "system-settings.json");
-  const snapshots: SystemSettings[] = [];
-  const shadowWriter: SystemSettingsShadowWriter = {
-    syncFromAuthoritative(settings) {
-      snapshots.push(JSON.parse(JSON.stringify(settings)) as SystemSettings);
-      return { status: "created", snapshotHash: "test" };
-    },
-  };
+test("SystemSettingsStore uses V3 SQLite after cutover and never reads or writes legacy JSON", async () => {
+  await withDir(async (dir) => {
+    const file = path.join(dir, "settings.json");
+    const legacy = JSON.stringify({ onlineLookupEnabled: true, models: [model("legacy", "reply", "legacy-secret")] });
+    await writeFile(file, legacy, "utf8");
+    const db = new SharedDb(path.join(dir, "bot-shared.db"));
+    try {
+      const repository = new V3StateRepository(db, { stateEncryptionKey: TEST_STATE_KEY });
+      repository.markCutover();
+      const store = new SystemSettingsStore(file, [], undefined, repository);
+      assert.equal((await store.get()).onlineLookupEnabled, false);
+      await store.update({ onlineLookupEnabled: true });
+      assert.equal(repository.getSystemSettings()?.onlineLookupEnabled, true);
+      assert.equal(await readFile(file, "utf8"), legacy);
+    } finally {
+      db.close();
+    }
+  });
+});
 
-  try {
-    const store = new SystemSettingsStore(filePath, [], shadowWriter);
+test("SystemSettingsStore retains the JSON shadow only before V3 cutover", async () => {
+  await withDir(async (dir) => {
+    const snapshots: SystemSettings[] = [];
+    const shadowWriter: SystemSettingsShadowWriter = {
+      syncFromAuthoritative(settings) {
+        snapshots.push(JSON.parse(JSON.stringify(settings)) as SystemSettings);
+        return { status: "created", snapshotHash: "test" };
+      },
+    };
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"), [], shadowWriter);
     await store.get();
-    assert.equal(snapshots.length, 0, "ordinary configuration reads must not write the shadow");
-
+    assert.equal(snapshots.length, 0);
     assert.equal(await store.syncShadowFromAuthoritative(), true);
-    assert.equal(snapshots.length, 1);
-
     await store.update({ onlineLookupEnabled: true });
     assert.equal(snapshots.length, 2);
     assert.equal(snapshots[1]?.onlineLookupEnabled, true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  });
 });
-
-test("SystemSettingsStore preserves JSON updates when SQLite shadow sync fails", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-shadow-failure-"));
-  const filePath = path.join(dir, "system-settings.json");
-  const failingShadowWriter: SystemSettingsShadowWriter = {
-    syncFromAuthoritative() {
-      throw new Error("sqlite_unavailable");
-    },
-  };
-
-  try {
-    const store = new SystemSettingsStore(filePath, [], failingShadowWriter);
-    const updated = await store.update({ onlineLookupEnabled: true });
-    assert.equal(updated.onlineLookupEnabled, true);
-    assert.equal((await new SystemSettingsStore(filePath).get()).onlineLookupEnabled, true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-async function createStore(defaultModels: ConstructorParameters<typeof SystemSettingsStore>[1] = []): Promise<SystemSettingsStore> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "system-settings-"));
-  return new SystemSettingsStore(path.join(dir, "system-settings.json"), defaultModels);
-}

@@ -26,6 +26,7 @@ const dedupTaskMessage = shallowRef("");
 const dedupDecisions = shallowRef<DedupDecision[]>([]);
 const dedupMode = shallowRef<DedupMode>("fast");
 const dedupPollFailures = shallowRef(0);
+const creating = shallowRef(false);
 const readonly = computed(() => app.readonly);
 let dedupPollTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -63,6 +64,13 @@ const editForm = reactive({
   source: "admin",
   enabled: true,
 });
+const createForm = reactive({
+  title: "",
+  content: "",
+  type: "member_profile" as MemoryType,
+  subjectUserId: "",
+  confidence: 1,
+});
 const memberSelectOptions = computed(() => memberOptions.value.map((member) => ({
   value: member.userId,
   label: `${member.displayName} / ${member.userId}`,
@@ -70,7 +78,7 @@ const memberSelectOptions = computed(() => memberOptions.value.map((member) => (
 })));
 
 function typeLabel(type: MemoryType): string {
-  return type === "member_profile" ? "成员画像" : "群内事实";
+  return type === "member_profile" ? "成员显式记忆" : "群内事实";
 }
 
 function confidenceText(value: number): string {
@@ -104,7 +112,6 @@ async function load(): Promise<void> {
       subjectUserId: filters.userId,
       type: filters.type,
       enabled: filters.enabled,
-      excludeProfileRecords: 1,
       evidence: "preview",
       page: pagination.page,
       pageSize: pagination.pageSize,
@@ -127,6 +134,44 @@ async function loadMemberOptions(): Promise<void> {
     memberOptions.value = data.members;
   } catch (error) {
     app.showToast((error as Error).message, "error");
+  }
+}
+
+async function createMemory(): Promise<void> {
+  if (!ensureWritable() || !app.groupId) return;
+  if (!createForm.title.trim() || !createForm.content.trim()) {
+    app.showToast("标题和内容不能为空", "error");
+    return;
+  }
+  if (createForm.type === "member_profile" && !createForm.subjectUserId.trim()) {
+    app.showToast("成员记忆需要选择成员", "error");
+    return;
+  }
+  creating.value = true;
+  try {
+    await api<Memory>("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        groupId: app.groupId,
+        type: createForm.type,
+        subjectUserId: createForm.type === "group_fact" ? "" : createForm.subjectUserId.trim(),
+        title: createForm.title.trim(),
+        content: createForm.content.trim(),
+        confidence: Number(createForm.confidence),
+        source: "admin",
+        enabled: true,
+      }),
+    });
+    createForm.title = "";
+    createForm.content = "";
+    createForm.subjectUserId = "";
+    createForm.confidence = 1;
+    await Promise.all([load(), loadMemberOptions()]);
+    app.showToast("记忆已保存");
+  } catch (error) {
+    app.showToast((error as Error).message, "error");
+  } finally {
+    creating.value = false;
   }
 }
 
@@ -195,7 +240,7 @@ async function saveEdit(item: Memory): Promise<void> {
     return;
   }
   if (editForm.type === "member_profile" && !editForm.subjectUserId.trim()) {
-    app.showToast("成员画像需要填写 QQ", "error");
+    app.showToast("成员显式记忆需要填写 QQ", "error");
     return;
   }
   setBusy(item.id, true);
@@ -214,7 +259,7 @@ async function saveEdit(item: Memory): Promise<void> {
     });
     editingId.value = "";
     await load();
-    app.showToast("长期记忆已保存");
+    app.showToast("记忆已保存");
   } catch (error) {
     app.showToast((error as Error).message, "error");
   } finally {
@@ -231,7 +276,7 @@ async function setEnabled(item: Memory, enabled: boolean): Promise<void> {
       body: JSON.stringify({ enabled }),
     });
     await load();
-    app.showToast(enabled ? "长期记忆已启用" : "长期记忆已停用");
+    app.showToast(enabled ? "记忆已启用" : "记忆已停用");
   } catch (error) {
     app.showToast((error as Error).message, "error");
   } finally {
@@ -241,13 +286,13 @@ async function setEnabled(item: Memory, enabled: boolean): Promise<void> {
 
 async function deleteOne(item: Memory): Promise<void> {
   if (!ensureWritable()) return;
-  if (!confirm(`删除长期记忆「${item.title}」？`)) return;
+  if (!confirm(`删除记忆「${item.title}」？`)) return;
   setBusy(item.id, true);
   try {
     await api(`/api/memories/${encodeURIComponent(item.id)}`, { method: "DELETE" });
     selectedIds.value.delete(item.id);
     await load();
-    app.showToast("长期记忆已删除");
+    app.showToast("记忆已删除");
   } catch (error) {
     app.showToast((error as Error).message, "error");
   } finally {
@@ -259,10 +304,10 @@ async function bulk(action: "disable" | "delete"): Promise<void> {
   if (!ensureWritable()) return;
   const ids = [...selectedIds.value];
   if (!ids.length) {
-    app.showToast("请先选择长期记忆", "error");
+    app.showToast("请先选择记忆", "error");
     return;
   }
-  if (action === "delete" && !confirm(`删除已选择的 ${ids.length} 条长期记忆？`)) return;
+  if (action === "delete" && !confirm(`删除已选择的 ${ids.length} 条记忆？`)) return;
   loading.value = true;
   try {
     const result = await api<{ processedCount: number; skippedCount: number }>("/api/memories/bulk", {
@@ -479,10 +524,27 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   <section class="panel">
     <div class="section-head">
       <div>
-        <h2>长期记忆 <span class="tag">{{ pagination.total }}</span></h2>
-        <p>维护已批准保留的成员记忆，可停用、编辑、删除重复或错误内容。</p>
+        <h2>记忆 <span class="tag">{{ pagination.total }}</span></h2>
+        <p>只展示成员或管理员明确保存的信息；普通聊天不会自动写入。</p>
       </div>
     </div>
+
+    <section class="create-panel">
+      <div>
+        <h3>新增记忆</h3>
+        <p>管理员可直接保存群事实或指定成员的明确偏好、边界和长期背景。</p>
+      </div>
+      <div class="create-grid">
+        <label>类型<select v-model="createForm.type" class="select"><option value="member_profile">成员记忆</option><option value="group_fact">群事实</option></select></label>
+        <label>成员
+          <SearchableSelect v-model="createForm.subjectUserId" :options="memberSelectOptions" placeholder="选择成员" empty-label="群整体" :disabled="createForm.type === 'group_fact'" />
+        </label>
+        <label>标题<input v-model="createForm.title" class="input" placeholder="例如：回复偏好" /></label>
+        <label>置信度<input v-model.number="createForm.confidence" class="input" type="number" min="0" max="1" step="0.01" /></label>
+        <label class="wide">内容<textarea v-model="createForm.content" class="textarea" placeholder="只填写已明确获得的信息；不要保存密码、令牌或私人凭据。" /></label>
+      </div>
+      <div class="create-actions"><button class="btn" type="button" :disabled="readonly || creating" @click="createMemory">{{ creating ? "保存中..." : "保存记忆" }}</button></div>
+    </section>
 
     <div class="filter-card">
       <label>关键词 / 来源<input v-model="filters.q" class="input" placeholder="搜索记忆标题、关键词、内容..." @change="applyFilters" /></label>
@@ -498,7 +560,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       <label>记忆类型
         <select v-model="filters.type" class="select" @change="applyFilters">
           <option value="">全部类型</option>
-          <option value="member_profile">成员画像</option>
+          <option value="member_profile">成员显式记忆</option>
           <option value="group_fact">群内事实</option>
         </select>
       </label>
@@ -520,14 +582,14 @@ watch(() => [pagination.page, pagination.pageSize], () => {
     </div>
 
     <div class="notice">
-      <span>按成员与类型维护长期记忆，重复或相似内容可以先停用再删除。</span>
+      <span>按成员与群事实维护明确保存的记忆；重复或相似内容可以先停用再删除。</span>
       <button class="ghost-btn" type="button" @click="filters.q = ''; filters.userId = ''; filters.type = ''; filters.enabled = ''; applyFilters()">清空筛选</button>
     </div>
 
     <section class="dedup-panel">
       <div>
         <h3>记忆去重</h3>
-        <p>请选择一个记忆成员后再检查重复。去重只处理该成员的长期记忆，避免全局扫描超时。</p>
+        <p>请选择一个成员后再检查重复。去重只处理已经明确保存的成员记忆，避免全局扫描超时。</p>
       </div>
       <div class="dedup-actions">
         <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate('fast')">
@@ -564,8 +626,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       <button class="ghost-btn danger" type="button" :disabled="readonly || loading || !selectedIds.size" @click="bulk('delete')">批量删除</button>
     </div>
 
-    <div v-if="loading" class="empty">正在加载长期记忆...</div>
-    <div v-else-if="!items.length" class="empty">暂无长期记忆。</div>
+    <div v-if="loading" class="empty">正在加载记忆...</div>
+    <div v-else-if="!items.length" class="empty">暂无记忆。</div>
     <div v-else class="memory-list">
       <article v-for="item in items" :key="item.id" class="memory-row">
         <input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="readonly || isBusy(item.id)" @change="toggle(item.id)" />
@@ -576,7 +638,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
               <label class="wide">内容<textarea v-model="editForm.content" class="textarea" /></label>
               <label>类型
                 <select v-model="editForm.type" class="select">
-                  <option value="member_profile">成员画像</option>
+                  <option value="member_profile">成员显式记忆</option>
                   <option value="group_fact">群内事实</option>
                 </select>
               </label>
@@ -644,6 +706,27 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 </template>
 
 <style scoped>
+.create-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid color-mix(in oklch, var(--accent) 38%, var(--line));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--accent-soft) 40%, var(--surface));
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.create-panel h3,
+.create-panel p { margin: 0; }
+.create-panel p { color: var(--muted); margin-top: 5px; }
+.create-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.create-grid label { display: grid; gap: 8px; color: var(--muted); font-weight: 700; }
+.create-actions { display: flex; justify-content: flex-end; }
+
 .filter-card {
   display: grid;
   grid-template-columns:
@@ -879,6 +962,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 @media (max-width: 1180px) {
+  .create-grid,
   .filter-card,
   .dedup-panel,
   .dedup-row,

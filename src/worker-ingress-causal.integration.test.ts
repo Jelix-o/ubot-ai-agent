@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { BotApplication, type MessageReceipt, type MessageTransport } from "./bot.js";
-import { IngressApp } from "./index-ingress.js";
+import { IngressApp, normalizeIngressMessageTime } from "./index-ingress.js";
 import { WorkerApp } from "./index-worker.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
@@ -26,6 +26,20 @@ import { WorkerTransport } from "./worker-transport.js";
 const BOT_QQ = "12345";
 const GROUP_ID = "67890";
 const USER_ID = "20001";
+
+test("Ingress clamps future OneBot timestamps to receipt time", () => {
+  const receivedAt = Date.parse("2026-08-27T03:00:00.000Z");
+
+  assert.equal(
+    normalizeIngressMessageTime(Math.floor((receivedAt + 60 * 60 * 1000) / 1_000), receivedAt),
+    receivedAt,
+  );
+  assert.equal(
+    normalizeIngressMessageTime(Math.floor((receivedAt - 30_000) / 1_000), receivedAt),
+    receivedAt - 30_000,
+  );
+  assert.equal(normalizeIngressMessageTime(undefined, receivedAt), receivedAt);
+});
 
 class FakeNapCatTransport extends EventEmitter implements MessageTransport {
   readonly sent: Array<{ groupId: string; text: string; platformMessageId: string }> = [];

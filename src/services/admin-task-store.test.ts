@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import type { AdminTasksFile } from "../types.js";
+import { SharedDb } from "../shared/sqlite.js";
 import { AdminTaskStore } from "./admin-task-store.js";
+import { V3StateRepository } from "./v3-state-repository.js";
+
+const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 async function withStore<T>(run: (store: AdminTaskStore) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-task-store-"));
@@ -237,13 +241,13 @@ test("AdminTaskStore marks active memory dedup tasks stale after twelve minutes"
 test("AdminTaskStore searches task title, result, and errors before pagination", async () => {
   await withStore(async (store) => {
     await store.run({
-      type: "profile-generate",
-      title: "Generate profile for Alice",
+      type: "memory-dedup",
+      title: "Deduplicate explicit memories for Alice",
       groupId: "67890",
       subjectUserId: "20001",
       operatorUserId: "admin",
       detail: "overall",
-    }, async () => ({ recordId: "profile-alice", sourceMemoryCount: 3 }));
+    }, async () => ({ memoryId: "memory-alice", sourceMemoryCount: 3 }));
 
     await assert.rejects(
       () => store.run({
@@ -256,9 +260,9 @@ test("AdminTaskStore searches task title, result, and errors before pagination",
       /latency timeout/,
     );
 
-    const byResult = await store.listPage({ q: "profile-alice", page: 1, pageSize: 1 });
+    const byResult = await store.listPage({ q: "memory-alice", page: 1, pageSize: 1 });
     assert.equal(byResult.pagination.total, 1);
-    assert.equal(byResult.tasks[0]?.type, "profile-generate");
+    assert.equal(byResult.tasks[0]?.type, "memory-dedup");
 
     const byError = await store.listPage({ q: "timeout", page: 1, pageSize: 1 });
     assert.equal(byError.pagination.total, 1);
@@ -273,12 +277,12 @@ test("AdminTaskStore searches task title, result, and errors before pagination",
 test("AdminTaskStore filters visible group tasks before pagination", async () => {
   await withStore(async (store) => {
     await store.run({
-      type: "profile-generate",
+      type: "memory-dedup",
       title: "Visible group task",
       groupId: "67890",
       subjectUserId: "20001",
       operatorUserId: "admin",
-    }, async () => ({ recordId: "visible-profile" }));
+    }, async () => ({ memoryId: "visible-memory" }));
     await store.run({
       type: "bulk-review",
       title: "Other group task",
@@ -315,4 +319,50 @@ test("AdminTaskStore filters visible group tasks before pagination", async () =>
     assert.equal(withSystem.tasks.some((task) => !task.groupId && task.type === "model-check"), true);
     assert.equal(withSystem.tasks.some((task) => task.groupId === "100200300"), false);
   });
+});
+
+test("AdminTaskStore ignores malformed V3 task documents and never falls back to JSON after cutover", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "admin-task-store-v3-"));
+  const filePath = path.join(dir, "tasks.json");
+  const legacy = JSON.stringify({
+    tasks: [{
+      id: "legacy-task",
+      type: "model-check",
+      status: "succeeded",
+      title: "Legacy task must not reappear",
+      operatorUserId: "legacy",
+      progress: 100,
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    }],
+  });
+  await writeFile(filePath, legacy, "utf8");
+  const db = new SharedDb(path.join(dir, "bot-shared.db"));
+  try {
+    const repository = new V3StateRepository(db, { stateEncryptionKey: TEST_STATE_KEY });
+    repository.markCutover();
+    repository.saveDocument("admin-task", "corrupt-task", {
+      id: "different-id",
+      type: "model-check",
+      status: "succeeded",
+      title: "Malformed row",
+      operatorUserId: "system",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    });
+    const store = new AdminTaskStore(filePath, repository);
+    const created = await store.create({
+      type: "model-check",
+      title: "SQLite task",
+      operatorUserId: "admin",
+    });
+    const listed = await store.listPage({ page: 1, pageSize: 20 });
+
+    assert.deepEqual(listed.tasks.map((task) => task.id), [created.id]);
+    assert.equal(await store.get("corrupt-task"), undefined);
+    assert.equal(await readFile(filePath, "utf8"), legacy);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

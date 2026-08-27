@@ -7,13 +7,14 @@ import { logError, logInfo } from "./logger.js";
  *   BOT_ROLE=ingress  → dist/index-ingress.js   (NapCat WS, dedupe, emitter)
  *   BOT_ROLE=worker   → dist/index-worker.js    (topic routing, LLM, replies)
  *   BOT_ROLE=admin    → dist/index-admin.js     (admin HTTP backend)
- *   (unset)           → legacy single-process mode (index-legacy internals)
+ *   BOT_ROLE=legacy   → legacy single-process mode (explicit disaster recovery)
  *
  * The old monolithic `main()` is preserved as the legacy entry so the
  * rollback path (plan section 7) stays a one-line env change.
  */
 
 const role = (process.env.BOT_ROLE ?? "").trim().toLowerCase();
+const production = process.env.NODE_ENV === "production";
 
 async function main(): Promise<void> {
   if (role === "ingress") {
@@ -31,8 +32,21 @@ async function main(): Promise<void> {
     await adminMain();
     return;
   }
+  if (role === "legacy") {
+    const { main: legacyMain } = await import("./index-legacy.js");
+    await legacyMain();
+    return;
+  }
 
-  // Legacy single-process mode.
+  // Keep a convenient local-development default, but production must never
+  // silently fall back to the monolith because a systemd environment value was
+  // omitted or misspelled. Disaster recovery is always explicit (`legacy`).
+  if (production) {
+    throw new Error("BOT_ROLE must be ingress, worker, admin, or explicit legacy in production.");
+  }
+  if (role) {
+    throw new Error("BOT_ROLE must be ingress, worker, admin, or legacy.");
+  }
   const { main: legacyMain } = await import("./index-legacy.js");
   await legacyMain();
 }

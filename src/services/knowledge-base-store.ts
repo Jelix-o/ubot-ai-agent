@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 
 import type { KnowledgeBaseEntry } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import type { V3StateRepository } from "./v3-state-repository.js";
 
 interface KnowledgeBaseFile {
   entries: KnowledgeBaseEntry[];
@@ -48,7 +49,10 @@ export class KnowledgeBaseStore {
   private cachedData?: KnowledgeBaseFile;
   private cachedVersion?: string;
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly v3State?: V3StateRepository,
+  ) {}
 
   async list(groupId?: string): Promise<KnowledgeBaseEntry[]> {
     const data = await this.readData();
@@ -88,6 +92,17 @@ export class KnowledgeBaseStore {
   }
 
   async create(input: KnowledgeBaseEntryInput): Promise<KnowledgeBaseEntry> {
+    if (this.v3State) {
+      const now = new Date().toISOString();
+      const entry = normalizeEntry({
+        id: randomUUID(),
+        ...input,
+        createdAt: now,
+        updatedAt: now,
+      });
+      this.v3State.saveKnowledge(entry);
+      return cloneEntry(entry);
+    }
     const data = await this.readData();
     const now = new Date().toISOString();
     const entry = normalizeEntry({
@@ -125,6 +140,18 @@ export class KnowledgeBaseStore {
   }
 
   async update(id: string, patch: Partial<KnowledgeBaseEntryInput>): Promise<KnowledgeBaseEntry | undefined> {
+    if (this.v3State) {
+      const current = this.v3State.getKnowledge(id);
+      if (!current) return undefined;
+      const updated = normalizeEntry({
+        ...current,
+        ...patch,
+        keywords: patch.keywords === undefined ? current.keywords : patch.keywords,
+        updatedAt: new Date().toISOString(),
+      });
+      this.v3State.saveKnowledge(updated);
+      return cloneEntry(updated);
+    }
     const data = await this.readData();
     const index = data.entries.findIndex((entry) => entry.id === id);
     if (index === -1) {
@@ -144,6 +171,7 @@ export class KnowledgeBaseStore {
   }
 
   async remove(id: string): Promise<boolean> {
+    if (this.v3State) return this.v3State.deleteKnowledge(id);
     const data = await this.readData();
     const next = data.entries.filter((entry) => entry.id !== id);
     if (next.length === data.entries.length) {
@@ -160,6 +188,10 @@ export class KnowledgeBaseStore {
       return [];
     }
 
+    if (this.v3State && !this.v3State.isKnowledgePackEnabled(groupId)) {
+      return [];
+    }
+
     const data = await this.readData();
     return data.entries
       .filter((entry) => entry.groupId === groupId && entry.enabled)
@@ -171,6 +203,9 @@ export class KnowledgeBaseStore {
   }
 
   private async readData(): Promise<KnowledgeBaseFile> {
+    if (this.v3State) {
+      return { entries: this.v3State.listKnowledge().map(cloneEntry) };
+    }
     const version = await fileVersion(this.filePath);
     if (this.cachedData && this.cachedVersion === version) {
       return this.cachedData;
@@ -192,6 +227,9 @@ export class KnowledgeBaseStore {
   }
 
   private async writeData(data: KnowledgeBaseFile): Promise<void> {
+    if (this.v3State) {
+      throw new Error("v3_state_repository_requires_operation_level_writes");
+    }
     await writeJsonFileAtomic(this.filePath, data);
     this.cachedData = data;
     this.cachedVersion = await fileVersion(this.filePath);

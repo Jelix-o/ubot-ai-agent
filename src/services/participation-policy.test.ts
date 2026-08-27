@@ -15,6 +15,7 @@ function decide(overrides: Partial<Parameters<ParticipationPolicy["decide"]>[0]>
     groupEnabled: true,
     groupMuted: false,
     isCommand: false,
+    isExplicitMemoryRequest: false,
     isConversationCommand: false,
     keywordTriggered: false,
     ...overrides,
@@ -46,6 +47,18 @@ test("participation policy keeps explicit mentions above the muted ambient rule"
 
   assert.equal(decision.action, "reply");
   assert.equal(decision.reason, "direct_mention");
+  assert.equal(decision.score, 1);
+});
+
+test("participation policy routes explicit memory requests as auditable tasks", () => {
+  const decision = decide({
+    text: "请记住我喜欢简洁回答",
+    hasAtBot: true,
+    isExplicitMemoryRequest: true,
+  });
+
+  assert.equal(decision.action, "task");
+  assert.equal(decision.reason, "explicit_memory_request");
   assert.equal(decision.score, 1);
 });
 

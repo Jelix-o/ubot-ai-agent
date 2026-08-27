@@ -183,7 +183,6 @@ test("buildSystemPrompt includes approved group memory and matched knowledge", (
         note: "核心测试成员",
         hasManualIdentity: true,
         memoryCount: 1,
-        pendingCandidateCount: 0,
       },
     ],
     groupMemories: [
@@ -415,6 +414,68 @@ test("generateReply falls back once when Anthropic adapter explicitly declines s
   assert.deepEqual(requests.map((request) => request.stream ?? false), [true, false]);
 });
 
+test("provider capabilities skip streaming and OpenAI reasoning fields for Anthropic-compatible requests", async () => {
+  const requests: Array<{ stream?: boolean; reasoning_effort?: string }> = [];
+  const client = {
+    providerCapabilities: {
+      streaming: false,
+      reasoningEffort: false,
+      vision: true,
+    },
+    async create(args: { stream?: boolean; reasoning_effort?: string }) {
+      requests.push(args);
+      return {
+        model: "claude-test",
+        choices: [{ message: { content: "non-streaming provider reply" } }],
+      };
+    },
+  };
+  const service = new AiService("https://example.invalid", "test-key", "claude-test", client as never, {
+    reasoningEffort: "xhigh",
+    providerCapabilities: {
+      streaming: true,
+      reasoningEffort: true,
+    },
+  });
+
+  const reply = await service.generateReply({ skill, history: [], userInput: "hello" });
+
+  assert.equal(reply.text, "non-streaming provider reply");
+  assert.equal(reply.reasoningEffort, undefined);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.stream, false);
+  assert.equal("reasoning_effort" in (requests[0] ?? {}), false);
+  assert.deepEqual(service.getProviderCapabilities(), {
+    vision: true,
+    streaming: false,
+    reasoningEffort: false,
+    requestTimeout: true,
+  });
+});
+
+test("provider capabilities reject image work before an unsupported model is called", async () => {
+  let calls = 0;
+  const client = {
+    providerCapabilities: { vision: false },
+    async create() {
+      calls += 1;
+      return { model: "text-only", choices: [{ message: { content: "unexpected" } }] };
+    },
+  };
+  const service = new AiService("https://example.invalid", "test-key", "text-only", client as never);
+
+  await assert.rejects(
+    service.generateReply({
+      skill,
+      history: [],
+      userInput: "read this image",
+      images: [{ url: "https://example.com/image.png" }],
+    }),
+    { name: "ImageInspectionError" },
+  );
+  assert.equal(calls, 0);
+});
+
 test("generateReply negotiates xhigh down to high without a lower-quality retry", async () => {
   const requests: Array<{ stream?: boolean; reasoning_effort?: string; max_tokens?: number }> = [];
   const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
@@ -591,176 +652,6 @@ test("evaluateControlledMention falls back to no mention when model output is in
   assert.equal(decision.shouldMention, false);
 });
 
-test("extractGroupMemoryCandidates leaves room for reasoning model output", async () => {
-  const calls: unknown[] = [];
-  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
-    async create(args: unknown) {
-      calls.push(args);
-      return {
-        choices: [
-          {
-            message: {
-              content:
-                "{\"candidates\":[{\"type\":\"member_profile\",\"subjectUserId\":\"20001\",\"title\":\"Tester preference\",\"content\":\"Tester prefers concise answers.\",\"confidence\":0.8}]}",
-            },
-          },
-        ],
-      };
-    },
-  } as never);
-
-  const candidates = await service.extractGroupMemoryCandidates({
-    groupId: "67890",
-    existingMemories: [
-      {
-        type: "member_profile",
-        subjectUserId: "20001",
-        title: "Existing preference",
-        content: "Tester already prefers concise replies.",
-        confidence: 0.9,
-        source: "auto",
-        updatedAt: "2026-06-01T09:00:00.000Z",
-      },
-    ],
-    existingCandidates: [
-      {
-        type: "group_fact",
-        title: "Existing rule candidate",
-        content: "The group already asks for context before questions.",
-        confidence: 0.7,
-        status: "pending",
-        updatedAt: "2026-06-01T10:00:00.000Z",
-      },
-    ],
-    confidencePolicy: {
-      candidateThreshold: 0.55,
-      autoApproveThreshold: 0.88,
-      unattendedModeEnabled: true,
-    },
-    messages: [
-      {
-        userId: "20001",
-        userName: "Tester",
-        text: "I prefer concise answers.",
-        timestamp: "2026-06-02T09:00:00.000Z",
-      },
-    ],
-  });
-
-  const request = calls[0] as { max_tokens?: number; messages?: Array<{ content: string }> };
-  assert.equal(request.max_tokens, 8000);
-  assert.match(request.messages?.[0]?.content ?? "", /55%/);
-  assert.match(request.messages?.[0]?.content ?? "", /88%/);
-  assert.match(request.messages?.[0]?.content ?? "", /必须使用简体中文/);
-  assert.match(request.messages?.[0]?.content ?? "", /含义相同或高度相似时不要新增/);
-  assert.match(request.messages?.[1]?.content ?? "", /Existing approved long-term memories/);
-  assert.match(request.messages?.[1]?.content ?? "", /Tester already prefers concise replies/);
-  assert.match(request.messages?.[1]?.content ?? "", /Existing memory candidates/);
-  assert.match(request.messages?.[1]?.content ?? "", /already asks for context/);
-  assert.equal(candidates[0]?.subjectUserId, "20001");
-});
-
-test("normalizeMemoryCandidateLanguage rewrites English candidate to Chinese JSON", async () => {
-  const calls: unknown[] = [];
-  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
-    async create(args: unknown) {
-      calls.push(args);
-      return {
-        choices: [
-          {
-            message: {
-              content: "{\"title\":\"饮食忌口\",\"content\":\"Tester 不能吃太油的食物。\"}",
-            },
-          },
-        ],
-      };
-    },
-  } as never);
-
-  const candidate = await service.normalizeMemoryCandidateLanguage({
-    type: "member_profile",
-    subjectUserId: "20001",
-    title: "Food sensitivity",
-    content: "Tester cannot eat oily food.",
-    confidence: 0.8,
-  });
-
-  assert.equal(candidate?.title, "饮食忌口");
-  assert.equal(candidate?.content, "Tester 不能吃太油的食物。");
-  const request = calls[0] as { messages?: Array<{ content: string }> };
-  assert.match(request.messages?.[0]?.content ?? "", /长期记忆中文化助手/);
-});
-
-test("profile summary normalization keeps complete sentence beyond old 260 char limit", async () => {
-  const longSentence = "徐美宜是台湾人，在半导体行业工作，拥有硬体工程师经验，日常负责收集机台异常和撰写分析报告，自称内向且皮肤颜色较黑。";
-  const summary = `${longSentence.repeat(6)}她自述这些信息主要来自群聊中的长期互动。`;
-  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
-    async create() {
-      return {
-        choices: [
-          {
-            message: { content: summary },
-          },
-        ],
-      };
-    },
-  } as never);
-
-  const result = await service.summarizeOverallMemberProfile({
-    groupId: "67890",
-    userId: "3951154629",
-    displayName: "徐美宜",
-    memories: [{ title: "画像", content: summary }],
-  });
-
-  assert.ok(result);
-  assert.ok(result.length > 260);
-  assert.doesNotMatch(result, /她自述$/);
-  assert.match(result, /[。！？.!?]$/);
-});
-
-test("profile summaries use expanded Mimo budgets and broad memory context", async () => {
-  const calls: unknown[] = [];
-  const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
-    async create(args: unknown) {
-      calls.push(args);
-      return {
-        choices: [
-          {
-            message: {
-              content: "画像总结内容",
-            },
-          },
-        ],
-      };
-    },
-  } as never);
-  const memories = Array.from({ length: 80 }, (_, index) => ({
-    title: `记忆 ${index + 1}`,
-    content: `内容 ${index + 1}`,
-  }));
-
-  await service.summarizeDailyMemberProfile({
-    groupId: "67890",
-    userId: "20001",
-    displayName: "Tester",
-    dateKey: "2026-06-02",
-    memories,
-  });
-  await service.summarizeOverallMemberProfile({
-    groupId: "67890",
-    userId: "20001",
-    displayName: "Tester",
-    memories,
-  });
-
-  const dailyRequest = calls[0] as { max_tokens?: number; messages?: Array<{ content: string }> };
-  const overallRequest = calls[1] as { max_tokens?: number; messages?: Array<{ content: string }> };
-  assert.equal(dailyRequest.max_tokens, 4000);
-  assert.match(dailyRequest.messages?.[1]?.content ?? "", /记忆 80/);
-  assert.equal(overallRequest.max_tokens, 6000);
-  assert.match(overallRequest.messages?.[1]?.content ?? "", /记忆 80/);
-});
 test("checkHealth treats successful empty completions as available", async () => {
   const service = new AiService("https://example.invalid/v1", "test-key", "mimo-v2.5-pro", {
     async create() {
@@ -780,7 +671,7 @@ test("checkHealth treats successful empty completions as available", async () =>
   const health = await service.checkHealth({ refresh: true });
 
   assert.equal(health.ok, true);
-  assert.equal(health.detail, "画像/记忆模型接口可用（空内容响应）");
+  assert.equal(health.detail, "模型接口可用（空内容响应）");
   assert.equal(health.model, "mimo-v2.5-pro");
   assert.equal(health.baseUrl, "https://example.invalid/v1");
   assert.equal(health.cached, false);
@@ -800,7 +691,7 @@ test("checkHealth cache-only mode never contacts the upstream model", async () =
   assert.equal(calls, 0);
   assert.equal(health.ok, true);
   assert.equal(health.skipped, true);
-  assert.equal(health.detail, "尚未手动检测画像/记忆模型。");
+  assert.equal(health.detail, "尚未手动检测模型。");
 });
 
 test("checkHealth classifies upstream failures", async () => {

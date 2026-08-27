@@ -2,6 +2,7 @@ import { loadConfig } from "./config.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 import { NapCatReverseServer } from "./napcat-reverse-server.js";
 import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
+import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
 import { parseGroupMessage, extractTextFromMessage, extractImagesFromMessage } from "./utils/message-parser.js";
@@ -25,6 +26,25 @@ const RETRACTED_TTL_MS = 24 * 60 * 60 * 1000;
 const BOT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EMITTER_POLL_MS = 400;
 const EMITTER_BATCH_SIZE = 20;
+
+/**
+ * OneBot timestamps describe the source event, but are not a retention
+ * authority. A future timestamp would otherwise extend raw-content retention
+ * and can also distort route windows, so receipt time wins in that case.
+ */
+export function normalizeIngressMessageTime(eventTimeSeconds: unknown, receivedAtMs: number): number {
+  const seconds = typeof eventTimeSeconds === "number"
+    ? eventTimeSeconds
+    : Number(eventTimeSeconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return receivedAtMs;
+  }
+  const eventTimeMs = Math.trunc(seconds * 1_000);
+  if (!Number.isSafeInteger(eventTimeMs)) {
+    return receivedAtMs;
+  }
+  return Math.min(eventTimeMs, receivedAtMs);
+}
 
 /**
  * Delivers one already-claimed outbox row and commits the real platform id.
@@ -187,14 +207,15 @@ export class IngressApp {
 
     // Backlog detection (plan section 8 Bonus): messages pushed after a
     // reconnect that are older than 60s must not trigger replies.
-    const msgTimeMs = event.time ? event.time * 1000 : Date.now();
-    if (Date.now() - msgTimeMs > BACKLOG_MAX_AGE_MS) {
+    const receivedAt = Date.now();
+    const msgTimeMs = normalizeIngressMessageTime(event.time, receivedAt);
+    if (receivedAt - msgTimeMs > BACKLOG_MAX_AGE_MS) {
       this.metrics.inc("backlog_detected");
       logInfo("Ignored backlog message after reconnect.", {
         groupId,
         userId,
         msgId,
-        ageMs: Date.now() - msgTimeMs,
+        ageMs: receivedAt - msgTimeMs,
       });
       return;
     }
@@ -202,13 +223,13 @@ export class IngressApp {
     // Per-group token bucket: persist excess messages as non-processable audit
     // events. The worker can then advance its normal consumer watermark without
     // ever generating a reply, avoiding the old detached token-bucket watermark.
-    const count = this.sharedDb.countMessagesSince(groupId, Date.now() - TOKEN_BUCKET_WINDOW_MS);
+    const count = this.sharedDb.countMessagesSince(groupId, receivedAt - TOKEN_BUCKET_WINDOW_MS);
     const dropReason = count >= TOKEN_BUCKET_MAX_PER_WINDOW ? "rate_limited" : undefined;
 
     // Idempotent dedupe (plan section 2.1): (self_bot_id, group_id, msg_id).
     // self_id 缺失时用 botQq 作为 dedup key 的一部分（保证幂等键稳定）。
     const parsed = parseGroupMessage(event.message, this.options.botQq);
-    const createdAt = Date.now();
+    const createdAt = receivedAt;
     const rowId = this.sharedDb.insertMessage({
       groupId,
       userId,
@@ -340,6 +361,16 @@ function sleep(ms: number): Promise<void> {
 
 export async function main(): Promise<void> {
   const config = loadConfig();
+  // Ingress does not otherwise read application state, but it is still a V3
+  // production unit. Validate the migration marker and state key before it
+  // accepts any NapCat traffic so a partial rollout cannot reopen JSON state
+  // through the other roles.
+  const startupDb = openSharedDb(config.dataDir);
+  try {
+    resolveV3RuntimeState(startupDb, config.stateEncryptionKey);
+  } finally {
+    startupDb.close();
+  }
   const app = new IngressApp({
     botQq: config.botQq,
     dataDir: config.dataDir,

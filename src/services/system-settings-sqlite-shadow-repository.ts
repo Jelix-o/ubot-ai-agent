@@ -80,11 +80,35 @@ function serializeSafeSettings(settings: SystemSettings): { json: string; hash: 
 }
 
 function redactSecrets(settings: SystemSettings): SystemSettings {
-  const safe = JSON.parse(JSON.stringify(settings)) as SystemSettings;
-  safe.adminSecretConfigured ??= Boolean(safe.adminSecretHash);
-  safe.groupAdminSecretConfigured ??= Boolean(safe.groupAdminSecretHash);
-  delete safe.adminSecretHash;
-  delete safe.groupAdminSecretHash;
+  const safe = JSON.parse(JSON.stringify(settings)) as SystemSettings & Record<string, unknown>;
+  for (const key of [
+    "adminSecret",
+    "groupAdminSecret",
+    "adminSecretHash",
+    "groupAdminSecretHash",
+    "adminSecretConfigured",
+    "groupAdminSecretConfigured",
+    "profileSummaryMaxChars",
+    "profileShortSummaryMaxChars",
+    "dailyProfileReviewEnabled",
+    "dailyProfileReviewTime",
+    "memoryDedupEnabled",
+    "memoryDedupTime",
+    "memoryDedupSemanticTimeoutMinutes",
+    "memoryCandidateConfidenceThreshold",
+    "memoryAutoApproveConfidenceThreshold",
+    "memoryUnattendedModeEnabled",
+  ]) {
+    delete safe[key];
+  }
+  const tokenCostControl = safe.tokenCostControl;
+  if (tokenCostControl && typeof tokenCostControl === "object") {
+    const controls = tokenCostControl as unknown as Record<string, unknown>;
+    delete controls.memoryCandidateExtractionEnabled;
+    delete controls.memoryCandidateNormalizationEnabled;
+    delete controls.memorySemanticDedupEnabled;
+    delete controls.dailyProfileReviewAiEnabled;
+  }
   safe.models = safe.models.map((model) => {
     const { apiKey: _apiKey, ...withoutApiKey } = model;
     return {

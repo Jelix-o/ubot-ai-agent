@@ -1,0 +1,10 @@
+[Unit]
+Description=Run UBot V3 retention maintenance hourly
+
+[Timer]
+OnCalendar=*-*-* *:17:00 UTC
+Persistent=true
+Unit=ubot-maintenance.service
+
+[Install]
+WantedBy=timers.target

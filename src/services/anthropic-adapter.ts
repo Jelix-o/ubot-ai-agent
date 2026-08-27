@@ -1,109 +1,55 @@
+import Anthropic from "@anthropic-ai/sdk";
 import type OpenAI from "openai";
+
+import {
+  ANTHROPIC_PROVIDER_CAPABILITIES,
+  type ProviderCapabilitiesCarrier,
+} from "./ai-provider.js";
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type ChatCompletion = OpenAI.Chat.Completions.ChatCompletion;
 type ChatCompletionCreateParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
 
-interface AnthropicMessage {
-  role: "user" | "assistant";
-  content: string | Array<{ type: string; [key: string]: unknown }>;
+type AnthropicMessagesClient = Pick<Anthropic["messages"], "create">;
+
+export interface AnthropicChatCompletionsOptions {
+  timeoutMs?: number;
+  /** Injection point for deterministic tests; production constructs the official SDK. */
+  client?: { messages: AnthropicMessagesClient };
 }
 
-interface AnthropicRequest {
-  model: string;
-  max_tokens: number;
-  messages: AnthropicMessage[];
-  system?: string;
-  temperature?: number;
-}
+/**
+ * A narrow compatibility adapter for the existing OpenAI-shaped AiService.
+ * Network requests are issued only by Anthropic's official SDK; this class
+ * merely translates request and response payloads at the provider boundary.
+ */
+export class AnthropicChatCompletions implements ProviderCapabilitiesCarrier {
+  readonly providerCapabilities = ANTHROPIC_PROVIDER_CAPABILITIES;
+  private readonly client: { messages: AnthropicMessagesClient };
 
-interface AnthropicResponse {
-  id: string;
-  type: string;
-  role: string;
-  content: Array<{ type: string; text?: string }>;
-  model: string;
-  stop_reason: string;
-  usage: { input_tokens: number; output_tokens: number };
-}
-
-export class AnthropicChatCompletions {
   constructor(
-    private readonly baseUrl: string,
-    private readonly apiKey: string,
-  ) {}
+    baseUrl: string,
+    apiKey: string,
+    options: AnthropicChatCompletionsOptions = {},
+  ) {
+    this.client = options.client ?? new Anthropic({
+      baseURL: normalizeAnthropicBaseUrl(baseUrl),
+      apiKey,
+      timeout: options.timeoutMs,
+      maxRetries: 0,
+    });
+  }
 
   async create(params: ChatCompletionCreateParams): Promise<ChatCompletion> {
     if ((params as { stream?: boolean }).stream === true) {
       throw new Error("anthropic_stream_unsupported");
     }
-    const { messages, model, temperature, max_tokens } = params;
-
-    let systemPrompt = "";
-    const anthropicMessages: AnthropicMessage[] = [];
-
-    for (const msg of messages) {
-      if (msg.role === "system") {
-        systemPrompt += (systemPrompt ? "\n" : "") + (typeof msg.content === "string" ? msg.content : "");
-      } else {
-        let content: string;
-        if (typeof msg.content === "string") {
-          content = msg.content;
-        } else if (Array.isArray(msg.content)) {
-          const parts: Array<{ type: string; [key: string]: unknown }> = [];
-          for (const part of msg.content as Array<{
-            type?: string;
-            text?: string;
-            image_url?: { url?: string };
-          }>) {
-            if (part.type === "text" && typeof part.text === "string") {
-              parts.push({ type: "text", text: part.text });
-            } else if (part.type === "image_url" && typeof part.image_url?.url === "string") {
-              parts.push({
-                type: "image",
-                source: { type: "url", url: part.image_url.url },
-              });
-            }
-          }
-          anthropicMessages.push({ role: msg.role as "user" | "assistant", content: parts });
-          continue;
-        } else {
-          content = String(msg.content ?? "");
-        }
-        anthropicMessages.push({ role: msg.role as "user" | "assistant", content });
-      }
-    }
-
-    const body: AnthropicRequest = {
-      model,
-      max_tokens: max_tokens ?? 1024,
-      messages: anthropicMessages,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
-      ...(temperature != null ? { temperature } : {}),
-    };
-
-    const url = `${this.baseUrl.replace(/\/$/, "")}/v1/messages`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "unknown error");
-      throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
-    }
-
-    const result = (await response.json()) as AnthropicResponse;
+    const request = toAnthropicRequest(params);
+    const signal = (params as { signal?: AbortSignal }).signal;
+    const result = await this.client.messages.create(request as never, signal ? { signal } : undefined) as Anthropic.Message;
 
     const textContent = result.content
-      .filter((block) => block.type === "text" && block.text)
-      .map((block) => block.text!)
+      .flatMap((block) => block.type === "text" ? [block.text] : [])
       .join("");
 
     return {
@@ -126,4 +72,79 @@ export class AnthropicChatCompletions {
       },
     } as unknown as ChatCompletion;
   }
+}
+
+function toAnthropicRequest(params: ChatCompletionCreateParams): Record<string, unknown> {
+  const systemParts: string[] = [];
+  const messages: Array<{ role: "user" | "assistant"; content: string | Array<Record<string, unknown>> }> = [];
+
+  for (const message of params.messages) {
+    if (message.role === "system") {
+      const content = extractText(message.content);
+      if (content) systemParts.push(content);
+      continue;
+    }
+    messages.push({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: toAnthropicContent(message.content),
+    });
+  }
+
+  return {
+    model: params.model,
+    max_tokens: params.max_tokens ?? 1024,
+    messages,
+    ...(systemParts.length > 0 ? { system: systemParts.join("\n") } : {}),
+    ...(params.temperature != null ? { temperature: params.temperature } : {}),
+  };
+}
+
+function toAnthropicContent(content: unknown): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content ?? "");
+
+  const blocks = content.flatMap((part): Array<Record<string, unknown>> => {
+    if (!part || typeof part !== "object") return [];
+    const value = part as { type?: unknown; text?: unknown; image_url?: { url?: unknown } };
+    if (value.type === "text" && typeof value.text === "string") {
+      return [{ type: "text", text: value.text }];
+    }
+    if (value.type === "image_url" && typeof value.image_url?.url === "string") {
+      return [{ type: "image", source: toAnthropicImageSource(value.image_url.url) }];
+    }
+    return [];
+  });
+
+  return blocks.length > 0 ? blocks : "";
+}
+
+function toAnthropicImageSource(url: string): Record<string, string> {
+  const matched = /^data:(image\/(?:jpeg|png|gif|webp));base64,([a-z0-9+/=\s]+)$/i.exec(url);
+  if (matched) {
+    return {
+      type: "base64",
+      media_type: matched[1].toLowerCase(),
+      data: matched[2].replace(/\s/g, ""),
+    };
+  }
+  return { type: "url", url };
+}
+
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "text"
+      ? [typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : ""]
+      : [])
+    .filter(Boolean)
+    .join("\n");
+}
+
+function normalizeAnthropicBaseUrl(value: string): string {
+  const normalized = value.trim().replace(/\/+$/, "");
+  if (!normalized) {
+    throw new Error("invalid_anthropic_base_url");
+  }
+  return normalized.replace(/\/v1(?:\/messages)?$/i, "") || normalized;
 }
