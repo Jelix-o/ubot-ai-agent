@@ -554,7 +554,7 @@ export function parseStaticHtmlGeneration(text: string): ParsedModelPage {
  * a model-authored file reaches the public directory.
  */
 export function sanitizeStaticHtml(input: string): string {
-  const html = input.replace(/^\uFEFF/, "").trim();
+  const html = normalizeBenignSvgNamespace(input.replace(/^\uFEFF/, "").trim());
   if (!html || Buffer.byteLength(html, "utf8") > MAX_HTML_PREVIEW_BYTES) {
     throw new HtmlPreviewError("html_preview_too_large");
   }
@@ -577,6 +577,16 @@ export function sanitizeStaticHtml(input: string): string {
     throw new HtmlPreviewError("html_preview_document_invalid");
   }
   return sanitized;
+}
+
+function normalizeBenignSvgNamespace(html: string): string {
+  // The default SVG namespace is inert in inline HTML and commonly emitted by
+  // generators. Remove that exact declaration so published content still has
+  // no namespace attributes; every other xmlns/xlink form remains fail-closed.
+  return html.replace(
+    /(<svg\b[^>]*?)\s+xmlns\s*=\s*(["'])http:\/\/www\.w3\.org\/2000\/svg\2(?=[\s>])/gi,
+    "$1",
+  );
 }
 
 function rejectUnsafeDocumentTokens(html: string): void {

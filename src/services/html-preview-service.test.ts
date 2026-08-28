@@ -106,13 +106,24 @@ test("static HTML sanitizer accepts bounded inline SVG with CSS animation", () =
   assert.match(sanitized, /<path d="M 160 260 L 260 160 L 360 260 Z"/);
 });
 
+test("static HTML sanitizer removes only the inert default inline SVG namespace", () => {
+  const page = '<!doctype html><html><head><title>x</title></head><body><svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"></circle></svg></body></html>';
+  const sanitized = sanitizeStaticHtml(page);
+  assert.match(sanitized, /<svg viewBox="0 0 10 10">/);
+  assert.doesNotMatch(sanitized, /xmlns/i);
+  assert.throws(
+    () => sanitizeStaticHtml('<!doctype html><html><head><title>x</title></head><body><svg xmlns="urn:custom" viewBox="0 0 10 10"></svg></body></html>'),
+    (error: unknown) => error instanceof HtmlPreviewError && error.code === "html_preview_attribute_disallowed",
+  );
+});
+
 test("static HTML sanitizer rejects active and externally-referenced SVG features", () => {
   for (const fragment of [
     '<svg viewBox="0 0 10 10"><image href="https://example.com/p.png"></image></svg>',
     '<svg viewBox="0 0 10 10"><use href="#shape"></use></svg>',
     '<svg viewBox="0 0 10 10"><foreignObject><div>x</div></foreignObject></svg>',
     '<svg viewBox="0 0 10 10"><animateTransform attributeName="transform"></animateTransform></svg>',
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>',
+    '<svg xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10"></svg>',
     '<svg viewBox="0 0 10 10"><path d="M0 0L1 1" fill="url(#paint)"></path></svg>',
   ]) {
     assert.throws(
