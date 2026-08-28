@@ -13,7 +13,7 @@ import { ConversationContextRepository, type ConversationRoute } from "./service
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
 import { isAiConversationCommand } from "./services/group-participation-service.js";
 import type { ParticipationDecision } from "./services/participation-policy.js";
-import { BotApplication, type MessageTransport } from "./bot.js";
+import { BotApplication, type BackgroundLlmGate, type MessageTransport } from "./bot.js";
 import { GroupLock } from "./services/group-lock.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
@@ -42,6 +42,7 @@ import { CharacterProfileService } from "./services/character-profile-service.js
 import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { SkillService } from "./services/skill-service.js";
+import { HtmlPreviewService } from "./services/html-preview-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
@@ -65,6 +66,7 @@ export class WorkerApp {
   private readonly gateway: GatewayProxy;
   private maxQueueDepthSeen = 0;
   readonly llmGate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>;
+  readonly backgroundLlmGate: BackgroundLlmGate;
 
   constructor(
     private readonly options: {
@@ -93,24 +95,32 @@ export class WorkerApp {
       slowThresholdMs: 40_000,
       openMs: 30_000,
     });
-    this.llmGate = async (task) => {
+    this.backgroundLlmGate = async <T>(task: () => Promise<T>, signal?: AbortSignal) => {
       let release: (() => void) | undefined;
       try {
         release = await this.semaphore.acquire();
         this.metrics.inc("llm_semaphore_acquired");
       } catch {
         this.metrics.inc("llm_semaphore_timeout");
-        return degradedReply("llm_semaphore_timeout", this.options.botApp.getBotQq());
+        throw new Error("llm_semaphore_timeout");
       }
       try {
-        return await this.gateway.call<AiReply>(async () => task());
+        return await this.gateway.call<T>(async () => task(), { signal });
+      } finally {
+        release();
+      }
+    };
+    this.llmGate = async (task, signal) => {
+      try {
+        return await this.backgroundLlmGate(task, signal);
       } catch (error) {
         if (error instanceof CircuitOpenError) {
           return degradedReply("circuit_open", this.options.botApp.getBotQq());
         }
+        if (error instanceof Error && error.message === "llm_semaphore_timeout") {
+          return degradedReply("llm_semaphore_timeout", this.options.botApp.getBotQq());
+        }
         throw error;
-      } finally {
-        release();
       }
     };
 
@@ -120,6 +130,13 @@ export class WorkerApp {
           return `${message.group_id}:passive`;
         }
         this.updateAtmosphere(message.group_id, message.msg_time);
+        const previewRequest = await this.options.botApp.getHtmlPreviewRequest(
+          message.text,
+          Boolean(message.has_at_bot),
+        );
+        if (previewRequest) {
+          return `${message.group_id}:html-preview`;
+        }
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
         // 等指令全部被当成自由发言跳过，指令不生效）。
         const isCommand = message.text.trim().startsWith("#");
@@ -187,8 +204,13 @@ export class WorkerApp {
 
     // keyOf already persisted this route. Reading by source row makes retries
     // and duplicate delivery reuse the exact same result without rerouting.
+    const previewRequest = await this.options.botApp.getHtmlPreviewRequest(
+      message.text,
+      Boolean(message.has_at_bot),
+    );
+    const isPreview = Boolean(previewRequest);
     const isCommand = message.text.trim().startsWith("#") && !isAiConversationCommand(message.text);
-    const participation = isCommand
+    const participation = isCommand || isPreview
       ? undefined
       : await this.getOrRecordParticipationDecision(message);
     const isRoutedConversation = participation?.action === "reply";
@@ -207,8 +229,10 @@ export class WorkerApp {
     const route = !isRoutedConversation
       ? undefined
       : this.contextRepository.getRouteBySourceRowId(message.id) ?? this.resolveRoute(message);
-    const key = isCommand
-      ? `${message.group_id}:command`
+    const key = isPreview
+      ? `${message.group_id}:html-preview`
+      : isCommand
+        ? `${message.group_id}:command`
       : route
         ? `${message.group_id}:${route.branchId}`
         : `${message.group_id}:passive`;
@@ -246,10 +270,35 @@ export class WorkerApp {
       return;
     }
 
-    // In-flight merge semantics (plan 2.3): only applies when a task for this
-    // key is ALREADY running; the first message always proceeds.
+    if (isPreview) {
+      // ConsumerRunner owns strict serial execution for this key. Do not put
+      // preview work in InflightManager: its conversation-oriented cancel and
+      // merge rules would violate the one-request-per-page publication model.
+      const taskStartedAt = Date.now();
+      try {
+        await this.options.botApp.handleGroupMessage(this.buildEvent(message));
+        this.metrics.inc("tasks_completed");
+        this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
+        await done();
+      } catch (error) {
+        logError("Worker HTML preview handling failed.", {
+          key,
+          msgId: message.msg_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.metrics.inc("tasks_failed");
+        throw error;
+      } finally {
+        const queueDepth = this.runner.queueDepth;
+        this.maxQueueDepthSeen = Math.max(this.maxQueueDepthSeen, queueDepth);
+        this.metrics.setGauge("per_key_queue_depth_max", this.maxQueueDepthSeen);
+      }
+      return;
+    }
+
+    // Conversation keys retain their existing in-flight merge semantics.
     const existingInflight = this.sharedDb.getInflight(key);
-    if (existingInflight) {
+    if (existingInflight && !isPreview) {
       const decision = this.inflight.decideNewMessage(key, message.text, Date.now());
       if (decision.action === "drop") {
         this.metrics.inc("duplicate_trigger_dropped");
@@ -539,6 +588,11 @@ async function buildBotApp(
   );
   const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath, v3State);
   const atmosphere = new AtmosphereSummarizer(dataDir, {}, v3State);
+  const htmlPreviewService = new HtmlPreviewService({
+    sharedDb,
+    rootDir: config.htmlPreviewRoot,
+    publicBaseUrl: config.htmlPreviewPublicBaseUrl,
+  });
 
   return new BotApplication(
     transport,
@@ -585,6 +639,7 @@ async function buildBotApp(
     contextRepository,
     new ConversationContextRouter(contextRepository),
     capabilityPolicy,
+    htmlPreviewService,
   );
 }
 
@@ -629,6 +684,7 @@ export async function main(): Promise<void> {
   // Wire the semaphore+breaker gate into the bot's LLM call path.
   const botApp = app.botApp;
   botApp.setLlmGate(app.llmGate);
+  botApp.setBackgroundLlmGate(app.backgroundLlmGate);
 
   botApp.start();
   app.start();

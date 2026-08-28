@@ -16,8 +16,20 @@ import dotenv from "dotenv";
 import { DatabaseSync } from "node:sqlite";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const IMPORTER_VERSION = "3.0.3";
+const IMPORTER_VERSION = "3.0.4";
 const EXPLICIT_MEMORY_SOURCES = new Set(["admin", "explicit_command", "explicit_request"]);
+const DEFAULT_V3_ENABLED_CAPABILITIES = [
+  "conversation", "explicit_memory", "knowledge", "scheduled_reminders",
+  "daily_reports", "holiday_countdown", "realtime_lookup", "voice", "singing",
+  "html_preview",
+];
+const DEFAULT_V3_PROVIDER_CAPABILITIES = {
+  openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout"],
+  // Claude uses the official Messages SDK boundary. It supports vision and a
+  // request timeout, but V3 does not send OpenAI-only streaming/reasoning
+  // request features to it.
+  anthropic: ["chat", "vision", "requestTimeout"],
+};
 const HUIXIAN_RELEASE_PROFILE_REVISION = "immersive-natural-v3.0.3";
 const HUIXIAN_RELEASE_PROFILE_CHANGED_BY = "release:3.0.3:huixian-immersive";
 
@@ -153,6 +165,7 @@ async function runExistingCutoverUpgrade() {
   const repository = new V3StateRepository(sharedDb, { stateEncryptionKey: encryptionKey });
   try {
     repository.requireCutover();
+    const now = Date.now();
     const upgrade = repository.runAtomically(() => ({
       retiredQqAdministration: repository.retireLegacyQqAdministration(),
       huixianProfileRevision: repository.applyHuixianReleaseProfile({
@@ -160,6 +173,7 @@ async function runExistingCutoverUpgrade() {
         profile: huixianProfile,
         changedBy: HUIXIAN_RELEASE_PROFILE_CHANGED_BY,
       }),
+      htmlPreviewCapability: enableHtmlPreviewCapability(repository, now),
     }));
     writeReport({
       mode: "existing-cutover-upgrade",
@@ -174,6 +188,43 @@ async function runExistingCutoverUpgrade() {
   } finally {
     sharedDb.close();
   }
+}
+
+/**
+ * Existing V3 installations already have a persistent capability policy.
+ * Additive releases must make the new feature explicit in that authority;
+ * otherwise the policy's intentional deny-by-default behavior would leave
+ * every group unable to use the new command after migration 10 succeeds.
+ */
+function enableHtmlPreviewCapability(repository, now) {
+  const policy = repository.getCapabilityPolicy();
+  if (!policy) {
+    // RC/early-V3 installations that wrote the cutover marker before the
+    // persistent policy table existed need a single repair before runtime can
+    // start. This is deliberately limited to a missing row: a malformed row
+    // still fails closed, and a valid narrowed policy remains narrowed except
+    // for the newly shipped explicit html_preview capability.
+    repository.saveCapabilityPolicy(defaultV3CapabilityPolicy(now), now);
+    return { changed: true, initialized: true };
+  }
+  if (policy.enabledCapabilities.includes("html_preview")) {
+    return { changed: false };
+  }
+  repository.saveCapabilityPolicy({
+    ...policy,
+    enabledCapabilities: [...policy.enabledCapabilities, "html_preview"],
+    updatedAt: new Date(now).toISOString(),
+  }, now);
+  return { changed: true };
+}
+
+function defaultV3CapabilityPolicy(now) {
+  return {
+    version: 1,
+    enabledCapabilities: [...DEFAULT_V3_ENABLED_CAPABILITIES],
+    providerCapabilities: structuredClone(DEFAULT_V3_PROVIDER_CAPABILITIES),
+    updatedAt: new Date(now).toISOString(),
+  };
 }
 
 async function runMaintenance() {
@@ -210,11 +261,38 @@ async function runMaintenance() {
       repository.markRollbackArchivePurged(archive.id, now);
       purged.push(archive.id);
     }
-    repository.recordMaintenanceRun("v3-retention", { raw, purgedRollbackArchives: purged.length }, now);
-    writeReport({ mode: "maintenance-execute", raw, purgedRollbackArchives: purged });
+    const htmlPreviews = await cleanupHtmlPreviews(sharedDb, now);
+    repository.recordMaintenanceRun("v3-retention", {
+      raw,
+      purgedRollbackArchives: purged.length,
+      htmlPreviews,
+    }, now);
+    writeReport({ mode: "maintenance-execute", raw, purgedRollbackArchives: purged, htmlPreviews });
   } finally {
     sharedDb.close();
   }
+}
+
+/**
+ * Preview publication metadata is authoritative in SQLite, while its static
+ * files live in the persistent data tree. Keep this dependency here rather
+ * than teaching the generic repository about filesystem ownership.
+ */
+async function cleanupHtmlPreviews(sharedDb, now) {
+  const configuredRoot = process.env.HTML_PREVIEW_ROOT?.trim();
+  const previewRoot = path.resolve(configuredRoot || path.join(dataDir, "generated-pages"));
+  const relative = path.relative(dataDir, previewRoot);
+  if (!relative || relative === "." || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("HTML_PREVIEW_ROOT must remain under the persistent data directory for maintenance.");
+  }
+  const publicBaseUrl = process.env.HTML_PREVIEW_PUBLIC_BASE_URL?.trim() || "https://preview.9958.uk";
+  const { HtmlPreviewService } = await loadCompiledHtmlPreviewModules();
+  const service = new HtmlPreviewService({
+    sharedDb,
+    rootDir: previewRoot,
+    publicBaseUrl,
+  });
+  return service.cleanup(now);
 }
 
 async function buildPreflightReport(sources) {
@@ -244,7 +322,7 @@ async function buildPreflightReport(sources) {
     dataDir,
     dbPath,
     migrationVersions,
-    expectedMigrationVersionsOnExecute: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+    expectedMigrationVersionsOnExecute: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     outboxBlockingRows,
     huixianProfilePath,
     huixianProfileAvailable: existsSync(huixianProfilePath),
@@ -486,21 +564,7 @@ function importAllState({ repository, sharedDb, parsed, sources, huixianProfile,
   }
 
   repository.saveHuixianProfile(huixianProfile, "v3-migration");
-  repository.saveCapabilityPolicy({
-    version: 1,
-    enabledCapabilities: [
-      "conversation", "explicit_memory", "knowledge", "scheduled_reminders",
-      "daily_reports", "holiday_countdown", "realtime_lookup", "voice", "singing",
-    ],
-    providerCapabilities: {
-      openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout"],
-      // Claude uses the official Messages SDK boundary. It supports vision
-      // and a request timeout, but V3 intentionally does not ask it to use
-      // the OpenAI streaming or reasoning_effort request features.
-      anthropic: ["chat", "vision", "requestTimeout"],
-    },
-    updatedAt: new Date(now).toISOString(),
-  }, now);
+  repository.saveCapabilityPolicy(defaultV3CapabilityPolicy(now), now);
 
   for (const source of sources) {
     if (source.exists) {
@@ -852,6 +916,14 @@ async function loadCompiledProfileModules() {
     return await import(new URL("../dist/services/skill-service.js", import.meta.url));
   } catch (error) {
     throw new Error(`V3 migration requires a built release (dist/services/skill-service.js): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function loadCompiledHtmlPreviewModules() {
+  try {
+    return await import(new URL("../dist/services/html-preview-service.js", import.meta.url));
+  } catch (error) {
+    throw new Error(`V3 maintenance requires a built release (dist/services/html-preview-service.js): ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

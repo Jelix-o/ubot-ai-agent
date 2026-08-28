@@ -50,6 +50,7 @@ function iconFor(name: unknown): string {
     members: "users",
     memories: "memory",
     knowledge: "knowledge",
+    "html-previews": "overview",
     tasks: "tasks",
     audit: "audit",
     security: "health",

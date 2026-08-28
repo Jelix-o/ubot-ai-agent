@@ -44,6 +44,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "memoryDisabledUserIds"
   | "onlineLookupEnabled"
   | "visionEnabled"
+  | "htmlPreviewEnabled"
 >>;
 
 export class GroupConfigService {
@@ -598,6 +599,9 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
     onlineLookupEnabled: group.onlineLookupEnabled === true,
     visionEnabled: group.visionEnabled === true,
+    // Generated pages are a normal member-facing capability. Existing groups
+    // upgrade enabled unless an administrator explicitly turns it off.
+    htmlPreviewEnabled: group.htmlPreviewEnabled !== false,
   };
 }
 
@@ -698,6 +702,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("visionEnabled" in input) {
     next.visionEnabled = normalizeBoolean(input.visionEnabled, "invalid_group_config");
+  }
+  if ("htmlPreviewEnabled" in input) {
+    next.htmlPreviewEnabled = normalizeBoolean(input.htmlPreviewEnabled, "invalid_group_config");
   }
 
   return normalizeGroupConfig(next);

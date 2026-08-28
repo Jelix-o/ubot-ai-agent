@@ -11,6 +11,7 @@ import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
+import type { HtmlPreviewMetadata, HtmlPreviewProcessResult } from "./services/html-preview-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -484,6 +485,13 @@ class FakeAiService {
     return this.responder();
   }
 
+  async generateStaticHtml(): Promise<{ text: string; model: string }> {
+    return {
+      text: '{"title":"测试页面","html":"<!doctype html><html><head><title>测试</title></head><body><main>ok</main></body></html>"}',
+      model: "test-model",
+    };
+  }
+
   async evaluateControlledMention(args: {
     skill: SkillDefinition;
     history: ConversationTurn[];
@@ -920,6 +928,11 @@ function createApp(options?: {
     getCausalTurnsBeforeTurn(branchId: string, turnId: number): ConversationTurn[];
     appendAssistantTurn(input: unknown): never;
   };
+  htmlPreviewService?: {
+    enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string; request?: string }): Promise<{ page: HtmlPreviewMetadata; created: boolean }>;
+    processNext(input: { id?: string; request?: string; generate: (request: string, signal?: AbortSignal) => Promise<unknown> }): Promise<HtmlPreviewProcessResult>;
+    cleanup(): Promise<{ expired: number; temp: number; orphans: number }>;
+  };
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1018,6 +1031,9 @@ function createApp(options?: {
     undefined,
     true,
     options?.conversationContextRepository as never,
+    undefined,
+    undefined,
+    options?.htmlPreviewService as never,
   );
 
   return {
@@ -1050,6 +1066,71 @@ test("responds to mentioned group message without writing legacy personal histor
   assert.equal(aiService.calls[0]?.userInput, "summarize this");
   assert.equal(transport.sent[0]?.text, "AI reply");
   assert.equal(conversationStore.turnsByKey["67890:20001"], undefined);
+});
+
+test("#网页 routes an explicit page request to the durable publisher instead of normal chat", async () => {
+  const calls: Array<{ request?: string; id?: string }> = [];
+  const publisher = {
+    async enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string; request?: string }) {
+      calls.push({ request: input.request });
+      return {
+        created: true,
+        page: {
+          id: "A".repeat(43),
+          groupId: input.groupId,
+          creatorUserId: input.creatorUserId,
+          sourceMessageId: input.sourceMessageId,
+          title: "网页预览",
+          previewUrl: "https://preview.9958.uk/p/test/",
+          status: "pending" as const,
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 1_000).toISOString(),
+        },
+      };
+    },
+    async processNext(input: { id?: string; request?: string; generate: (request: string, signal?: AbortSignal) => Promise<unknown> }) {
+      calls.push({ id: input.id, request: input.request });
+      await input.generate(input.request ?? "", undefined);
+      return { status: "published" as const };
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app, aiService, transport } = createApp({ htmlPreviewService: publisher });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#网页 做一个待办清单" } }]));
+
+  assert.deepEqual(calls.map((call) => call.request), ["做一个待办清单", "做一个待办清单"]);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("natural page generation requires an @ and explicit creation wording", async () => {
+  const requests: string[] = [];
+  const publisher = {
+    async enqueue(input: { request?: string; groupId: string; creatorUserId: string; sourceMessageId: string }) {
+      requests.push(input.request ?? "");
+      return {
+        created: true,
+        page: {
+          id: "B".repeat(43), groupId: input.groupId, creatorUserId: input.creatorUserId, sourceMessageId: input.sourceMessageId,
+          title: "网页预览", previewUrl: "https://preview.9958.uk/p/test/", status: "pending" as const,
+          createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_000).toISOString(),
+        },
+      };
+    },
+    async processNext() { return { status: "published" as const }; },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app, aiService } = createApp({ htmlPreviewService: publisher });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "生成一个网页做展示" } }]));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "生成一个网页做展示" } },
+  ], 20001, 67890, 22));
+
+  assert.deepEqual(requests, ["生成一个网页做展示"]);
+  assert.equal(aiService.calls.length, 0, "explicit page generation must not fall through to normal chat");
 });
 test("verified reply anchors continue mentions-only conversations without an @", async () => {
   const groupConfigService = new FakeGroupConfigService([{

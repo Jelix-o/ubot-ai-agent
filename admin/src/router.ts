@@ -13,6 +13,7 @@ import AppAuditView from "./views/AuditView.vue";
 import AppHealthView from "./views/HealthView.vue";
 import AppSettingsView from "./views/SettingsView.vue";
 import AppSecurityView from "./views/SecurityView.vue";
+import AppHtmlPreviewsView from "./views/HtmlPreviewsView.vue";
 
 export const routes = [
   { path: "/login", name: "login", component: AppLoginView, meta: { title: "后台登录", subtitle: "输入管理员账号和秘钥进入 UBot 控制台" } },
@@ -21,6 +22,7 @@ export const routes = [
   { path: "/members", name: "members", component: AppMembersView, meta: { title: "成员管理", subtitle: "维护成员备注、身份标签、明确记忆和隐私退出" } },
   { path: "/memories", name: "memories", component: AppMemoriesView, meta: { title: "记忆", subtitle: "维护明确保存的记忆、归属、状态和来源" } },
   { path: "/knowledge", name: "knowledge", component: AppKnowledgeView, meta: { title: "知识库", subtitle: "管理群内 FAQ 和历史聊天提炼后的知识条目" } },
+  { path: "/html-previews", name: "html-previews", component: AppHtmlPreviewsView, meta: { title: "网页预览", subtitle: "管理群内生成的静态网页预览链接和留存时间" } },
   { path: "/persona", name: "persona", component: AppPersonaView, meta: { title: "会仙人格", subtitle: "维护会仙的身份、表达边界和回复节奏", superOnly: true } },
   // Keep old bookmarks working without exposing this compatibility alias as a page.
   { path: "/skills", redirect: "/persona", meta: { navigation: false } },

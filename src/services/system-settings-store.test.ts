@@ -156,6 +156,34 @@ test("SystemSettingsStore permits command copy changes but not permission escala
   });
 });
 
+test("SystemSettingsStore supplies the member HTML preview command for legacy settings", async () => {
+  await withDir(async (dir) => {
+    const file = path.join(dir, "settings.json");
+    await writeFile(file, JSON.stringify({ commands: [], updatedAt: "2026-08-28T00:00:00.000Z" }), "utf8");
+    const store = new SystemSettingsStore(file);
+
+    const command = (await store.get()).commands.find((item) => item.id === "html_preview");
+    assert.deepEqual(command && {
+      primary: command.primary,
+      aliases: command.aliases,
+      permission: command.permission,
+      enabled: command.enabled,
+    }, {
+      primary: "#网页",
+      aliases: ["#html"],
+      permission: "member",
+      enabled: true,
+    });
+
+    const updated = await store.update({
+      commands: [{ ...command!, primary: "#页面", permission: "super_admin" }],
+    });
+    const retained = updated.commands.find((item) => item.id === "html_preview");
+    assert.equal(retained?.primary, "#页面");
+    assert.equal(retained?.permission, "member");
+  });
+});
+
 test("SystemSettingsStore discards legacy profile and automatic-memory fields from JSON", async () => {
   await withDir(async (dir) => {
     const file = path.join(dir, "settings.json");

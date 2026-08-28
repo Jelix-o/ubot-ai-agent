@@ -593,6 +593,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "voice", title: "语音", primary: "#语音", permission: "member", help: "生成语音回复" },
     { id: "voice_reply", title: "默认语音回复", primary: "#语音回复", permission: "group_admin", help: "查看或开关普通 AI 回复默认发送语音条" },
     { id: "sing", title: "唱歌", primary: "#唱歌", permission: "member", help: "让机器人用唱歌模式生成语音回复" },
+    { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
     { id: "model", title: "模型", primary: "#模型", permission: "group_admin", help: "查看或切换当前群回复模型" },
     { id: "mute", title: "静默模式", primary: "#闭嘴", aliases: ["#说话"], permission: "group_admin", help: "让机器人进入或退出静默模式" },

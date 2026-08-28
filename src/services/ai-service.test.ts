@@ -3,7 +3,14 @@ import test from "node:test";
 
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
 import type { AiIdentityContext, ConversationTurn, SkillDefinition } from "../types.js";
-import { AiService, buildChatMessages, buildSystemPrompt, createCancellableTimeout } from "./ai-service.js";
+import {
+  AiService,
+  buildChatMessages,
+  buildSystemPrompt,
+  createCancellableTimeout,
+  MAX_STATIC_HTML_REQUEST_CHARS,
+  STATIC_HTML_MAX_COMPLETION_TOKENS,
+} from "./ai-service.js";
 
 const skill: SkillDefinition = {
   id: "leijun",
@@ -400,6 +407,60 @@ test("generateReply does not retry a streaming policy rejection", async () => {
 
   await assert.rejects(service.generateReply({ skill, history: [], userInput: "blocked input" }), /400 content policy/);
   assert.equal(calls, 1);
+});
+
+test("generateStaticHtml returns raw strict-JSON output using a bounded non-streaming request", async () => {
+  const requests: Array<{
+    model?: string;
+    temperature?: number;
+    max_tokens?: number;
+    stream?: boolean;
+    messages?: Array<{ role?: string; content?: string }>;
+    signal?: AbortSignal;
+  }> = [];
+  const service = new AiService("https://example.invalid/v1", "test-key", "preview-model", {
+    async create(args: typeof requests[number]) {
+      requests.push(args);
+      return {
+        model: "preview-model-actual",
+        choices: [{ message: { content: '{"title":"待办","html":"<!doctype html><html></html>"}' } }],
+      };
+    },
+  } as never);
+
+  const generated = await service.generateStaticHtml({ request: "做一个有完成状态的待办清单" });
+
+  assert.deepEqual(generated, {
+    text: '{"title":"待办","html":"<!doctype html><html></html>"}',
+    model: "preview-model-actual",
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.model, "preview-model");
+  assert.equal(requests[0]?.temperature, 0.2);
+  assert.equal(requests[0]?.max_tokens, STATIC_HTML_MAX_COMPLETION_TOKENS);
+  assert.equal(requests[0]?.stream, false);
+  assert.equal(requests[0]?.signal instanceof AbortSignal, true);
+  assert.match(requests[0]?.messages?.[0]?.content ?? "", /Return exactly one valid JSON object/);
+  assert.match(requests[0]?.messages?.[0]?.content ?? "", /fetch\/XMLHttpRequest\/WebSocket/);
+  assert.match(requests[0]?.messages?.[1]?.content ?? "", /BEGIN USER PAGE REQUIREMENT/);
+  assert.doesNotMatch(requests[0]?.messages?.[0]?.content ?? "", /雷总私聊版/);
+});
+
+test("generateStaticHtml rejects oversized and empty requirements before contacting the provider", async () => {
+  let calls = 0;
+  const service = new AiService("https://example.invalid/v1", "test-key", "preview-model", {
+    async create() {
+      calls += 1;
+      return { choices: [{ message: { content: "unexpected" } }] };
+    },
+  } as never);
+
+  await assert.rejects(service.generateStaticHtml({ request: "  " }), /static_html_request_empty/);
+  await assert.rejects(
+    service.generateStaticHtml({ request: "x".repeat(MAX_STATIC_HTML_REQUEST_CHARS + 1) }),
+    /static_html_request_too_long/,
+  );
+  assert.equal(calls, 0);
 });
 
 test("generateReply falls back once when streaming is explicitly unsupported", async () => {

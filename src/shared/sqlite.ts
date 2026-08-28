@@ -618,6 +618,46 @@ CREATE INDEX IF NOT EXISTS idx_v3_daily_report_outputs_sent_at
 `;
 
 /**
+ * Generated static pages deliberately retain only publication metadata. The
+ * request, model output and generated HTML stay out of SQLite: HTML is served
+ * from the isolated preview origin and user input remains in the message
+ * ledger's short retention window only.
+ */
+const HTML_PREVIEW_SCHEMA = `
+CREATE TABLE IF NOT EXISTS html_previews (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  creator_user_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '网页预览',
+  content_sha256 TEXT,
+  byte_size INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'published', 'failed', 'expired', 'deleted')),
+  lease_token TEXT,
+  lease_expires_at INTEGER,
+  announcement_outbox_id INTEGER REFERENCES outbox(id),
+  announcement_created_at INTEGER,
+  error_code TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  published_at INTEGER,
+  failed_at INTEGER,
+  expires_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  UNIQUE (group_id, source_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_html_previews_queue
+  ON html_previews (status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_html_previews_group_queue
+  ON html_previews (group_id, status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_html_previews_expiry
+  ON html_previews (expires_at, status);
+CREATE INDEX IF NOT EXISTS idx_html_previews_announcement
+  ON html_previews (announcement_outbox_id) WHERE announcement_outbox_id IS NOT NULL;
+`;
+
+/**
  * Reconciles schemas produced by pre-migration releases. Keep this as the
  * first tracked migration so an existing installation has an auditable
  * baseline before new domain tables are added.
@@ -707,6 +747,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     version: 9,
     name: "add-v3-daily-report-rendered-outputs",
     apply: (db) => db.exec(V3_DAILY_REPORT_OUTPUT_SCHEMA),
+  },
+  {
+    version: 10,
+    name: "add-static-html-preview-publications",
+    apply: (db) => db.exec(HTML_PREVIEW_SCHEMA),
   },
 ];
 

@@ -14,9 +14,6 @@ Usage: deploy-linux-release.sh <version> <bundle.tar.gz> [bundle.tar.gz.sha256]
 The archive and manifest must be the matching downloaded GitHub Release assets.
 The deployer verifies their SHA-256 manifest locally before extracting anything.
 
-Required environment:
-  UBOT_NGINX_CONFIG=/absolute/path/to/the-active-bot.9958.uk-nginx-config
-
 Optional environment:
   UBOT_APP_ROOT=/opt/ai-project
   UBOT_RELEASE_ROOT=/opt/ai-project-releases
@@ -25,9 +22,14 @@ Optional environment:
   UBOT_NAPCAT_CONFIG=/opt/napcat/config/onebot11_428881701.json
   UBOT_NAPCAT_REVERSE_URL=ws://172.21.0.1:6199/onebot/ws
   UBOT_NAPCAT_CONTAINER=napcat
+  UBOT_PREVIEW_CERT_PATH=/etc/ssl/cloudflare/preview.9958.uk.pem
+  UBOT_PREVIEW_KEY_PATH=/etc/ssl/cloudflare/preview.9958.uk.key
 
 The target must be able to reach api.github.com and the public release asset
 URL (HTTPS_PROXY is honored by curl when a proxy is required).
+
+The preview host is installed separately from bot.9958.uk. This release never
+replaces the active bot vhost or other existing Nginx sites.
 USAGE
 }
 
@@ -72,13 +74,22 @@ BACKUP_ROOT="$APP_ROOT/release-backups"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$BACKUP_ROOT/$TIMESTAMP-v$VERSION"
 NAPCAT_CONFIG="${UBOT_NAPCAT_CONFIG:-/opt/napcat/config/onebot11_428881701.json}"
-NGINX_CONFIG="${UBOT_NGINX_CONFIG:-}"
 NAPCAT_REVERSE_URL="${UBOT_NAPCAT_REVERSE_URL:-ws://172.21.0.1:6199/onebot/ws}"
 NAPCAT_URL_PATH="network.websocketClients.0.url"
 NAPCAT_CONFIG_STAGING="$BACKUP_DIR/napcat-config.v3.json"
 NAPCAT_CONTAINER="${UBOT_NAPCAT_CONTAINER:-napcat}"
 NAPCAT_RESTART_TIMEOUT_SECONDS=60
 GITHUB_RELEASE_REPOSITORY="Jelix-o/ubot-ai-agent"
+# These targets are intentionally not configurable: accepting an arbitrary
+# /etc/nginx path would let a deployment environment variable overwrite an
+# unrelated production vhost. Only this isolated preview site is release-owned.
+PREVIEW_NGINX_CONFIG="/etc/nginx/sites-available/preview-9958"
+PREVIEW_NGINX_INCLUDE="/etc/nginx/ubot-preview-static.conf"
+PREVIEW_NGINX_ENABLED_LINK="/etc/nginx/sites-enabled/preview-9958"
+PREVIEW_CERTIFICATE="${UBOT_PREVIEW_CERT_PATH:-${UBOT_PREVIEW_CERTIFICATE:-/etc/ssl/cloudflare/preview.9958.uk.pem}}"
+PREVIEW_CERTIFICATE_KEY="${UBOT_PREVIEW_KEY_PATH:-${UBOT_PREVIEW_CERTIFICATE_KEY:-/etc/ssl/cloudflare/preview.9958.uk.key}}"
+PREVIEW_ROOT=""
+PREVIEW_ROOT_PAGES=""
 
 # These are the only legacy runtime files that the one-way state migration can
 # remove after it commits the SQLite cutover marker. Keep this list aligned
@@ -127,7 +138,7 @@ require_command() {
   }
 }
 
-for command in node npm tar sha256sum systemctl sudo curl install mv readlink nginx mktemp dirname find docker sleep stat; do
+for command in node npm tar sha256sum systemctl sudo curl install mv readlink ln nginx mktemp dirname basename find docker sleep stat sed openssl grep; do
   require_command "$command"
 done
 sudo -n true
@@ -142,6 +153,34 @@ esac
 fail_cutover_preflight() {
   echo "Pre-cutover access check failed: $1" >&2
   exit 2
+}
+
+require_safe_absolute_path() {
+  local value="$1"
+  local label="$2"
+  local required_prefix="$3"
+  if [[ ! "$value" =~ ^/[A-Za-z0-9._/-]+$ ]] || [[ "$value" == *"//"* ]] ||
+     [[ "$value" == *"/./"* ]] || [[ "$value" == *"/../"* ]] || [[ "$value" == */.. ]]; then
+    fail_cutover_preflight "$label must be a normalized absolute path containing only safe path characters."
+  fi
+  if [[ "$value" != "$required_prefix"* ]] || [[ "$value" == "$required_prefix" ]]; then
+    fail_cutover_preflight "$label must stay under $required_prefix"
+  fi
+}
+
+validate_preview_nginx_paths() {
+  if [[ "$PREVIEW_NGINX_CONFIG" != "/etc/nginx/sites-available/preview-9958" ]] ||
+     [[ "$PREVIEW_NGINX_INCLUDE" != "/etc/nginx/ubot-preview-static.conf" ]] ||
+     [[ "$PREVIEW_NGINX_ENABLED_LINK" != "/etc/nginx/sites-enabled/preview-9958" ]]; then
+    fail_cutover_preflight "Preview Nginx targets are fixed to the dedicated preview-9958 site."
+  fi
+  require_safe_absolute_path "$PREVIEW_CERTIFICATE" "Preview Origin certificate" "/etc/"
+  require_safe_absolute_path "$PREVIEW_CERTIFICATE_KEY" "Preview Origin certificate key" "/etc/"
+  if [[ "$PREVIEW_NGINX_CONFIG" == "$PREVIEW_NGINX_INCLUDE" ]] ||
+     [[ "$PREVIEW_NGINX_CONFIG" == "$PREVIEW_NGINX_ENABLED_LINK" ]] ||
+     [[ "$PREVIEW_NGINX_INCLUDE" == "$PREVIEW_NGINX_ENABLED_LINK" ]]; then
+    fail_cutover_preflight "Preview Nginx vhost, include, and enabled-link paths must be distinct."
+  fi
 }
 
 require_mutable_directory() {
@@ -193,6 +232,108 @@ require_sudo_mutable_directory() {
   local label="$2"
   if ! sudo -n test -d "$directory" || ! sudo -n test -w "$directory" || ! sudo -n test -x "$directory"; then
     fail_cutover_preflight "$label directory must be writable and searchable through sudo: $directory"
+  fi
+}
+
+require_sudo_readable_regular_file() {
+  local file_path="$1"
+  local label="$2"
+  if ! sudo -n test -f "$file_path" || ! sudo -n test -r "$file_path"; then
+    fail_cutover_preflight "$label is missing, not a regular file, or not readable through sudo: $file_path"
+  fi
+}
+
+preflight_preview_nginx_targets() {
+  local target
+  validate_preview_nginx_paths
+  for target in "$PREVIEW_NGINX_CONFIG" "$PREVIEW_NGINX_INCLUDE"; do
+    if sudo -n test -L "$target"; then
+      fail_cutover_preflight "Dedicated preview Nginx file must not be a symlink: $target"
+    fi
+    if sudo -n test -e "$target" && ! sudo -n test -f "$target"; then
+      fail_cutover_preflight "Dedicated preview Nginx target must be a regular file when present: $target"
+    fi
+  done
+  if sudo -n test -e "$PREVIEW_NGINX_ENABLED_LINK" && ! sudo -n test -L "$PREVIEW_NGINX_ENABLED_LINK"; then
+    fail_cutover_preflight "Preview Nginx enabled target must be a symlink when present: $PREVIEW_NGINX_ENABLED_LINK"
+  fi
+  require_sudo_mutable_directory "$(dirname "$PREVIEW_NGINX_CONFIG")" "Preview Nginx vhost"
+  require_sudo_mutable_directory "$(dirname "$PREVIEW_NGINX_INCLUDE")" "Preview Nginx static include"
+  require_sudo_mutable_directory "$(dirname "$PREVIEW_NGINX_ENABLED_LINK")" "Preview Nginx enabled-link"
+}
+
+preflight_preview_certificate() {
+  local subject_alt_names cert_public_key key_public_key
+  require_sudo_readable_regular_file "$PREVIEW_CERTIFICATE" "Preview TLS certificate"
+  require_sudo_readable_regular_file "$PREVIEW_CERTIFICATE_KEY" "Preview TLS certificate key"
+  if ! subject_alt_names="$(sudo -n openssl x509 -in "$PREVIEW_CERTIFICATE" -noout -ext subjectAltName 2>/dev/null)"; then
+    fail_cutover_preflight "Preview TLS certificate could not be parsed: $PREVIEW_CERTIFICATE"
+  fi
+  if [[ "$subject_alt_names" != *"DNS:preview.9958.uk"* ]]; then
+    fail_cutover_preflight "Preview TLS certificate does not cover preview.9958.uk"
+  fi
+  if ! cert_public_key="$(sudo -n openssl x509 -in "$PREVIEW_CERTIFICATE" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{ print $1 }')"; then
+    fail_cutover_preflight "Preview TLS certificate public key could not be read."
+  fi
+  if ! key_public_key="$(sudo -n openssl pkey -in "$PREVIEW_CERTIFICATE_KEY" -pubout -outform DER 2>/dev/null | sha256sum | awk '{ print $1 }')"; then
+    fail_cutover_preflight "Preview TLS certificate key could not be read."
+  fi
+  if [[ ! "$cert_public_key" =~ ^[a-f0-9]{64}$ ]] || [[ "$cert_public_key" != "$key_public_key" ]]; then
+    fail_cutover_preflight "Preview TLS certificate and key do not match."
+  fi
+}
+
+load_preview_settings() {
+  local loaded_root
+  if ! loaded_root="$(PERSISTENT_ENV="$PERSISTENT_ENV" PERSISTENT_DATA="$PERSISTENT_DATA" node - <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const values = new Map();
+for (const raw of fs.readFileSync(process.env.PERSISTENT_ENV, "utf8").split(/\r?\n/)) {
+  const line = raw.trim();
+  if (!line || line.startsWith("#")) continue;
+  const match = line.match(/^(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*)$/);
+  if (!match) continue;
+  let value = match[2].trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
+  values.set(match[1], value);
+}
+const dataRoot = path.resolve(process.env.PERSISTENT_DATA);
+const configuredRoot = values.get("HTML_PREVIEW_ROOT")?.trim();
+if (configuredRoot && !path.isAbsolute(configuredRoot)) {
+  throw new Error("HTML_PREVIEW_ROOT must be an absolute path in Linux production");
+}
+const previewRoot = path.resolve(configuredRoot || path.join(dataRoot, "generated-pages"));
+const relative = path.relative(dataRoot, previewRoot);
+if (!relative || relative === "." || relative.startsWith("..") || path.isAbsolute(relative)) {
+  throw new Error("HTML_PREVIEW_ROOT must be a child of the persistent data directory");
+}
+if (!/^[A-Za-z0-9._/-]+$/.test(previewRoot)) {
+  throw new Error("HTML_PREVIEW_ROOT contains unsupported path characters for Nginx deployment");
+}
+const publicBase = values.get("HTML_PREVIEW_PUBLIC_BASE_URL")?.trim() || "https://preview.9958.uk";
+const parsed = new URL(publicBase);
+if (parsed.origin !== "https://preview.9958.uk" || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+  throw new Error("HTML_PREVIEW_PUBLIC_BASE_URL must be exactly https://preview.9958.uk in production");
+}
+process.stdout.write(previewRoot);
+NODE
+  )"; then
+    fail_cutover_preflight "Could not validate persistent HTML preview settings."
+  fi
+  PREVIEW_ROOT="$loaded_root"
+  PREVIEW_ROOT_PAGES="$PREVIEW_ROOT/pages"
+}
+
+prepare_preview_root() {
+  if [[ -e "$PREVIEW_ROOT" && ! -d "$PREVIEW_ROOT" ]]; then
+    fail_cutover_preflight "HTML preview root is not a directory: $PREVIEW_ROOT"
+  fi
+  install -d -m 0755 "$PREVIEW_ROOT" "$PREVIEW_ROOT_PAGES"
+  if [[ ! -w "$PREVIEW_ROOT" || ! -w "$PREVIEW_ROOT_PAGES" ]]; then
+    fail_cutover_preflight "HTML preview root must be writable by the UBot deployment user."
   fi
 }
 
@@ -287,7 +428,8 @@ preflight_cutover_write_access() {
   # target directories now, rather than discovering a restricted sudo policy
   # after SQLite has become the only state authority.
   require_sudo_mutable_directory "$SYSTEMD_ROOT" "Systemd unit"
-  require_sudo_mutable_directory "$(dirname "$NGINX_CONFIG")" "Nginx configuration"
+  preflight_preview_nginx_targets
+  preflight_preview_certificate
   preflight_napcat_container
 }
 
@@ -511,11 +653,88 @@ restore_persistent_env() {
   fi
 }
 
-restore_nginx_config() {
-  if [[ -f "$BACKUP_DIR/nginx-config.before" ]]; then
-    sudo cp "$BACKUP_DIR/nginx-config.before" "$NGINX_CONFIG" || true
-    sudo nginx -t && sudo systemctl reload nginx || true
+backup_preview_nginx_target() {
+  local target="$1"
+  local backup_name="$2"
+  local backup_path="$BACKUP_DIR/$backup_name"
+  if sudo -n test -L "$target"; then
+    sudo -n readlink "$target" > "$backup_path.symlink"
+  elif sudo -n test -f "$target"; then
+    sudo -n cp -p "$target" "$backup_path"
+  elif sudo -n test -e "$target"; then
+    fail_cutover_preflight "Preview Nginx target became non-regular during backup: $target"
+  else
+    : > "$backup_path.absent"
   fi
+}
+
+backup_preview_nginx_files() {
+  backup_preview_nginx_target "$PREVIEW_NGINX_CONFIG" "preview-nginx-vhost.before"
+  backup_preview_nginx_target "$PREVIEW_NGINX_INCLUDE" "preview-nginx-include.before"
+  backup_preview_nginx_target "$PREVIEW_NGINX_ENABLED_LINK" "preview-nginx-enabled.before"
+}
+
+restore_preview_nginx_target() {
+  local target="$1"
+  local backup_name="$2"
+  local backup_path="$BACKUP_DIR/$backup_name"
+  if [[ -f "$backup_path" ]]; then
+    sudo -n cp -p "$backup_path" "$target" || true
+  elif [[ -f "$backup_path.symlink" ]]; then
+    sudo -n rm -f "$target" || true
+    sudo -n ln -s "$(<"$backup_path.symlink")" "$target" || true
+  elif [[ -f "$backup_path.absent" ]]; then
+    sudo -n rm -f "$target" || true
+  fi
+}
+
+restore_preview_nginx_files() {
+  restore_preview_nginx_target "$PREVIEW_NGINX_CONFIG" "preview-nginx-vhost.before"
+  restore_preview_nginx_target "$PREVIEW_NGINX_INCLUDE" "preview-nginx-include.before"
+  restore_preview_nginx_target "$PREVIEW_NGINX_ENABLED_LINK" "preview-nginx-enabled.before"
+  sudo nginx -t && sudo systemctl reload nginx || true
+}
+
+install_preview_nginx_file_atomically() {
+  local source_path="$1"
+  local target_path="$2"
+  local parent root_staging
+  parent="$(dirname "$target_path")"
+  root_staging="$(sudo -n mktemp "$parent/.ubot-preview-nginx.XXXXXX")"
+  if ! sudo -n install -m 0644 "$source_path" "$root_staging"; then
+    sudo -n rm -f "$root_staging" || true
+    return 1
+  fi
+  sudo -n mv -f "$root_staging" "$target_path"
+}
+
+install_preview_nginx_enabled_link() {
+  local parent temporary_link
+  parent="$(dirname "$PREVIEW_NGINX_ENABLED_LINK")"
+  temporary_link="$parent/.ubot-preview-enabled-$VERSION-$$"
+  sudo -n rm -f "$temporary_link"
+  sudo -n ln -s "$PREVIEW_NGINX_CONFIG" "$temporary_link"
+  sudo -n mv -Tf "$temporary_link" "$PREVIEW_NGINX_ENABLED_LINK"
+}
+
+render_preview_nginx_files() {
+  local source_vhost="$STAGING_DIR/deploy/nginx/preview.9958.uk.conf"
+  local source_include="$STAGING_DIR/deploy/nginx/ubot-preview-static.conf"
+  PREVIEW_NGINX_VHOST_STAGING="$BACKUP_DIR/preview.9958.uk.conf.rendered"
+  PREVIEW_NGINX_INCLUDE_STAGING="$BACKUP_DIR/ubot-preview-static.conf.rendered"
+  if ! grep -q '__UBOT_PREVIEW_CERT_PATH__' "$source_vhost" ||
+     ! grep -q '__UBOT_PREVIEW_KEY_PATH__' "$source_vhost" ||
+     ! grep -q '__UBOT_HTML_PREVIEW_ROOT__' "$source_include"; then
+    echo "Release preview Nginx templates are missing required substitution markers." >&2
+    return 1
+  fi
+  sed \
+    -e "s|__UBOT_PREVIEW_CERT_PATH__|$PREVIEW_CERTIFICATE|g" \
+    -e "s|__UBOT_PREVIEW_KEY_PATH__|$PREVIEW_CERTIFICATE_KEY|g" \
+    "$source_vhost" > "$PREVIEW_NGINX_VHOST_STAGING"
+  sed -e "s|__UBOT_HTML_PREVIEW_ROOT__|$PREVIEW_ROOT|g" \
+    "$source_include" > "$PREVIEW_NGINX_INCLUDE_STAGING"
+  chmod 600 "$PREVIEW_NGINX_VHOST_STAGING" "$PREVIEW_NGINX_INCLUDE_STAGING"
 }
 
 rollback() {
@@ -531,7 +750,7 @@ rollback() {
     restart_napcat_container || echo "NapCat restart after configuration restore failed; inspect $NAPCAT_CONTAINER manually." >&2
   fi
   restore_persistent_env
-  restore_nginx_config
+  restore_preview_nginx_files
   restore_unit_files
   if [[ -n "$old_current_target" ]]; then
     switch_current_link "$old_current_target" || true
@@ -577,10 +796,6 @@ if [[ -z "$NAPCAT_CONFIG" || ! -f "$NAPCAT_CONFIG" ]]; then
   echo "UBOT_NAPCAT_CONFIG must point to the existing NapCat reverse WebSocket JSON configuration." >&2
   exit 2
 fi
-if [[ -z "$NGINX_CONFIG" || ! -f "$NGINX_CONFIG" ]]; then
-  echo "UBOT_NGINX_CONFIG must point to the active bot.9958.uk Nginx configuration." >&2
-  exit 2
-fi
 if [[ "$NAPCAT_REVERSE_URL" != "ws://172.21.0.1:6199/onebot/ws" ]]; then
   echo "UBOT_NAPCAT_REVERSE_URL must be ws://172.21.0.1:6199/onebot/ws." >&2
   exit 2
@@ -588,6 +803,8 @@ fi
 
 mkdir -p "$RELEASE_ROOT" "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
+load_preview_settings
+prepare_preview_root
 
 if [[ -f "$DB_PATH" ]] && has_existing_v3_cutover; then
   existing_cutover_before_deploy=1
@@ -617,7 +834,7 @@ if [[ "$old_legacy_active" -eq 1 ]]; then sudo systemctl stop "$LEGACY_SERVICE";
 
 backup_unit_files
 sudo cp "$NAPCAT_CONFIG" "$BACKUP_DIR/napcat-config.before.json"
-sudo cp "$NGINX_CONFIG" "$BACKUP_DIR/nginx-config.before"
+backup_preview_nginx_files
 sudo cp "$PERSISTENT_ENV" "$BACKUP_DIR/env.before"
 
 # This is an operator recovery backup, never a release asset. The V3 migration
@@ -625,8 +842,16 @@ sudo cp "$PERSISTENT_ENV" "$BACKUP_DIR/env.before"
 backup_inputs=(.env)
 if [[ "$existing_cutover_before_deploy" -eq 1 ]]; then
   # State is backed up again with VACUUM below. Keep a narrow filesystem
-  # snapshot here and deliberately avoid reading retired JSON or skills.
+  # snapshot here and deliberately avoid reading retired JSON or skills. The
+  # generated-page root remains persistent state and is included separately.
   backup_inputs+=(data/shared)
+  if [[ -e "$PREVIEW_ROOT" ]]; then
+    preview_root_relative="${PREVIEW_ROOT#"$PERSISTENT_DATA/"}"
+    if [[ "$preview_root_relative" == "$PREVIEW_ROOT" || -z "$preview_root_relative" ]]; then
+      fail_cutover_preflight "HTML preview root must remain under persistent data for backup."
+    fi
+    backup_inputs+=("data/$preview_root_relative")
+  fi
 else
   for persistent_name in data config skills; do
     if [[ -e "$APP_ROOT/$persistent_name" ]]; then
@@ -662,7 +887,7 @@ for required in \
   deploy/systemd/ubot-ingress.service.template deploy/systemd/ubot-worker.service.template \
   deploy/systemd/ubot-admin.service.template deploy/systemd/ubot.target.template \
   deploy/systemd/ubot-maintenance.service.template deploy/systemd/ubot-maintenance.timer.template \
-  deploy/nginx/bot.9958.uk.conf; do
+  deploy/nginx/preview.9958.uk.conf deploy/nginx/ubot-preview-static.conf; do
   if [[ ! -e "$STAGING_DIR/$required" ]]; then
     echo "Release bundle is missing a required V3 path: $required" >&2
     exit 2
@@ -750,9 +975,13 @@ for unit in "${UNIT_FILES[@]}"; do
   sudo install -m 0644 "$template" "$SYSTEMD_ROOT/$unit"
 done
 
-# Use the explicitly selected active Nginx configuration. The backup remains
-# in the restricted deployment directory and rollback validates before reload.
-sudo cp "$STAGING_DIR/deploy/nginx/bot.9958.uk.conf" "$NGINX_CONFIG"
+# The preview vhost is intentionally independent from bot.9958.uk. Render
+# only reviewed path markers into the dedicated files and atomically replace
+# those files; no existing application vhost is touched by this release.
+render_preview_nginx_files
+install_preview_nginx_file_atomically "$PREVIEW_NGINX_INCLUDE_STAGING" "$PREVIEW_NGINX_INCLUDE"
+install_preview_nginx_file_atomically "$PREVIEW_NGINX_VHOST_STAGING" "$PREVIEW_NGINX_CONFIG"
+install_preview_nginx_enabled_link
 sudo nginx -t
 
 mv "$STAGING_DIR" "$RELEASE_DIR"

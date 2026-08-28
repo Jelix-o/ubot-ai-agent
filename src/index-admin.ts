@@ -20,6 +20,7 @@ import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { openSharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
+import { HtmlPreviewService } from "./services/html-preview-service.js";
 
 /**
  * Admin process:
@@ -76,6 +77,11 @@ export async function main(): Promise<void> {
   const adminTaskStore = new AdminTaskStore(config.adminTasksPath, v3State);
   const modelHealthHistoryStore = new ModelHealthHistoryStore(config.modelHealthHistoryPath, v3State);
   const adminOperationLogService = new AdminOperationLogService(config.adminOperationLogPath, v3State);
+  const htmlPreviewService = new HtmlPreviewService({
+    sharedDb,
+    rootDir: config.htmlPreviewRoot,
+    publicBaseUrl: config.htmlPreviewPublicBaseUrl,
+  });
 
   const server = new AdminHttpServer({
     host: config.adminHttpHost,
@@ -92,6 +98,7 @@ export async function main(): Promise<void> {
     systemSettingsStore,
     adminTaskStore,
     modelHealthHistoryStore,
+    htmlPreviewService,
     adminOperationLogService,
     getTransportHealthStatus: () => readClient.getHealth(),
     listGroupMembers: (groupId) => readClient.listGroupMembersStrict(groupId),

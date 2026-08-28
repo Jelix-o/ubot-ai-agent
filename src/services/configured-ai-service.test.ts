@@ -12,6 +12,7 @@ class FakeRuntimeAiService implements RuntimeAiService {
   healthCalls = 0;
   replyCalls = 0;
   summaryCalls = 0;
+  staticHtmlCalls = 0;
 
   constructor(
     private readonly health: AiHealthStatus,
@@ -27,6 +28,14 @@ class FakeRuntimeAiService implements RuntimeAiService {
     this.replyCalls += 1;
     if (!this.reply) throw new Error("not implemented");
     return this.reply;
+  }
+
+  async generateStaticHtml(): ReturnType<RuntimeAiService["generateStaticHtml"]> {
+    this.staticHtmlCalls += 1;
+    return {
+      text: '{"title":"Demo","html":"<!doctype html><title>Demo</title>"}',
+      model: this.health.model,
+    };
   }
 
   async evaluateReplyDesire(): ReturnType<RuntimeAiService["evaluateReplyDesire"]> {
@@ -193,6 +202,31 @@ test("ConfiguredAiService routes retained report summaries to the summary provid
 
   assert.equal(summary, "summary");
   assert.deepEqual(created, ["summary:summary-model"]);
+});
+
+test("ConfiguredAiService routes static HTML generation to the selected reply model", async (t) => {
+  const store = await createSettingsStore(t);
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  const created: string[] = [];
+
+  await store.update({
+    models: [
+      model({ id: "reply", model: "reply-model" }),
+      model({ id: "summary", model: "summary-model", purpose: "summary" }),
+    ],
+    selectedModelIds: { reply: "reply", summary: "summary" },
+  });
+
+  const service = new ConfiguredAiService(fallback, store, "reply", (configured) => {
+    created.push(`${configured.purpose}:${configured.model}`);
+    return new FakeRuntimeAiService(makeHealth(configured.model, configured.baseUrl));
+  });
+
+  const generated = await service.generateStaticHtml({ request: "做一个待办清单" });
+
+  assert.equal(generated.model, "reply-model");
+  assert.match(generated.text, /\"html\"/);
+  assert.deepEqual(created, ["reply:reply-model"]);
 });
 
 async function createSettingsStore(t: test.TestContext): Promise<SystemSettingsStore> {

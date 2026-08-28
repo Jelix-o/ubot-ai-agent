@@ -41,6 +41,24 @@ export interface GroupConfig {
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
+  htmlPreviewEnabled?: boolean;
+}
+
+export type HtmlPreviewStatus = "pending" | "published" | "failed" | "expired" | "deleted";
+
+/** Metadata only. The admin API never returns generated page source. */
+export interface HtmlPreviewMetadata {
+  id: string;
+  groupId: string;
+  creatorUserId?: string;
+  sourceMessageId?: string;
+  title: string;
+  previewUrl: string;
+  status: HtmlPreviewStatus;
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+  byteSize?: number;
 }
 
 export interface SubjectLabel {

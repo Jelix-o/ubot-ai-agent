@@ -31,6 +31,12 @@ import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-rem
 import type { SkillService } from "./services/skill-service.js";
 import type { CharacterProfileService } from "./services/character-profile-service.js";
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
+import {
+  HTML_PREVIEW_FAILURE_MESSAGE,
+  parseHtmlPreviewRequest,
+  type HtmlPreviewService,
+  type ParsedHtmlPreviewRequest,
+} from "./services/html-preview-service.js";
 import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
@@ -101,6 +107,7 @@ const SERVER_PREFIX = "#服务器";
 const OPS_ALERT_PREFIX = "#告警";
 const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
+const HTML_PREVIEW_PREFIX = "#网页";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
@@ -153,6 +160,7 @@ const RUNTIME_COMMAND_SPECS = {
   help: { builtinPrefix: HELP_PREFIXES[0]!, builtinAliases: HELP_PREFIXES.slice(1) },
   holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
   knowledge: { builtinPrefix: KNOWLEDGE_PREFIX, builtinAliases: [] },
+  html_preview: { builtinPrefix: HTML_PREVIEW_PREFIX, builtinAliases: ["#html"] },
   live_chat: { builtinPrefix: LIVE_CHAT_PREFIX, builtinAliases: [] },
   memory: { builtinPrefix: MEMORY_PREFIX, builtinAliases: [] },
   model: { builtinPrefix: MODEL_PREFIX, builtinAliases: [] },
@@ -178,14 +186,14 @@ interface RuntimeCommandMatch {
 interface ReplyAiRoute {
   mode: ReplyModelMode;
   label: string;
-  service: Pick<RuntimeAiService, "generateReply">;
+  service: Pick<RuntimeAiService, "generateReply" | "generateStaticHtml">;
   supportsVision: boolean;
 }
 
 interface ReplyModelOption {
   mode: ReplyModelMode;
   label: string;
-  service: Pick<RuntimeAiService, "generateReply">;
+  service: Pick<RuntimeAiService, "generateReply" | "generateStaticHtml">;
   supportsVision: boolean;
 }
 
@@ -194,6 +202,14 @@ interface ReplyAiResult {
   usedMode: ReplyModelMode;
   fallbackUsed: boolean;
 }
+
+/**
+ * Static page generation must use the same worker-side concurrency and
+ * circuit-breaker boundary as conversational requests. Unlike a reply call,
+ * it has no useful degraded payload, so failures intentionally propagate to
+ * the preview publication service for its fixed failure handling.
+ */
+export type BackgroundLlmGate = <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 
 class VisionUnsupportedModelError extends Error {
   constructor(modelLabel: string) {
@@ -301,6 +317,7 @@ export class BotApplication {
   private readonly participationService: GroupParticipationService;
   private readonly maintenanceScheduler: MaintenanceScheduler;
   private readonly explicitMemoryService?: ExplicitMemoryService;
+  private backgroundLlmGate?: BackgroundLlmGate;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -347,6 +364,8 @@ export class BotApplication {
     private readonly conversationContextRouter?: ConversationContextRouter,
     /** Present for V3 composition; omitted only by pre-cutover compatibility embeddings. */
     private readonly capabilityPolicy?: RuntimeCapabilityPolicy,
+    /** Durable static HTML publisher, absent only in older compatibility embeddings. */
+    private readonly htmlPreviewService?: Pick<HtmlPreviewService, "enqueue" | "processNext" | "cleanup">,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -360,6 +379,7 @@ export class BotApplication {
         { id: "scheduled-reminder", intervalMs: BOT_MAINTENANCE_INTERVALS.scheduledReminder, run: () => this.runScheduledReminderTick() },
         { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
+        { id: "html-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runHtmlPreviewCleanupTick() },
       ],
       pollIntervalMs: BOT_MAINTENANCE_INTERVALS.poll,
     });
@@ -390,6 +410,24 @@ export class BotApplication {
 
   private async getRuntimeCommands(): Promise<SystemCommandConfig[]> {
     return readRuntimeCommands(this.systemSettingsStore);
+  }
+
+  /**
+   * Kept public for the Worker key selector so an explicit page request gets
+   * the dedicated per-group FIFO queue before generic participation routing.
+   */
+  async getHtmlPreviewRequest(text: string, hasAtBot: boolean): Promise<ParsedHtmlPreviewRequest | undefined> {
+    const commands = await this.getRuntimeCommands();
+    const command = matchRuntimeCommand(text, commands, "html_preview");
+    if (command?.suffix.trim()) {
+      return { request: command.suffix.trim(), source: "command" };
+    }
+    // A disabled runtime command remains disabled. Do not let the pure parser
+    // reinterpret its literal `#网页` spelling as a natural-language request.
+    if (text.trim().startsWith("#")) {
+      return undefined;
+    }
+    return parseHtmlPreviewRequest(text, hasAtBot);
   }
 
   private async getTokenCostControl(): Promise<TokenCostControlSettings> {
@@ -649,6 +687,25 @@ export class BotApplication {
         return;
       }
       await this.handleScheduledReminderCommand(groupConfig, event, scheduledReminderCommand.rewrittenText);
+      return;
+    }
+
+    const htmlPreviewCommand = matchRuntimeCommand(commandText, runtimeCommands, "html_preview");
+    if (htmlPreviewCommand) {
+      const request = htmlPreviewCommand.suffix.trim();
+      if (!request) {
+        await this.sendText(groupId, `网页命令格式：${runtimeCommandPrimary(runtimeCommands, "html_preview")} <需求>`);
+        return;
+      }
+      await this.handleHtmlPreviewRequest(groupConfig, event, { request, source: "command" }, signal);
+      return;
+    }
+
+    const naturalHtmlPreviewRequest = commandText.trim().startsWith("#")
+      ? undefined
+      : parseHtmlPreviewRequest(parsedMessage.text, parsedMessage.hasAtBot);
+    if (naturalHtmlPreviewRequest?.source === "natural") {
+      await this.handleHtmlPreviewRequest(groupConfig, event, naturalHtmlPreviewRequest, signal);
       return;
     }
 
@@ -923,6 +980,11 @@ export class BotApplication {
     this.llmGate = gate;
   }
 
+  /** Injects the worker's shared LLM gate for non-conversation model work. */
+  setBackgroundLlmGate(gate: BackgroundLlmGate): void {
+    this.backgroundLlmGate = gate;
+  }
+
   private async runLiveChatTick(): Promise<void> {
     if (!this.isCapabilityEnabled("conversation")) {
       return;
@@ -1165,6 +1227,83 @@ export class BotApplication {
       logWarn("Failed to clear daily report store.", {
         error: (error as Error).message,
       });
+    }
+  }
+
+  private async runHtmlPreviewCleanupTick(): Promise<void> {
+    if (!this.htmlPreviewService) {
+      return;
+    }
+    try {
+      const result = await this.htmlPreviewService.cleanup();
+      if (result.expired || result.temp || result.orphans) {
+        logInfo("Cleaned generated HTML previews.", result);
+      }
+    } catch (error) {
+      logWarn("Failed to clean generated HTML previews.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleHtmlPreviewRequest(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    request: ParsedHtmlPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    if (!this.isCapabilityEnabled("html_preview")) {
+      await this.rejectCapability(groupId, "html_preview");
+      return;
+    }
+    if (groupConfig.htmlPreviewEnabled === false) {
+      await this.sendText(groupId, "本群网页预览功能已关闭");
+      return;
+    }
+    if (!this.htmlPreviewService) {
+      logWarn("HTML preview request received without a publisher service.", { groupId });
+      await this.sendText(groupId, HTML_PREVIEW_FAILURE_MESSAGE);
+      return;
+    }
+
+    try {
+      const queued = await this.htmlPreviewService.enqueue({
+        groupId,
+        creatorUserId: String(event.user_id),
+        sourceMessageId: String(event.message_id),
+        request: request.request,
+      });
+      const route = await this.getReplyAiRoute(groupConfig);
+      const result = await this.htmlPreviewService.processNext({
+        id: queued.page.id,
+        request: request.request,
+        signal,
+        generate: async (pageRequest, pageSignal) => {
+          const call = () => route.service.generateStaticHtml({
+            request: pageRequest,
+            signal: pageSignal ?? signal,
+          });
+          return this.backgroundLlmGate
+            ? this.backgroundLlmGate(call, pageSignal ?? signal)
+            : call();
+        },
+      });
+      logInfo("Handled HTML preview request.", {
+        groupId,
+        sourceMessageId: String(event.message_id),
+        source: request.source,
+        created: queued.created,
+        status: result.status,
+        pageId: queued.page.id,
+      });
+    } catch (error) {
+      logError("HTML preview generation could not be queued.", {
+        groupId,
+        sourceMessageId: String(event.message_id),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await this.sendText(groupId, HTML_PREVIEW_FAILURE_MESSAGE);
     }
   }
 

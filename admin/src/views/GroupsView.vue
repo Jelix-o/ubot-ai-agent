@@ -78,6 +78,7 @@ function defaultGroupConfig(): GroupConfig {
     defaultVoiceReplyEnabled: false,
     onlineLookupEnabled: false,
     visionEnabled: false,
+    htmlPreviewEnabled: true,
   };
 }
 
@@ -468,6 +469,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
           <label><input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" /> 自动查询实时资料</label>
           <label><input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" /> 图片理解</label>
+          <label><input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" /> 静态网页预览</label>
           <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
             <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
           </label>

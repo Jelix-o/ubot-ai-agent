@@ -23,7 +23,7 @@ const requiredDeployerMarkers = [
   "cutover_may_have_started=1",
   "restore_napcat_config",
   "restore_persistent_env",
-  "restore_nginx_config",
+  "restore_preview_nginx_files",
   "restore_unit_files",
   "if [[ \"$cutover_may_have_started\" -eq 0 && \"$old_legacy_active\" -eq 1 ]]; then",
   "Do not restart the legacy service",

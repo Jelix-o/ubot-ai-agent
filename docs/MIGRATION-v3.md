@@ -61,16 +61,18 @@ restricted backup.
 
 ## Completion Checks
 
-1. Confirm the SQLite migration ledger contains versions `1` through `9` and
+1. Confirm the SQLite migration ledger contains versions `1` through `10` and
    `v3_state_meta` contains the V3 cutover marker.
    An existing-cutover upgrade can also record an audited, one-time packaged
    Huixian profile revision. It reads only the release asset, not retired
    runtime JSON; the revision marker prevents later redeploys from replacing
    an administrator's subsequent persona edits.
+   V3.0.4 additionally appends the explicitly authorized `html_preview`
+   capability to the existing policy without broadening any other capability.
 2. Start `ubot.target`, then confirm `ubot-ingress.service`,
    `ubot-worker.service`, and `ubot-admin.service` are active.
 3. Confirm `ubot-maintenance.timer` is enabled. It removes expired raw message
-   metadata and encrypted rollback archives.
+   metadata, encrypted rollback archives and 30-day generated preview pages.
 4. Sign in over HTTPS, complete TOTP enrollment when required, and perform one
    `@机器人` message plus one reply to a confirmed bot message.
 

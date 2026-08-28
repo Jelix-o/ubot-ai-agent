@@ -73,6 +73,8 @@ $itemsToCopy = @(
   ".env.example",
   ".env.server-2022.example",
   "deploy/nginx/bot.9958.uk.conf",
+  "deploy/nginx/preview.9958.uk.conf",
+  "deploy/nginx/ubot-preview-static.conf",
   "deploy/systemd/ubot-ingress.service.template",
   "deploy/systemd/ubot-worker.service.template",
   "deploy/systemd/ubot-admin.service.template",

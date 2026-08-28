@@ -11,6 +11,7 @@ export type RuntimeAiService = Pick<
   AiService,
   | "checkHealth"
   | "generateReply"
+  | "generateStaticHtml"
   | "evaluateReplyDesire"
   | "evaluateControlledMention"
   | "generateDailyReportInsights"
@@ -72,6 +73,14 @@ export class ConfiguredAiService implements RuntimeAiService {
 
   async generateReply(args: Parameters<AiService["generateReply"]>[0]): ReturnType<AiService["generateReply"]> {
     return (await this.resolveService()).generateReply(args);
+  }
+
+  async generateStaticHtml(
+    args: Parameters<AiService["generateStaticHtml"]>[0],
+  ): ReturnType<AiService["generateStaticHtml"]> {
+    // Static previews intentionally use the same selected reply model as the
+    // group conversation. They are not a summary or custom-model workload.
+    return (await this.resolveService("reply")).generateStaticHtml(args);
   }
 
   async evaluateReplyDesire(

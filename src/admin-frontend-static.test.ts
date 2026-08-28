@@ -101,3 +101,26 @@ test("admin hides compatibility routes and loads a missing member cache explicit
   assert.match(server, /napcat_members_unavailable/);
   assert.match(adminEntry, /listGroupMembersStrict/);
 });
+
+test("admin manages HTML preview metadata without embedding generated page content", async () => {
+  const [router, shell, previewView, api, groups, server] = await Promise.all([
+    readAdmin("router.ts"),
+    readAdmin("App.vue"),
+    readAdmin(path.join("views", "HtmlPreviewsView.vue")),
+    readAdmin(path.join("services", "api.ts")),
+    readAdmin(path.join("views", "GroupsView.vue")),
+    readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
+  ]);
+
+  assert.match(router, /path:\s*"\/html-previews"/);
+  assert.match(shell, /"html-previews"/);
+  assert.match(api, /interface HtmlPreviewMetadata/);
+  assert.match(groups, /htmlPreviewEnabled/);
+  assert.match(previewView, /\/api\/html-previews/);
+  assert.match(previewView, /rel="noopener noreferrer"/);
+  assert.match(previewView, /url\.hostname !== "preview\.9958\.uk"/);
+  assert.match(server, /handleHtmlPreviews/);
+  assert.match(server, /html_preview_delete/);
+  assert.match(server, /page\.items\.map\(formatHtmlPreviewForAdmin\)/);
+  assert.match(server, /generated HTML/);
+});

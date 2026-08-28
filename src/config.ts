@@ -77,6 +77,8 @@ export function loadConfig(): AppConfig {
     ttsAllowNapCatAiFallback,
     ttsCacheDir: path.join(dataDir, "tts-cache"),
     dataDir,
+    htmlPreviewPublicBaseUrl: optionalEnv("HTML_PREVIEW_PUBLIC_BASE_URL") ?? "https://preview.9958.uk",
+    htmlPreviewRoot: optionalEnv("HTML_PREVIEW_ROOT") ?? path.join(dataDir, "generated-pages"),
     botQq: requireEnv("BOT_QQ"),
     groupsConfigPath: path.join(cwd, "config", "groups.json"),
     skillsDir: path.join(cwd, "skills"),

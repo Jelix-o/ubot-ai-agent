@@ -38,12 +38,14 @@ test("V3 Linux deployer verifies assets, migrates once, and atomically selects c
   assert.match(deployer, /Do not restart the legacy service/);
   assert.match(deployer, /restore_napcat_config/);
   assert.match(deployer, /restore_persistent_env/);
-  assert.match(deployer, /restore_nginx_config/);
+  assert.match(deployer, /restore_preview_nginx_files/);
   assert.match(deployer, /mv -Tf .*CURRENT_LINK/);
   assert.match(deployer, /systemctl disable "\$LEGACY_SERVICE"/);
   assert.match(deployer, /systemctl start ubot\.target/);
   assert.match(deployer, /systemctl start ubot-maintenance\.timer/);
-  assert.match(deployer, /UBOT_NGINX_CONFIG/);
+  assert.match(deployer, /PREVIEW_NGINX_CONFIG="\/etc\/nginx\/sites-available\/preview-9958"/);
+  assert.match(deployer, /PREVIEW_NGINX_INCLUDE="\/etc\/nginx\/ubot-preview-static\.conf"/);
+  assert.match(deployer, /PREVIEW_NGINX_ENABLED_LINK="\/etc\/nginx\/sites-enabled\/preview-9958"/);
   assert.match(deployer, /onebot11_428881701\.json/);
   assert.match(deployer, /network\.websocketClients\.0\.url/);
   assert.match(deployer, /NAPCAT_URL_PATH="network\.websocketClients\.0\.url"/);

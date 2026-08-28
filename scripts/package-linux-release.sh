@@ -62,6 +62,8 @@ for release_path in \
   scripts/migrate-v3-state.mjs \
   scripts/verify-release-source.mjs \
   deploy/nginx/bot.9958.uk.conf \
+  deploy/nginx/preview.9958.uk.conf \
+  deploy/nginx/ubot-preview-static.conf \
   deploy/systemd/ubot-ingress.service.template \
   deploy/systemd/ubot-worker.service.template \
   deploy/systemd/ubot-admin.service.template \

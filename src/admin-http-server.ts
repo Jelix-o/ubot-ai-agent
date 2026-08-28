@@ -63,6 +63,11 @@ interface AdminHttpServerOptions {
   systemSettingsStore?: SystemSettingsStore;
   adminTaskStore?: AdminTaskStore;
   modelHealthHistoryStore?: ModelHealthHistoryStore;
+  /**
+   * Optional so an admin process stays runnable during rolling upgrades.
+   * Preview routes fail closed until the durable publisher is wired in.
+   */
+  htmlPreviewService?: HtmlPreviewAdminService;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>;
@@ -119,6 +124,38 @@ class AdminRequestBodyError extends Error {
   ) {
     super(code);
   }
+}
+
+/**
+ * Admin-facing structural contract. It contains metadata only: generated HTML
+ * stays on the isolated preview origin and never enters admin JSON responses.
+ */
+interface HtmlPreviewAdminMetadata {
+  id: string;
+  groupId: string;
+  creatorUserId?: string;
+  title: string;
+  previewUrl: string;
+  status: string;
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+  byteSize?: number;
+}
+
+interface HtmlPreviewAdminService {
+  listPage(args: {
+    groupId?: string;
+    visibleGroupIds?: string[];
+    page?: number;
+    pageSize?: number;
+    status?: "pending" | "published" | "failed" | "expired" | "deleted";
+  }): Promise<{
+    items: HtmlPreviewAdminMetadata[];
+    pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  }>;
+  get(id: string): Promise<HtmlPreviewAdminMetadata | undefined>;
+  remove(id: string): Promise<boolean>;
 }
 
 class MemberDirectoryUnavailableError extends Error {
@@ -760,6 +797,17 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/html-previews") {
+      await this.handleHtmlPreviews(req, res, url, session);
+      return;
+    }
+
+    const htmlPreviewRoute = matchRoute(pathname, /^\/api\/html-previews\/([^/]+)$/);
+    if (htmlPreviewRoute) {
+      await this.handleHtmlPreviewItem(req, res, htmlPreviewRoute.id, session);
+      return;
+    }
+
     if (pathname === "/api/memories") {
       await this.handleMemories(req, res, url, session);
       return;
@@ -998,6 +1046,82 @@ export class AdminHttpServer {
     }
     const status = result.kind === "disabled" ? 403 : result.kind === "invalid_challenge" ? 400 : 401;
     this.sendJson(res, { error: result.kind }, status);
+  }
+
+  private async handleHtmlPreviews(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
+    const service = this.options.htmlPreviewService;
+    if (!service) {
+      this.sendJson(res, { error: "html_previews_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "GET") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+
+    const requestedGroupId = url.searchParams.get("groupId") ?? undefined;
+    const groupId = await this.normalizeAccessibleGroupId(session, requestedGroupId);
+    if (groupId === false) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const status = normalizeHtmlPreviewStatus(url.searchParams.get("status") ?? undefined);
+    if ((url.searchParams.get("status") ?? "") && !status) {
+      this.sendJson(res, { error: "invalid_html_preview_status" }, 400);
+      return;
+    }
+
+    const visibleGroupIds = session.role === "super_admin"
+      ? undefined
+      : (await this.visibleGroups(session)).map((group) => group.groupId);
+    const page = await service.listPage({
+      ...(groupId ? { groupId } : {}),
+      ...(visibleGroupIds ? { visibleGroupIds } : {}),
+      ...(status ? { status } : {}),
+      ...paginationParams(url, 20, 100),
+    });
+    // Do not spread repository records. Its internal data may contain source
+    // ids or disk hashes, but the admin surface intentionally returns only
+    // user-visible metadata.
+    this.sendJson(res, {
+      previews: page.items.map(formatHtmlPreviewForAdmin),
+      pagination: page.pagination,
+    });
+  }
+
+  private async handleHtmlPreviewItem(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    const service = this.options.htmlPreviewService;
+    if (!service) {
+      this.sendJson(res, { error: "html_previews_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "DELETE") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+
+    const preview = await service.get(id);
+    if (!preview) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (!(await this.canAccessGroup(session, preview.groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const removed = await service.remove(id);
+    if (!removed) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    await this.recordOperation({
+      session,
+      groupId: preview.groupId,
+      action: "html_preview_delete",
+      target: preview.id,
+      detail: "manual_delete",
+    });
+    this.sendJson(res, { ok: true });
   }
 
   private async handleTasks(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -2902,6 +3026,47 @@ function normalizeTaskStatus(value: string | undefined): AdminTaskStatus | undef
     : undefined;
 }
 
+type HtmlPreviewStatus = "pending" | "published" | "failed" | "expired" | "deleted";
+
+function normalizeHtmlPreviewStatus(value: string | undefined): HtmlPreviewStatus | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "pending" ||
+    normalized === "published" ||
+    normalized === "failed" ||
+    normalized === "expired" ||
+    normalized === "deleted"
+    ? normalized
+    : undefined;
+}
+
+function formatHtmlPreviewForAdmin(preview: HtmlPreviewAdminMetadata): {
+  id: string;
+  groupId: string;
+  creatorUserId?: string;
+  title: string;
+  previewUrl: string;
+  status: HtmlPreviewStatus;
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+  byteSize?: number;
+} {
+  return {
+    id: preview.id,
+    groupId: preview.groupId,
+    ...(preview.creatorUserId ? { creatorUserId: preview.creatorUserId } : {}),
+    title: preview.title.slice(0, 240),
+    previewUrl: preview.previewUrl,
+    status: normalizeHtmlPreviewStatus(preview.status) ?? "failed",
+    createdAt: preview.createdAt,
+    expiresAt: preview.expiresAt,
+    ...(preview.deletedAt ? { deletedAt: preview.deletedAt } : {}),
+    ...(typeof preview.byteSize === "number" && Number.isFinite(preview.byteSize) && preview.byteSize >= 0
+      ? { byteSize: Math.floor(preview.byteSize!) }
+      : {}),
+  };
+}
+
 function progressForMemoryDedupEvent(event: MemoryDedupProgressEvent, mode: "fast" | "deep"): number {
   if (event.phase === "loaded") return 18;
   if (event.phase === "local_scanned") return mode === "deep" && event.semanticPairLimit > 0 ? 35 : 80;
@@ -2985,6 +3150,7 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "defaultVoiceReplyEnabled",
     "onlineLookupEnabled",
     "visionEnabled",
+    "htmlPreviewEnabled",
   ]);
   const update = Object.fromEntries(Object.entries(body).filter(([key]) => permitted.has(key)));
   if ("memoryDisabledUserIds" in body) {

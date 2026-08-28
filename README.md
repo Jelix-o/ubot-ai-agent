@@ -1,8 +1,8 @@
-# UBot V3.0.3
+# UBot V3.0.4
 
-UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.3 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报和节日倒计时；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
+UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.4 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时和静态网页预览；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.3.md](RELEASE-v3.0.3.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.4.md](RELEASE-v3.0.4.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
 
 ## V3 架构
 
@@ -26,6 +26,7 @@ V3 使用 SQLite 保存群配置、系统设置、会仙 Character Profile、Kno
 - 导入时只接受 `admin`、`explicit_command`、`explicit_request` 来源的记忆。候选记忆、自动画像、旧人格和旧对话素材进入加密的七天回滚归档，不进入运行数据库。
 - 原始群消息和附件元数据保留最多七天。日报保留结果，不依赖长期保存的原始内容。
 - OpenAI-compatible provider 保留，Anthropic 使用官方 SDK 和明确的 capability 合约处理流式、视觉、超时与降级。
+- `#网页 <需求>`、`#html <需求>` 或明确 `@会仙 生成网页/HTML/静态页面` 会创建一个独立、30 天有效的静态预览链接。页面只允许自包含 HTML/CSS/浏览器端 JavaScript，发布在 `https://preview.9958.uk`，绝不与后台 Cookie 或 API 共用 `bot.9958.uk` 域。
 - 未授权访问 `/api/health` 返回 `401` 是预期行为，不是健康检查失败。
 
 完整的群内命令说明见 [COMMANDS.md](COMMANDS.md)。
@@ -68,6 +69,7 @@ cp .env.example .env
 | `NAPCAT_ACCESS_TOKEN` | 非本地 ingress 监听时必须设置的 NapCat 令牌 |
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | 默认回复模型 |
 | `ADMIN_HTTP_*` | 后台监听和公开 HTTPS 地址 |
+| `HTML_PREVIEW_PUBLIC_BASE_URL` / `HTML_PREVIEW_ROOT` | 独立预览域与持久化的模型生成页面目录；生产固定为 `https://preview.9958.uk` 和 `data/generated-pages`（或其受限子目录） |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 仅账户表为空时导入第一个超级管理员 |
 | `UBOT_STATE_ENCRYPTION_KEY` | V3 状态、TOTP 和回滚归档的 32-byte 主密钥（64 位 hex 或 base64url），使用 HKDF 用途隔离 |
 
@@ -100,32 +102,33 @@ npm run package:all
 命令生成以下四个发布资产，并重新验证 SHA-256：
 
 ```text
-release/ubot-3.0.3-win.zip
-release/ubot-3.0.3-win.zip.sha256
-release/ubot-3.0.3-linux.tar.gz
-release/ubot-3.0.3-linux.tar.gz.sha256
+release/ubot-3.0.4-win.zip
+release/ubot-3.0.4-win.zip.sha256
+release/ubot-3.0.4-linux.tar.gz
+release/ubot-3.0.4-linux.tar.gz.sha256
 ```
 
 发布包不包含 `.env`、数据库、日志、`data/`、`config/`、旧 `skills/`、私钥或任何持久群资料。Windows 使用 `run.cmd` 启动三种角色；已有旧数据时，先按上节显式运行切换迁移，不要让启动脚本猜测迁移时机。
 
-正式路径由 GitHub Actions 在匹配的最终 `v3.0.3` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
+正式路径由 GitHub Actions 在匹配的最终 `v3.0.4` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
 
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:7897"
 npm run release:github
 ```
 
-GitHub Actions 在 `v3.0.3` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
+GitHub Actions 在 `v3.0.4` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
 
 ## Linux 生产部署
 
-生产使用 `ubuntu@43.212.131.90` 上的 `bot.9958.uk`，但部署命令不应将私钥、密码或令牌写入仓库。部署前阅读 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)。概要如下：
+生产使用 `ubuntu@43.212.131.90` 上的 `bot.9958.uk` 与独立静态预览域 `preview.9958.uk`，但部署命令不应将私钥、密码或令牌写入仓库。部署前阅读 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)。概要如下：
 
 ```bash
-sha256sum -c ubot-3.0.3-linux.tar.gz.sha256 # matching GitHub Release asset
+sha256sum -c ubot-3.0.4-linux.tar.gz.sha256 # matching GitHub Release asset
 UBOT_NAPCAT_CONFIG=/opt/napcat/config/onebot11_428881701.json \
-  UBOT_NGINX_CONFIG=/absolute/path/to/active-bot.9958.uk.conf \
-  bash scripts/deploy-linux-release.sh 3.0.3 ubot-3.0.3-linux.tar.gz
+  UBOT_PREVIEW_CERT_PATH=/etc/ssl/cloudflare/preview.9958.uk.pem \
+  UBOT_PREVIEW_KEY_PATH=/etc/ssl/cloudflare/preview.9958.uk.key \
+  bash scripts/deploy-linux-release.sh 3.0.4 ubot-3.0.4-linux.tar.gz
 ```
 
-部署会使用 `172.21.0.1:6199` 作为 Docker 中 NapCat 访问宿主 Ingress 的反向 WebSocket 地址。`6198` 和 `6200` 继续仅监听回环地址；不修改 UFW 或 AWS 安全组。Nginx 模板位于 [deploy/nginx/bot.9958.uk.conf](deploy/nginx/bot.9958.uk.conf)，固定写入 `X-Forwarded-Proto: https`，不会信任可伪造的客户端请求头。
+部署会使用 `172.21.0.1:6199` 作为 Docker 中 NapCat 访问宿主 Ingress 的反向 WebSocket 地址。`6198` 和 `6200` 继续仅监听回环地址；不修改 UFW 或 AWS 安全组。预览站点的 Nginx 模板位于 [deploy/nginx/preview.9958.uk.conf](deploy/nginx/preview.9958.uk.conf) 和 [deploy/nginx/ubot-preview-static.conf](deploy/nginx/ubot-preview-static.conf)：它们仅静态服务随机页面路径，不代理后台/API，也不会覆盖 `bot.9958.uk` 或其他现有 vhost。

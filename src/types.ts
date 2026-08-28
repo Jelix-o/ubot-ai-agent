@@ -330,6 +330,8 @@ export interface GroupBotConfig {
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
+  /** Static HTML preview publishing is enabled for configured groups by default. */
+  htmlPreviewEnabled?: boolean;
 }
 
 export interface GroupsConfigFile {
@@ -510,6 +512,10 @@ export interface AppConfig {
   ttsAllowNapCatAiFallback: boolean;
   ttsCacheDir: string;
   dataDir: string;
+  /** Public origin deliberately separate from the authenticated admin host. */
+  htmlPreviewPublicBaseUrl: string;
+  /** Persistent directory; never a release-owned path. */
+  htmlPreviewRoot: string;
   botQq: string;
   groupsConfigPath: string;
   skillsDir: string;

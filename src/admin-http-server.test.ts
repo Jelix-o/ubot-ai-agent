@@ -21,6 +21,86 @@ const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef01234567
 
 type Auth = { cookie: string; csrf: string; session: { userId: string; username: string; role: string; allowedGroupIds: string[] } };
 
+type HtmlPreviewTestItem = {
+  id: string;
+  groupId: string;
+  creatorUserId: string;
+  title: string;
+  previewUrl: string;
+  status: "pending" | "published" | "failed" | "expired" | "deleted";
+  createdAt: string;
+  expiresAt: string;
+  byteSize: number;
+  /** Deliberately present in the fake to prove the API filters it out. */
+  html: string;
+};
+
+type HtmlPreviewTestService = {
+  listPage(args: {
+    groupId?: string;
+    visibleGroupIds?: string[];
+    page?: number;
+    pageSize?: number;
+    status?: string;
+  }): Promise<{ items: HtmlPreviewTestItem[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>;
+  get(id: string): Promise<HtmlPreviewTestItem | undefined>;
+  remove(id: string): Promise<boolean>;
+};
+
+function createHtmlPreviewTestService(): HtmlPreviewTestService {
+  let items: HtmlPreviewTestItem[] = [
+    {
+      id: "preview-allowed",
+      groupId: "67890",
+      creatorUserId: "20001",
+      title: "已授权页面",
+      previewUrl: "https://preview.9958.uk/p/abcdefghijklmnopqrstuvwx_0123456789ABCDEF/",
+      status: "published",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-31T00:00:00.000Z",
+      byteSize: 1024,
+      html: "<script>throw new Error('must never leave the service')</script>",
+    },
+    {
+      id: "preview-forbidden",
+      groupId: "100200",
+      creatorUserId: "20002",
+      title: "未授权页面",
+      previewUrl: "https://preview.9958.uk/p/zyxwvutsrqponmlkjihgfe_9876543210FEDCBA/",
+      status: "published",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      expiresAt: "2026-02-01T00:00:00.000Z",
+      byteSize: 2048,
+      html: "<main>private</main>",
+    },
+  ];
+
+  return {
+    async listPage(args) {
+      const filtered = items.filter((item) => (
+        (!args.groupId || item.groupId === args.groupId) &&
+        (!args.visibleGroupIds || args.visibleGroupIds.includes(item.groupId)) &&
+        (!args.status || item.status === args.status)
+      ));
+      const pageSize = args.pageSize ?? 20;
+      const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+      const page = Math.min(Math.max(1, args.page ?? 1), totalPages);
+      return {
+        items: filtered.slice((page - 1) * pageSize, page * pageSize),
+        pagination: { page, pageSize, total: filtered.length, totalPages },
+      };
+    },
+    async get(id) {
+      return items.find((item) => item.id === id);
+    },
+    async remove(id) {
+      const previousLength = items.length;
+      items = items.filter((item) => item.id !== id);
+      return items.length !== previousLength;
+    },
+  };
+}
+
 const huixian: CharacterProfile = {
   id: "huixian",
   name: "会仙",
@@ -33,7 +113,10 @@ const huixian: CharacterProfile = {
 
 async function startFixture(
   t: test.TestContext,
-  options: { listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]> } = {},
+  options: {
+    listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
+    htmlPreviewService?: HtmlPreviewTestService;
+  } = {},
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-v3-"));
   const db = new SharedDb(path.join(dir, "bot-shared.db"));
@@ -67,6 +150,7 @@ async function startFixture(
   const operations = new AdminOperationLogService(path.join(dir, "operations.jsonl"), repository);
   const settings = new SystemSettingsStore(path.join(dir, "settings.json"), [], undefined, repository);
   const characterProfileService = new CharacterProfileService(repository, { bootstrapProfile: huixian });
+  const htmlPreviewService = options.htmlPreviewService ?? createHtmlPreviewTestService();
   await characterProfileService.ensureHuixianProfile("test-bootstrap");
   await memories.create({
     groupId: "67890",
@@ -90,6 +174,7 @@ async function startFixture(
     knowledgeBaseStore: knowledge,
     characterProfileService,
     systemSettingsStore: settings,
+    htmlPreviewService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
     ...(options.listGroupMembers ? { listGroupMembers: options.listGroupMembers } : {}),
@@ -107,7 +192,7 @@ async function startFixture(
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, db, memories, operations };
+  return { baseUrl, db, memories, operations, htmlPreviewService };
 }
 
 async function request(baseUrl: string, pathname: string, options: RequestInit = {}): Promise<Response> {
@@ -352,6 +437,94 @@ test("group administrators are limited to authorized groups and operational feat
     headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken },
   });
   assert.equal(restore.status, 403);
+});
+
+test("HTML preview admin endpoints expose metadata only, enforce group scope, CSRF, and audit deletion", async (t) => {
+  const { baseUrl, operations } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+
+  const list = await request(baseUrl, "/api/html-previews?groupId=67890", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(list.status, 200);
+  const listData = await list.json() as {
+    previews: Array<Record<string, unknown>>;
+    pagination: { total: number };
+  };
+  assert.equal(listData.pagination.total, 1);
+  assert.deepEqual(Object.keys(listData.previews[0]!).sort(), [
+    "byteSize",
+    "createdAt",
+    "creatorUserId",
+    "expiresAt",
+    "groupId",
+    "id",
+    "previewUrl",
+    "status",
+    "title",
+  ]);
+  assert.equal(Object.hasOwn(listData.previews[0]!, "html"), false);
+  assert.equal(listData.previews[0]?.title, "已授权页面");
+
+  const missingCsrf = await request(baseUrl, "/api/html-previews/preview-allowed", {
+    method: "DELETE",
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(missingCsrf.status, 403);
+
+  const deleted = await request(baseUrl, "/api/html-previews/preview-allowed", {
+    method: "DELETE",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf },
+  });
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(await deleted.json(), { ok: true });
+  assert.equal((await operations.list({ groupId: "67890" })).some((entry) => (
+    entry.action === "html_preview_delete" && entry.target === "preview-allowed"
+  )), true);
+
+  const afterDelete = await request(baseUrl, "/api/html-previews?groupId=67890", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal((await afterDelete.json() as { pagination: { total: number } }).pagination.total, 0);
+});
+
+test("group administrators cannot list or delete HTML previews outside their grants", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const inviteResponse = await request(baseUrl, "/api/admin-accounts/invites", {
+    method: "POST",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
+  });
+  const invite = await inviteResponse.json() as { token: string };
+  const accepted = await request(baseUrl, "/api/auth/invites/accept", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ inviteToken: invite.token, username: "preview-operator", password: "operator-password" }),
+  });
+  const enrollment = await accepted.json() as { enrollmentToken: string; totpSecret: string };
+  const enrolled = await request(baseUrl, "/api/auth/totp/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enrollmentToken: enrollment.enrollmentToken, code: makeTotp(enrollment.totpSecret) }),
+  });
+  const cookie = enrolled.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.ok(cookie);
+  const session = await request(baseUrl, "/api/session", { headers: { Cookie: cookie } });
+  const groupAdmin = await session.json() as { csrfToken: string };
+
+  const allowedList = await request(baseUrl, "/api/html-previews?groupId=67890", { headers: { Cookie: cookie } });
+  assert.equal(allowedList.status, 200);
+  assert.equal((await allowedList.json() as { pagination: { total: number } }).pagination.total, 1);
+
+  const crossGroupList = await request(baseUrl, "/api/html-previews?groupId=100200", { headers: { Cookie: cookie } });
+  assert.equal(crossGroupList.status, 403);
+
+  const crossGroupDelete = await request(baseUrl, "/api/html-previews/preview-forbidden", {
+    method: "DELETE",
+    headers: { Cookie: cookie, "X-CSRF-Token": groupAdmin.csrfToken },
+  });
+  assert.equal(crossGroupDelete.status, 403);
 });
 
 test("member directory stays cache-only until refresh, then returns a cached NapCat snapshot", async (t) => {
