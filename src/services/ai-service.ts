@@ -349,6 +349,7 @@ export class AiService {
           "You generate a single self-contained static HTML page from a product requirement.",
           "Return exactly one valid JSON object and no markdown, prose, code fence, or leading/trailing text.",
           'Its exact schema is {"title":"short page title","html":"complete HTML document"}. Both fields must be strings.',
+          "Keep the entire JSON response under 12000 characters. Prefer a concise SVG scene and reusable CSS classes over decorative detail.",
           "The html value must contain a complete HTML document and may use only inline CSS and inline browser JavaScript.",
           "Inline SVG is allowed only for self-contained shapes and text. Omit xmlns, links, external resources, image/use/foreignObject, and SMIL animation tags.",
           "Omit meta elements. SVG may use only svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, and desc elements.",
@@ -376,7 +377,9 @@ export class AiService {
         messages,
         max_tokens: this.staticHtmlRequestOptions.maxCompletionTokens,
         stream: false,
-        ...(isDeepSeekApiEndpoint(this.baseURL) ? { thinking: { type: "disabled" } } : {}),
+        ...(isDeepSeekApiEndpoint(this.baseURL)
+          ? { thinking: { type: "disabled" }, response_format: { type: "json_object" } }
+          : {}),
         signal: controller.signal,
       } as any) as OpenAI.Chat.Completions.ChatCompletion;
       const text = completion.choices[0]?.message?.content?.trim();

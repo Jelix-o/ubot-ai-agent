@@ -436,6 +436,7 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
     messages?: Array<{ role?: string; content?: string }>;
     signal?: AbortSignal;
     thinking?: { type?: string };
+    response_format?: { type?: string };
   }> = [];
   const service = new AiService("https://example.invalid/v1", "test-key", "preview-model", {
     async create(args: typeof requests[number]) {
@@ -460,6 +461,7 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
   assert.equal(requests[0]?.stream, false);
   assert.equal(requests[0]?.signal instanceof AbortSignal, true);
   assert.equal(requests[0]?.thinking, undefined);
+  assert.equal(requests[0]?.response_format, undefined);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /Return exactly one valid JSON object/);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /fetch\/XMLHttpRequest\/WebSocket/);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /Animate SVG with inline CSS @keyframes/);
@@ -467,10 +469,10 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
   assert.doesNotMatch(requests[0]?.messages?.[0]?.content ?? "", /雷总私聊版/);
 });
 
-test("generateStaticHtml disables DeepSeek thinking so the HTML budget is not consumed by reasoning", async () => {
-  let observed: { thinking?: { type?: string } } | undefined;
+test("generateStaticHtml uses bounded DeepSeek JSON mode without spending the HTML budget on reasoning", async () => {
+  let observed: { thinking?: { type?: string }; response_format?: { type?: string }; messages?: Array<{ content?: string }> } | undefined;
   const service = new AiService("https://api.deepseek.com", "test-key", "deepseek-preview", {
-    async create(args: { thinking?: { type?: string } }) {
+    async create(args: { thinking?: { type?: string }; response_format?: { type?: string }; messages?: Array<{ content?: string }> }) {
       observed = args;
       return { choices: [{ message: { content: '{"title":"x","html":"<!doctype html><html><body>x</body></html>"}' } }] };
     },
@@ -478,6 +480,8 @@ test("generateStaticHtml disables DeepSeek thinking so the HTML budget is not co
 
   await service.generateStaticHtml({ request: "生成网页" });
   assert.deepEqual(observed?.thinking, { type: "disabled" });
+  assert.deepEqual(observed?.response_format, { type: "json_object" });
+  assert.match(observed?.messages?.[0]?.content ?? "", /under 12000 characters/);
 });
 
 test("generateStaticHtml rejects oversized and empty requirements before contacting the provider", async () => {
