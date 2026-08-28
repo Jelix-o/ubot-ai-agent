@@ -12,6 +12,7 @@ const targetUnit = readFileSync(path.resolve("deploy", "systemd", "ubot.target.t
 const maintenanceUnit = readFileSync(path.resolve("deploy", "systemd", "ubot-maintenance.service.template"), "utf8");
 const maintenanceTimer = readFileSync(path.resolve("deploy", "systemd", "ubot-maintenance.timer.template"), "utf8");
 const nginx = readFileSync(path.resolve("deploy", "nginx", "bot.9958.uk.conf"), "utf8");
+const previewNginx = readFileSync(path.resolve("deploy", "nginx", "ubot-preview-static.conf"), "utf8");
 const releaseWorkflow = readFileSync(path.resolve(".github", "workflows", "release.yml"), "utf8");
 const ciWorkflow = readFileSync(path.resolve(".github", "workflows", "ci.yml"), "utf8");
 const localPublisher = readFileSync(path.resolve("scripts", "publish-github-release.ps1"), "utf8");
@@ -179,4 +180,10 @@ test("V3 Nginx terminates HTTPS and safely accommodates Cloudflare Flexible orig
   assert.match(nginx, /Content-Security-Policy/);
   assert.equal((nginx.match(/location ~ \^\/\(\?:\\\.env/g) ?? []).length, 2);
   assert.doesNotMatch(nginx, /assets\(\?:\/\|\$\)/);
+});
+
+test("HTML preview Nginx rewrites directory URLs to one explicit index file", () => {
+  assert.match(previewNginx, /rewrite "\^\/p\/\(\[A-Za-z0-9_-\]\{43\}\)\/\$" \/p\/\$1\/index\.html last;/);
+  assert.ok(previewNginx.includes('location ~ "^/p/([A-Za-z0-9_-]{43})/index\\\\.html$"'));
+  assert.doesNotMatch(previewNginx, /location ~ "\^\/p\/\(\[A-Za-z0-9_-\]\{43\}\)\/\$" \{\s*alias/s);
 });
