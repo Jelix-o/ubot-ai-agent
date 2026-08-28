@@ -616,6 +616,13 @@ const GLOBAL_ATTRIBUTES = new Set([
   "id", "class", "title", "role", "style", "tabindex", "hidden", "dir", "lang",
   "aria-label", "aria-labelledby", "aria-describedby", "aria-expanded", "aria-controls", "aria-live",
 ]);
+const SVG_PRESENTATION_ATTRIBUTES = new Set([
+  "fill", "fill-opacity", "fill-rule", "clip-rule", "stroke", "stroke-width", "stroke-opacity",
+  "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
+  "opacity", "color", "vector-effect", "paint-order", "shape-rendering", "text-rendering",
+  "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "word-spacing",
+  "text-anchor", "dominant-baseline", "visibility", "display",
+]);
 const TAG_ATTRIBUTES: Record<string, ReadonlySet<string>> = {
   a: new Set(["href", "target"]),
   button: new Set(["type", "disabled", "value"]),
@@ -655,7 +662,10 @@ function sanitizeTagAttributes(tag: string, raw: string): string {
     cursor = matcher.lastIndex;
     const name = match[1]!.toLowerCase();
     const attributeValue = match[2] ?? match[3] ?? match[4] ?? "";
-    const allowed = GLOBAL_ATTRIBUTES.has(name) || name.startsWith("data-") || TAG_ATTRIBUTES[tag]?.has(name) === true;
+    const allowed = GLOBAL_ATTRIBUTES.has(name) ||
+      name.startsWith("data-") ||
+      TAG_ATTRIBUTES[tag]?.has(name) === true ||
+      (SVG_TAGS.has(tag) && SVG_PRESENTATION_ATTRIBUTES.has(name));
     if (!allowed || name.startsWith("on")) throw new HtmlPreviewError("html_preview_attribute_disallowed");
     if (name === "href" && !/^#[A-Za-z][A-Za-z0-9_-]*$/.test(attributeValue)) {
       throw new HtmlPreviewError("html_preview_url_disallowed");
@@ -679,7 +689,7 @@ function sanitizeTagAttributes(tag: string, raw: string): string {
 const SVG_TAGS = new Set(["svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "text", "tspan", "desc"]);
 const SVG_NUMBER_ATTRIBUTES = new Set([
   "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy",
-  "width", "height", "stroke-width", "stroke-dashoffset", "pathlength",
+  "width", "height", "stroke-width", "stroke-dashoffset", "stroke-miterlimit", "pathlength", "font-size",
 ]);
 const SVG_PAINT_ATTRIBUTES = new Set(["fill", "stroke"]);
 
@@ -706,7 +716,7 @@ function validateSvgAttribute(name: string, value: string): void {
   if (SVG_PAINT_ATTRIBUTES.has(name) && !/^(?:none|currentColor|transparent|#[0-9A-Fa-f]{3,8}|[A-Za-z]+|rgba?\([0-9.% ,]+\)|hsla?\([0-9.% ,]+\))$/.test(value)) {
     throw new HtmlPreviewError("html_preview_attribute_invalid");
   }
-  if (name === "opacity" && (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(value) || Number(value) < 0 || Number(value) > 1)) {
+  if (["opacity", "fill-opacity", "stroke-opacity"].includes(name) && (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(value) || Number(value) < 0 || Number(value) > 1)) {
     throw new HtmlPreviewError("html_preview_attribute_invalid");
   }
   if (name === "stroke-dasharray" && !/^(?:none|[-+0-9eE.,\s]+)$/.test(value)) {
@@ -714,6 +724,17 @@ function validateSvgAttribute(name: string, value: string): void {
   }
   if (name === "stroke-linecap" && !/^(?:butt|round|square)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
   if (name === "stroke-linejoin" && !/^(?:arcs|bevel|miter|miter-clip|round)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (["fill-rule", "clip-rule"].includes(name) && !/^(?:nonzero|evenodd)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "vector-effect" && value !== "non-scaling-stroke") throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "paint-order" && !/^(?:normal|(?:fill|stroke|markers)(?:\s+(?:fill|stroke|markers)){0,2})$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "shape-rendering" && !/^(?:auto|optimizeSpeed|crispEdges|geometricPrecision)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "text-rendering" && !/^(?:auto|optimizeSpeed|optimizeLegibility|geometricPrecision)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "font-weight" && !/^(?:normal|bold|bolder|lighter|[1-9]00)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "font-style" && !/^(?:normal|italic|oblique)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "font-family" && !/^[A-Za-z0-9\u4E00-\u9FFF ,_'"-]{1,120}$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (["letter-spacing", "word-spacing"].includes(name) && !/^(?:normal|-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|em|rem|%)?)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "visibility" && !/^(?:visible|hidden|collapse)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "display" && !/^(?:none|inline|block)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
   if (name === "text-anchor" && !/^(?:start|middle|end)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
   if (name === "dominant-baseline" && !/^(?:auto|middle|central|hanging|text-after-edge|text-before-edge)$/.test(value)) {
     throw new HtmlPreviewError("html_preview_attribute_invalid");

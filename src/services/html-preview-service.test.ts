@@ -117,6 +117,19 @@ test("static HTML sanitizer removes only the inert default inline SVG namespace"
   );
 });
 
+test("static HTML sanitizer accepts safe SVG typography and presentation attributes", () => {
+  const page = '<!doctype html><html><head><title>x</title></head><body><svg viewBox="0 0 200 100"><g fill="#fff" fill-opacity="0.8" stroke="#234" stroke-miterlimit="4" vector-effect="non-scaling-stroke"><text x="100" y="50" font-size="28" font-weight="700" font-family="Arial, sans-serif" letter-spacing="1px" text-anchor="middle">鹈鹕</text></g></svg></body></html>';
+  const sanitized = sanitizeStaticHtml(page);
+  assert.match(sanitized, /font-size="28"/);
+  assert.match(sanitized, /font-weight="700"/);
+  assert.match(sanitized, /fill-opacity="0.8"/);
+  assert.match(sanitized, /vector-effect="non-scaling-stroke"/);
+  assert.throws(
+    () => sanitizeStaticHtml('<!doctype html><html><head><title>x</title></head><body><svg viewBox="0 0 10 10"><text x="1" y="2" font-family="url(evil)">x</text></svg></body></html>'),
+    (error: unknown) => error instanceof HtmlPreviewError,
+  );
+});
+
 test("static HTML sanitizer rejects active and externally-referenced SVG features", () => {
   for (const fragment of [
     '<svg viewBox="0 0 10 10"><image href="https://example.com/p.png"></image></svg>',
