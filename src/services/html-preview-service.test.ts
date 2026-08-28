@@ -130,6 +130,17 @@ test("static HTML sanitizer accepts safe SVG typography and presentation attribu
   );
 });
 
+test("static HTML sanitizer permits passive SVG attributes without an exhaustive drawing whitelist", () => {
+  const page = '<!doctype html><html><head><title>x</title></head><body><svg viewBox="0 0 20 20"><path d="M0 0L20 20" transform-origin="center" stroke-alignment="center" font-variant="small-caps"></path></svg></body></html>';
+  const sanitized = sanitizeStaticHtml(page);
+  assert.match(sanitized, /transform-origin="center"/);
+  assert.match(sanitized, /stroke-alignment="center"/);
+  assert.throws(
+    () => sanitizeStaticHtml('<!doctype html><html><head><title>x</title></head><body><svg viewBox="0 0 10 10"><path d="M0 0L1 1" href="#external"></path></svg></body></html>'),
+    (error: unknown) => error instanceof HtmlPreviewError && error.code === "html_preview_attribute_disallowed",
+  );
+});
+
 test("static HTML sanitizer rejects active and externally-referenced SVG features", () => {
   for (const fragment of [
     '<svg viewBox="0 0 10 10"><image href="https://example.com/p.png"></image></svg>',

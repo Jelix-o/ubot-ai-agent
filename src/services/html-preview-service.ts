@@ -665,7 +665,7 @@ function sanitizeTagAttributes(tag: string, raw: string): string {
     const allowed = GLOBAL_ATTRIBUTES.has(name) ||
       name.startsWith("data-") ||
       TAG_ATTRIBUTES[tag]?.has(name) === true ||
-      (SVG_TAGS.has(tag) && SVG_PRESENTATION_ATTRIBUTES.has(name));
+      (SVG_TAGS.has(tag) && (SVG_PRESENTATION_ATTRIBUTES.has(name) || isPassiveSvgAttributeName(name)));
     if (!allowed || name.startsWith("on")) throw new HtmlPreviewError("html_preview_attribute_disallowed");
     if (name === "href" && !/^#[A-Za-z][A-Za-z0-9_-]*$/.test(attributeValue)) {
       throw new HtmlPreviewError("html_preview_url_disallowed");
@@ -695,6 +695,9 @@ const SVG_PAINT_ATTRIBUTES = new Set(["fill", "stroke"]);
 
 function validateSvgAttribute(name: string, value: string): void {
   if (!value) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (value.length > 4_096 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
   if (SVG_NUMBER_ATTRIBUTES.has(name) && !/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|px)?$/.test(value)) {
     throw new HtmlPreviewError("html_preview_attribute_invalid");
   }
@@ -739,6 +742,12 @@ function validateSvgAttribute(name: string, value: string): void {
   if (name === "dominant-baseline" && !/^(?:auto|middle|central|hanging|text-after-edge|text-before-edge)$/.test(value)) {
     throw new HtmlPreviewError("html_preview_attribute_invalid");
   }
+}
+
+function isPassiveSvgAttributeName(name: string): boolean {
+  return /^[a-z][a-z0-9-]*$/.test(name) &&
+    !name.startsWith("on") &&
+    !["href", "src", "xmlns"].includes(name);
 }
 
 function rejectUnsafeCss(value: string): void {
