@@ -56,6 +56,7 @@ export interface HtmlPreviewProcessResult {
   previewUrl?: string;
   announcementOutboxId?: number;
   errorCode?: string;
+  failureStage?: "generation" | "repair";
 }
 
 export interface HtmlPreviewServiceOptions {
@@ -93,7 +94,10 @@ interface ParsedModelPage {
 
 /** Error codes are deliberately concise because they can become audit metadata. */
 export class HtmlPreviewError extends Error {
-  constructor(public readonly code: string) {
+  constructor(
+    public readonly code: string,
+    public readonly failureStage?: "generation" | "repair",
+  ) {
     super(code);
     this.name = "HtmlPreviewError";
   }
@@ -294,11 +298,12 @@ export class HtmlPreviewService {
       };
     } catch (error) {
       const errorCode = errorCodeOf(error);
+      const failureStage = error instanceof HtmlPreviewError ? error.failureStage : undefined;
       const failed = this.repository.fail(page.id, claim.leaseToken, errorCode, now);
       if (!failed) {
         // A lease loss can happen only if an operator removed/expired the page;
         // do not overwrite its terminal metadata or emit a duplicate failure.
-        return { status: "unavailable", errorCode };
+        return { status: "unavailable", errorCode, ...(failureStage ? { failureStage } : {}) };
       }
       const announcementOutboxId = this.repository.enqueueFailureNotice(failed.id, failureMessageFor(errorCode), now);
       return {
@@ -306,6 +311,7 @@ export class HtmlPreviewService {
         page: this.toMetadata(this.repository.get(failed.id) ?? failed),
         ...(announcementOutboxId === undefined ? {} : { announcementOutboxId }),
         errorCode,
+        ...(failureStage ? { failureStage } : {}),
       };
     }
   }
@@ -329,11 +335,16 @@ export class HtmlPreviewService {
     let previousOutput: string | undefined;
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await generate(
-        attempt === 0 ? request : buildRepairRequest(request, errorCodeOf(lastError)),
-        signal,
-        { repair: attempt === 1, ...(previousOutput ? { previousOutput } : {}) },
-      );
+      let result: HtmlPreviewGenerationResult | string;
+      try {
+        result = await generate(
+          attempt === 0 ? request : buildRepairRequest(request, errorCodeOf(lastError)),
+          signal,
+          { repair: attempt === 1, ...(previousOutput ? { previousOutput } : {}) },
+        );
+      } catch (error) {
+        throw new HtmlPreviewError(errorCodeOf(error), attempt === 0 ? "generation" : "repair");
+      }
       const text = typeof result === "string" ? result : result.text;
       previousOutput = text.slice(0, 1_600);
       try {
@@ -343,7 +354,7 @@ export class HtmlPreviewService {
         lastError = error;
       }
     }
-    throw lastError instanceof Error ? lastError : new HtmlPreviewError("html_preview_model_output_invalid");
+    throw new HtmlPreviewError(errorCodeOf(lastError), "repair");
   }
 
   private async ensureAnnouncement(
@@ -549,211 +560,20 @@ export function parseStaticHtmlGeneration(text: string): ParsedModelPage {
 }
 
 /**
- * A conservative single-document sanitizer. The preview is sandboxed again by
- * trusted `index.html` and static-host CSP, but validation fails closed before
- * a model-authored file reaches the public directory.
+ * Apply only publication-envelope validation. Generated markup is intentionally
+ * left intact: the isolated preview origin, iframe sandbox and response CSP are
+ * the capability boundary, so valid HTML/SVG/CSS is not rejected by a partial
+ * application-level grammar.
  */
 export function sanitizeStaticHtml(input: string): string {
-  const html = normalizeBenignSvgNamespace(input.replace(/^\uFEFF/, "").trim());
+  const html = input.replace(/^\uFEFF/, "").trim();
   if (!html || Buffer.byteLength(html, "utf8") > MAX_HTML_PREVIEW_BYTES) {
     throw new HtmlPreviewError("html_preview_too_large");
   }
   if (!/^<!doctype\s+html\s*>/i.test(html) || !/<html(?:\s|>)/i.test(html) || !/<body(?:\s|>)/i.test(html)) {
     throw new HtmlPreviewError("html_preview_document_invalid");
   }
-  rejectUnsafeDocumentTokens(html);
-  const sanitized = html.replace(/<\/?([A-Za-z][A-Za-z0-9:-]*)([^>]*)>/g, (whole, rawName: string, rawAttributes: string) => {
-    const name = rawName.toLowerCase();
-    const closing = /^<\//.test(whole);
-    if (!ALLOWED_HTML_TAGS.has(name)) {
-      throw new HtmlPreviewError("html_preview_tag_disallowed");
-    }
-    if (closing) return `</${name}>`;
-    const selfClosing = /\/\s*>$/.test(whole) || VOID_HTML_TAGS.has(name);
-    const attributes = sanitizeTagAttributes(name, rawAttributes.replace(/\/\s*$/, ""));
-    return `<${name}${attributes}${selfClosing ? "" : ""}>`;
-  });
-  if (/<(?:script|style)\b[^>]*>[^]*<\/(?:script|style)>/i.test(sanitized) === false && /<(?:script|style)\b/i.test(html)) {
-    throw new HtmlPreviewError("html_preview_document_invalid");
-  }
-  return sanitized;
-}
-
-function normalizeBenignSvgNamespace(html: string): string {
-  // The default SVG namespace is inert in inline HTML and commonly emitted by
-  // generators. Remove that exact declaration so published content still has
-  // no namespace attributes; every other xmlns/xlink form remains fail-closed.
-  return html.replace(
-    /(<svg\b[^>]*?)\s+xmlns\s*=\s*(["'])http:\/\/www\.w3\.org\/2000\/svg\2(?=[\s>])/gi,
-    "$1",
-  );
-}
-
-function rejectUnsafeDocumentTokens(html: string): void {
-  const forbiddenTag = /<\/?\s*(?:iframe|frame|frameset|embed|object|applet|form|base|link|meta|portal|template|math|audio|video|source|track|picture|canvas|image|use|foreignobject|animate|animatemotion|animatetransform|set)\b/i;
-  const forbiddenAttribute = /\s(?:on[a-z0-9:_-]+|src|srcdoc|action|formaction|poster|background|cite|ping|xlink:href|xmlns)\s*=/i;
-  const forbiddenNetwork = /(?:https?:|\/\/|\b(?:fetch|xmlhttprequest|websocket|eventsource|sendbeacon)\b|\bimportscripts\b|\bimport\s*\(|@import\b|\burl\s*\()/i;
-  const forbiddenScript = /\b(?:window\.open|location(?:\.|\s*=)|document\.(?:cookie|write|open)|(?:inner|outer)html|insertadjacenthtml|createelement|appendchild|setattribute|eval\s*\(|new\s+function)\b/i;
-  const unsafeProtocol = /(?:javascript|vbscript|data|file|blob)\s*:/i;
-  if (forbiddenTag.test(html)) throw new HtmlPreviewError("html_preview_tag_disallowed");
-  if (forbiddenAttribute.test(html)) throw new HtmlPreviewError("html_preview_attribute_disallowed");
-  if (forbiddenNetwork.test(html)) throw new HtmlPreviewError("html_preview_network_disallowed");
-  if (forbiddenScript.test(html)) throw new HtmlPreviewError("html_preview_script_disallowed");
-  if (unsafeProtocol.test(html)) throw new HtmlPreviewError("html_preview_url_disallowed");
-}
-
-const ALLOWED_HTML_TAGS = new Set([
-  "html", "head", "body", "title", "style", "script",
-  "main", "header", "footer", "section", "article", "aside", "nav", "div", "span",
-  "h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "code", "blockquote", "hr", "br",
-  "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
-  "button", "input", "label", "select", "option", "textarea", "details", "summary", "dialog",
-  "strong", "b", "em", "i", "small", "mark", "time", "a",
-  "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "text", "tspan", "desc",
-]);
-const VOID_HTML_TAGS = new Set(["br", "hr", "input"]);
-const GLOBAL_ATTRIBUTES = new Set([
-  "id", "class", "title", "role", "style", "tabindex", "hidden", "dir", "lang",
-  "aria-label", "aria-labelledby", "aria-describedby", "aria-expanded", "aria-controls", "aria-live",
-]);
-const SVG_PRESENTATION_ATTRIBUTES = new Set([
-  "fill", "fill-opacity", "fill-rule", "clip-rule", "stroke", "stroke-width", "stroke-opacity",
-  "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
-  "opacity", "color", "vector-effect", "paint-order", "shape-rendering", "text-rendering",
-  "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "word-spacing",
-  "text-anchor", "dominant-baseline", "visibility", "display",
-]);
-const TAG_ATTRIBUTES: Record<string, ReadonlySet<string>> = {
-  a: new Set(["href", "target"]),
-  button: new Set(["type", "disabled", "value"]),
-  input: new Set(["type", "value", "placeholder", "checked", "disabled", "min", "max", "step", "name"]),
-  label: new Set(["for"]),
-  option: new Set(["value", "selected", "disabled"]),
-  select: new Set(["disabled", "name"]),
-  textarea: new Set(["placeholder", "disabled", "name", "rows", "cols"]),
-  td: new Set(["colspan", "rowspan", "headers"]),
-  th: new Set(["colspan", "rowspan", "scope", "headers"]),
-  time: new Set(["datetime"]),
-  svg: new Set(["viewbox", "width", "height", "preserveaspectratio", "fill", "stroke", "stroke-width"]),
-  g: new Set(["transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity"]),
-  path: new Set(["d", "pathlength", "transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset", "opacity"]),
-  circle: new Set(["cx", "cy", "r", "transform", "fill", "stroke", "stroke-width", "opacity"]),
-  ellipse: new Set(["cx", "cy", "rx", "ry", "transform", "fill", "stroke", "stroke-width", "opacity"]),
-  rect: new Set(["x", "y", "width", "height", "rx", "ry", "transform", "fill", "stroke", "stroke-width", "opacity"]),
-  line: new Set(["x1", "y1", "x2", "y2", "transform", "stroke", "stroke-width", "stroke-linecap", "opacity"]),
-  polyline: new Set(["points", "transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity"]),
-  polygon: new Set(["points", "transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity"]),
-  text: new Set(["x", "y", "dx", "dy", "transform", "fill", "stroke", "stroke-width", "opacity", "text-anchor", "dominant-baseline"]),
-  tspan: new Set(["x", "y", "dx", "dy", "fill", "stroke", "opacity", "text-anchor"]),
-};
-
-function sanitizeTagAttributes(tag: string, raw: string): string {
-  const value = raw.trim();
-  if (!value) return "";
-  const matched: string[] = [];
-  const matcher = /([A-Za-z][A-Za-z0-9:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-  let cursor = 0;
-  for (let match = matcher.exec(value); match; match = matcher.exec(value)) {
-    if (value.slice(cursor, match.index).trim()) throw new HtmlPreviewError("html_preview_attribute_invalid");
-    cursor = matcher.lastIndex;
-    const name = match[1]!.toLowerCase();
-    const attributeValue = match[2] ?? match[3] ?? match[4] ?? "";
-    const allowed = GLOBAL_ATTRIBUTES.has(name) ||
-      name.startsWith("data-") ||
-      TAG_ATTRIBUTES[tag]?.has(name) === true ||
-      (SVG_TAGS.has(tag) && SVG_PRESENTATION_ATTRIBUTES.has(name)) ||
-      isPassiveAttributeName(name);
-    if (!allowed || name.startsWith("on")) throw new HtmlPreviewError("html_preview_attribute_disallowed");
-    if (name === "href" && !/^#[A-Za-z][A-Za-z0-9_-]*$/.test(attributeValue)) {
-      throw new HtmlPreviewError("html_preview_url_disallowed");
-    }
-    if (name === "target" && attributeValue !== "_self") throw new HtmlPreviewError("html_preview_attribute_disallowed");
-    if (name === "style") rejectUnsafeCss(attributeValue);
-    if (name === "id" && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(attributeValue)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-    if (name === "tabindex" && !/^-?\d{1,3}$/.test(attributeValue)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-    if (SVG_TAGS.has(tag)) validateSvgAttribute(name, attributeValue);
-    const outputName = tag === "svg" && name === "viewbox"
-      ? "viewBox"
-      : tag === "svg" && name === "preserveaspectratio"
-        ? "preserveAspectRatio"
-        : name;
-    matched.push(attributeValue ? ` ${outputName}="${escapeAttribute(attributeValue)}"` : ` ${outputName}`);
-  }
-  if (value.slice(cursor).trim()) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  return matched.join("");
-}
-
-const SVG_TAGS = new Set(["svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "text", "tspan", "desc"]);
-const SVG_NUMBER_ATTRIBUTES = new Set([
-  "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy",
-  "width", "height", "stroke-width", "stroke-dashoffset", "stroke-miterlimit", "pathlength", "font-size",
-]);
-const SVG_PAINT_ATTRIBUTES = new Set(["fill", "stroke"]);
-
-function validateSvgAttribute(name: string, value: string): void {
-  if (!value) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (value.length > 4_096 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (SVG_NUMBER_ATTRIBUTES.has(name) && !/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|px)?$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "viewbox" && !/^\s*-?(?:\d+(?:\.\d+)?|\.\d+)(?:[ ,]+-?(?:\d+(?:\.\d+)?|\.\d+)){3}\s*$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "preserveaspectratio" && !/^(?:none|x(?:Min|Mid|Max)Y(?:Min|Mid|Max)(?:\s+(?:meet|slice))?)$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "d" && !/^[MmZzLlHhVvCcSsQqTtAa0-9eE+.,\s-]+$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "points" && !/^[0-9eE+.,\s-]+$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "transform" && !/^(?:(?:matrix|translate|scale|rotate|skewX|skewY)\(\s*[-+0-9eE.,\s]+\)\s*)+$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (SVG_PAINT_ATTRIBUTES.has(name) && !/^(?:none|currentColor|transparent|#[0-9A-Fa-f]{3,8}|[A-Za-z]+|rgba?\([0-9.% ,]+\)|hsla?\([0-9.% ,]+\))$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (["opacity", "fill-opacity", "stroke-opacity"].includes(name) && (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(value) || Number(value) < 0 || Number(value) > 1)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "stroke-dasharray" && !/^(?:none|[-+0-9eE.,\s]+)$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-  if (name === "stroke-linecap" && !/^(?:butt|round|square)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "stroke-linejoin" && !/^(?:arcs|bevel|miter|miter-clip|round)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (["fill-rule", "clip-rule"].includes(name) && !/^(?:nonzero|evenodd)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "vector-effect" && value !== "non-scaling-stroke") throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "paint-order" && !/^(?:normal|(?:fill|stroke|markers)(?:\s+(?:fill|stroke|markers)){0,2})$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "shape-rendering" && !/^(?:auto|optimizeSpeed|crispEdges|geometricPrecision)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "text-rendering" && !/^(?:auto|optimizeSpeed|optimizeLegibility|geometricPrecision)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "font-weight" && !/^(?:normal|bold|bolder|lighter|[1-9]00)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "font-style" && !/^(?:normal|italic|oblique)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "font-family" && !/^[A-Za-z0-9\u4E00-\u9FFF ,_'"-]{1,120}$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (["letter-spacing", "word-spacing"].includes(name) && !/^(?:normal|-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|em|rem|%)?)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "visibility" && !/^(?:visible|hidden|collapse)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "display" && !/^(?:none|inline|block)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "text-anchor" && !/^(?:start|middle|end)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-  if (name === "dominant-baseline" && !/^(?:auto|middle|central|hanging|text-after-edge|text-before-edge)$/.test(value)) {
-    throw new HtmlPreviewError("html_preview_attribute_invalid");
-  }
-}
-
-function isPassiveAttributeName(name: string): boolean {
-  return /^[a-z][a-z0-9-]*$/.test(name) &&
-    !name.startsWith("on") &&
-    ![
-      "href", "src", "srcdoc", "action", "formaction", "poster", "background",
-      "cite", "ping", "xmlns", "http-equiv",
-    ].includes(name);
-}
-
-function rejectUnsafeCss(value: string): void {
-  if (/(?:@import|\burl\s*\(|expression\s*\(|-moz-binding|behavior\s*:|javascript\s*:|https?:|\/\/)/i.test(value)) {
-    throw new HtmlPreviewError("html_preview_css_disallowed");
-  }
+  return html;
 }
 
 function buildTrustedIndex(title: string): string {
@@ -815,10 +635,10 @@ function normalizeTitle(value: string): string {
 
 function buildRepairRequest(request: string, errorCode?: string): string {
   const suffix = [
-    "\n\n请重新生成。上一版未通过严格 JSON 或静态安全校验。",
+    "\n\n请重新生成。上一版未通过 JSON 或完整 HTML 文档校验。",
     errorCode ? `校验结果：${errorCode}。` : "",
-    '只输出 {\\"title\\":\\"...\\",\\"html\\":\\"完整 HTML 文档\\"}，不要解释、Markdown、外链或联网代码。',
-    "不要输出 meta 或 xmlns 属性。SVG 只可使用 svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、desc；动画只用 CSS @keyframes、transform、opacity。",
+    '只输出 {\\"title\\":\\"...\\",\\"html\\":\\"完整 HTML 文档\\"}，不要解释或 Markdown。',
+    "页面必须自包含并可离线运行；可以使用标准 HTML、SVG、CSS 和内联 JavaScript。",
   ].join("");
   return `${request.slice(0, Math.max(1, MAX_HTML_PREVIEW_REQUEST_CHARS - suffix.length))}${suffix}`;
 }

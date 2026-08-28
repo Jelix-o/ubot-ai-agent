@@ -1,8 +1,8 @@
-# UBot V3.0.13
+# UBot V3.0.14
 
-UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.13 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时和静态网页预览；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
+UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.14 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时和静态网页预览；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.13.md](RELEASE-v3.0.13.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.14.md](RELEASE-v3.0.14.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
 
 ## V3 架构
 
@@ -102,33 +102,33 @@ npm run package:all
 命令生成以下四个发布资产，并重新验证 SHA-256：
 
 ```text
-release/ubot-3.0.13-win.zip
-release/ubot-3.0.13-win.zip.sha256
-release/ubot-3.0.13-linux.tar.gz
-release/ubot-3.0.13-linux.tar.gz.sha256
+release/ubot-3.0.14-win.zip
+release/ubot-3.0.14-win.zip.sha256
+release/ubot-3.0.14-linux.tar.gz
+release/ubot-3.0.14-linux.tar.gz.sha256
 ```
 
 发布包不包含 `.env`、数据库、日志、`data/`、`config/`、旧 `skills/`、私钥或任何持久群资料。Windows 使用 `run.cmd` 启动三种角色；已有旧数据时，先按上节显式运行切换迁移，不要让启动脚本猜测迁移时机。
 
-正式路径由 GitHub Actions 在匹配的最终 `v3.0.13` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
+正式路径由 GitHub Actions 在匹配的最终 `v3.0.14` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
 
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:7897"
 npm run release:github
 ```
 
-GitHub Actions 在 `v3.0.13` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
+GitHub Actions 在 `v3.0.14` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
 
 ## Linux 生产部署
 
 生产使用 `ubuntu@43.212.131.90` 上的 `bot.9958.uk` 与独立静态预览域 `preview.9958.uk`，但部署命令不应将私钥、密码或令牌写入仓库。部署前阅读 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)。概要如下：
 
 ```bash
-sha256sum -c ubot-3.0.13-linux.tar.gz.sha256 # matching GitHub Release asset
+sha256sum -c ubot-3.0.14-linux.tar.gz.sha256 # matching GitHub Release asset
 UBOT_NAPCAT_CONFIG=/opt/napcat/config/onebot11_428881701.json \
   UBOT_PREVIEW_CERT_PATH=/etc/ssl/cloudflare/preview.9958.uk.pem \
   UBOT_PREVIEW_KEY_PATH=/etc/ssl/cloudflare/preview.9958.uk.key \
-  bash scripts/deploy-linux-release.sh 3.0.13 ubot-3.0.13-linux.tar.gz
+  bash scripts/deploy-linux-release.sh 3.0.14 ubot-3.0.14-linux.tar.gz
 ```
 
 部署会使用 `172.21.0.1:6199` 作为 Docker 中 NapCat 访问宿主 Ingress 的反向 WebSocket 地址。`6198` 和 `6200` 继续仅监听回环地址；不修改 UFW 或 AWS 安全组。预览站点的 Nginx 模板位于 [deploy/nginx/preview.9958.uk.conf](deploy/nginx/preview.9958.uk.conf) 和 [deploy/nginx/ubot-preview-static.conf](deploy/nginx/ubot-preview-static.conf)：它们仅静态服务随机页面路径，不代理后台/API，也不会覆盖 `bot.9958.uk` 或其他现有 vhost。

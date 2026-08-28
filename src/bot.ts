@@ -1347,6 +1347,8 @@ export class BotApplication {
         pageId: queued.page.id,
         generationMode: generationRoute.mode,
         fallbackUsed,
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+        ...(result.failureStage ? { failureStage: result.failureStage } : {}),
       });
     } catch (error) {
       logError("HTML preview generation could not be queued.", {

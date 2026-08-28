@@ -187,3 +187,16 @@ test("HTML preview Nginx rewrites directory URLs to one explicit index file", ()
   assert.ok(previewNginx.includes('location ~ "^/p/([A-Za-z0-9_-]{43})/index\\\\.html$"'));
   assert.doesNotMatch(previewNginx, /location ~ "\^\/p\/\(\[A-Za-z0-9_-\]\{43\}\)\/\$" \{\s*alias/s);
 });
+
+test("HTML preview content remains offline and capability-isolated by browser policy", () => {
+  assert.match(previewNginx, /default-src 'none'/);
+  assert.match(previewNginx, /base-uri 'none'/);
+  assert.match(previewNginx, /form-action 'none'/);
+  assert.match(previewNginx, /object-src 'none'/);
+  assert.match(previewNginx, /connect-src 'none'/);
+  assert.match(previewNginx, /script-src 'unsafe-inline'/);
+  assert.match(previewNginx, /style-src 'unsafe-inline'/);
+  assert.match(previewNginx, /worker-src 'none'/);
+  assert.match(previewNginx, /frame-src 'none'/);
+  assert.match(previewNginx, /sandbox allow-scripts/);
+});
