@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 
+import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
+
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
 import {
@@ -20,7 +22,6 @@ import type {
   SkillDefinition,
 } from "../types.js";
 import type { BufferedMessage } from "./live-chat-service.js";
-import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
 
 type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type ChatCompletionsClient = Pick<OpenAI.Chat.Completions, "create"> & ProviderCapabilitiesCarrier;
@@ -47,6 +48,35 @@ export interface AiReplyRequestOptions {
 export interface StaticHtmlGenerationResult {
   text: string;
   model: string;
+}
+
+export interface AiProviderFailureDetails {
+  kind: UpstreamFailureKind;
+  statusCode?: number;
+  errorName: string;
+}
+
+/**
+ * Classifies only failures that are safe to retry on another configured
+ * provider. Authentication, request validation and content-policy failures
+ * deliberately remain attached to the selected provider.
+ */
+export function getAiProviderFailureDetails(error: unknown): AiProviderFailureDetails {
+  const statusCode = extractUpstreamStatusCode(error);
+  const kind = statusCode === 409
+    ? "unavailable"
+    : classifyUpstreamFailure({ statusCode, error });
+  return {
+    kind,
+    ...(statusCode === undefined ? {} : { statusCode }),
+    errorName: error instanceof Error ? error.name : typeof error,
+  };
+}
+
+export function isRetryableAiProviderFailure(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) return false;
+  const { kind } = getAiProviderFailureDetails(error);
+  return kind === "rate_limit" || kind === "unavailable" || kind === "timeout" || kind === "network";
 }
 
 export interface StaticHtmlGenerationRequest {
@@ -320,6 +350,8 @@ export class AiService {
           "Return exactly one valid JSON object and no markdown, prose, code fence, or leading/trailing text.",
           'Its exact schema is {"title":"short page title","html":"complete HTML document"}. Both fields must be strings.',
           "The html value must contain a complete HTML document and may use only inline CSS and inline browser JavaScript.",
+          "Inline SVG is allowed only for self-contained shapes and text. Omit xmlns, links, external resources, image/use/foreignObject, and SMIL animation tags.",
+          "Animate SVG with inline CSS @keyframes using transform or opacity; do not use animate, animateTransform, or set elements.",
           "Do not use external resources, URLs, network requests, fetch/XMLHttpRequest/WebSocket/EventSource, forms, iframes, embeds, objects, workers, redirects, navigation, or server-side code.",
           "Do not use inline on* event attributes. For interactions, attach event listeners from an inline script.",
           "Do not include markdown or explanatory text inside the title. Escape the HTML correctly as a JSON string.",
@@ -1029,6 +1061,21 @@ function countPromptChars(messages: ChatMessage[]): number {
 function isStreamFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /stream(?:ing)?[^\n]{0,80}(?:not supported|unsupported|not available)|unsupported[^\n]{0,80}stream|anthropic_stream_unsupported/i.test(message);
+}
+
+function extractUpstreamStatusCode(error: unknown): number | undefined {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 4 && current && typeof current === "object" && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    for (const key of ["status", "statusCode", "status_code"] as const) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) return value;
+    }
+    current = record.cause;
+  }
+  return undefined;
 }
 
 export function buildChatMessages(

@@ -33,6 +33,15 @@ export class ProviderCapabilityDisabledError extends Error {
   }
 }
 
+export class ConfiguredModelUnavailableError extends Error {
+  readonly status = 503;
+
+  constructor(modelId: string) {
+    super(`configured_model_unavailable:${modelId}`);
+    this.name = "ConfiguredModelUnavailableError";
+  }
+}
+
 export class ConfiguredAiService implements RuntimeAiService {
   private cachedService?: {
     key: string;
@@ -65,6 +74,7 @@ export class ConfiguredAiService implements RuntimeAiService {
     },
     private readonly selectedModelId?: string,
     private readonly capabilityPolicy?: ProviderCapabilityPolicy,
+    private readonly requireSelectedModel = false,
   ) {}
 
   async checkHealth(options?: Parameters<AiService["checkHealth"]>[0]): ReturnType<AiService["checkHealth"]> {
@@ -125,6 +135,9 @@ export class ConfiguredAiService implements RuntimeAiService {
   private async resolveService(preferredPurpose?: SystemModelPurpose): Promise<RuntimeAiService> {
     const model = await this.getActiveModel(preferredPurpose);
     if (!model) {
+      if (this.requireSelectedModel && this.selectedModelId) {
+        throw new ConfiguredModelUnavailableError(this.selectedModelId);
+      }
       this.requireProviderChat("openai");
       return this.fallback;
     }
@@ -189,6 +202,9 @@ export class ConfiguredAiService implements RuntimeAiService {
         );
         if (selectedModel) {
           return selectedModel;
+        }
+        if (this.requireSelectedModel) {
+          return undefined;
         }
       }
       const fallbackModel = settings.models.find((item) => item.purpose === purpose && isUsableModel(item));

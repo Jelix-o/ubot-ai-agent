@@ -7,6 +7,7 @@ import test from "node:test";
 import { SharedDb } from "../shared/sqlite.js";
 import { HTML_PREVIEW_RETENTION_MS } from "./html-preview-repository.js";
 import {
+  HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE,
   HtmlPreviewError,
   HtmlPreviewService,
   parseHtmlPreviewRequest,
@@ -95,6 +96,50 @@ test("static HTML sanitizer rejects network access and event handlers", () => {
     () => sanitizeStaticHtml("<!doctype html><html><head><title>x</title></head><body><button onclick=\"alert(1)\">x</button></body></html>"),
     (error: unknown) => error instanceof HtmlPreviewError && error.code === "html_preview_attribute_disallowed",
   );
+});
+
+test("static HTML sanitizer accepts bounded inline SVG with CSS animation", () => {
+  const page = '<!doctype html><html><head><title>鹈鹕骑车</title><style>@keyframes pedal{to{transform:rotate(360deg)}}.wheel{animation:pedal 1s linear infinite;transform-origin:center}</style></head><body><svg viewBox="0 0 640 360" width="640" height="360" aria-label="鹈鹕骑自行车"><g transform="translate(20 10)"><circle class="wheel" cx="160" cy="260" r="64" fill="none" stroke="#234" stroke-width="8"></circle><path d="M 160 260 L 260 160 L 360 260 Z" fill="none" stroke="currentColor" stroke-width="6"></path><text x="250" y="80" text-anchor="middle">鹈鹕</text></g></svg></body></html>';
+  const sanitized = sanitizeStaticHtml(page);
+  assert.match(sanitized, /<svg viewBox="0 0 640 360"/);
+  assert.match(sanitized, /@keyframes pedal/);
+  assert.match(sanitized, /<path d="M 160 260 L 260 160 L 360 260 Z"/);
+});
+
+test("static HTML sanitizer rejects active and externally-referenced SVG features", () => {
+  for (const fragment of [
+    '<svg viewBox="0 0 10 10"><image href="https://example.com/p.png"></image></svg>',
+    '<svg viewBox="0 0 10 10"><use href="#shape"></use></svg>',
+    '<svg viewBox="0 0 10 10"><foreignObject><div>x</div></foreignObject></svg>',
+    '<svg viewBox="0 0 10 10"><animateTransform attributeName="transform"></animateTransform></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>',
+    '<svg viewBox="0 0 10 10"><path d="M0 0L1 1" fill="url(#paint)"></path></svg>',
+  ]) {
+    assert.throws(
+      () => sanitizeStaticHtml(`<!doctype html><html><head><title>x</title></head><body>${fragment}</body></html>`),
+      (error: unknown) => error instanceof HtmlPreviewError,
+    );
+  }
+});
+
+test("provider unavailability creates the specific retry-later notice", async (t) => {
+  const { db, service } = await createFixture(t);
+  const queued = await service.enqueue({
+    groupId: "provider-down",
+    creatorUserId: "member-1",
+    sourceMessageId: "provider-down-1",
+    request: "生成网页",
+  });
+  const result = await service.processNext({
+    id: queued.page.id,
+    request: "生成网页",
+    generate: async () => { throw new HtmlPreviewError("html_preview_provider_unavailable"); },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorCode, "html_preview_provider_unavailable");
+  assert.equal(typeof result.announcementOutboxId, "number");
+  const outbox = db.db.prepare("SELECT text FROM outbox WHERE id = ?").get(result.announcementOutboxId!) as { text: string };
+  assert.equal(outbox.text, HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE);
 });
 
 test("HTML previews publish atomically, expire after thirty days, and can be deleted", async (t) => {

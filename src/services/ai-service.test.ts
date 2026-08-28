@@ -8,9 +8,27 @@ import {
   buildChatMessages,
   buildSystemPrompt,
   createCancellableTimeout,
+  getAiProviderFailureDetails,
+  isRetryableAiProviderFailure,
   MAX_STATIC_HTML_REQUEST_CHARS,
   STATIC_HTML_MAX_COMPLETION_TOKENS,
 } from "./ai-service.js";
+
+test("AI provider failure classification permits only transient cross-model fallback", () => {
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("service unavailable"), { status: 503 })), true);
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("rate limited"), { status: 429 })), true);
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("conflict"), { status: 409 })), true);
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("invalid request"), { status: 400 })), false);
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("invalid key"), { status: 401 })), false);
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("service unavailable"), { status: 503 }), controller.signal), false);
+  assert.deepEqual(getAiProviderFailureDetails({ statusCode: 503 }), {
+    kind: "unavailable",
+    statusCode: 503,
+    errorName: "object",
+  });
+});
 
 const skill: SkillDefinition = {
   id: "leijun",
@@ -442,6 +460,7 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
   assert.equal(requests[0]?.signal instanceof AbortSignal, true);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /Return exactly one valid JSON object/);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /fetch\/XMLHttpRequest\/WebSocket/);
+  assert.match(requests[0]?.messages?.[0]?.content ?? "", /Animate SVG with inline CSS @keyframes/);
   assert.match(requests[0]?.messages?.[1]?.content ?? "", /BEGIN USER PAGE REQUIREMENT/);
   assert.doesNotMatch(requests[0]?.messages?.[0]?.content ?? "", /雷总私聊版/);
 });

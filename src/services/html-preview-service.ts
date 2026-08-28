@@ -18,6 +18,7 @@ export const MAX_HTML_PREVIEW_BYTES = 512 * 1024;
 export const DEFAULT_HTML_PREVIEW_MIN_FREE_BYTES = 32 * 1024 * 1024;
 const HTML_PREVIEW_TEMP_RETENTION_MS = 15 * 60 * 1_000;
 export const HTML_PREVIEW_FAILURE_MESSAGE = "网页生成失败了，这次没能发布预览链接。请换个说法后再试一次。";
+export const HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE = "网页生成服务暂时繁忙，请稍后再试。";
 
 export interface ParsedHtmlPreviewRequest {
   request: string;
@@ -194,7 +195,7 @@ export class HtmlPreviewService {
             };
           }
           if (target.status === "failed") {
-            const announcementOutboxId = this.repository.enqueueFailureNotice(target.id, HTML_PREVIEW_FAILURE_MESSAGE, now);
+            const announcementOutboxId = this.repository.enqueueFailureNotice(target.id, failureMessageFor(target.errorCode), now);
             return {
               status: "failed",
               page: this.toMetadata(this.repository.get(target.id) ?? target),
@@ -299,7 +300,7 @@ export class HtmlPreviewService {
         // do not overwrite its terminal metadata or emit a duplicate failure.
         return { status: "unavailable", errorCode };
       }
-      const announcementOutboxId = this.repository.enqueueFailureNotice(failed.id, HTML_PREVIEW_FAILURE_MESSAGE, now);
+      const announcementOutboxId = this.repository.enqueueFailureNotice(failed.id, failureMessageFor(errorCode), now);
       return {
         status: "failed",
         page: this.toMetadata(this.repository.get(failed.id) ?? failed),
@@ -579,7 +580,7 @@ export function sanitizeStaticHtml(input: string): string {
 }
 
 function rejectUnsafeDocumentTokens(html: string): void {
-  const forbiddenTag = /<\/?\s*(?:iframe|frame|frameset|embed|object|applet|form|base|link|meta|portal|template|svg|math|audio|video|source|track|picture|canvas)\b/i;
+  const forbiddenTag = /<\/?\s*(?:iframe|frame|frameset|embed|object|applet|form|base|link|meta|portal|template|math|audio|video|source|track|picture|canvas|image|use|foreignobject|animate|animatemotion|animatetransform|set)\b/i;
   const forbiddenAttribute = /\s(?:on[a-z0-9:_-]+|src|srcdoc|action|formaction|poster|background|cite|ping|xlink:href|xmlns)\s*=/i;
   const forbiddenNetwork = /(?:https?:|\/\/|\b(?:fetch|xmlhttprequest|websocket|eventsource|sendbeacon)\b|\bimportscripts\b|\bimport\s*\(|@import\b|\burl\s*\()/i;
   const forbiddenScript = /\b(?:window\.open|location(?:\.|\s*=)|document\.(?:cookie|write|open)|(?:inner|outer)html|insertadjacenthtml|createelement|appendchild|setattribute|eval\s*\(|new\s+function)\b/i;
@@ -598,6 +599,7 @@ const ALLOWED_HTML_TAGS = new Set([
   "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
   "button", "input", "label", "select", "option", "textarea", "details", "summary", "dialog",
   "strong", "b", "em", "i", "small", "mark", "time", "a",
+  "svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "text", "tspan", "desc",
 ]);
 const VOID_HTML_TAGS = new Set(["br", "hr", "input"]);
 const GLOBAL_ATTRIBUTES = new Set([
@@ -615,6 +617,17 @@ const TAG_ATTRIBUTES: Record<string, ReadonlySet<string>> = {
   td: new Set(["colspan", "rowspan", "headers"]),
   th: new Set(["colspan", "rowspan", "scope", "headers"]),
   time: new Set(["datetime"]),
+  svg: new Set(["viewbox", "width", "height", "preserveaspectratio", "fill", "stroke", "stroke-width"]),
+  g: new Set(["transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity"]),
+  path: new Set(["d", "pathlength", "transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset", "opacity"]),
+  circle: new Set(["cx", "cy", "r", "transform", "fill", "stroke", "stroke-width", "opacity"]),
+  ellipse: new Set(["cx", "cy", "rx", "ry", "transform", "fill", "stroke", "stroke-width", "opacity"]),
+  rect: new Set(["x", "y", "width", "height", "rx", "ry", "transform", "fill", "stroke", "stroke-width", "opacity"]),
+  line: new Set(["x1", "y1", "x2", "y2", "transform", "stroke", "stroke-width", "stroke-linecap", "opacity"]),
+  polyline: new Set(["points", "transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity"]),
+  polygon: new Set(["points", "transform", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "opacity"]),
+  text: new Set(["x", "y", "dx", "dy", "transform", "fill", "stroke", "stroke-width", "opacity", "text-anchor", "dominant-baseline"]),
+  tspan: new Set(["x", "y", "dx", "dy", "fill", "stroke", "opacity", "text-anchor"]),
 };
 
 function sanitizeTagAttributes(tag: string, raw: string): string {
@@ -641,10 +654,60 @@ function sanitizeTagAttributes(tag: string, raw: string): string {
     if (name === "style") rejectUnsafeCss(attributeValue);
     if (name === "id" && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(attributeValue)) throw new HtmlPreviewError("html_preview_attribute_invalid");
     if (name === "tabindex" && !/^-?\d{1,3}$/.test(attributeValue)) throw new HtmlPreviewError("html_preview_attribute_invalid");
-    matched.push(attributeValue ? ` ${name}="${escapeAttribute(attributeValue)}"` : ` ${name}`);
+    if (SVG_TAGS.has(tag)) validateSvgAttribute(name, attributeValue);
+    const outputName = tag === "svg" && name === "viewbox"
+      ? "viewBox"
+      : tag === "svg" && name === "preserveaspectratio"
+        ? "preserveAspectRatio"
+        : name;
+    matched.push(attributeValue ? ` ${outputName}="${escapeAttribute(attributeValue)}"` : ` ${outputName}`);
   }
   if (value.slice(cursor).trim()) throw new HtmlPreviewError("html_preview_attribute_invalid");
   return matched.join("");
+}
+
+const SVG_TAGS = new Set(["svg", "g", "path", "circle", "ellipse", "rect", "line", "polyline", "polygon", "text", "tspan", "desc"]);
+const SVG_NUMBER_ATTRIBUTES = new Set([
+  "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "dx", "dy",
+  "width", "height", "stroke-width", "stroke-dashoffset", "pathlength",
+]);
+const SVG_PAINT_ATTRIBUTES = new Set(["fill", "stroke"]);
+
+function validateSvgAttribute(name: string, value: string): void {
+  if (!value) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (SVG_NUMBER_ATTRIBUTES.has(name) && !/^-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|px)?$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "viewbox" && !/^\s*-?(?:\d+(?:\.\d+)?|\.\d+)(?:[ ,]+-?(?:\d+(?:\.\d+)?|\.\d+)){3}\s*$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "preserveaspectratio" && !/^(?:none|x(?:Min|Mid|Max)Y(?:Min|Mid|Max)(?:\s+(?:meet|slice))?)$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "d" && !/^[MmZzLlHhVvCcSsQqTtAa0-9eE+.,\s-]+$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "points" && !/^[0-9eE+.,\s-]+$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "transform" && !/^(?:(?:matrix|translate|scale|rotate|skewX|skewY)\(\s*[-+0-9eE.,\s]+\)\s*)+$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (SVG_PAINT_ATTRIBUTES.has(name) && !/^(?:none|currentColor|transparent|#[0-9A-Fa-f]{3,8}|[A-Za-z]+|rgba?\([0-9.% ,]+\)|hsla?\([0-9.% ,]+\))$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "opacity" && (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(value) || Number(value) < 0 || Number(value) > 1)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "stroke-dasharray" && !/^(?:none|[-+0-9eE.,\s]+)$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
+  if (name === "stroke-linecap" && !/^(?:butt|round|square)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "stroke-linejoin" && !/^(?:arcs|bevel|miter|miter-clip|round)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "text-anchor" && !/^(?:start|middle|end)$/.test(value)) throw new HtmlPreviewError("html_preview_attribute_invalid");
+  if (name === "dominant-baseline" && !/^(?:auto|middle|central|hanging|text-after-edge|text-before-edge)$/.test(value)) {
+    throw new HtmlPreviewError("html_preview_attribute_invalid");
+  }
 }
 
 function rejectUnsafeCss(value: string): void {
@@ -719,6 +782,12 @@ function errorCodeOf(error: unknown): string {
   if (error instanceof HtmlPreviewError) return error.code;
   if (error instanceof Error && error.name === "AbortError") return "html_preview_aborted";
   return "html_preview_generation_failed";
+}
+
+function failureMessageFor(errorCode: string | undefined): string {
+  return errorCode === "html_preview_provider_unavailable"
+    ? HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE
+    : HTML_PREVIEW_FAILURE_MESSAGE;
 }
 
 function extractOutboxId(value: unknown): number | undefined {

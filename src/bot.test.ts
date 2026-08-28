@@ -4,14 +4,14 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import test from "node:test";
 
-import { BotApplication, type MessageTransport } from "./bot.js";
+import { BotApplication, type HtmlPreviewFallbackRoute, type MessageTransport } from "./bot.js";
 import type { AdminOperationLogEntry } from "./services/admin-operation-log-service.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
-import type { HtmlPreviewMetadata, HtmlPreviewProcessResult } from "./services/html-preview-service.js";
+import { HtmlPreviewError, type HtmlPreviewMetadata, type HtmlPreviewProcessResult } from "./services/html-preview-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -466,10 +466,15 @@ class FakeAiService {
     assistantReply: string;
     identityContext: AiIdentityContext;
   }> = [];
+  staticHtmlCalls: string[] = [];
   constructor(
     private readonly responder: () => Promise<AiReply>,
     private readonly controlledMentionResponder: () => Promise<ControlledMentionDecision> = async () => ({
       shouldMention: false,
+    }),
+    private readonly staticHtmlResponder: (request: string) => Promise<{ text: string; model: string }> = async () => ({
+      text: '{"title":"测试页面","html":"<!doctype html><html><head><title>测试</title></head><body><main>ok</main></body></html>"}',
+      model: "test-model",
     }),
   ) {}
 
@@ -485,11 +490,9 @@ class FakeAiService {
     return this.responder();
   }
 
-  async generateStaticHtml(): Promise<{ text: string; model: string }> {
-    return {
-      text: '{"title":"测试页面","html":"<!doctype html><html><head><title>测试</title></head><body><main>ok</main></body></html>"}',
-      model: "test-model",
-    };
+  async generateStaticHtml(args: { request: string }): Promise<{ text: string; model: string }> {
+    this.staticHtmlCalls.push(args.request);
+    return this.staticHtmlResponder(args.request);
   }
 
   async evaluateControlledMention(args: {
@@ -933,6 +936,7 @@ function createApp(options?: {
     processNext(input: { id?: string; request?: string; generate: (request: string, signal?: AbortSignal) => Promise<unknown> }): Promise<HtmlPreviewProcessResult>;
     cleanup(): Promise<{ expired: number; temp: number; orphans: number }>;
   };
+  htmlPreviewFallbackRoute?: HtmlPreviewFallbackRoute;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1034,6 +1038,7 @@ function createApp(options?: {
     undefined,
     undefined,
     options?.htmlPreviewService as never,
+    options?.htmlPreviewFallbackRoute,
   );
 
   return {
@@ -1102,6 +1107,112 @@ test("#网页 routes an explicit page request to the durable publisher instead o
   assert.deepEqual(calls.map((call) => call.request), ["做一个待办清单", "做一个待办清单"]);
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent.length, 0);
+});
+
+test("HTML preview sticks to the silent ds fallback after a transient GPT failure", async () => {
+  const primary = new FakeAiService(
+    async () => ({ text: "unused", model: "primary", skillId: "assistant" }),
+    undefined,
+    async () => { throw Object.assign(new Error("service unavailable"), { status: 503 }); },
+  );
+  const fallbackCalls: string[] = [];
+  const fallback = {
+    async generateStaticHtml(args: { request: string }) {
+      fallbackCalls.push(args.request);
+      return { text: '{"title":"鹈鹕","html":"<!doctype html><html><head><title>鹈鹕</title></head><body><main>ok</main></body></html>"}', model: "deepseek" };
+    },
+  };
+  const publisher = {
+    async enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string }) {
+      return { created: true, page: { id: "F".repeat(43), groupId: input.groupId, creatorUserId: input.creatorUserId, sourceMessageId: input.sourceMessageId, title: "网页预览", previewUrl: "https://preview.9958.uk/p/test/", status: "pending" as const, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_000).toISOString() } };
+    },
+    async processNext(input: { request?: string; generate: (request: string) => Promise<unknown> }) {
+      await input.generate(input.request ?? "");
+      await input.generate(`${input.request ?? ""} repair`);
+      return { status: "published" as const };
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app, transport } = createApp({
+    aiService: primary,
+    htmlPreviewService: publisher,
+    htmlPreviewFallbackRoute: { mode: "ds", label: "ds", service: fallback },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#网页 SVG 鹈鹕骑自行车" } }]));
+
+  assert.equal(primary.staticHtmlCalls.length, 1);
+  assert.deepEqual(fallbackCalls, ["SVG 鹈鹕骑自行车", "SVG 鹈鹕骑自行车 repair"]);
+  assert.equal(transport.sent.length, 0, "a successful silent fallback must not add a group notice");
+});
+
+test("HTML preview does not switch providers for a non-retryable client error", async () => {
+  const primary = new FakeAiService(
+    async () => ({ text: "unused", model: "primary", skillId: "assistant" }),
+    undefined,
+    async () => { throw Object.assign(new Error("invalid request"), { status: 400 }); },
+  );
+  let fallbackCalls = 0;
+  const publisher = {
+    async enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string }) {
+      return { created: true, page: { id: "G".repeat(43), groupId: input.groupId, creatorUserId: input.creatorUserId, sourceMessageId: input.sourceMessageId, title: "网页预览", previewUrl: "https://preview.9958.uk/p/test/", status: "pending" as const, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_000).toISOString() } };
+    },
+    async processNext(input: { request?: string; generate: (request: string) => Promise<unknown> }) {
+      await input.generate(input.request ?? "");
+      return { status: "published" as const };
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app } = createApp({
+    aiService: primary,
+    htmlPreviewService: publisher,
+    htmlPreviewFallbackRoute: {
+      mode: "ds",
+      label: "ds",
+      service: { async generateStaticHtml() { fallbackCalls += 1; return { text: "", model: "ds" }; } },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#网页 非法请求" } }]));
+
+  assert.equal(primary.staticHtmlCalls.length, 1);
+  assert.equal(fallbackCalls, 0);
+});
+
+test("HTML preview maps exhausted primary and fallback providers to provider unavailable", async () => {
+  const primary = new FakeAiService(
+    async () => ({ text: "unused", model: "primary", skillId: "assistant" }),
+    undefined,
+    async () => { throw Object.assign(new Error("pool=0"), { status: 503 }); },
+  );
+  let observedErrorCode = "";
+  const publisher = {
+    async enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string }) {
+      return { created: true, page: { id: "H".repeat(43), groupId: input.groupId, creatorUserId: input.creatorUserId, sourceMessageId: input.sourceMessageId, title: "网页预览", previewUrl: "https://preview.9958.uk/p/test/", status: "pending" as const, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_000).toISOString() } };
+    },
+    async processNext(input: { request?: string; generate: (request: string) => Promise<unknown> }) {
+      try {
+        await input.generate(input.request ?? "");
+      } catch (error) {
+        observedErrorCode = error instanceof HtmlPreviewError ? error.code : "unknown";
+      }
+      return { status: "failed" as const, errorCode: observedErrorCode };
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app } = createApp({
+    aiService: primary,
+    htmlPreviewService: publisher,
+    htmlPreviewFallbackRoute: {
+      mode: "ds",
+      label: "ds",
+      service: { async generateStaticHtml() { throw Object.assign(new Error("upstream unavailable"), { status: 503 }); } },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#网页 鹈鹕动画" } }]));
+
+  assert.equal(observedErrorCode, "html_preview_provider_unavailable");
 });
 
 test("natural page generation requires an @ and explicit creation wording", async () => {

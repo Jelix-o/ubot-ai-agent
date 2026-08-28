@@ -560,6 +560,15 @@ async function buildBotApp(
     undefined,
     capabilityPolicy,
   );
+  const htmlPreviewFallbackAiService = new ConfiguredAiService(
+    replyAiService,
+    systemSettingsStore,
+    "reply",
+    undefined,
+    "ds",
+    capabilityPolicy,
+    true,
+  );
   const defaultTtsService = new TtsService(
     config.ttsBaseUrl,
     config.ttsApiKey,
@@ -640,6 +649,11 @@ async function buildBotApp(
     new ConversationContextRouter(contextRepository),
     capabilityPolicy,
     htmlPreviewService,
+    {
+      mode: "ds",
+      label: "ds",
+      service: htmlPreviewFallbackAiService,
+    },
   );
 }
 

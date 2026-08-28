@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { AiHealthStatus, AiReply, SkillDefinition, SystemModelConfig } from "../types.js";
-import { ConfiguredAiService, type RuntimeAiService } from "./configured-ai-service.js";
+import { ConfiguredAiService, ConfiguredModelUnavailableError, type RuntimeAiService } from "./configured-ai-service.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
 
 class FakeRuntimeAiService implements RuntimeAiService {
@@ -227,6 +227,22 @@ test("ConfiguredAiService routes static HTML generation to the selected reply mo
   assert.equal(generated.model, "reply-model");
   assert.match(generated.text, /\"html\"/);
   assert.deepEqual(created, ["reply:reply-model"]);
+});
+
+test("strict selected model binding never falls back to another reply model", async (t) => {
+  const store = await createSettingsStore(t);
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  await store.update({
+    models: [model({ id: "reply", model: "reply-model" })],
+    selectedModelIds: { reply: "reply" },
+  });
+  const service = new ConfiguredAiService(fallback, store, "reply", undefined, "ds", undefined, true);
+
+  await assert.rejects(
+    service.generateStaticHtml({ request: "做一个待办清单" }),
+    (error: unknown) => error instanceof ConfiguredModelUnavailableError && error.message === "configured_model_unavailable:ds",
+  );
+  assert.equal(fallback.staticHtmlCalls, 0);
 });
 
 async function createSettingsStore(t: test.TestContext): Promise<SystemSettingsStore> {

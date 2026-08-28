@@ -1,7 +1,11 @@
 import os from "node:os";
 
 import { logError, logInfo, logWarn } from "./logger.js";
-import type { AiService } from "./services/ai-service.js";
+import {
+  getAiProviderFailureDetails,
+  isRetryableAiProviderFailure,
+  type AiService,
+} from "./services/ai-service.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type {
@@ -33,6 +37,7 @@ import type { CharacterProfileService } from "./services/character-profile-servi
 import type { SystemSettingsStore } from "./services/system-settings-store.js";
 import {
   HTML_PREVIEW_FAILURE_MESSAGE,
+  HtmlPreviewError,
   parseHtmlPreviewRequest,
   type HtmlPreviewService,
   type ParsedHtmlPreviewRequest,
@@ -203,6 +208,12 @@ interface ReplyAiResult {
   fallbackUsed: boolean;
 }
 
+export interface HtmlPreviewFallbackRoute {
+  mode: ReplyModelMode;
+  label: string;
+  service: Pick<RuntimeAiService, "generateStaticHtml">;
+}
+
 /**
  * Static page generation must use the same worker-side concurrency and
  * circuit-breaker boundary as conversational requests. Unlike a reply call,
@@ -366,6 +377,8 @@ export class BotApplication {
     private readonly capabilityPolicy?: RuntimeCapabilityPolicy,
     /** Durable static HTML publisher, absent only in older compatibility embeddings. */
     private readonly htmlPreviewService?: Pick<HtmlPreviewService, "enqueue" | "processNext" | "cleanup">,
+    /** Strictly bound fallback; it must never resolve back to the primary model. */
+    private readonly htmlPreviewFallbackRoute?: HtmlPreviewFallbackRoute,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -1275,18 +1288,54 @@ export class BotApplication {
         request: request.request,
       });
       const route = await this.getReplyAiRoute(groupConfig);
+      let generationRoute: HtmlPreviewFallbackRoute = route;
+      let fallbackUsed = false;
       const result = await this.htmlPreviewService.processNext({
         id: queued.page.id,
         request: request.request,
         signal,
         generate: async (pageRequest, pageSignal) => {
-          const call = () => route.service.generateStaticHtml({
-            request: pageRequest,
-            signal: pageSignal ?? signal,
-          });
-          return this.backgroundLlmGate
-            ? this.backgroundLlmGate(call, pageSignal ?? signal)
-            : call();
+          const requestSignal = pageSignal ?? signal;
+          const call = () => generationRoute.service.generateStaticHtml({ request: pageRequest, signal: requestSignal });
+          try {
+            return await (this.backgroundLlmGate ? this.backgroundLlmGate(call, requestSignal) : call());
+          } catch (error) {
+            const fallback = this.htmlPreviewFallbackRoute;
+            if (!isRetryableAiProviderFailure(error, requestSignal)) throw error;
+            if (fallbackUsed || !fallback || fallback.mode === generationRoute.mode) {
+              throw new HtmlPreviewError("html_preview_provider_unavailable");
+            }
+            const primaryFailure = getAiProviderFailureDetails(error);
+            logWarn("HTML preview provider unavailable; switching to fallback model.", {
+              groupId,
+              sourceMessageId: String(event.message_id),
+              primaryMode: generationRoute.mode,
+              fallbackMode: fallback.mode,
+              failureKind: primaryFailure.kind,
+              ...(primaryFailure.statusCode === undefined ? {} : { statusCode: primaryFailure.statusCode }),
+              errorName: primaryFailure.errorName,
+            });
+            generationRoute = fallback;
+            fallbackUsed = true;
+            const fallbackCall = () => generationRoute.service.generateStaticHtml({ request: pageRequest, signal: requestSignal });
+            try {
+              return await (this.backgroundLlmGate ? this.backgroundLlmGate(fallbackCall, requestSignal) : fallbackCall());
+            } catch (fallbackError) {
+              if (isRetryableAiProviderFailure(fallbackError, requestSignal)) {
+                const fallbackFailure = getAiProviderFailureDetails(fallbackError);
+                logWarn("HTML preview fallback model is unavailable.", {
+                  groupId,
+                  sourceMessageId: String(event.message_id),
+                  fallbackMode: fallback.mode,
+                  failureKind: fallbackFailure.kind,
+                  ...(fallbackFailure.statusCode === undefined ? {} : { statusCode: fallbackFailure.statusCode }),
+                  errorName: fallbackFailure.errorName,
+                });
+                throw new HtmlPreviewError("html_preview_provider_unavailable");
+              }
+              throw fallbackError;
+            }
+          }
         },
       });
       logInfo("Handled HTML preview request.", {
@@ -1296,6 +1345,8 @@ export class BotApplication {
         created: queued.created,
         status: result.status,
         pageId: queued.page.id,
+        generationMode: generationRoute.mode,
+        fallbackUsed,
       });
     } catch (error) {
       logError("HTML preview generation could not be queued.", {
