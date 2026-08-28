@@ -14,7 +14,7 @@ test("V3 network configuration updates only the approved NapCat endpoint and loo
   const napcatPath = path.join(root, "napcat.json");
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
-  writeFileSync(envPath, [
+  writeFileSync(envPath, `\uFEFF${[
     "NAPCAT_MODE=forward",
     "NAPCAT_REVERSE_WS_HOST=127.0.0.1",
     "NAPCAT_REVERSE_WS_PORT=6201",
@@ -22,7 +22,7 @@ test("V3 network configuration updates only the approved NapCat endpoint and loo
     "ADMIN_HTTP_PORT=6200",
     "KEEP_THIS=value",
     "",
-  ].join("\n"));
+  ].join("\n")}`);
   writeFileSync(napcatPath, JSON.stringify({
     network: {
       websocketClients: [{ url: "ws://172.21.0.1:6198/old" }],
@@ -38,6 +38,7 @@ test("V3 network configuration updates only the approved NapCat endpoint and loo
   ], { encoding: "utf8" });
 
   const env = readFileSync(envPath, "utf8");
+  assert.doesNotMatch(env, /^\uFEFF/);
   assert.match(env, /^NAPCAT_MODE=reverse$/m);
   assert.match(env, /^NAPCAT_REVERSE_WS_HOST=172\.21\.0\.1$/m);
   assert.match(env, /^NAPCAT_REVERSE_WS_PORT=6199$/m);

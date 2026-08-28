@@ -55,6 +55,8 @@ test("V3 Linux deployer verifies assets, migrates once, and atomically selects c
   assert.match(deployer, /docker inspect --type container --format '\{\{\.State\.Running\}\}'/);
   assert.match(deployer, /docker restart --time 30 "\$NAPCAT_CONTAINER"/);
   assert.match(deployer, /verify_updated_network_env/);
+  assert.match(deployer, /normalize-dotenv-bom\.mjs/);
+  assert.match(deployer, /env\.before-bom-normalization/);
   assert.match(deployer, /ADMIN_HTTP_ENABLED.*true/);
   assert.match(deployer, /nginx -t/);
   assert.match(deployer, /status" != "401/);
@@ -75,11 +77,13 @@ test("V3 Linux deployer rejects inaccessible mutable state before stopping write
   assert.match(deployer, /Release root/);
 
   const preflightCall = deployer.lastIndexOf("preflight_cutover_write_access\n");
+  const bomNormalization = deployer.indexOf('node "$DEPLOY_SCRIPT_DIR/normalize-dotenv-bom.mjs"');
   const stopWriters = deployer.indexOf("# Stop all writers before backing up SQLite or reading legacy JSON files.");
   const cutover = deployer.indexOf("cutover_may_have_started=1");
   const rollbackArm = deployer.indexOf("rollback_armed=1", stopWriters);
   assert.ok(preflightCall >= 0, "deployer must invoke the mutable-path preflight");
   assert.ok(preflightCall < stopWriters, "mutable-path preflight must run before stopping writers");
+  assert.ok(bomNormalization >= 0 && bomNormalization < stopWriters, "dotenv BOM normalization must finish before stopping writers");
   assert.ok(preflightCall < cutover, "mutable-path preflight must run before V3 cutover can start");
   assert.ok(rollbackArm > stopWriters && rollbackArm < cutover, "rollback must be armed before either writer is stopped");
 });

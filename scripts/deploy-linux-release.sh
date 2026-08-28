@@ -7,6 +7,8 @@
 set -euo pipefail
 umask 077
 
+DEPLOY_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
   cat >&2 <<'USAGE'
 Usage: deploy-linux-release.sh <version> <bundle.tar.gz> [bundle.tar.gz.sha256]
@@ -803,6 +805,14 @@ fi
 
 mkdir -p "$RELEASE_ROOT" "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
+# systemd does not accept a UTF-8 BOM before the first EnvironmentFile key.
+# Normalize it while every writer is still running: the helper first creates
+# an exclusive byte-for-byte backup, preserves ownership and mode, and uses a
+# same-directory rename so failure cannot leave a partial dotenv file.
+require_atomically_replaceable_file "$PERSISTENT_ENV" "Persistent .env"
+node "$DEPLOY_SCRIPT_DIR/normalize-dotenv-bom.mjs" \
+  --env "$PERSISTENT_ENV" \
+  --backup "$BACKUP_DIR/env.before-bom-normalization"
 load_preview_settings
 prepare_preview_root
 
@@ -882,7 +892,7 @@ mkdir -p "$STAGING_DIR"
 tar -xzf "$BUNDLE" -C "$STAGING_DIR"
 for required in \
   package.json package-lock.json dist/index.js assets/huixian-profile.json \
-  scripts/deploy-linux-release.sh scripts/migrate-v3-state.mjs \
+  scripts/deploy-linux-release.sh scripts/migrate-v3-state.mjs scripts/normalize-dotenv-bom.mjs \
   scripts/configure-v3-network.mjs \
   deploy/systemd/ubot-ingress.service.template deploy/systemd/ubot-worker.service.template \
   deploy/systemd/ubot-admin.service.template deploy/systemd/ubot.target.template \

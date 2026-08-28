@@ -23,7 +23,7 @@ if (requestedPath && requestedPath !== approvedNapcatUrlPath) {
   throw new Error(`The only approved NapCat URL path is ${approvedNapcatUrlPath}.`);
 }
 
-const envText = await readFile(envPath, "utf8");
+const envText = (await readFile(envPath, "utf8")).replace(/^\uFEFF/, "");
 const nextEnv = setEnvValues(envText, {
   NAPCAT_MODE: "reverse",
   NAPCAT_REVERSE_WS_HOST: "172.21.0.1",

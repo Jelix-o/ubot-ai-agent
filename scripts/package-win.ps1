@@ -63,6 +63,7 @@ $itemsToCopy = @(
   "dist",
   "scripts/configure-v3-network.mjs",
   "scripts/deploy-linux-release.sh",
+  "scripts/normalize-dotenv-bom.mjs",
   "scripts/migrate-v3-state.mjs",
   "scripts/verify-release-source.mjs",
   "package.json",
