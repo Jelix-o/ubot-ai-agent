@@ -141,6 +141,18 @@ test("static HTML sanitizer permits passive SVG attributes without an exhaustive
   );
 });
 
+test("static HTML sanitizer permits passive HTML attributes while blocking active capabilities", () => {
+  const page = '<!doctype html><html lang="zh-CN"><head><title>x</title><style type="text/css">body{margin:0}</style></head><body><main aria-hidden="false" inert><div popover="manual">x</div></main></body></html>';
+  const sanitized = sanitizeStaticHtml(page);
+  assert.match(sanitized, /<style type="text\/css">/);
+  assert.match(sanitized, /aria-hidden="false"/);
+  assert.match(sanitized, /popover="manual"/);
+  assert.throws(
+    () => sanitizeStaticHtml('<!doctype html><html><head><title>x</title></head><body><div src="https://example.com/x">x</div></body></html>'),
+    (error: unknown) => error instanceof HtmlPreviewError,
+  );
+});
+
 test("static HTML sanitizer rejects active and externally-referenced SVG features", () => {
   for (const fragment of [
     '<svg viewBox="0 0 10 10"><image href="https://example.com/p.png"></image></svg>',

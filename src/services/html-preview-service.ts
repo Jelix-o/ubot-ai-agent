@@ -650,10 +650,6 @@ const TAG_ATTRIBUTES: Record<string, ReadonlySet<string>> = {
 function sanitizeTagAttributes(tag: string, raw: string): string {
   const value = raw.trim();
   if (!value) return "";
-  if (tag === "script" || tag === "style" || tag === "html" || tag === "head" || tag === "body" || tag === "title") {
-    if (value) throw new HtmlPreviewError("html_preview_attribute_disallowed");
-    return "";
-  }
   const matched: string[] = [];
   const matcher = /([A-Za-z][A-Za-z0-9:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
   let cursor = 0;
@@ -665,7 +661,8 @@ function sanitizeTagAttributes(tag: string, raw: string): string {
     const allowed = GLOBAL_ATTRIBUTES.has(name) ||
       name.startsWith("data-") ||
       TAG_ATTRIBUTES[tag]?.has(name) === true ||
-      (SVG_TAGS.has(tag) && (SVG_PRESENTATION_ATTRIBUTES.has(name) || isPassiveSvgAttributeName(name)));
+      (SVG_TAGS.has(tag) && SVG_PRESENTATION_ATTRIBUTES.has(name)) ||
+      isPassiveAttributeName(name);
     if (!allowed || name.startsWith("on")) throw new HtmlPreviewError("html_preview_attribute_disallowed");
     if (name === "href" && !/^#[A-Za-z][A-Za-z0-9_-]*$/.test(attributeValue)) {
       throw new HtmlPreviewError("html_preview_url_disallowed");
@@ -744,10 +741,13 @@ function validateSvgAttribute(name: string, value: string): void {
   }
 }
 
-function isPassiveSvgAttributeName(name: string): boolean {
+function isPassiveAttributeName(name: string): boolean {
   return /^[a-z][a-z0-9-]*$/.test(name) &&
     !name.startsWith("on") &&
-    !["href", "src", "xmlns"].includes(name);
+    ![
+      "href", "src", "srcdoc", "action", "formaction", "poster", "background",
+      "cite", "ping", "xmlns", "http-equiv",
+    ].includes(name);
 }
 
 function rejectUnsafeCss(value: string): void {
