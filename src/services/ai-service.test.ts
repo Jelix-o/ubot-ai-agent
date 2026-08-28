@@ -435,6 +435,7 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
     stream?: boolean;
     messages?: Array<{ role?: string; content?: string }>;
     signal?: AbortSignal;
+    thinking?: { type?: string };
   }> = [];
   const service = new AiService("https://example.invalid/v1", "test-key", "preview-model", {
     async create(args: typeof requests[number]) {
@@ -458,11 +459,25 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
   assert.equal(requests[0]?.max_tokens, STATIC_HTML_MAX_COMPLETION_TOKENS);
   assert.equal(requests[0]?.stream, false);
   assert.equal(requests[0]?.signal instanceof AbortSignal, true);
+  assert.equal(requests[0]?.thinking, undefined);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /Return exactly one valid JSON object/);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /fetch\/XMLHttpRequest\/WebSocket/);
   assert.match(requests[0]?.messages?.[0]?.content ?? "", /Animate SVG with inline CSS @keyframes/);
   assert.match(requests[0]?.messages?.[1]?.content ?? "", /BEGIN USER PAGE REQUIREMENT/);
   assert.doesNotMatch(requests[0]?.messages?.[0]?.content ?? "", /雷总私聊版/);
+});
+
+test("generateStaticHtml disables DeepSeek thinking so the HTML budget is not consumed by reasoning", async () => {
+  let observed: { thinking?: { type?: string } } | undefined;
+  const service = new AiService("https://api.deepseek.com", "test-key", "deepseek-preview", {
+    async create(args: { thinking?: { type?: string } }) {
+      observed = args;
+      return { choices: [{ message: { content: '{"title":"x","html":"<!doctype html><html><body>x</body></html>"}' } }] };
+    },
+  } as never);
+
+  await service.generateStaticHtml({ request: "生成网页" });
+  assert.deepEqual(observed?.thinking, { type: "disabled" });
 });
 
 test("generateStaticHtml rejects oversized and empty requirements before contacting the provider", async () => {

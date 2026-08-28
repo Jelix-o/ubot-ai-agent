@@ -142,6 +142,33 @@ test("provider unavailability creates the specific retry-later notice", async (t
   assert.equal(outbox.text, HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE);
 });
 
+test("repair request names the failed safety rule and constrains SVG output", async (t) => {
+  const { service } = await createFixture(t);
+  const queued = await service.enqueue({
+    groupId: "repair-svg",
+    creatorUserId: "member-1",
+    sourceMessageId: "repair-svg-1",
+    request: "SVG 鹈鹕骑自行车",
+  });
+  const requests: string[] = [];
+  const result = await service.processNext({
+    id: queued.page.id,
+    request: "SVG 鹈鹕骑自行车",
+    generate: async (request) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        return JSON.stringify({ title: "bad", html: "<!doctype html><html><head><meta charset=\"utf-8\"><title>x</title></head><body>x</body></html>" });
+      }
+      return JSON.stringify({ title: "ok", html: SAFE_PAGE });
+    },
+  });
+  assert.equal(result.status, "published");
+  assert.equal(requests.length, 2);
+  assert.match(requests[1] ?? "", /html_preview_tag_disallowed/);
+  assert.match(requests[1] ?? "", /不要输出 meta 或 xmlns/);
+  assert.match(requests[1] ?? "", /动画只用 CSS @keyframes/);
+});
+
 test("HTML previews publish atomically, expire after thirty days, and can be deleted", async (t) => {
   const { db, rootDir, service } = await createFixture(t);
   const now = Date.UTC(2026, 7, 28, 12, 0, 0);

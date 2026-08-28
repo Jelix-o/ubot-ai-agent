@@ -330,7 +330,7 @@ export class HtmlPreviewService {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const result = await generate(
-        attempt === 0 ? request : buildRepairRequest(request),
+        attempt === 0 ? request : buildRepairRequest(request, errorCodeOf(lastError)),
         signal,
         { repair: attempt === 1, ...(previousOutput ? { previousOutput } : {}) },
       );
@@ -773,8 +773,13 @@ function normalizeTitle(value: string): string {
   return value.replace(/\s+/g, " ").trim().slice(0, 160);
 }
 
-function buildRepairRequest(request: string): string {
-  const suffix = "\n\n请重新生成。上一版未通过严格 JSON 或静态安全校验；只输出 {\\\"title\\\":\\\"...\\\",\\\"html\\\":\\\"完整 HTML 文档\\\"}，不要解释、Markdown、外链或联网代码。";
+function buildRepairRequest(request: string, errorCode?: string): string {
+  const suffix = [
+    "\n\n请重新生成。上一版未通过严格 JSON 或静态安全校验。",
+    errorCode ? `校验结果：${errorCode}。` : "",
+    '只输出 {\\"title\\":\\"...\\",\\"html\\":\\"完整 HTML 文档\\"}，不要解释、Markdown、外链或联网代码。',
+    "不要输出 meta 或 xmlns 属性。SVG 只可使用 svg、g、path、circle、ellipse、rect、line、polyline、polygon、text、tspan、desc；动画只用 CSS @keyframes、transform、opacity。",
+  ].join("");
   return `${request.slice(0, Math.max(1, MAX_HTML_PREVIEW_REQUEST_CHARS - suffix.length))}${suffix}`;
 }
 

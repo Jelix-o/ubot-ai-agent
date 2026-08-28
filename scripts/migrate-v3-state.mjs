@@ -16,7 +16,7 @@ import dotenv from "dotenv";
 import { DatabaseSync } from "node:sqlite";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const IMPORTER_VERSION = "3.0.7";
+const IMPORTER_VERSION = "3.0.8";
 const EXPLICIT_MEMORY_SOURCES = new Set(["admin", "explicit_command", "explicit_request"]);
 const DEFAULT_V3_ENABLED_CAPABILITIES = [
   "conversation", "explicit_memory", "knowledge", "scheduled_reminders",

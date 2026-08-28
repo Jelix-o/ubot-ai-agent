@@ -351,6 +351,7 @@ export class AiService {
           'Its exact schema is {"title":"short page title","html":"complete HTML document"}. Both fields must be strings.',
           "The html value must contain a complete HTML document and may use only inline CSS and inline browser JavaScript.",
           "Inline SVG is allowed only for self-contained shapes and text. Omit xmlns, links, external resources, image/use/foreignObject, and SMIL animation tags.",
+          "Omit meta elements. SVG may use only svg, g, path, circle, ellipse, rect, line, polyline, polygon, text, tspan, and desc elements.",
           "Animate SVG with inline CSS @keyframes using transform or opacity; do not use animate, animateTransform, or set elements.",
           "Do not use external resources, URLs, network requests, fetch/XMLHttpRequest/WebSocket/EventSource, forms, iframes, embeds, objects, workers, redirects, navigation, or server-side code.",
           "Do not use inline on* event attributes. For interactions, attach event listeners from an inline script.",
@@ -375,6 +376,7 @@ export class AiService {
         messages,
         max_tokens: this.staticHtmlRequestOptions.maxCompletionTokens,
         stream: false,
+        ...(isDeepSeekApiEndpoint(this.baseURL) ? { thinking: { type: "disabled" } } : {}),
         signal: controller.signal,
       } as any) as OpenAI.Chat.Completions.ChatCompletion;
       const text = completion.choices[0]?.message?.content?.trim();
@@ -1061,6 +1063,14 @@ function countPromptChars(messages: ChatMessage[]): number {
 function isStreamFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /stream(?:ing)?[^\n]{0,80}(?:not supported|unsupported|not available)|unsupported[^\n]{0,80}stream|anthropic_stream_unsupported/i.test(message);
+}
+
+function isDeepSeekApiEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === "api.deepseek.com";
+  } catch {
+    return false;
+  }
 }
 
 function extractUpstreamStatusCode(error: unknown): number | undefined {
