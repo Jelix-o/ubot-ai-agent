@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -197,4 +197,93 @@ test("V3 cutover excludes daily-report raw messages older than seven days", (t) 
   } finally {
     migrated.close();
   }
+});
+
+test("V3 cutover removes untracked rollback files when a legacy source cannot be parsed", (t) => {
+  const appRoot = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-cutover-failure-"));
+  const dataDir = path.join(appRoot, "data");
+  const dbPath = path.join(dataDir, "shared", "bot-shared.db");
+  t.after(() => rmSync(appRoot, { recursive: true, force: true }));
+
+  mkdirSync(path.join(appRoot, "config"), { recursive: true });
+  mkdirSync(path.join(dataDir, "shared"), { recursive: true });
+  mkdirSync(path.join(appRoot, "assets"), { recursive: true });
+  writeFileSync(path.join(appRoot, ".env"), `UBOT_STATE_ENCRYPTION_KEY=${TEST_STATE_KEY}\n`);
+  writeFileSync(path.join(appRoot, "config", "groups.json"), JSON.stringify({ groups: [] }));
+  writeFileSync(path.join(dataDir, "group-memory.json"), "{ malformed legacy JSON");
+  cpSync(path.resolve("assets", "huixian-profile.json"), path.join(appRoot, "assets", "huixian-profile.json"));
+
+  const db = new SharedDb(dbPath);
+  db.close();
+
+  assert.throws(() => execFileSync(process.execPath, [
+    path.resolve("scripts", "migrate-v3-state.mjs"),
+    "--app-root", appRoot,
+    "--execute",
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, UBOT_STATE_ENCRYPTION_KEY: TEST_STATE_KEY },
+  }), /Invalid legacy JSON/);
+
+  const rollbackDir = path.join(dataDir, "v3-rollback");
+  assert.deepEqual(existsSync(rollbackDir) ? readdirSync(rollbackDir) : [], []);
+
+  const afterFailure = new SharedDb(dbPath);
+  try {
+    assert.equal(
+      afterFailure.db.prepare("SELECT meta_value FROM v3_state_meta WHERE meta_key = 'state_cutover'").get(),
+      undefined,
+    );
+    assert.equal(
+      (afterFailure.db.prepare("SELECT COUNT(*) AS count FROM v3_rollback_archives").get() as { count: number }).count,
+      0,
+    );
+  } finally {
+    afterFailure.close();
+  }
+});
+
+test("existing V3 cutover upgrades SQLite without reading or re-archiving legacy JSON", (t) => {
+  const appRoot = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-existing-cutover-"));
+  const dataDir = path.join(appRoot, "data");
+  const dbPath = path.join(dataDir, "shared", "bot-shared.db");
+  t.after(() => rmSync(appRoot, { recursive: true, force: true }));
+
+  mkdirSync(path.join(appRoot, "config"), { recursive: true });
+  mkdirSync(path.join(dataDir, "shared"), { recursive: true });
+  writeFileSync(path.join(appRoot, ".env"), `UBOT_STATE_ENCRYPTION_KEY=${TEST_STATE_KEY}\n`);
+  // Both files are deliberately malformed. An existing-cutover upgrade is
+  // prohibited from discovering or parsing either retired source.
+  writeFileSync(path.join(appRoot, "config", "groups.json"), "{ malformed groups JSON");
+  writeFileSync(path.join(dataDir, "group-memory.json"), "{ malformed memory JSON");
+
+  const initial = new SharedDb(dbPath);
+  try {
+    initial.db.prepare(
+      `INSERT INTO v3_state_meta (meta_key, meta_value, updated_at) VALUES ('state_cutover', 'v3', ?)`,
+    ).run(Date.now());
+    // Emulate a deployed 3.0.0 database before the additive v9 migration.
+    initial.db.exec("DROP TABLE v3_daily_report_outputs");
+    initial.db.prepare("DELETE FROM schema_migrations WHERE version = 9").run();
+  } finally {
+    initial.close();
+  }
+
+  const output = execFileSync(process.execPath, [
+    path.resolve("scripts", "migrate-v3-state.mjs"),
+    "--app-root", appRoot,
+    "--execute",
+    "--allow-existing-cutover",
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, UBOT_STATE_ENCRYPTION_KEY: TEST_STATE_KEY },
+  });
+  const report = JSON.parse(output) as { mode: string; cutover: string; legacyJson: string; migrationVersions: number[] };
+  assert.equal(report.mode, "existing-cutover-upgrade");
+  assert.equal(report.cutover, "already-complete");
+  assert.equal(report.legacyJson, "not-read");
+  assert.ok(report.migrationVersions.includes(9));
+  assert.equal(existsSync(path.join(dataDir, "v3-rollback")), false);
+  assert.equal(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8"), "{ malformed groups JSON");
+  assert.equal(readFileSync(path.join(dataDir, "group-memory.json"), "utf8"), "{ malformed memory JSON");
 });

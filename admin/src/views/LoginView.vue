@@ -14,7 +14,7 @@ const recoveryCodes = shallowRef<string[]>([]);
 const inviteToken = new URLSearchParams(window.location.search).get("invite") || "";
 const actionLabel = computed(() => {
   if (step.value === "password") return inviteToken ? "创建受邀账号" : "继续";
-  if (step.value === "recovery") return "使用恢复码登录";
+  if (step.value === "recovery") return "使用恢复码重置验证器";
   return "验证并登录";
 });
 
@@ -39,8 +39,13 @@ async function login(): Promise<void> {
         password: form.password,
         recoveryCode: form.recoveryCode,
       });
-      if (data.ok === true) {
-        window.location.href = "/";
+      if (String(data.status || "") === "totp_enrollment_required") {
+        challengeToken.value = String(data.enrollmentToken || "");
+        enrollmentSecret.value = String(data.totpSecret || "");
+        enrollmentUri.value = String(data.totpUri || "");
+        step.value = "enroll";
+        form.code = "";
+        form.recoveryCode = "";
         return;
       }
     } else if (step.value === "totp") {
@@ -149,7 +154,7 @@ function loginError(code: string): string {
       <p v-if="step === 'password'">请输入账号和密码继续安全验证。</p>
       <p v-else-if="step === 'totp'">输入验证器应用中的 6 位验证码。</p>
       <p v-else-if="step === 'enroll'">先将密钥添加到验证器应用，再输入当前验证码。</p>
-      <p v-else>输入账号密码和一条未使用的恢复码。</p>
+      <p v-else>输入账号密码和一条未使用的恢复码，随后重新绑定验证器。</p>
       <section v-if="recoveryCodes.length" class="recovery-codes">
         <h3>保存恢复码</h3>
         <p>这些恢复码只显示一次。每条只能使用一次。</p>

@@ -119,6 +119,42 @@ test("V3 system settings keep model credentials out of document JSON and retire 
   });
 });
 
+test("V3 state strips legacy QQ administrator fields and can clear an existing cutover", async () => {
+  await withRepository((repository, db) => {
+    repository.saveDocument("group-control", "default", { superAdminUserIds: ["90001"] });
+    repository.saveGroups({
+      superAdminUserIds: ["90001"],
+      groups: [{
+        groupId: "10001",
+        currentSkillId: "huixian",
+        allowedSkillIds: ["huixian"],
+        switcherUserIds: ["90002"],
+        liveChatUserIds: [],
+      }],
+    });
+
+    assert.equal(repository.getGroups().superAdminUserIds, undefined);
+    assert.deepEqual(repository.getGroup("10001")?.switcherUserIds, []);
+    const stored = db.db.prepare("SELECT config_json FROM v3_groups WHERE group_id = '10001'").get() as { config_json: string };
+    assert.deepEqual(JSON.parse(stored.config_json).switcherUserIds, []);
+    assert.equal(repository.getDocument("group-control", "default", undefined), undefined);
+
+    db.db.prepare("UPDATE v3_groups SET config_json = ? WHERE group_id = '10001'")
+      .run(JSON.stringify({
+        groupId: "10001",
+        currentSkillId: "huixian",
+        allowedSkillIds: ["huixian"],
+        switcherUserIds: ["90003"],
+        liveChatUserIds: [],
+      }));
+    repository.saveDocument("group-control", "default", { superAdminUserIds: ["90004"] });
+
+    assert.deepEqual(repository.retireLegacyQqAdministration(), { groupsCleared: 1, controlRemoved: true });
+    assert.deepEqual(repository.getGroup("10001")?.switcherUserIds, []);
+    assert.equal(repository.getDocument("group-control", "default", undefined), undefined);
+  });
+});
+
 test("cutover requires a state encryption key and repository stores never read legacy JSON", async () => {
   await withRepository(async (repository, db, dir) => {
     repository.markCutover();
@@ -309,5 +345,41 @@ test("daily-report raw content cannot use a future timestamp to extend retention
 
     assert.ok(row.occurred_at >= receivedBefore);
     assert.ok(row.occurred_at <= receivedAfter);
+  });
+});
+
+test("daily-report delivery keeps the rendered result after raw inputs expire", async () => {
+  await withRepository((repository) => {
+    const sentAt = Date.parse("2026-08-20T18:00:00.000Z");
+    repository.appendDailyReportMessage({
+      groupId: "10001",
+      dayKey: "2026-08-12",
+      userId: "20001",
+      userName: "成员",
+      text: "七天后应清理的原始群消息",
+      timestamp: "2026-08-12T10:00:00.000Z",
+    });
+
+    repository.markDailyReportSent(
+      "10001",
+      "2026-08-12",
+      sentAt,
+      "2026-08-12 群聊日报\n今日消息 1 条",
+    );
+
+    assert.equal(repository.getDailyReportLastSent("10001"), "2026-08-12");
+    assert.deepEqual(repository.getDailyReportOutput("10001", "2026-08-12"), {
+      groupId: "10001",
+      dayKey: "2026-08-12",
+      renderedText: "2026-08-12 群聊日报\n今日消息 1 条",
+      sentAt: "2026-08-20T18:00:00.000Z",
+    });
+
+    repository.pruneRawMessageRetention(Date.parse("2026-08-19T00:00:00.000Z"));
+    assert.equal(repository.getDailyReportMessages("10001", "2026-08-12").length, 0);
+    assert.equal(
+      repository.getDailyReportOutput("10001", "2026-08-12")?.renderedText,
+      "2026-08-12 群聊日报\n今日消息 1 条",
+    );
   });
 });

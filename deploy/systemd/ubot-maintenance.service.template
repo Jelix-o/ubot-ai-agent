@@ -9,6 +9,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/ai-project-releases/current
 EnvironmentFile=/opt/ai-project/.env
+Environment=UBOT_APP_ROOT=/opt/ai-project
 Environment=NODE_ENV=production
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/env node scripts/migrate-v3-state.mjs --maintenance --execute

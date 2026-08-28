@@ -17,6 +17,7 @@ const LOGIN_WINDOW_MS = 10 * 60 * 1_000;
 const LOGIN_MAX_FAILURES = 5;
 const LOGIN_LOCK_MS = 15 * 60 * 1_000;
 const TOTP_LOGIN_MAX_FAILURES = 5;
+const TOTP_RATE_LIMIT_SCOPE = "totp";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1_000;
 const CHALLENGE_TTL_MS = 10 * 60 * 1_000;
 const RECENT_MFA_MS = 10 * 60 * 1_000;
@@ -79,6 +80,20 @@ export type AuthCompletionResult =
   | { kind: "invalid_recovery_code" }
   | { kind: "disabled" }
   | { kind: "success"; session: AdminAuthSession; recoveryCodes?: string[] };
+
+/** Recovery codes can only begin a fresh MFA enrollment; they never create a session. */
+export type RecoveryLoginResult =
+  | { kind: "invalid_credentials" }
+  | { kind: "locked"; retryAfterSeconds: number }
+  | { kind: "invalid_recovery_code" }
+  | { kind: "disabled" }
+  | {
+    kind: "totp_enrollment_required";
+    enrollmentToken: string;
+    username: string;
+    totpSecret: string;
+    totpUri: string;
+  };
 
 export interface AdminInvite {
   id: string;
@@ -230,8 +245,7 @@ export class AdminAuthService {
       return { kind: "disabled" };
     }
     const secret = this.decrypt(challenge.secret_ciphertext);
-    const rateKey = `${account.id}:${input.enrollmentToken}`;
-    const rate = this.getRateLimit("totp_enrollment", rateKey);
+    const rate = this.getRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
     if (rate.lockedUntil && rate.lockedUntil > Date.now()) {
       this.restoreChallenge(challenge.id);
       return { kind: "invalid_totp" };
@@ -239,7 +253,7 @@ export class AdminAuthService {
     const counter = verifyTotp(secret, input.code, account.mfa_last_counter);
     if (counter === undefined) {
       this.restoreChallenge(challenge.id);
-      this.recordLoginFailure("totp_enrollment", rateKey, Date.now());
+      this.recordLoginFailure(TOTP_RATE_LIMIT_SCOPE, account.id, Date.now());
       this.writeAudit({ accountId: account.id, action: "totp_enrollment_failed", meta: input.meta });
       return { kind: "invalid_totp" };
     }
@@ -258,7 +272,7 @@ export class AdminAuthService {
       this.writeAudit({ accountId: account.id, action: "totp_enrollment_replayed", meta: input.meta });
       return { kind: "invalid_totp" };
     }
-    this.clearRateLimit("totp_enrollment", rateKey);
+    this.clearRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
     const session = this.createSession(account, input.meta, now);
     this.writeAudit({ accountId: account.id, action: "totp_enrollment_completed", meta: input.meta });
     return { kind: "success", session, recoveryCodes: recoveryCodeSet.codes };
@@ -278,8 +292,7 @@ export class AdminAuthService {
     if (!account || account.disabled_at || !account.totp_secret_ciphertext) {
       return { kind: "disabled" };
     }
-    const rateKey = `${account.id}:${input.loginToken}`;
-    const rate = this.getRateLimit("totp_login", rateKey);
+    const rate = this.getRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
     if (rate.lockedUntil && rate.lockedUntil > Date.now()) {
       this.restoreChallenge(challenge.id);
       return { kind: "invalid_totp" };
@@ -287,7 +300,7 @@ export class AdminAuthService {
     const counter = verifyTotp(this.decrypt(account.totp_secret_ciphertext), input.code, account.mfa_last_counter);
     if (counter === undefined) {
       this.restoreChallenge(challenge.id);
-      this.recordLoginFailure("totp_login", rateKey, Date.now());
+      this.recordLoginFailure(TOTP_RATE_LIMIT_SCOPE, account.id, Date.now());
       this.writeAudit({ accountId: account.id, action: "login_totp_failed", meta: input.meta });
       return { kind: "invalid_totp" };
     }
@@ -304,7 +317,7 @@ export class AdminAuthService {
       this.writeAudit({ accountId: account.id, action: "login_totp_replayed", meta: input.meta });
       return { kind: "invalid_totp" };
     }
-    this.clearRateLimit("totp_login", rateKey);
+    this.clearRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
     const session = this.createSession(account, input.meta, now);
     this.writeAudit({ accountId: account.id, action: "login_completed", meta: input.meta });
     return { kind: "success", session };
@@ -316,7 +329,7 @@ export class AdminAuthService {
     recoveryCode: string;
     loginKey: string;
     meta?: AdminAuthRequestMeta;
-  }): Promise<AuthCompletionResult | PasswordLoginResult> {
+  }): Promise<RecoveryLoginResult> {
     await this.ensureInitialized();
     const now = Date.now();
     const rate = this.getRateLimit("recovery_login", input.loginKey);
@@ -346,32 +359,66 @@ export class AdminAuthService {
       this.writeAudit({ accountId: account.id, action: "login_recovery_failed", meta: input.meta });
       return { kind: "invalid_recovery_code" };
     }
-    this.sharedDb.db.exec("BEGIN IMMEDIATE");
+    const secret = encodeBase32(randomBytes(TOTP_SECRET_BYTES));
+    const enrollmentToken = randomToken();
     let recoveryCodeClaimed = false;
+    let accountDisabled = false;
+    this.sharedDb.db.exec("BEGIN IMMEDIATE");
     try {
-      const consumed = this.sharedDb.db.prepare(
-        "UPDATE admin_recovery_codes SET used_at = ? WHERE id = ? AND account_id = ? AND used_at IS NULL",
-      ).run(now, code.id, account.id);
-      if (Number(consumed.changes ?? 0) === 1) {
-        this.sharedDb.db.prepare("UPDATE admin_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?").run(now, now, account.id);
-        this.sharedDb.db.exec("COMMIT");
-        recoveryCodeClaimed = true;
-      } else {
+      const currentAccount = this.findAccountById(account.id);
+      if (!currentAccount || currentAccount.disabled_at) {
         this.sharedDb.db.exec("ROLLBACK");
+        accountDisabled = true;
+      } else {
+        const consumed = this.sharedDb.db.prepare(
+          "UPDATE admin_recovery_codes SET used_at = ? WHERE id = ? AND account_id = ? AND used_at IS NULL",
+        ).run(now, code.id, account.id);
+        if (Number(consumed.changes ?? 0) === 1) {
+          // A recovery code proves account recovery, not an authenticated session.
+          // Rotate every MFA credential before issuing a new enrollment challenge.
+          this.sharedDb.db.prepare(
+            `UPDATE admin_accounts
+                SET totp_secret_ciphertext = NULL, totp_enabled_at = NULL, mfa_last_counter = -1, updated_at = ?
+              WHERE id = ?`,
+          ).run(now, account.id);
+          this.sharedDb.db.prepare("DELETE FROM admin_recovery_codes WHERE account_id = ?").run(account.id);
+          this.sharedDb.db.prepare(
+            "UPDATE admin_sessions SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL",
+          ).run(now, account.id);
+          this.sharedDb.db.prepare("DELETE FROM admin_auth_challenges WHERE account_id = ?").run(account.id);
+          this.insertChallenge({
+            accountId: account.id,
+            kind: "totp_enroll",
+            token: enrollmentToken,
+            secretCiphertext: this.encrypt(secret),
+            meta: input.meta,
+          });
+          this.sharedDb.db.exec("COMMIT");
+          recoveryCodeClaimed = true;
+        } else {
+          this.sharedDb.db.exec("ROLLBACK");
+        }
       }
     } catch (error) {
       this.sharedDb.db.exec("ROLLBACK");
       throw error;
     }
+    if (accountDisabled) return { kind: "disabled" };
     if (!recoveryCodeClaimed) {
       this.recordLoginFailure("recovery_login", input.loginKey, now);
       this.writeAudit({ accountId: account.id, action: "login_recovery_replayed", meta: input.meta });
       return { kind: "invalid_recovery_code" };
     }
     this.clearRateLimit("recovery_login", input.loginKey);
-    const session = this.createSession(account, input.meta, now);
-    this.writeAudit({ accountId: account.id, action: "login_recovery_completed", meta: input.meta });
-    return { kind: "success", session };
+    this.clearRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
+    this.writeAudit({ accountId: account.id, action: "login_recovery_totp_reset_started", meta: input.meta });
+    return {
+      kind: "totp_enrollment_required",
+      enrollmentToken,
+      username: account.username,
+      totpSecret: secret,
+      totpUri: buildTotpUri(account.username, secret),
+    };
   }
 
   getSession(opaqueToken: string | undefined): AdminAuthSession | undefined {
@@ -435,8 +482,14 @@ export class AdminAuthService {
   completeSessionReauth(session: AdminAuthSession, code: string, meta?: AdminAuthRequestMeta): boolean {
     const account = this.findAccountById(session.userId ?? "");
     if (!account?.totp_secret_ciphertext || account.disabled_at) return false;
+    const rate = this.getRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
+    if (rate.lockedUntil && rate.lockedUntil > Date.now()) return false;
     const counter = verifyTotp(this.decrypt(account.totp_secret_ciphertext), code, account.mfa_last_counter);
-    if (counter === undefined) return false;
+    if (counter === undefined) {
+      this.recordLoginFailure(TOTP_RATE_LIMIT_SCOPE, account.id, Date.now());
+      this.writeAudit({ accountId: account.id, action: "mfa_reauthentication_failed", meta });
+      return false;
+    }
     const now = Date.now();
     this.sharedDb.db.exec("BEGIN IMMEDIATE");
     try {
@@ -447,13 +500,20 @@ export class AdminAuthService {
         this.sharedDb.db.exec("ROLLBACK");
         return false;
       }
-      this.sharedDb.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ? WHERE id = ? AND revoked_at IS NULL").run(now, session.sessionId);
+      const sessionUpdated = this.sharedDb.db.prepare(
+        "UPDATE admin_sessions SET mfa_verified_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
+      ).run(now, session.sessionId, account.id);
+      if (Number(sessionUpdated.changes ?? 0) !== 1) {
+        this.sharedDb.db.exec("ROLLBACK");
+        return false;
+      }
       this.sharedDb.db.exec("COMMIT");
     } catch (error) {
       this.sharedDb.db.exec("ROLLBACK");
       throw error;
     }
     session.mfaVerifiedAt = now;
+    this.clearRateLimit(TOTP_RATE_LIMIT_SCOPE, account.id);
     this.writeAudit({ accountId: account.id, action: "mfa_reauthenticated", meta });
     return true;
   }
@@ -644,17 +704,19 @@ export class AdminAuthService {
   }
 
   disableAccount(accountId: string, actorAccountId: string): void {
-    const account = this.findAccountById(accountId);
-    if (!account) throw new AdminAuthError("not_found", 404);
-    if (account.id === actorAccountId) throw new AdminAuthError("cannot_disable_self", 400);
-    if (account.role === "super_admin" && this.activeSuperAdminCount() <= 1) {
-      throw new AdminAuthError("last_super_admin", 409);
-    }
     const now = Date.now();
     this.sharedDb.db.exec("BEGIN IMMEDIATE");
     try {
-      this.sharedDb.db.prepare("UPDATE admin_accounts SET disabled_at = ?, updated_at = ? WHERE id = ?").run(now, now, accountId);
-      this.sharedDb.db.prepare("UPDATE admin_sessions SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL").run(now, accountId);
+      const account = this.findAccountById(accountId);
+      if (!account) throw new AdminAuthError("not_found", 404);
+      if (account.id === actorAccountId) throw new AdminAuthError("cannot_disable_self", 400);
+      if (!account.disabled_at && account.role === "super_admin" && this.activeSuperAdminCount() <= 1) {
+        throw new AdminAuthError("last_super_admin", 409);
+      }
+      if (!account.disabled_at) {
+        this.sharedDb.db.prepare("UPDATE admin_accounts SET disabled_at = ?, updated_at = ? WHERE id = ? AND disabled_at IS NULL").run(now, now, accountId);
+        this.sharedDb.db.prepare("UPDATE admin_sessions SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL").run(now, accountId);
+      }
       this.sharedDb.db.exec("COMMIT");
     } catch (error) {
       this.sharedDb.db.exec("ROLLBACK");
@@ -859,7 +921,7 @@ export class AdminAuthService {
     const inWindow = current.windowStartedAt >= now - LOGIN_WINDOW_MS;
     const failures = inWindow ? current.failures + 1 : 1;
     const windowStartedAt = inWindow ? current.windowStartedAt : now;
-    const limit = scope.startsWith("totp_") ? TOTP_LOGIN_MAX_FAILURES : LOGIN_MAX_FAILURES;
+    const limit = scope === TOTP_RATE_LIMIT_SCOPE || scope.startsWith("totp_") ? TOTP_LOGIN_MAX_FAILURES : LOGIN_MAX_FAILURES;
     const lockedUntil = failures >= limit ? now + LOGIN_LOCK_MS : undefined;
     this.sharedDb.db.prepare(
       `INSERT INTO admin_login_rate_limits (scope, key_hash, window_started_at, failures, locked_until, updated_at)

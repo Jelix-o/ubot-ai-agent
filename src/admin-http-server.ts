@@ -935,12 +935,18 @@ export class AdminHttpServer {
         loginKey: this.loginAttemptKey(req, username),
         meta,
       });
-      if (result.kind === "success" || result.kind === "invalid_challenge" || result.kind === "invalid_totp" || result.kind === "invalid_recovery_code" || result.kind === "disabled") {
-        this.sendAuthCompletion(res, result);
+      if (result.kind === "totp_enrollment_required") {
+        this.sendJson(res, {
+          status: "totp_enrollment_required",
+          enrollmentToken: result.enrollmentToken,
+          username: result.username,
+          totpSecret: result.totpSecret,
+          totpUri: result.totpUri,
+        });
       } else if (result.kind === "locked") {
         this.sendJson(res, { error: "too_many_login_attempts", retryAfterSeconds: result.retryAfterSeconds }, 429);
       } else {
-        this.sendJson(res, { error: "invalid_credentials" }, 401);
+        this.sendJson(res, { error: result.kind }, result.kind === "disabled" ? 403 : 401);
       }
       return true;
     }
@@ -1546,6 +1552,10 @@ export class AdminHttpServer {
       const body = await readJsonBody(req);
       if (hasRetiredSharedAdminSecretField(body)) {
         this.sendJson(res, { error: "shared_admin_secret_retired" }, 410);
+        return;
+      }
+      if (session.role === "super_admin" && this.options.groupConfigService.isV3Runtime() && "switcherUserIds" in body) {
+        this.sendJson(res, { error: "legacy_qq_admin_retired" }, 410);
         return;
       }
       try {

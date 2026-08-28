@@ -159,9 +159,17 @@ test("V3 admin uses SQLite TOTP authentication and retires legacy routes", async
 
   const group = await request(baseUrl, "/api/groups/67890/config", { headers: { Cookie: auth.cookie } });
   assert.equal(group.status, 200);
-  const groupData = await group.json() as { currentSkillId: string; allowedSkillIds: string[] };
+  const groupData = await group.json() as { currentSkillId: string; allowedSkillIds: string[]; switcherUserIds: string[] };
   assert.equal(groupData.currentSkillId, "huixian");
   assert.deepEqual(groupData.allowedSkillIds, ["huixian"]);
+  assert.deepEqual(groupData.switcherUserIds, []);
+
+  const retiredQqAdminConfig = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PUT",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ switcherUserIds: ["77777"] }),
+  });
+  assert.equal(retiredQqAdminConfig.status, 410);
 
   const overview = await request(baseUrl, "/api/overview?groupId=67890", { headers: { Cookie: auth.cookie } });
   assert.equal(overview.status, 200);
@@ -224,6 +232,48 @@ test("V3 admin uses SQLite TOTP authentication and retires legacy routes", async
     body: JSON.stringify({ memoryCandidateConfidenceThreshold: 80 }),
   });
   assert.equal(retiredSettings.status, 410);
+});
+
+test("recovery authentication requires fresh TOTP enrollment and never sets a session cookie", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const password = await request(baseUrl, "/api/auth/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "admin", password: "secret-password" }),
+  });
+  const challenge = await password.json() as { enrollmentToken: string; totpSecret: string };
+  const enrolled = await request(baseUrl, "/api/auth/totp/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enrollmentToken: challenge.enrollmentToken, code: makeTotp(challenge.totpSecret) }),
+  });
+  const initial = await enrolled.json() as { recoveryCodes: string[] };
+  const oldCookie = enrolled.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.ok(oldCookie);
+  assert.equal(initial.recoveryCodes.length, 10);
+
+  const recovery = await request(baseUrl, "/api/auth/recovery", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: "admin",
+      password: "secret-password",
+      recoveryCode: initial.recoveryCodes[0],
+    }),
+  });
+  assert.equal(recovery.status, 200);
+  assert.equal(recovery.headers.get("set-cookie"), null);
+  const reset = await recovery.json() as { status: string; enrollmentToken: string; totpSecret: string };
+  assert.equal(reset.status, "totp_enrollment_required");
+  assert.equal((await request(baseUrl, "/api/session", { headers: { Cookie: oldCookie } })).status, 401);
+
+  const reEnrolled = await request(baseUrl, "/api/auth/totp/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enrollmentToken: reset.enrollmentToken, code: makeTotp(reset.totpSecret) }),
+  });
+  assert.equal(reEnrolled.status, 200);
+  assert.ok(reEnrolled.headers.get("set-cookie"));
 });
 
 test("group administrators are limited to authorized groups and operational features", async (t) => {

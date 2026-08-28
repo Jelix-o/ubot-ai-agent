@@ -123,6 +123,7 @@ const MSG_INVALID_QQ = "请提供有效的 QQ 号";
 const MSG_DAILY_REPORT_NO_PERMISSION = "你没有管理群聊日报的权限";
 const MSG_HOLIDAY_COUNTDOWN_NO_PERMISSION = "你没有管理节假日倒计时的权限";
 const MSG_SCHEDULED_REMINDER_NO_PERMISSION = "你没有管理定时任务总开关的权限";
+const MSG_ADMIN_RETIRED = "QQ 管理员已退休；请使用后台账号、TOTP 和群授权管理权限";
 const MSG_ADMIN_NO_PERMISSION = "你没有管理管理员的权限";
 const MSG_MUTE_NO_PERMISSION = "你没有让机器人闭嘴或说话的权限";
 const MSG_BLACKLIST_NO_PERMISSION = "你没有管理机器人黑名单的权限";
@@ -143,7 +144,6 @@ const ROAST_MODE_SCENARIO_INSTRUCTION = [
 ].join("\n");
 
 const RUNTIME_COMMAND_SPECS = {
-  admin: { builtinPrefix: ADMIN_PREFIX, builtinAliases: [] },
   blacklist: { builtinPrefix: BLACKLIST_PREFIX, builtinAliases: [] },
   conversation: { builtinPrefix: CONVERSATION_PREFIX, builtinAliases: [CLEAR_GROUP_CONTEXT_COMMAND] },
   daily_report: { builtinPrefix: DAILY_REPORT_PREFIX, builtinAliases: [] },
@@ -598,9 +598,16 @@ export class BotApplication {
       return;
     }
 
-    const adminCommand = matchRuntimeCommand(commandText, runtimeCommands, "admin");
+    // This is intentionally not a configurable runtime command. V3 retires
+    // QQ-number administration even if an old command setting survived a
+    // pre-cutover JSON file.
+    const adminCommand = matchCommandPrefix(commandText, [ADMIN_PREFIX], ADMIN_PREFIX);
     if (adminCommand) {
-      await this.handleAdminCommand(groupConfig, event, adminCommand.rewrittenText);
+      if (this.usesV3AdminAuthority()) {
+        await this.sendText(groupId, MSG_ADMIN_RETIRED);
+      } else {
+        await this.handleLegacyAdminCommand(groupConfig, event, adminCommand.rewrittenText);
+      }
       return;
     }
 
@@ -1043,7 +1050,7 @@ export class BotApplication {
               members: await this.safeListGroupMembers(groupConfig.groupId),
             });
             await this.sendText(groupConfig.groupId, report);
-            await this.dailyReportService.markSent(groupConfig.groupId, now);
+            await this.dailyReportService.markSent(groupConfig.groupId, now, report);
           });
           logInfo("Sent daily group report.", {
             groupId: groupConfig.groupId,
@@ -1428,10 +1435,9 @@ export class BotApplication {
       return;
     }
 
-    const [currentSkill, scheduledTasks, superAdminUserIds] = await Promise.all([
+    const [currentSkill, scheduledTasks] = await Promise.all([
       this.skillService.getSkill(groupConfig.currentSkillId),
       this.scheduledReminderService.listGroupTasks(groupId),
-      this.groupConfigService.getSuperAdminUserIds(),
     ]);
     const liveUsers = groupConfig.liveChatUserIds;
     const blacklistedUsers = groupConfig.blacklistedUserIds ?? [];
@@ -1448,7 +1454,7 @@ export class BotApplication {
         `群聊日报：${groupConfig.dailyReportEnabled === false ? "已关闭" : `已开启，${groupConfig.dailyReportTime ?? "17:59"}`}`,
         `节假日倒计时：${groupConfig.holidayCountdownEnabled === false ? "已关闭" : `已开启，${groupConfig.holidayCountdownTime ?? "09:00"}`}`,
         `黑名单：${blacklistedUsers.length > 0 ? `${blacklistedUsers.length} 人` : "无"}`,
-        `管理员：本群 ${groupConfig.switcherUserIds.length} 人，超级 ${superAdminUserIds.length} 人`,
+        "权限：后台账号、TOTP 与群授权管理",
       ].join("\n"),
     );
   }
@@ -1485,7 +1491,7 @@ export class BotApplication {
         `定时任务：${groupConfig.scheduledRemindersEnabled === false ? "总开关已关闭" : "总开关已开启"}，${scheduledTasks.length} 个${nextTask ? `，下次 ${formatLocalDateTime(new Date(nextTask.nextRunAt))}` : ""}`,
         `群聊日报：${groupConfig.dailyReportEnabled === false ? "已关闭" : `已开启，${groupConfig.dailyReportTime ?? "17:59"}`}`,
         `节假日倒计时：${groupConfig.holidayCountdownEnabled === false ? "已关闭" : `已开启，${groupConfig.holidayCountdownTime ?? "09:00"}`}`,
-        `管理员配置：本群 ${groupConfig.switcherUserIds.length} 人，黑名单 ${(groupConfig.blacklistedUserIds ?? []).length} 人`,
+        `黑名单：${(groupConfig.blacklistedUserIds ?? []).length} 人；权限由后台账号、TOTP 与群授权管理`,
       ].join("\n"),
     );
   }
@@ -1735,6 +1741,7 @@ export class BotApplication {
           members: await this.safeListGroupMembers(groupId),
         });
         await this.sendText(groupId, report);
+        await this.dailyReportService.recordDeliveredReport(groupId, report);
       });
       return;
     }
@@ -2039,7 +2046,8 @@ export class BotApplication {
     await this.sendText(groupId, buildFeatureListMessage(commandText, runtimeCommands));
   }
 
-  private async handleAdminCommand(
+  /** Pre-cutover compatibility only. V3 routes all admin authority to SQLite accounts. */
+  private async handleLegacyAdminCommand(
     groupConfig: GroupBotConfig,
     event: NapcatGroupMessageEvent,
     commandText: string,
@@ -3057,6 +3065,10 @@ export class BotApplication {
       userId: String(event.user_id),
       userName: resolveSenderName(event),
       text: reportText,
+      // Ingress writes a receipt-safe message timestamp into the worker event.
+      // Do not replace it with worker processing time: that would let a delayed
+      // consumer extend the seven-day raw-message retention period.
+      timestamp: toReceiptSafeEventTimestamp(event.time),
     });
   }
 
@@ -3157,11 +3169,19 @@ export class BotApplication {
   }
 
   private async isAdmin(groupConfig: GroupBotConfig, userId: string): Promise<boolean> {
+    if (this.usesV3AdminAuthority()) {
+      return false;
+    }
     if (groupConfig.switcherUserIds.includes(userId)) {
       return true;
     }
 
     return this.groupConfigService.isSuperAdmin(userId);
+  }
+
+  private usesV3AdminAuthority(): boolean {
+    const service = this.groupConfigService as unknown as { isV3Runtime?: () => boolean };
+    return service.isV3Runtime?.() === true;
   }
 
   private async resolveSkill(groupConfig: GroupBotConfig): Promise<SkillDefinition> {
@@ -3278,13 +3298,11 @@ export class BotApplication {
       return;
     }
 
-    const superAdminUserIds = await this.groupConfigService.getSuperAdminUserIds();
     const textByGroup = new Map<string, string>();
     for (const group of args.groups) {
-      const mentionUserIds = group.switcherUserIds.length > 0 ? group.switcherUserIds : superAdminUserIds;
       textByGroup.set(
         group.groupId,
-        `${formatOpsAlertMentions(mentionUserIds)}【运维告警】${args.message}`.trim(),
+        `【运维告警】${args.message}`,
       );
     }
 
@@ -4272,6 +4290,22 @@ function resolveSenderName(event: NapcatGroupMessageEvent): string {
   return String(event.user_id);
 }
 
+function toReceiptSafeEventTimestamp(eventTimeSeconds: unknown, receivedAtMs = Date.now()): string {
+  const seconds = typeof eventTimeSeconds === "number" ? eventTimeSeconds : Number(eventTimeSeconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return new Date(receivedAtMs).toISOString();
+  }
+
+  const eventTimeMs = Math.trunc(seconds * 1_000);
+  if (!Number.isSafeInteger(eventTimeMs)) {
+    return new Date(receivedAtMs).toISOString();
+  }
+
+  // Worker events already carry ingress-normalized time. The additional clamp
+  // protects the legacy direct runtime from a future OneBot timestamp too.
+  return new Date(Math.min(eventTimeMs, receivedAtMs)).toISOString();
+}
+
 function formatClockTime(date: Date): string {
   return `${`${date.getHours()}`.padStart(2, "0")}:${`${date.getMinutes()}`.padStart(2, "0")}`;
 }
@@ -4378,7 +4412,7 @@ function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig
     return [
       `没找到“${topic}”这个帮助分类`,
       "",
-      "可用分类：对话、语音、会仙、实时对话、定时任务、日报、节假日、管理员、权限",
+      "可用分类：对话、语音、会仙、实时对话、定时任务、日报、节假日、权限",
       `示例：${helper("help")} 技能`,
       "",
       buildHelpOverviewMessage(sections, helper),
@@ -4488,29 +4522,12 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
       ],
     },
     {
-      title: "管理员",
-      aliases: ["管理员", "管理", "admin"],
-      lines: [
-        `1. ${command("admin")} 列表`,
-        `2. ${command("admin")} 添加 <QQ号>`,
-        `3. ${command("admin")} 移除 <QQ号>`,
-        `4. ${command("status")}`,
-        `5. ${command("health")}`,
-        `6. ${command("server")}`,
-        `7. ${command("ops_alert")} 状态 / 开启 / 关闭`,
-        `8. ${command("operation_log")}`,
-        `9. ${command("blacklist")} <QQ号>`,
-        `10. ${command("blacklist")} 解除 <QQ号>`,
-        "说明：添加和移除管理员仅超级管理员可用；拉黑命令群管理员可用",
-      ],
-    },
-    {
       title: "权限",
       aliases: ["权限", "auth", "permission"],
       lines: [
         "普通成员：可用对话、语音、唱歌、帮助和部分状态查询",
-        "群管理员：可用全部系统指令",
-        "超级管理员：拥有全部权限，并可增删群管理员",
+        "群内权限由后台账号、TOTP 与群授权管理",
+        "QQ 号、共享群密码和 #管理员 已退休",
       ],
     },
   ];
@@ -4525,14 +4542,13 @@ function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpF
     `4. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
     `5. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
     `6. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
-    `7. 管理员：${command("admin")} 列表、添加 <QQ号>、移除 <QQ号>`,
-    `8. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（管理员）`,
-    `9. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（管理员）`,
-    `10. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
-    `11. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
-    `分类帮助：${command("help")} 对话 / 语音 / 实时对话 / 定时任务 / 日报 / 节假日 / 管理员 / 权限`,
+    `7. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
+    `8. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
+    `9. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
+    `10. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+    `分类帮助：${command("help")} 对话 / 语音 / 实时对话 / 定时任务 / 日报 / 节假日 / 权限`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
-    "权限说明：普通成员可用对话、语音、唱歌、帮助和部分查询；群管理员可用全部系统指令；超级管理员额外可管理管理员",
+    "权限说明：群内 QQ 号不再授予管理员权限；请在后台使用账号、TOTP 和群授权管理运营设置",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,
     `可用分类：${sections.map((section) => section.title).join("、")}`,
   ].join("\n");

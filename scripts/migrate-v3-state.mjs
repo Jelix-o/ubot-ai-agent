@@ -16,7 +16,7 @@ import dotenv from "dotenv";
 import { DatabaseSync } from "node:sqlite";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const IMPORTER_VERSION = "3.0.0";
+const IMPORTER_VERSION = "3.0.1";
 const EXPLICIT_MEMORY_SOURCES = new Set(["admin", "explicit_command", "explicit_request"]);
 
 const args = parseArgs(process.argv.slice(2));
@@ -37,6 +37,21 @@ if (args.maintenance) {
 }
 
 async function runCutover() {
+  // A maintenance release must be able to apply additive SQLite migrations
+  // after the one-way cutover. This branch intentionally runs before legacy
+  // source discovery so an already-cut-over installation never touches JSON
+  // again, even when retired files happen to remain on disk.
+  if (args.allowExistingCutover) {
+    const cutoverState = inspectCutoverState();
+    if (cutoverState === "v3") {
+      await runExistingCutoverUpgrade();
+      return;
+    }
+    if (cutoverState !== "absent") {
+      throw new Error(`Unexpected V3 cutover marker: ${cutoverState}`);
+    }
+  }
+
   const sources = await collectLegacySources();
   const report = await buildPreflightReport(sources);
   if (!args.execute) {
@@ -59,13 +74,15 @@ async function runCutover() {
   const { V3StateRepository, StateCipher } = await loadCompiledRepositoryModules();
   const sharedDb = new SharedDb(dbPath);
   const repository = new V3StateRepository(sharedDb, { stateEncryptionKey: encryptionKey });
+  let archive;
+  let archiveRecorded = false;
   try {
     if (repository.isCutover()) {
       throw new Error("V3 state cutover is already complete; JSON import is intentionally unavailable.");
     }
 
     const now = Date.now();
-    const archive = await createEncryptedRollbackArchive({ sources, cipher: new StateCipher(encryptionKey), now });
+    archive = await createEncryptedRollbackArchive({ sources, cipher: new StateCipher(encryptionKey), now });
     const parsed = await parseLegacySources(sources);
     const huixianProfile = await readJson(huixianProfilePath);
     if (!isHuixianProfile(huixianProfile)) {
@@ -81,6 +98,9 @@ async function runCutover() {
       archive,
       now,
     }));
+    // The retention row is committed by the import transaction. From here,
+    // the hourly maintenance job owns this archive's seven-day cleanup.
+    archiveRecorded = true;
 
     await removeLegacyRuntimeFiles(sources);
     writeReport({
@@ -89,6 +109,52 @@ async function runCutover() {
       archive: archive.publicManifest,
       imported: importReport,
       cutover: "complete",
+    });
+  } catch (error) {
+    // Parsing or importing can fail after the encrypted archive is written
+    // but before its retention row commits. Remove only this run's untracked
+    // paths so they cannot outlive the seven-day retention boundary.
+    if (archive && !archiveRecorded) {
+      await removeUntrackedRollbackArchive(archive);
+    }
+    throw error;
+  } finally {
+    sharedDb.close();
+  }
+}
+
+async function runExistingCutoverUpgrade() {
+  if (!args.execute) {
+    writeReport({
+      mode: "existing-cutover-upgrade-dry-run",
+      appRoot,
+      dataDir,
+      dbPath,
+      note: "The V3 cutover marker is present. Run with --execute to apply additive SQLite migrations without reading legacy JSON.",
+    });
+    return;
+  }
+  if (!existsSync(dbPath)) {
+    throw new Error(`Shared SQLite database is missing: ${dbPath}`);
+  }
+
+  const encryptionKey = requireStateEncryptionKey();
+  const { SharedDb } = await loadCompiledStateModules();
+  const { V3StateRepository } = await loadCompiledRepositoryModules();
+  const sharedDb = new SharedDb(dbPath);
+  const repository = new V3StateRepository(sharedDb, { stateEncryptionKey: encryptionKey });
+  try {
+    repository.requireCutover();
+    const retiredQqAdministration = repository.retireLegacyQqAdministration();
+    writeReport({
+      mode: "existing-cutover-upgrade",
+      appRoot,
+      dataDir,
+      dbPath,
+      migrationVersions: sharedDb.listSchemaMigrations().map((migration) => migration.version),
+      cutover: "already-complete",
+      legacyJson: "not-read",
+      retiredQqAdministration,
     });
   } finally {
     sharedDb.close();
@@ -163,7 +229,7 @@ async function buildPreflightReport(sources) {
     dataDir,
     dbPath,
     migrationVersions,
-    expectedMigrationVersionsOnExecute: [1, 2, 3, 4, 5, 6, 7, 8],
+    expectedMigrationVersionsOnExecute: [1, 2, 3, 4, 5, 6, 7, 8, 9],
     outboxBlockingRows,
     huixianProfilePath,
     huixianProfileAvailable: existsSync(huixianProfilePath),
@@ -521,48 +587,67 @@ async function createEncryptedRollbackArchive({ sources, cipher, now }) {
   const bundlePath = path.join(rollbackDir, `${id}.legacy.enc`);
   const dbPathEncrypted = path.join(rollbackDir, `${id}.precutover-db.enc`);
   const dbVacuumPath = path.join(rollbackDir, `.${id}.precutover.db`);
-  const files = [];
-  for (const source of sources.filter((item) => item.exists)) {
-    files.push({
-      key: source.key,
-      path: path.relative(appRoot, source.path).replaceAll("\\", "/"),
-      sha256: source.sha256,
-      body: (await readFile(source.path)).toString("base64"),
-    });
-  }
-  const bundle = JSON.stringify({ version: 1, createdAt: new Date(now).toISOString(), files });
-  await writeRestricted(bundlePath, cipher.encrypt("rollback-legacy-bundle", bundle));
+  try {
+    const files = [];
+    for (const source of sources.filter((item) => item.exists)) {
+      files.push({
+        key: source.key,
+        path: path.relative(appRoot, source.path).replaceAll("\\", "/"),
+        sha256: source.sha256,
+        body: (await readFile(source.path)).toString("base64"),
+      });
+    }
+    const bundle = JSON.stringify({ version: 1, createdAt: new Date(now).toISOString(), files });
+    await writeRestricted(bundlePath, cipher.encrypt("rollback-legacy-bundle", bundle));
 
-  const database = new DatabaseSync(dbPath);
-  try {
-    database.exec(`VACUUM INTO '${escapeSqlString(dbVacuumPath)}'`);
-  } finally {
-    database.close();
-  }
-  try {
-    const databaseBody = await readFile(dbVacuumPath);
-    await writeRestricted(dbPathEncrypted, cipher.encrypt("rollback-precutover-db", databaseBody.toString("base64")));
-  } finally {
-    await rm(dbVacuumPath, { force: true });
-  }
-  const manifest = {
-    version: 1,
-    relatedPaths: [dbPathEncrypted],
-    sourceFiles: files.map(({ key, path: sourcePath, sha256: sourceSha256 }) => ({ key, path: sourcePath, sha256: sourceSha256 })),
-    expiresAt: new Date(now + RETENTION_MS).toISOString(),
-  };
-  return {
-    id,
-    bundlePath,
-    bundleSha256: sha256(await readFile(bundlePath)),
-    manifest,
-    publicManifest: {
+    const database = new DatabaseSync(dbPath);
+    try {
+      database.exec(`VACUUM INTO '${escapeSqlString(dbVacuumPath)}'`);
+    } finally {
+      database.close();
+    }
+    try {
+      const databaseBody = await readFile(dbVacuumPath);
+      await writeRestricted(dbPathEncrypted, cipher.encrypt("rollback-precutover-db", databaseBody.toString("base64")));
+    } finally {
+      await rm(dbVacuumPath, { force: true });
+    }
+    const manifest = {
+      version: 1,
+      relatedPaths: [dbPathEncrypted],
+      sourceFiles: files.map(({ key, path: sourcePath, sha256: sourceSha256 }) => ({ key, path: sourcePath, sha256: sourceSha256 })),
+      expiresAt: new Date(now + RETENTION_MS).toISOString(),
+    };
+    return {
       id,
-      path: path.relative(appRoot, bundlePath).replaceAll("\\", "/"),
-      expiresAt: manifest.expiresAt,
-      sourceFileCount: files.length,
-    },
-  };
+      bundlePath,
+      bundleSha256: sha256(await readFile(bundlePath)),
+      manifest,
+      publicManifest: {
+        id,
+        path: path.relative(appRoot, bundlePath).replaceAll("\\", "/"),
+        expiresAt: manifest.expiresAt,
+        sourceFileCount: files.length,
+      },
+    };
+  } catch (error) {
+    await removeArchivePaths([bundlePath, dbPathEncrypted, dbVacuumPath]);
+    throw error;
+  }
+}
+
+async function removeUntrackedRollbackArchive(archive) {
+  const manifest = archive.manifest && typeof archive.manifest === "object" ? archive.manifest : {};
+  const relatedPaths = Array.isArray(manifest.relatedPaths) ? manifest.relatedPaths : [];
+  await removeArchivePaths([archive.bundlePath, ...relatedPaths]);
+}
+
+async function removeArchivePaths(paths) {
+  for (const value of new Set(paths.filter((candidate) => typeof candidate === "string"))) {
+    const archivePath = path.resolve(value);
+    ensurePathWithin(rollbackDir, archivePath);
+    await rm(archivePath, { force: true });
+  }
 }
 
 async function removeLegacyRuntimeFiles(sources) {
@@ -578,9 +663,18 @@ async function removeLegacyRuntimeFiles(sources) {
 }
 
 function normalizeGroupsFile(value) {
-  return value && typeof value === "object" && Array.isArray(value.groups)
-    ? { groups: value.groups, ...(Array.isArray(value.superAdminUserIds) ? { superAdminUserIds: value.superAdminUserIds } : {}) }
-    : { groups: [] };
+  if (!value || typeof value !== "object" || !Array.isArray(value.groups)) {
+    return { groups: [] };
+  }
+  // QQ-number admin lists are retained only inside the encrypted rollback
+  // archive. They must not cross the V3 cutover into live SQLite state.
+  return {
+    groups: value.groups.map((group) => {
+      if (!group || typeof group !== "object") return group;
+      const { switcherUserIds: _retiredQqAdmins, ...safeGroup } = group;
+      return safeGroup;
+    }),
+  };
 }
 
 function isHuixianProfile(value) {
@@ -614,6 +708,20 @@ function countBlockingOutboxRows(database) {
 
 function tableExists(database, name) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+
+function inspectCutoverState() {
+  if (!existsSync(dbPath)) return "absent";
+  const database = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    if (!tableExists(database, "v3_state_meta")) return "absent";
+    const row = database.prepare(
+      "SELECT meta_value FROM v3_state_meta WHERE meta_key = 'state_cutover'",
+    ).get();
+    return typeof row?.meta_value === "string" ? row.meta_value : "absent";
+  } finally {
+    database.close();
+  }
 }
 
 function toMs(value, fallback) {
@@ -713,18 +821,19 @@ function writeReport(value) {
 }
 
 function parseArgs(argv) {
-  const parsed = { execute: false, maintenance: false };
+  const parsed = { execute: false, maintenance: false, allowExistingCutover: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--execute") parsed.execute = true;
     else if (arg === "--maintenance") parsed.maintenance = true;
+    else if (arg === "--allow-existing-cutover") parsed.allowExistingCutover = true;
     else if (arg === "--app-root") parsed.appRoot = argv[++index];
     else if (arg === "--data-dir") parsed.dataDir = argv[++index];
     else if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "Usage: node scripts/migrate-v3-state.mjs [--app-root <path>] [--data-dir <path>] [--execute]\n" +
+        "Usage: node scripts/migrate-v3-state.mjs [--app-root <path>] [--data-dir <path>] [--execute] [--allow-existing-cutover]\n" +
         "       node scripts/migrate-v3-state.mjs --maintenance --execute\n" +
-        "The default cutover is a read-only preflight. Stop all UBot services and drain retryable outbox rows before --execute.\n",
+        "The default cutover is a read-only preflight. --allow-existing-cutover upgrades an already cut-over SQLite database without reading legacy JSON. Stop all UBot services and drain retryable outbox rows before the first --execute.\n",
       );
       process.exit(0);
     } else {

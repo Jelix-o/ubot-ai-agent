@@ -150,7 +150,12 @@ class FakeGroupConfigService {
   constructor(
     public groups: GroupBotConfig[],
     public superAdminUserIds: string[] = [],
+    private readonly v3Runtime = false,
   ) {}
+
+  isV3Runtime(): boolean {
+    return this.v3Runtime;
+  }
 
   async getAll(): Promise<GroupBotConfig[]> {
     return this.groups.map((group) => cloneGroup(group));
@@ -530,9 +535,10 @@ class FakeTtsService {
 }
 
 class FakeDailyReportService {
-  recorded: Array<{ groupId: string; userId: string; userName: string; text: string }> = [];
+  recorded: Array<{ groupId: string; userId: string; userName: string; text: string; timestamp?: string }> = [];
   reports: Array<{ groupId: string; now: string; useAiQuip?: boolean; members?: readonly NapcatGroupMember[] }> = [];
-  marked: Array<{ groupId: string; now: string }> = [];
+  marked: Array<{ groupId: string; now: string; renderedText?: string }> = [];
+  delivered: Array<{ groupId: string; renderedText: string; now: string }> = [];
   summaries: Array<{ groupId: string; label: string; now: string; useAiSummary?: boolean }> = [];
 
   constructor(
@@ -545,6 +551,7 @@ class FakeDailyReportService {
     userId: string;
     userName: string;
     text: string;
+    timestamp?: string;
   }): Promise<void> {
     this.recorded.push(args);
   }
@@ -583,8 +590,12 @@ class FakeDailyReportService {
     return `${args.request.label}聊天总结`;
   }
 
-  async markSent(groupId: string, now = new Date()): Promise<void> {
-    this.marked.push({ groupId, now: now.toISOString() });
+  async markSent(groupId: string, now = new Date(), renderedText?: string): Promise<void> {
+    this.marked.push({ groupId, now: now.toISOString(), renderedText });
+  }
+
+  async recordDeliveredReport(groupId: string, renderedText: string, now = new Date()): Promise<void> {
+    this.delivered.push({ groupId, renderedText, now: now.toISOString() });
   }
 }
 
@@ -1383,7 +1394,7 @@ test("admin status command summarizes current group controls", async () => {
     assert.match(status, /群聊日报：已关闭/);
     assert.match(status, /节假日倒计时：已开启，09:30/);
     assert.match(status, /黑名单：1 人/);
-    assert.match(status, /管理员：本群 1 人，超级 1 人/);
+    assert.match(status, /权限：后台账号、TOTP 与群授权管理/);
   });
 });
 
@@ -1540,7 +1551,7 @@ test("ops alert tick sends startup and napcat down alerts without automatic reco
       includeStartup: true,
     });
     assert.match(transport.sent.at(-1)?.text ?? "", /【运维告警】服务已启动/);
-    assert.match(transport.sent.at(-1)?.text ?? "", /\[CQ:at,qq=99999\]/);
+    assert.doesNotMatch(transport.sent.at(-1)?.text ?? "", /\[CQ:at,qq=99999\]/);
 
     transport.healthStatus = { ok: false, detail: "反向 WebSocket 未连接" };
     await runOpsAlertTick.runOpsAlertTick({ now: new Date("2026-06-02T09:01:00.000Z") });
@@ -2338,6 +2349,29 @@ test("daily report recording prefers group card and falls back to nickname", asy
 
   assert.equal(dailyReportService.recorded[0]?.userName, "群备注");
   assert.equal(dailyReportService.recorded[1]?.userName, "备用昵称");
+});
+
+test("daily report records ingress event time instead of delayed worker time", async () => {
+  const { app, dailyReportService } = createApp();
+  const event = createEvent([{ type: "text", data: { text: "历史消息" } }]);
+  event.time = Date.parse("2026-08-20T10:00:00.000Z") / 1_000;
+
+  await app.handleGroupMessage(event);
+
+  assert.equal(dailyReportService.recorded[0]?.timestamp, "2026-08-20T10:00:00.000Z");
+});
+
+test("daily report clamps a future direct-event timestamp to receipt time", async () => {
+  const { app, dailyReportService } = createApp();
+  const event = createEvent([{ type: "text", data: { text: "未来时间" } }]);
+  const before = Date.now();
+  event.time = Math.floor((before + 60_000) / 1_000);
+
+  await app.handleGroupMessage(event);
+
+  const recordedAt = Date.parse(dailyReportService.recorded[0]?.timestamp ?? "");
+  assert.ok(recordedAt >= before - 1_000);
+  assert.ok(recordedAt <= Date.now());
 });
 
 test("repeats the same plain group text on the fourth consecutive occurrence", async () => {
@@ -4902,6 +4936,7 @@ test("sends scheduled daily report once tick condition is met", async () => {
 
   assert.equal(transport.sent.at(-1)?.text, "18:00 群聊日报\n今日消息 12 条");
   assert.equal(dailyReportService.marked.length, 1);
+  assert.equal(dailyReportService.marked[0]?.renderedText, "18:00 群聊日报\n今日消息 12 条");
   assert.equal(dailyReportService.reports[0]?.useAiQuip, false);
   assert.deepEqual(dailyReportService.reports[0]?.members, transport.memberDirectoryByGroup["67890"]);
 });
@@ -4916,6 +4951,30 @@ test("manual daily report preview resolves the current group member directory", 
 
   assert.equal(dailyReportService.reports.length, 1);
   assert.deepEqual(dailyReportService.reports[0]?.members, transport.memberDirectoryByGroup["67890"]);
+  assert.equal(dailyReportService.delivered[0]?.renderedText, "日报内容");
+});
+
+test("V3 ignores legacy QQ administrators and retires the administrator command", async () => {
+  const groupConfigService = new FakeGroupConfigService(
+    [{
+      groupId: "67890",
+      currentSkillId: "huixian",
+      allowedSkillIds: ["huixian"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+    }],
+    ["99999"],
+    true,
+  );
+  const { app, transport } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#管理员 添加 77777" } }], 99999));
+
+  assert.equal(groupConfigService.groups[0]?.botMuted, undefined);
+  assert.equal(groupConfigService.groups[0]?.switcherUserIds.includes("77777"), false);
+  assert.match(transport.sent[0]?.text ?? "", /没有让机器人闭嘴或说话的权限/);
+  assert.match(transport.sent[1]?.text ?? "", /QQ 管理员已退休/);
 });
 
 test("creates scheduled reminder through natural bot mention and sends due reminders", async () => {

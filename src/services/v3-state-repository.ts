@@ -39,6 +39,14 @@ export interface V3DailyReportMessage {
   timestamp: string;
 }
 
+/** A rendered daily report retained after the raw source messages expire. */
+export interface V3DailyReportOutput {
+  groupId: string;
+  dayKey: string;
+  renderedText: string;
+  sentAt: string;
+}
+
 interface V3MemoryRow {
   id: string;
   group_id: string;
@@ -81,6 +89,13 @@ interface V3DailyMessageRow {
   user_name: string;
   text: string;
   occurred_at: number;
+}
+
+interface V3DailyReportOutputRow {
+  group_id: string;
+  day_key: string;
+  rendered_text: string;
+  sent_at: number;
 }
 
 export interface V3StateRepositoryOptions {
@@ -188,17 +203,16 @@ export class V3StateRepository {
     const rows = this.sharedDb.db
       .prepare("SELECT config_json FROM v3_groups ORDER BY group_id")
       .all() as Array<{ config_json: string }>;
-    const control = this.getDocument<{ superAdminUserIds?: string[] }>("group-control", "default", {});
     return {
-      ...(Array.isArray(control.superAdminUserIds)
-        ? { superAdminUserIds: [...new Set(control.superAdminUserIds.map((value) => String(value).trim()).filter(Boolean))] }
-        : {}),
-      groups: rows.flatMap((row) => parseJson<GroupBotConfig>(row.config_json) ? [parseJson<GroupBotConfig>(row.config_json)!] : []),
+      groups: rows.flatMap((row) => {
+        const parsed = parseJson<GroupBotConfig>(row.config_json);
+        return parsed ? [retireLegacyQqAdminFields(parsed)] : [];
+      }),
     };
   }
 
   saveGroups(input: GroupsConfigFile, now = Date.now()): void {
-    const groups = input.groups ?? [];
+    const groups = (input.groups ?? []).map((group) => retireLegacyQqAdminFields(group));
     this.withImmediateTransaction(() => {
       const knownIds = new Set(groups.map((group) => String(group.groupId).trim()).filter(Boolean));
       if (knownIds.size === 0) {
@@ -218,11 +232,9 @@ export class V3StateRepository {
           upsert.run(groupId, JSON.stringify(group), now);
         }
       }
-      this.saveDocument("group-control", "default", {
-        superAdminUserIds: Array.from(new Set((input.superAdminUserIds ?? [])
-          .map((value) => String(value).trim())
-          .filter(Boolean))),
-      }, now);
+      // QQ-number super-admins were a V1/V2 authorization mechanism. V3
+      // admin authority is held only by SQLite accounts and group grants.
+      this.deleteDocument("group-control", "default");
     });
   }
 
@@ -230,11 +242,13 @@ export class V3StateRepository {
     const row = this.sharedDb.db
       .prepare("SELECT config_json FROM v3_groups WHERE group_id = ?")
       .get(groupId) as { config_json: string } | undefined;
-    return row ? parseJson<GroupBotConfig>(row.config_json) : undefined;
+    const group = row ? parseJson<GroupBotConfig>(row.config_json) : undefined;
+    return group ? retireLegacyQqAdminFields(group) : undefined;
   }
 
   saveGroup(group: GroupBotConfig, now = Date.now()): void {
-    const groupId = String(group.groupId).trim();
+    const safeGroup = retireLegacyQqAdminFields(group);
+    const groupId = String(safeGroup.groupId).trim();
     if (!groupId) throw new Error("invalid_v3_group_id");
     this.sharedDb.db
       .prepare(
@@ -242,7 +256,34 @@ export class V3StateRepository {
          VALUES (?, ?, ?)
          ON CONFLICT(group_id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
       )
-      .run(groupId, JSON.stringify(group), now);
+      .run(groupId, JSON.stringify(safeGroup), now);
+  }
+
+  /**
+   * Removes authority from legacy QQ-number admin fields without consulting
+   * any JSON source. This is used by an additive upgrade on installations
+   * that had already completed the one-way V3 cutover before this retirement.
+   */
+  retireLegacyQqAdministration(now = Date.now()): { groupsCleared: number; controlRemoved: boolean } {
+    return this.withImmediateTransaction(() => {
+      const rows = this.sharedDb.db.prepare(
+        "SELECT group_id, config_json FROM v3_groups ORDER BY group_id",
+      ).all() as Array<{ group_id: string; config_json: string }>;
+      const update = this.sharedDb.db.prepare(
+        "UPDATE v3_groups SET config_json = ?, updated_at = ? WHERE group_id = ?",
+      );
+      let groupsCleared = 0;
+      for (const row of rows) {
+        const group = parseJson<GroupBotConfig>(row.config_json);
+        if (!group || !Array.isArray(group.switcherUserIds) || group.switcherUserIds.length === 0) {
+          continue;
+        }
+        update.run(JSON.stringify(retireLegacyQqAdminFields(group)), now, row.group_id);
+        groupsCleared += 1;
+      }
+      const controlRemoved = this.deleteDocument("group-control", "default");
+      return { groupsCleared, controlRemoved };
+    });
   }
 
   getSystemSettings<T extends SystemSettings = SystemSettings>(): T | undefined {
@@ -723,11 +764,54 @@ export class V3StateRepository {
     return row?.last_sent_day;
   }
 
-  markDailyReportSent(groupId: string, dayKey: string, now = Date.now()): void {
+  getDailyReportOutput(groupId: string, dayKey: string): V3DailyReportOutput | undefined {
+    const row = this.sharedDb.db.prepare(
+      `SELECT group_id, day_key, rendered_text, sent_at
+         FROM v3_daily_report_outputs WHERE group_id = ? AND day_key = ?`,
+    ).get(groupId, dayKey) as V3DailyReportOutputRow | undefined;
+    return row
+      ? {
+          groupId: row.group_id,
+          dayKey: row.day_key,
+          renderedText: row.rendered_text,
+          sentAt: new Date(row.sent_at).toISOString(),
+        }
+      : undefined;
+  }
+
+  saveDailyReportOutput(output: V3DailyReportOutput): void {
+    if (!output.renderedText.trim()) {
+      throw new Error("v3_daily_report_output_empty");
+    }
     this.sharedDb.db.prepare(
-      `INSERT INTO v3_daily_report_runs (group_id, last_sent_day, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(group_id) DO UPDATE SET last_sent_day = excluded.last_sent_day, updated_at = excluded.updated_at`,
-    ).run(groupId, dayKey, now);
+      `INSERT INTO v3_daily_report_outputs (group_id, day_key, rendered_text, sent_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(group_id, day_key) DO UPDATE SET
+         rendered_text = excluded.rendered_text,
+         sent_at = excluded.sent_at`,
+    ).run(output.groupId, output.dayKey, output.renderedText, toMs(output.sentAt));
+  }
+
+  markDailyReportSent(
+    groupId: string,
+    dayKey: string,
+    now = Date.now(),
+    renderedText?: string,
+  ): void {
+    this.withImmediateTransaction(() => {
+      this.sharedDb.db.prepare(
+        `INSERT INTO v3_daily_report_runs (group_id, last_sent_day, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(group_id) DO UPDATE SET last_sent_day = excluded.last_sent_day, updated_at = excluded.updated_at`,
+      ).run(groupId, dayKey, now);
+      if (renderedText !== undefined) {
+        this.saveDailyReportOutput({
+          groupId,
+          dayKey,
+          renderedText,
+          sentAt: new Date(now).toISOString(),
+        });
+      }
+    });
   }
 
   clearDailyReportMessages(): void {
@@ -983,6 +1067,10 @@ export class V3StateRepository {
  */
 function removeRetiredSystemSettingsFields<T extends SystemSettings>(settings: T): T {
   const safe = structuredClone(settings) as T & Record<string, unknown>;
+  // The QQ-number administration command is not a V3 capability. Remove an
+  // imported command record as well as the authorization fields so a future
+  // runtime cannot accidentally make it configurable again.
+  safe.commands = safe.commands.filter((command) => command.id !== "admin");
   for (const key of [
     "adminSecret",
     "groupAdminSecret",
@@ -1012,6 +1100,18 @@ function removeRetiredSystemSettingsFields<T extends SystemSettings>(settings: T
     delete controls.dailyProfileReviewAiEnabled;
   }
   return safe;
+}
+
+/**
+ * QQ-number administrators were deliberately replaced by authenticated V3
+ * admin accounts. Keep the legacy shape so older JSON can be archived or
+ * read before cutover, but never persist it as live V3 authorization state.
+ */
+function retireLegacyQqAdminFields(group: GroupBotConfig): GroupBotConfig {
+  return {
+    ...group,
+    switcherUserIds: [],
+  };
 }
 
 /** AES-256-GCM with a purpose-specific HKDF-derived key. */

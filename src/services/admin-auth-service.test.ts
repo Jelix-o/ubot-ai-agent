@@ -100,6 +100,69 @@ test("AdminAuthService enrollment encrypts TOTP state, rejects replay, and issue
   });
 });
 
+test("AdminAuthService recovery codes rotate MFA state and start a fresh enrollment without a session", async () => {
+  await withAuth(async (auth, db) => {
+    const enrolled = await enrollBootstrap(auth);
+    const recoveryCode = enrolled.recoveryCodes[0];
+    assert.ok(recoveryCode);
+    const accountId = enrolled.session.userId;
+    assert.ok(accountId);
+    if (!accountId) throw new Error("expected_account_id");
+
+    const pendingLogin = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "pending-before-recovery",
+    });
+    assert.equal(pendingLogin.kind, "totp_required");
+    if (pendingLogin.kind !== "totp_required") throw new Error("expected_totp_login");
+
+    const recovered = await auth.completeRecoveryLogin({
+      username: "root-admin",
+      password: "root-password",
+      recoveryCode,
+      loginKey: "recovery-reset",
+    });
+    assert.equal(recovered.kind, "totp_enrollment_required");
+    if (recovered.kind !== "totp_enrollment_required") throw new Error("expected_recovery_enrollment");
+    assert.equal(auth.getSession(enrolled.session.opaqueToken), undefined);
+
+    const account = db.db.prepare(
+      "SELECT totp_secret_ciphertext, totp_enabled_at, mfa_last_counter FROM admin_accounts WHERE username = ?",
+    ).get("root-admin") as {
+      totp_secret_ciphertext: string | null;
+      totp_enabled_at: number | null;
+      mfa_last_counter: number;
+    };
+    assert.equal(account.totp_secret_ciphertext, null);
+    assert.equal(account.totp_enabled_at, null);
+    assert.equal(account.mfa_last_counter, -1);
+    assert.equal(
+      (db.db.prepare("SELECT COUNT(*) AS count FROM admin_recovery_codes WHERE account_id = ?")
+        .get(accountId) as { count: number }).count,
+      0,
+    );
+    assert.equal(
+      (db.db.prepare("SELECT COUNT(*) AS count FROM admin_sessions WHERE account_id = ? AND revoked_at IS NULL")
+        .get(accountId) as { count: number }).count,
+      0,
+    );
+    assert.equal(
+      (await auth.completeTotpLogin({ loginToken: pendingLogin.loginToken, code: makeTotp(enrolled.totpSecret) })).kind,
+      "invalid_challenge",
+    );
+
+    const reEnrolled = await auth.completeTotpEnrollment({
+      enrollmentToken: recovered.enrollmentToken,
+      code: makeTotp(recovered.totpSecret),
+    });
+    assert.equal(reEnrolled.kind, "success");
+    if (reEnrolled.kind !== "success") throw new Error("expected_reenrollment_success");
+    assert.equal(reEnrolled.recoveryCodes?.length, 10);
+    assert.ok(auth.getSession(reEnrolled.session.opaqueToken));
+  });
+});
+
 test("AdminAuthService consumes recovery codes exactly once under concurrent attempts", async () => {
   await withAuth(async (auth) => {
     const enrolled = await enrollBootstrap(auth);
@@ -120,8 +183,88 @@ test("AdminAuthService consumes recovery codes exactly once under concurrent att
         loginKey: "recovery-b",
       }),
     ]);
-    assert.equal(results.filter((result) => result.kind === "success").length, 1);
+    assert.equal(results.filter((result) => result.kind === "totp_enrollment_required").length, 1);
     assert.equal(results.filter((result) => result.kind === "invalid_recovery_code").length, 1);
+  });
+});
+
+test("AdminAuthService persists account-scoped TOTP throttles across login tokens, reset enrollment, and session reauthentication", async () => {
+  await withAuth(async (auth) => {
+    const enrolled = await enrollBootstrap(auth);
+
+    const login = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "first-password-login",
+    });
+    assert.equal(login.kind, "totp_required");
+    if (login.kind !== "totp_required") throw new Error("expected_totp_login");
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      assert.equal((await auth.completeTotpLogin({ loginToken: login.loginToken, code: "invalid" })).kind, "invalid_totp");
+    }
+
+    const freshLogin = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "second-password-login",
+    });
+    assert.equal(freshLogin.kind, "totp_required");
+    if (freshLogin.kind !== "totp_required") throw new Error("expected_fresh_totp_login");
+    assert.equal(
+      (await auth.completeTotpLogin({ loginToken: freshLogin.loginToken, code: makeTotp(enrolled.totpSecret, Date.now() + 30_000) })).kind,
+      "invalid_totp",
+    );
+
+    // A successful enrollment deliberately clears the account throttle so the
+    // following reset/reauth checks exercise their own failures.
+    const reset = auth.beginTotpReset(enrolled.session);
+    assert.ok(reset);
+    if (!reset) throw new Error("expected_totp_reset");
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      assert.equal((await auth.completeTotpEnrollment({ enrollmentToken: reset.enrollmentToken, code: "invalid" })).kind, "invalid_totp");
+    }
+    const secondReset = auth.beginTotpReset(enrolled.session);
+    assert.ok(secondReset);
+    if (!secondReset) throw new Error("expected_second_totp_reset");
+    assert.equal(
+      (await auth.completeTotpEnrollment({ enrollmentToken: secondReset.enrollmentToken, code: makeTotp(secondReset.totpSecret) })).kind,
+      "invalid_totp",
+    );
+
+    // A recovery is an account-recovery event and starts a new MFA epoch,
+    // which is the only path that may clear the prior MFA throttle.
+    const recovery = await auth.completeRecoveryLogin({
+      username: "root-admin",
+      password: "root-password",
+      recoveryCode: enrolled.recoveryCodes[0]!,
+      loginKey: "recovery-after-reset-lock",
+    });
+    assert.equal(recovery.kind, "totp_enrollment_required");
+    if (recovery.kind !== "totp_enrollment_required") throw new Error("expected_recovery_enrollment");
+    const reEnrolled = await auth.completeTotpEnrollment({
+      enrollmentToken: recovery.enrollmentToken,
+      code: makeTotp(recovery.totpSecret),
+    });
+    assert.equal(reEnrolled.kind, "success");
+    if (reEnrolled.kind !== "success") throw new Error("expected_reenrollment_success");
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      assert.equal(auth.completeSessionReauth(reEnrolled.session, "invalid"), false);
+    }
+    const afterReauthLock = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "password-after-reauth-lock",
+    });
+    assert.equal(afterReauthLock.kind, "totp_required");
+    if (afterReauthLock.kind !== "totp_required") throw new Error("expected_password_totp_after_reauth_lock");
+    assert.equal(
+      (await auth.completeTotpLogin({
+        loginToken: afterReauthLock.loginToken,
+        code: makeTotp(recovery.totpSecret, Date.now() + 30_000),
+      })).kind,
+      "invalid_totp",
+    );
   });
 });
 

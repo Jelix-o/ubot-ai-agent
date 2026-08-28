@@ -1,8 +1,8 @@
-# UBot V3.0.0
+# UBot V3.0.1
 
-UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.0 的唯一人格是会仙，一位原创的成年虚拟聊天伙伴；她可以聊天、协助、联网查询、语音、唱歌、提醒、日报和节日倒计时，但不会伪造真人身份、私人照片或线下经历。
+UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.1 的唯一人格是会仙，一位原创的成年虚拟聊天伙伴；她可以聊天、协助、联网查询、语音、唱歌、提醒、日报和节日倒计时，但不会伪造真人身份、私人照片或线下经历。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.0.md](RELEASE-v3.0.0.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.1.md](RELEASE-v3.0.1.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
 
 ## V3 架构
 
@@ -21,6 +21,7 @@ V3 使用 SQLite 保存群配置、系统设置、会仙 Character Profile、Kno
 ## 主要行为
 
 - 会仙是唯一启用的人格，角色市场、旧人格选择和运行时 `skills/` 目录已退休。
+- QQ 号、`superAdminUserIds`、`switcherUserIds`、共享群密码和 `#管理员` 不再授予或管理 V3 权限；管理操作只由后台账号、TOTP 和按群授权执行。
 - 只有 `#记忆`、`@机器人 请记住` / `请记忆` 和管理员明确操作才会保存记忆。普通聊天不会自动抽取、推断或进入候选审核。
 - 导入时只接受 `admin`、`explicit_command`、`explicit_request` 来源的记忆。候选记忆、自动画像、旧人格和旧对话素材进入加密的七天回滚归档，不进入运行数据库。
 - 原始群消息和附件元数据保留最多七天。日报保留结果，不依赖长期保存的原始内容。
@@ -99,32 +100,32 @@ npm run package:all
 命令生成以下四个发布资产，并重新验证 SHA-256：
 
 ```text
-release/ubot-3.0.0-win.zip
-release/ubot-3.0.0-win.zip.sha256
-release/ubot-3.0.0-linux.tar.gz
-release/ubot-3.0.0-linux.tar.gz.sha256
+release/ubot-3.0.1-win.zip
+release/ubot-3.0.1-win.zip.sha256
+release/ubot-3.0.1-linux.tar.gz
+release/ubot-3.0.1-linux.tar.gz.sha256
 ```
 
 发布包不包含 `.env`、数据库、日志、`data/`、`config/`、旧 `skills/`、私钥或任何持久群资料。Windows 使用 `run.cmd` 启动三种角色；已有旧数据时，先按上节显式运行切换迁移，不要让启动脚本猜测迁移时机。
 
-正式路径由 GitHub Actions 在匹配的最终 `v3.0.0` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
+正式路径由 GitHub Actions 在匹配的最终 `v3.0.1` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
 
 ```powershell
 $env:HTTPS_PROXY = "http://127.0.0.1:7897"
 npm run release:github
 ```
 
-GitHub Actions 在 `v3.0.0` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
+GitHub Actions 在 `v3.0.1` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
 
 ## Linux 生产部署
 
 生产使用 `ubuntu@43.212.131.90` 上的 `bot.9958.uk`，但部署命令不应将私钥、密码或令牌写入仓库。部署前阅读 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)。概要如下：
 
 ```bash
-sha256sum -c ubot-3.0.0-linux.tar.gz.sha256 # matching GitHub Release asset
+sha256sum -c ubot-3.0.1-linux.tar.gz.sha256 # matching GitHub Release asset
 UBOT_NAPCAT_CONFIG=/opt/napcat/config/onebot11_428881701.json \
   UBOT_NGINX_CONFIG=/absolute/path/to/active-bot.9958.uk.conf \
-  bash scripts/deploy-linux-release.sh 3.0.0 ubot-3.0.0-linux.tar.gz
+  bash scripts/deploy-linux-release.sh 3.0.1 ubot-3.0.1-linux.tar.gz
 ```
 
 部署会使用 `172.21.0.1:6199` 作为 Docker 中 NapCat 访问宿主 Ingress 的反向 WebSocket 地址。`6198` 和 `6200` 继续仅监听回环地址；不修改 UFW 或 AWS 安全组。Nginx 模板位于 [deploy/nginx/bot.9958.uk.conf](deploy/nginx/bot.9958.uk.conf)，固定写入 `X-Forwarded-Proto: https`，不会信任可伪造的客户端请求头。

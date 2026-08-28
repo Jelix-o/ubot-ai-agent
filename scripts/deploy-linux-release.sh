@@ -115,6 +115,7 @@ old_current_target=""
 old_legacy_active=0
 old_target_active=0
 old_napcat_active=0
+existing_cutover_before_deploy=0
 cutover_may_have_started=0
 rollback_armed=0
 napcat_restart_attempted=0
@@ -264,14 +265,19 @@ preflight_cutover_write_access() {
     require_mutable_directory "$ROLLBACK_DIR" "V3 rollback"
   fi
 
-  for source_path in "${LEGACY_SOURCE_PATHS[@]}"; do
-    if [[ -e "$source_path" ]]; then
-      require_readable_file "$source_path" "Legacy migration source"
-      source_parent="$(dirname "$source_path")"
-      require_mutable_directory "$source_parent" "Legacy migration source parent"
-    fi
-  done
-  preflight_legacy_skills_access
+  # Once V3 has committed its cutover marker, upgrade releases must not scan
+  # retired JSON or skills. Their only state mutation is an additive SQLite
+  # migration, which is validated by migrate-v3-state.mjs itself.
+  if [[ "$existing_cutover_before_deploy" -eq 0 ]]; then
+    for source_path in "${LEGACY_SOURCE_PATHS[@]}"; do
+      if [[ -e "$source_path" ]]; then
+        require_readable_file "$source_path" "Legacy migration source"
+        source_parent="$(dirname "$source_path")"
+        require_mutable_directory "$source_parent" "Legacy migration source parent"
+      fi
+    done
+    preflight_legacy_skills_access
+  fi
 
   # `current` is switched after the state marker is written. Prove that the
   # containing release root can create and replace the temporary symlink now.
@@ -426,6 +432,27 @@ is_active() {
   [[ "$(systemctl is-active "$1" 2>/dev/null || true)" == "active" ]]
 }
 
+has_existing_v3_cutover() {
+  DB_PATH="$DB_PATH" node - <<'NODE'
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.env.DB_PATH, { readOnly: true });
+try {
+  const metaTable = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'v3_state_meta'",
+  ).get();
+  if (!metaTable) process.exitCode = 1;
+  else {
+    const row = db.prepare(
+      "SELECT meta_value FROM v3_state_meta WHERE meta_key = 'state_cutover'",
+    ).get();
+    process.exitCode = row?.meta_value === "v3" ? 0 : 1;
+  }
+} finally {
+  db.close();
+}
+NODE
+}
+
 backup_unit_files() {
   local unit
   mkdir -p "$BACKUP_DIR/systemd-before"
@@ -522,7 +549,12 @@ rollback() {
   if [[ "$cutover_may_have_started" -eq 0 && "$old_target_active" -eq 1 ]]; then
     sudo systemctl start ubot.target || true
   fi
-  if [[ "$cutover_may_have_started" -eq 1 ]]; then
+  # An additive upgrade starts from an already cut-over V3 database. Its
+  # migrations are transactional and old V3 code remains compatible with
+  # extra tables, so restart the previous target after configuration rollback.
+  if [[ "$cutover_may_have_started" -eq 1 && "$existing_cutover_before_deploy" -eq 1 && "$old_target_active" -eq 1 ]]; then
+    sudo systemctl start ubot.target || true
+  elif [[ "$cutover_may_have_started" -eq 1 ]]; then
     echo "V3 state migration may have changed SQLite. Release, unit, Nginx, dotenv, and NapCat configuration were restored. Do not restart the legacy service; use docs/OPERATIONS-v3.md for manual recovery." >&2
   fi
   exit "$exit_code"
@@ -557,10 +589,14 @@ fi
 mkdir -p "$RELEASE_ROOT" "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
-# Do this before stopping either old service. The migration writes its cutover
-# marker before deleting legacy JSON and then the network configurator uses
-# atomic replacement for both dotenv and NapCat JSON. A missing ACL at that
-# point cannot safely be recovered by restarting the JSON runtime.
+if [[ -f "$DB_PATH" ]] && has_existing_v3_cutover; then
+  existing_cutover_before_deploy=1
+fi
+
+# Do this before stopping either old service. On a first V3 deployment the
+# migration writes its cutover marker before deleting legacy JSON; on a later
+# V3 maintenance release it only applies additive SQLite migrations. The
+# network configurator then uses atomic replacement for dotenv and NapCat JSON.
 preflight_cutover_write_access
 
 if [[ -L "$CURRENT_LINK" ]]; then
@@ -587,11 +623,17 @@ sudo cp "$PERSISTENT_ENV" "$BACKUP_DIR/env.before"
 # This is an operator recovery backup, never a release asset. The V3 migration
 # owns the separate encrypted seven-day rollback archive for retired data.
 backup_inputs=(.env)
-for persistent_name in data config skills; do
-  if [[ -e "$APP_ROOT/$persistent_name" ]]; then
-    backup_inputs+=("$persistent_name")
-  fi
-done
+if [[ "$existing_cutover_before_deploy" -eq 1 ]]; then
+  # State is backed up again with VACUUM below. Keep a narrow filesystem
+  # snapshot here and deliberately avoid reading retired JSON or skills.
+  backup_inputs+=(data/shared)
+else
+  for persistent_name in data config skills; do
+    if [[ -e "$APP_ROOT/$persistent_name" ]]; then
+      backup_inputs+=("$persistent_name")
+    fi
+  done
+fi
 tar -C "$APP_ROOT" -czf "$BACKUP_DIR/persistent-files.tar.gz" "${backup_inputs[@]}"
 chmod 600 "$BACKUP_DIR/persistent-files.tar.gz"
 
@@ -683,7 +725,7 @@ ln -s "$PERSISTENT_DATA" "$STAGING_DIR/data"
 cutover_may_have_started=1
 UBOT_APP_ROOT="$APP_ROOT" \
   UBOT_HUIXIAN_PROFILE_PATH="$STAGING_DIR/assets/huixian-profile.json" \
-  node "$STAGING_DIR/scripts/migrate-v3-state.mjs" --execute
+  node "$STAGING_DIR/scripts/migrate-v3-state.mjs" --execute --allow-existing-cutover
 
 # Keep the real NapCat configuration root-owned. The configurator first
 # validates the exact approved field against a restricted staging copy while

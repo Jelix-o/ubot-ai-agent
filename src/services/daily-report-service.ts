@@ -2,7 +2,7 @@ import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 import type { ChatSummaryRequest } from "../utils/chat-summary-request.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 import type { AiService } from "./ai-service.js";
-import type { DailyReportMessageRecord } from "./daily-report-store.js";
+import type { DailyReportMessageRecord, DailyReportOutputRecord } from "./daily-report-store.js";
 import { DailyReportStore } from "./daily-report-store.js";
 
 type DailyReportAiService = Pick<AiService, "generateBroadcastQuip" | "generateChatPeriodSummary">;
@@ -57,8 +57,22 @@ export class DailyReportService {
     return isScheduledMinute(now, parseScheduleMinute(groupConfig.dailyReportTime));
   }
 
-  async markSent(groupId: string, now = new Date()): Promise<void> {
-    await this.store.markSent(groupId, toLocalDateKey(now));
+  async markSent(groupId: string, now = new Date(), renderedText?: string): Promise<void> {
+    await this.store.markSent(groupId, toLocalDateKey(now), renderedText, now);
+  }
+
+  /** Saves a manually delivered report without suppressing the scheduled run. */
+  async recordDeliveredReport(groupId: string, renderedText: string, now = new Date()): Promise<void> {
+    await this.store.saveReportOutput({
+      groupId,
+      dayKey: toLocalDateKey(now),
+      renderedText,
+      sentAt: now.toISOString(),
+    });
+  }
+
+  async getDeliveredReport(groupId: string, dayKey: string): Promise<DailyReportOutputRecord | undefined> {
+    return this.store.getReportOutput(groupId, dayKey);
   }
 
   async clearStore(): Promise<void> {

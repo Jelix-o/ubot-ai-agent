@@ -606,7 +606,6 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "ops_alert", title: "告警", primary: "#告警", permission: "group_admin", help: "管理运维告警开关" },
     { id: "memory", title: "记忆", primary: "#记忆", permission: "group_admin", help: "查看记忆状态" },
     { id: "knowledge", title: "知识库", primary: "#知识库", permission: "group_admin", help: "查看知识库状态" },
-    { id: "admin", title: "管理员", primary: "#管理员", permission: "super_admin", help: "管理群管理员" },
     { id: "blacklist", title: "拉黑", primary: "#拉黑", permission: "group_admin", help: "管理黑名单" },
     { id: "health", title: "健康检查", primary: "#健康检查", aliases: ["#健康"], permission: "group_admin", help: "查看服务健康状态" },
   ];

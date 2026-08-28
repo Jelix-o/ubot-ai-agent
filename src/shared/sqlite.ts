@@ -601,6 +601,23 @@ CREATE TABLE IF NOT EXISTS v3_maintenance_runs (
 `;
 
 /**
+ * A daily report is a durable result, unlike the raw member messages used to
+ * render it. Keep the rendered result after raw-message retention removes its
+ * inputs so operators still have the report that was actually delivered.
+ */
+const V3_DAILY_REPORT_OUTPUT_SCHEMA = `
+CREATE TABLE IF NOT EXISTS v3_daily_report_outputs (
+  group_id TEXT NOT NULL,
+  day_key TEXT NOT NULL,
+  rendered_text TEXT NOT NULL,
+  sent_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, day_key)
+);
+CREATE INDEX IF NOT EXISTS idx_v3_daily_report_outputs_sent_at
+  ON v3_daily_report_outputs (sent_at DESC);
+`;
+
+/**
  * Reconciles schemas produced by pre-migration releases. Keep this as the
  * first tracked migration so an existing installation has an auditable
  * baseline before new domain tables are added.
@@ -685,6 +702,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     version: 8,
     name: "add-v3-retention-and-cutover-metadata",
     apply: (db) => db.exec(V3_RETENTION_AND_CUTOVER_SCHEMA),
+  },
+  {
+    version: 9,
+    name: "add-v3-daily-report-rendered-outputs",
+    apply: (db) => db.exec(V3_DAILY_REPORT_OUTPUT_SCHEMA),
   },
 ];
 

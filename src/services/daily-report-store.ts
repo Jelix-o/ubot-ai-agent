@@ -11,9 +11,18 @@ export interface DailyReportMessageRecord {
   timestamp: string;
 }
 
+/** Rendered reports are durable results; their raw message inputs are not. */
+export interface DailyReportOutputRecord {
+  groupId: string;
+  dayKey: string;
+  renderedText: string;
+  sentAt: string;
+}
+
 interface DailyReportStoreFile {
   days: Record<string, Record<string, DailyReportMessageRecord[]>>;
   lastSentDateByGroup: Record<string, string>;
+  reportOutputsByGroup: Record<string, Record<string, DailyReportOutputRecord>>;
 }
 
 const MAX_STORED_DAYS = 7;
@@ -66,13 +75,50 @@ export class DailyReportStore {
     return data.lastSentDateByGroup[groupId];
   }
 
-  async markSent(groupId: string, dayKey: string): Promise<void> {
+  async getReportOutput(groupId: string, dayKey: string): Promise<DailyReportOutputRecord | undefined> {
     if (this.v3State) {
-      this.v3State.markDailyReportSent(groupId, dayKey);
+      const output = this.v3State.getDailyReportOutput(groupId, dayKey);
+      return output ? { ...output } : undefined;
+    }
+    const data = await this.readData();
+    const output = data.reportOutputsByGroup[groupId]?.[dayKey];
+    return output ? { ...output } : undefined;
+  }
+
+  async saveReportOutput(record: DailyReportOutputRecord): Promise<void> {
+    const output = normalizeOutputRecord(record);
+    if (this.v3State) {
+      this.v3State.saveDailyReportOutput(output);
+      return;
+    }
+    const data = await this.readData();
+    data.reportOutputsByGroup[output.groupId] ??= {};
+    data.reportOutputsByGroup[output.groupId]![output.dayKey] = output;
+    await this.writeData(data);
+  }
+
+  async markSent(
+    groupId: string,
+    dayKey: string,
+    renderedText?: string,
+    sentAt = new Date(),
+  ): Promise<void> {
+    if (this.v3State) {
+      this.v3State.markDailyReportSent(groupId, dayKey, sentAt.getTime(), renderedText);
       return;
     }
     const data = await this.readData();
     data.lastSentDateByGroup[groupId] = dayKey;
+    if (renderedText !== undefined) {
+      const output = normalizeOutputRecord({
+        groupId,
+        dayKey,
+        renderedText,
+        sentAt: sentAt.toISOString(),
+      });
+      data.reportOutputsByGroup[groupId] ??= {};
+      data.reportOutputsByGroup[groupId]![dayKey] = output;
+    }
     pruneStoreDays(data);
     await this.writeData(data);
   }
@@ -98,6 +144,7 @@ export class DailyReportStore {
       this.cachedData = {
         days: data.days ?? {},
         lastSentDateByGroup: data.lastSentDateByGroup ?? {},
+        reportOutputsByGroup: data.reportOutputsByGroup ?? {},
       };
       this.cachedVersion = version;
       return this.cachedData;
@@ -107,6 +154,7 @@ export class DailyReportStore {
         this.cachedData = {
           days: {},
           lastSentDateByGroup: {},
+          reportOutputsByGroup: {},
         };
         this.cachedVersion = "missing";
         return this.cachedData;
@@ -149,4 +197,19 @@ function toLocalDateKey(value: string): string {
     `${date.getMonth() + 1}`.padStart(2, "0"),
     `${date.getDate()}`.padStart(2, "0"),
   ].join("-");
+}
+
+function normalizeOutputRecord(record: DailyReportOutputRecord): DailyReportOutputRecord {
+  if (!record.renderedText.trim()) {
+    throw new Error("daily_report_output_empty");
+  }
+  if (!record.groupId.trim() || !record.dayKey.trim()) {
+    throw new Error("daily_report_output_invalid_key");
+  }
+  return {
+    groupId: record.groupId,
+    dayKey: record.dayKey,
+    renderedText: record.renderedText,
+    sentAt: new Date(record.sentAt).toISOString(),
+  };
 }

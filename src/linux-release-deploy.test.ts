@@ -24,12 +24,17 @@ test("V3 Linux deployer verifies assets, migrates once, and atomically selects c
   assert.match(deployer, /verify-release-source\.mjs" "\$STAGING_DIR"/);
   assert.match(deployer, /VACUUM INTO/);
   assert.match(deployer, /persistent-files\.tar\.gz/);
-  assert.match(deployer, /migrate-v3-state\.mjs" --execute/);
+  assert.match(deployer, /migrate-v3-state\.mjs" --execute --allow-existing-cutover/);
   assert.match(deployer, /UBOT_STATE_ENCRYPTION_KEY/);
   assert.doesNotMatch(deployer, /ADMIN_TOTP_ENCRYPTION_KEY/);
   assert.doesNotMatch(deployer, /ADMIN_SESSION_SECRET/);
   assert.match(deployer, /UBOT_HUIXIAN_PROFILE_PATH/);
   assert.match(deployer, /cutover_may_have_started=1/);
+  assert.match(deployer, /has_existing_v3_cutover\(\)/);
+  assert.match(deployer, /existing_cutover_before_deploy=1/);
+  assert.match(deployer, /existing_cutover_before_deploy" -eq 1/);
+  assert.match(deployer, /Once V3 has committed its cutover marker, upgrade releases must not scan/);
+  assert.match(deployer, /backup_inputs\+=\(data\/shared\)/);
   assert.match(deployer, /Do not restart the legacy service/);
   assert.match(deployer, /restore_napcat_config/);
   assert.match(deployer, /restore_persistent_env/);
@@ -105,6 +110,7 @@ test("V3 infrastructure keeps process ownership and network exposure narrow", ()
   assert.match(workerUnit, /BOT_ROLE=worker/);
   assert.match(adminUnit, /BOT_ROLE=admin/);
   assert.match(targetUnit, /Wants=ubot-ingress\.service ubot-worker\.service ubot-admin\.service/);
+  assert.match(maintenanceUnit, /Environment=UBOT_APP_ROOT=\/opt\/ai-project/);
   assert.match(maintenanceUnit, /migrate-v3-state\.mjs --maintenance --execute/);
   assert.match(maintenanceTimer, /Description=Run UBot V3 retention maintenance hourly/);
   assert.match(maintenanceTimer, /OnCalendar=\*-\*-\* \*:17:00 UTC/);

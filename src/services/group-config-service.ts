@@ -87,6 +87,10 @@ export class GroupConfigService {
   }
 
   async updateGroupConfig(groupId: string, input: GroupConfigUpdateInput): Promise<GroupBotConfig> {
+    if (this.v3State && "switcherUserIds" in input) {
+      this.v3State.requireCutover();
+      throw new GroupConfigValidationError("legacy_qq_admin_retired");
+    }
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
     if (index === -1) {
@@ -380,16 +384,30 @@ export class GroupConfigService {
   }
 
   async getSuperAdminUserIds(): Promise<string[]> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return [];
+    }
     const data = await this.readConfig();
     return [...(data.superAdminUserIds ?? [])];
   }
 
+  /** True once this service is backed by the post-cutover V3 repository. */
+  isV3Runtime(): boolean {
+    return Boolean(this.v3State);
+  }
+
   async isSuperAdmin(userId: string): Promise<boolean> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return false;
+    }
     const data = await this.readConfig();
     return (data.superAdminUserIds ?? []).includes(userId);
   }
 
   async addAdminUser(groupId: string, userId: string): Promise<GroupBotConfig> {
+    this.assertLegacyQqAdminManagementAvailable();
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
     if (index === -1) {
@@ -407,6 +425,7 @@ export class GroupConfigService {
   }
 
   async removeAdminUser(groupId: string, userId: string): Promise<GroupBotConfig> {
+    this.assertLegacyQqAdminManagementAvailable();
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
     if (index === -1) {
@@ -510,6 +529,13 @@ export class GroupConfigService {
     this.syncShadow(data, "json_write");
   }
 
+  private assertLegacyQqAdminManagementAvailable(): void {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      throw new GroupConfigValidationError("legacy_qq_admin_retired");
+    }
+  }
+
   private syncShadow(data: GroupsConfigFile, reason: "explicit_sync" | "json_write"): boolean {
     if (!this.shadowWriter) {
       return false;
@@ -531,7 +557,7 @@ export class GroupConfigService {
 
 function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
   return {
-    superAdminUserIds: Array.from(new Set(data.superAdminUserIds ?? [])),
+    ...(data.superAdminUserIds ? { superAdminUserIds: Array.from(new Set(data.superAdminUserIds)) } : {}),
     groups: (data.groups ?? []).map((group) => normalizeGroupConfig(group)),
   };
 }

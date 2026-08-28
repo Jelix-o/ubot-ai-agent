@@ -5,8 +5,12 @@ import path from "node:path";
 import test from "node:test";
 
 import type { GroupBotConfig } from "../types.js";
+import { SharedDb } from "../shared/sqlite.js";
 import { DailyReportService } from "./daily-report-service.js";
 import { DailyReportStore } from "./daily-report-store.js";
+import { V3StateRepository } from "./v3-state-repository.js";
+
+const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 const baseGroupConfig: GroupBotConfig = {
   groupId: "67890",
@@ -40,6 +44,35 @@ test("DailyReportStore refreshes sent-state after an external write", async () =
 
     assert.equal(await workerStore.getLastSentDate("67890"), "2026-08-23");
   } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("daily report service persists successful rendered output through V3 state", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-v3-output-"));
+  const db = new SharedDb(path.join(tempDir, "bot-shared.db"));
+  try {
+    const service = new DailyReportService(
+      new DailyReportStore(path.join(tempDir, "unused.json"), new V3StateRepository(db, { stateEncryptionKey: TEST_STATE_KEY })),
+      { async generateBroadcastQuip() { return "unused"; } } as never,
+    );
+    const scheduledAt = new Date("2026-08-20T10:00:00.000Z");
+
+    await service.markSent("67890", scheduledAt, "2026-08-20 群聊日报\n今日消息 12 条");
+
+    assert.deepEqual(await service.getDeliveredReport("67890", "2026-08-20"), {
+      groupId: "67890",
+      dayKey: "2026-08-20",
+      renderedText: "2026-08-20 群聊日报\n今日消息 12 条",
+      sentAt: "2026-08-20T10:00:00.000Z",
+    });
+    assert.equal(await new DailyReportStore("ignored", new V3StateRepository(db, { stateEncryptionKey: TEST_STATE_KEY })).getLastSentDate("67890"), "2026-08-20");
+
+    await service.recordDeliveredReport("67890", "手动日报结果", new Date("2026-08-20T11:00:00.000Z"));
+    assert.equal((await service.getDeliveredReport("67890", "2026-08-20"))?.renderedText, "手动日报结果");
+    assert.equal(await new DailyReportStore("ignored", new V3StateRepository(db, { stateEncryptionKey: TEST_STATE_KEY })).getLastSentDate("67890"), "2026-08-20");
+  } finally {
+    db.close();
     await rm(tempDir, { recursive: true, force: true });
   }
 });

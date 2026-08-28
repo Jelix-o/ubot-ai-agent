@@ -31,7 +31,6 @@ const reminderForm = reactive({
 });
 const form = reactive<GroupConfig>(defaultGroupConfig());
 
-const canManageQqAdministrators = computed(() => app.role === "super_admin");
 const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === form.replyModelMode)?.label || form.replyModelMode || "-");
 const hasReplyModels = computed(() => replyModels.value.length > 0);
 const memberSelectOptions = computed(() => memberOptions.value.map((member) => ({
@@ -165,10 +164,14 @@ async function save(): Promise<void> {
   }
   saving.value = true;
   try {
-    const { manualIdentities: _manualIdentities, memoryDisabledUserIds: _privacyOptOuts, ...operationalConfig } = form;
+    const {
+      manualIdentities: _manualIdentities,
+      memoryDisabledUserIds: _privacyOptOuts,
+      switcherUserIds: _retiredQqAdminUserIds,
+      ...operationalConfig
+    } = form;
     const payload = {
       ...operationalConfig,
-      ...(canManageQqAdministrators.value ? {} : { switcherUserIds: undefined }),
       triggerKeywords: (form.triggerKeywords || []).filter((item) => item.keyword.trim()),
     };
     await api<GroupConfig>(`/api/groups/${encodeURIComponent(app.groupId)}/config`, {
@@ -414,7 +417,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
         </div>
         <dl>
           <div><dt>成员备注</dt><dd>在成员管理中维护</dd></div>
-          <div v-if="canManageQqAdministrators"><dt>管理员</dt><dd>{{ form.switcherUserIds.length }} 人</dd></div>
           <div><dt>日报时间</dt><dd>{{ form.dailyReportTime || "-" }}</dd></div>
           <div><dt>触发词</dt><dd>{{ form.triggerKeywords?.filter((item) => item.enabled).length || 0 }} 个</dd></div>
         </dl>
@@ -487,9 +489,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
       <section class="panel group-config-card">
         <h3>群管理</h3>
         <div class="field-grid">
-          <label v-if="canManageQqAdministrators">管理员 QQ
-            <MultiTagSelect v-model="form.switcherUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-          </label>
           <label>实时对话 QQ
             <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" />
           </label>
