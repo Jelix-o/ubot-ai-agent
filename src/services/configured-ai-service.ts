@@ -4,6 +4,7 @@ import type { AiService } from "./ai-service.js";
 import { AiService as OpenAiService } from "./ai-service.js";
 import { resolveProviderCapabilities } from "./ai-provider.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
+import type { ProviderCapabilityPolicy, ProviderProtocol } from "./capability-policy-service.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 
 export type RuntimeAiService = Pick<
@@ -21,7 +22,15 @@ export type RuntimeAiService = Pick<
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
   "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "capabilities" | "supportsVision" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
->) => RuntimeAiService;
+>, policyCapabilities?: Parameters<typeof resolveProviderCapabilities>[1]) => RuntimeAiService;
+
+/** Raised instead of silently falling back when the persistent policy denies provider chat. */
+export class ProviderCapabilityDisabledError extends Error {
+  constructor(protocol: ProviderProtocol, feature: string) {
+    super(`v3_provider_capability_disabled:${protocol}:${feature}`);
+    this.name = "ProviderCapabilityDisabledError";
+  }
+}
 
 export class ConfiguredAiService implements RuntimeAiService {
   private cachedService?: {
@@ -33,8 +42,8 @@ export class ConfiguredAiService implements RuntimeAiService {
     private readonly fallback: RuntimeAiService,
     private readonly systemSettingsStore: SystemSettingsStore,
     private readonly purpose: SystemModelPurpose,
-    private readonly factory: RuntimeAiFactory = (model) => {
-      const providerCapabilities = resolveProviderCapabilities(model);
+    private readonly factory: RuntimeAiFactory = (model, policyCapabilities) => {
+      const providerCapabilities = resolveProviderCapabilities(model, policyCapabilities);
       if (model.apiProtocol === "anthropic") {
         const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "", {
           timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
@@ -42,18 +51,19 @@ export class ConfiguredAiService implements RuntimeAiService {
         return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, client as any, {
           reasoningEffort: model.reasoningEffort,
           maxCompletionTokens: model.maxCompletionTokens,
-          timeoutMs: model.requestTimeoutMs,
+          timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
           providerCapabilities,
         });
       }
       return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
         reasoningEffort: model.reasoningEffort,
         maxCompletionTokens: model.maxCompletionTokens,
-        timeoutMs: model.requestTimeoutMs,
+        timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
         providerCapabilities,
       });
     },
     private readonly selectedModelId?: string,
+    private readonly capabilityPolicy?: ProviderCapabilityPolicy,
   ) {}
 
   async checkHealth(options?: Parameters<AiService["checkHealth"]>[0]): ReturnType<AiService["checkHealth"]> {
@@ -106,8 +116,13 @@ export class ConfiguredAiService implements RuntimeAiService {
   private async resolveService(preferredPurpose?: SystemModelPurpose): Promise<RuntimeAiService> {
     const model = await this.getActiveModel(preferredPurpose);
     if (!model) {
+      this.requireProviderChat("openai");
       return this.fallback;
     }
+
+    const protocol = normalizeProtocol(model.apiProtocol);
+    this.requireProviderChat(protocol);
+    const policyCapabilities = this.capabilityPolicy?.getProviderCapabilityOverrides(protocol);
 
     const key = [
       model.id,
@@ -120,13 +135,14 @@ export class ConfiguredAiService implements RuntimeAiService {
       model.reasoningEffort,
       model.maxCompletionTokens,
       model.requestTimeoutMs,
+      JSON.stringify(policyCapabilities ?? {}),
     ].join("|");
     if (this.cachedService?.key === key) {
       return this.cachedService.service;
     }
 
     try {
-      const service = this.factory(model);
+      const service = this.factory(model, policyCapabilities);
       this.cachedService = { key, service };
       return service;
     } catch (error) {
@@ -136,7 +152,14 @@ export class ConfiguredAiService implements RuntimeAiService {
         baseUrl: model.baseUrl,
         error: (error as Error).message,
       });
+      this.requireProviderChat("openai");
       return this.fallback;
+    }
+  }
+
+  private requireProviderChat(protocol: ProviderProtocol): void {
+    if (this.capabilityPolicy?.isProviderFeatureEnabled(protocol, "chat") === false) {
+      throw new ProviderCapabilityDisabledError(protocol, "chat");
     }
   }
 
@@ -179,6 +202,10 @@ export class ConfiguredAiService implements RuntimeAiService {
     push(this.purpose);
     return order;
   }
+}
+
+function normalizeProtocol(value: SystemModelConfig["apiProtocol"]): ProviderProtocol {
+  return value === "anthropic" ? "anthropic" : "openai";
 }
 
 function isUsableModel(model: SystemModelConfig): boolean {

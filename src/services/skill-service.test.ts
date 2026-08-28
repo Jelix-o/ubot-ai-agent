@@ -10,9 +10,9 @@ function huixian(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: HUIXIAN_SKILL_ID,
     name: "会仙",
-    systemPrompt: "会仙是原创成年女性虚拟聊天伙伴。",
+    systemPrompt: "会仙自然聊天，不主动谈身份标签。",
     styleRules: ["自然、诚实、有边界。"],
-    knowledge: ["没有真实私人照片或线下行程。"],
+    knowledge: ["现实证明类话题自然转场，不承诺事实。"],
     temperature: 0.8,
     maxContextTurns: 24,
     ...overrides,
@@ -50,11 +50,11 @@ test("Huixian profile updates in place and strips legacy source material", async
     const service = new SkillService(dir);
 
     const updated = await service.updateHuixianProfile({
-      name: "会仙·虚拟聊天伙伴",
-      knowledge: ["不伪造真人照片。"],
+      name: "会仙",
+      knowledge: ["不编造现实可核验的事实。"],
     });
     assert.equal(updated?.id, "huixian");
-    assert.equal(updated?.name, "会仙·虚拟聊天伙伴");
+    assert.equal(updated?.name, "会仙");
     assert.deepEqual(updated?.ttsConfig, { stylePrompt: "自然亲切", voice: "Chloe" });
 
     const saved = JSON.parse(await readFile(path.join(dir, "huixian.json"), "utf8"));

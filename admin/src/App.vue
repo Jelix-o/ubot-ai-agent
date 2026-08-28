@@ -22,7 +22,14 @@ const userOpen = shallowRef(false);
 const mobileNavOpen = shallowRef(false);
 
 const isLogin = computed(() => route.name === "login");
-const navItems = computed(() => routes.filter((item) => item.name !== "login" && (!item.meta?.superOnly || app.role === "super_admin")));
+const navItems = computed(() => routes.filter((item) => (
+  typeof item.name === "string" &&
+  item.name !== "login" &&
+  item.meta?.navigation !== false &&
+  typeof item.meta?.title === "string" &&
+  item.meta.title.trim().length > 0 &&
+  (!item.meta.superOnly || app.role === "super_admin")
+)));
 const title = computed(() => String(route.meta.title || "UBot"));
 const subtitle = computed(() => String(route.meta.subtitle || ""));
 const roleLabel = computed(() => app.role === "super_admin" ? "超级管理员" : "群管理员");
@@ -45,6 +52,7 @@ function iconFor(name: unknown): string {
     knowledge: "knowledge",
     tasks: "tasks",
     audit: "audit",
+    security: "health",
     health: "health",
     settings: "settings",
     persona: "users",
@@ -223,7 +231,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span /> 系统运行中</strong>
-          <small>UBot v3.0.1</small>
+          <small>UBot v3.0.3</small>
         </div>
       </div>
     </aside>
@@ -281,6 +289,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
               <strong>{{ app.username }}</strong>
               <p>{{ roleLabel }}</p>
               <p v-if="app.role === 'group_admin'">可管理 {{ app.allowedGroupIds.length }} 个群</p>
+              <button class="ghost-btn" type="button" @click.stop="go('/security')">账号与安全</button>
               <button class="ghost-btn logout" type="button" data-smoke="logout" @click.stop="logout">退出登录</button>
             </div>
           </div>

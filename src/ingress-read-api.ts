@@ -4,6 +4,12 @@ import { logWarn } from "./logger.js";
 import type { MessageTransport } from "./bot.js";
 import type { MessageImageInput, ReferencedMessage } from "./types.js";
 
+export class IngressReadApiUnavailableError extends Error {
+  constructor() {
+    super("ingress_read_api_unavailable");
+  }
+}
+
 /**
  * Localhost read API exposed by the ingress process so the worker can use
  * NapCat read actions (get_msg, member list, image resolution) without owning
@@ -166,6 +172,27 @@ export class IngressReadApiClient {
     return body.members ?? [];
   }
 
+  /**
+   * Admin member management must distinguish a genuinely empty group from an
+   * unavailable ingress or NapCat directory. Worker reads keep the forgiving
+   * method above so transient ingress restarts do not interrupt conversation.
+   */
+  async listGroupMembersStrict(groupId: string): Promise<Array<{ user_id: number; nickname?: string; card?: string; role?: string }>> {
+    try {
+      const response = await this.fetchRequired(`${this.baseUrl}/read/group_members?group_id=${encodeURIComponent(groupId)}`);
+      const body = (await response.json()) as { members?: unknown };
+      if (!Array.isArray(body.members)) {
+        throw new IngressReadApiUnavailableError();
+      }
+      return body.members as Array<{ user_id: number; nickname?: string; card?: string; role?: string }>;
+    } catch (error) {
+      if (error instanceof IngressReadApiUnavailableError) {
+        throw error;
+      }
+      throw new IngressReadApiUnavailableError();
+    }
+  }
+
   async listGroups(): Promise<Array<{ group_id: number; group_name?: string }>> {
     const response = await this.safeFetch(`${this.baseUrl}/read/groups`);
     if (!response) {
@@ -224,6 +251,21 @@ export class IngressReadApiClient {
       return response.ok ? response : undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  private async fetchRequired(url: string, init?: RequestInit): Promise<Response> {
+    try {
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) {
+        throw new IngressReadApiUnavailableError();
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof IngressReadApiUnavailableError) {
+        throw error;
+      }
+      throw new IngressReadApiUnavailableError();
     }
   }
 }

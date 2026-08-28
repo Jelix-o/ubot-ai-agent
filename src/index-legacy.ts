@@ -39,6 +39,7 @@ import type { MessageTransport } from "./bot.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { openSharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
+import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { extractImagesFromMessage, parseGroupMessage } from "./utils/message-parser.js";
 
 type NapCatRuntime = MessageTransport & {
@@ -64,6 +65,7 @@ async function startLegacyBot(): Promise<BotApplication> {
   });
   const sharedDb = openSharedDb(config.dataDir);
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
+  const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath, v3State);
   const systemSettingsStore = new SystemSettingsStore(
     config.systemSettingsPath,
@@ -72,7 +74,14 @@ async function startLegacyBot(): Promise<BotApplication> {
     v3State,
   );
   await systemSettingsStore.syncShadowFromAuthoritative();
-  const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
+  const runtimeReplyAiService = new ConfiguredAiService(
+    replyAiService,
+    systemSettingsStore,
+    "reply",
+    undefined,
+    undefined,
+    capabilityPolicy,
+  );
   const defaultTtsService = new TtsService(
     config.ttsBaseUrl,
     config.ttsApiKey,
@@ -167,6 +176,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     true,
     contextRepository,
     contextRouter,
+    capabilityPolicy,
   );
 
   const adminHttpServer = config.adminHttpEnabled

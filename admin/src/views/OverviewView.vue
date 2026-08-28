@@ -78,7 +78,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>会仙人格</h2>
-            <p>当前群统一使用会仙。她会自然参与、认真帮忙，也会对真人照片、线下见面等问题保持诚实边界。</p>
+            <p>当前群统一使用会仙。她会自然参与、认真帮忙；现实证明类问题会简短转场，不编造可核验事实。</p>
           </div>
           <RouterLink v-if="app.role === 'super_admin'" class="ghost-btn" to="/persona">编辑人格</RouterLink>
         </div>

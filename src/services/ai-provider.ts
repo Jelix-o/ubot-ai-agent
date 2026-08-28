@@ -35,6 +35,7 @@ export const ANTHROPIC_PROVIDER_CAPABILITIES: Readonly<AiProviderCapabilities> =
 
 export function resolveProviderCapabilities(
   model: Pick<SystemModelConfig, "apiProtocol" | "capabilities" | "supportsVision">,
+  policyOverride?: Partial<AiProviderCapabilities>,
 ): AiProviderCapabilities {
   const defaults = model.apiProtocol === "anthropic"
     ? ANTHROPIC_PROVIDER_CAPABILITIES
@@ -42,19 +43,35 @@ export function resolveProviderCapabilities(
   const configured = model.capabilities ?? {};
 
   if (model.apiProtocol === "anthropic") {
-    return {
+    return applyPolicyCapabilityBounds({
       vision: configured.vision ?? model.supportsVision ?? defaults.vision,
       streaming: false,
       reasoningEffort: false,
       requestTimeout: true,
-    };
+    }, policyOverride);
   }
 
-  return {
+  return applyPolicyCapabilityBounds({
     vision: configured.vision ?? model.supportsVision ?? defaults.vision,
     streaming: configured.streaming ?? defaults.streaming,
     reasoningEffort: configured.reasoningEffort ?? defaults.reasoningEffort,
     requestTimeout: true,
+  }, policyOverride);
+}
+
+/** A persisted policy can only reduce provider capabilities, never expand them. */
+function applyPolicyCapabilityBounds(
+  capabilities: AiProviderCapabilities,
+  policyOverride: Partial<AiProviderCapabilities> | undefined,
+): AiProviderCapabilities {
+  if (!policyOverride) {
+    return capabilities;
+  }
+  return {
+    vision: capabilities.vision && policyOverride.vision !== false,
+    streaming: capabilities.streaming && policyOverride.streaming !== false,
+    reasoningEffort: capabilities.reasoningEffort && policyOverride.reasoningEffort !== false,
+    requestTimeout: capabilities.requestTimeout && policyOverride.requestTimeout !== false,
   };
 }
 

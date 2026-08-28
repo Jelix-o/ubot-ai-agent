@@ -13,7 +13,11 @@ import type { ConversationContextRouter } from "./services/conversation-context-
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupLock } from "./services/group-lock.js";
-import { ExplicitMemoryService } from "./services/explicit-memory-service.js";
+import {
+  ExplicitMemoryService,
+  parseExplicitMemoryRequest,
+  stripExplicitMemoryLead,
+} from "./services/explicit-memory-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ImagePipelineError, type ImagePipeline } from "./services/image-pipeline.js";
@@ -31,6 +35,15 @@ import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { TtsServiceError } from "./services/tts-service.js";
+import type {
+  ProviderCapabilityFeature,
+  ProviderProtocol,
+  RuntimeCapabilityPolicy,
+  V3RuntimeCapability,
+} from "./services/capability-policy-service.js";
+import { GroupParticipationService } from "./services/group-participation-service.js";
+import { BOT_MAINTENANCE_INTERVALS, MaintenanceScheduler } from "./services/maintenance-scheduler.js";
+import type { ParticipationDecision } from "./services/participation-policy.js";
 import type {
   AiInteractionTarget,
   AiIdentityContext,
@@ -52,7 +65,6 @@ import type {
   SharedConversationTopic,
   SkillDefinition,
   SystemCommandConfig,
-  SystemSettings,
   TokenCostControlSettings,
 } from "./types.js";
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
@@ -66,7 +78,6 @@ import {
 import { classifyUpstreamFailure } from "./utils/upstream-failure.js";
 import { withTimeout } from "./utils/with-timeout.js";
 import { parseVoiceCommand } from "./utils/voice-command.js";
-import { ParticipationPolicy, type ParticipationDecision } from "./services/participation-policy.js";
 
 const MODEL_PREFIX = "#模型";
 const VOICE_PREFIX = "#语音";
@@ -91,16 +102,7 @@ const OPS_ALERT_PREFIX = "#告警";
 const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
-const LIVE_CHAT_TICK_MS = 15 * 1000;
-const DAILY_REPORT_TICK_MS = 30 * 1000;
-const HOLIDAY_COUNTDOWN_TICK_MS = 30 * 1000;
-const SCHEDULED_REMINDER_TICK_MS = 30 * 1000;
-const OPS_ALERT_TICK_MS = 30 * 1000;
-const DAILY_REPORT_CLEANUP_TICK_MS = 60 * 1000;
-const MAINTENANCE_TICK_MS = 10_000;
 const MULTI_MESSAGE_DELAY_MS = 1000;
-const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
-const CHENGFENG_TRIGGER_KEYWORD = "乘风";
 const REPEAT_THRESHOLD = 4;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -296,18 +298,9 @@ interface OpsAlertRuntimeState {
 }
 
 export class BotApplication {
-  private readonly participationPolicy = new ParticipationPolicy();
+  private readonly participationService: GroupParticipationService;
+  private readonly maintenanceScheduler: MaintenanceScheduler;
   private readonly explicitMemoryService?: ExplicitMemoryService;
-  private maintenanceTimer?: NodeJS.Timeout;
-  private maintenanceTickRunning = false;
-
-  // 各个 tick 的上次执行时间（用于判断是否该执行）
-  private lastLiveChatTick = 0;
-  private lastDailyReportTick = 0;
-  private lastHolidayCountdownTick = 0;
-  private lastScheduledReminderTick = 0;
-  private lastOpsAlertTick = 0;
-  private lastDailyReportCleanupTick = 0;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -352,21 +345,33 @@ export class BotApplication {
     private startupAlertsEnabled = true,
     private readonly conversationContextRepository?: ConversationContextRepository,
     private readonly conversationContextRouter?: ConversationContextRouter,
+    /** Present for V3 composition; omitted only by pre-cutover compatibility embeddings. */
+    private readonly capabilityPolicy?: RuntimeCapabilityPolicy,
   ) {
+    this.participationService = new GroupParticipationService(
+      this.groupConfigService,
+      this.systemSettingsStore,
+    );
+    this.maintenanceScheduler = new MaintenanceScheduler({
+      jobs: [
+        { id: "live-chat", intervalMs: BOT_MAINTENANCE_INTERVALS.liveChat, run: () => this.runLiveChatTick() },
+        { id: "daily-report", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReport, run: () => this.runDailyReportTick() },
+        { id: "holiday-countdown", intervalMs: BOT_MAINTENANCE_INTERVALS.holidayCountdown, run: () => this.runHolidayCountdownTick() },
+        { id: "scheduled-reminder", intervalMs: BOT_MAINTENANCE_INTERVALS.scheduledReminder, run: () => this.runScheduledReminderTick() },
+        { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
+        { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
+      ],
+      pollIntervalMs: BOT_MAINTENANCE_INTERVALS.poll,
+    });
     if (this.groupMemoryStore) {
       this.explicitMemoryService = new ExplicitMemoryService(this.groupMemoryStore);
     }
   }
 
   start(): void {
-    if (this.maintenanceTimer) {
+    if (!this.maintenanceScheduler.start()) {
       return;
     }
-
-    this.maintenanceTimer = setInterval(() => {
-      void this.runMaintenanceTick();
-    }, MAINTENANCE_TICK_MS);
-    this.maintenanceTimer.unref();
 
     if (this.startupAlertsEnabled !== false) {
       void this.runOpsAlertTick({ includeStartup: true });
@@ -374,51 +379,13 @@ export class BotApplication {
   }
 
   async stop(): Promise<void> {
-    if (this.maintenanceTimer) {
-      clearInterval(this.maintenanceTimer);
-      this.maintenanceTimer = undefined;
-    }
+    this.maintenanceScheduler.stop();
     await this.conversationStore.flush();
   }
 
+  /** Compatibility seam retained for focused lifecycle tests and embeddings. */
   private async runMaintenanceTick(): Promise<void> {
-    if (this.maintenanceTickRunning) return;
-    this.maintenanceTickRunning = true;
-    try {
-      const now = Date.now();
-
-      if (now - this.lastLiveChatTick >= LIVE_CHAT_TICK_MS) {
-        this.lastLiveChatTick = now;
-        await this.runLiveChatTick();
-      }
-
-      if (now - this.lastDailyReportTick >= DAILY_REPORT_TICK_MS) {
-        this.lastDailyReportTick = now;
-        await this.runDailyReportTick();
-      }
-
-      if (now - this.lastHolidayCountdownTick >= HOLIDAY_COUNTDOWN_TICK_MS) {
-        this.lastHolidayCountdownTick = now;
-        await this.runHolidayCountdownTick();
-      }
-
-      if (now - this.lastScheduledReminderTick >= SCHEDULED_REMINDER_TICK_MS) {
-        this.lastScheduledReminderTick = now;
-        await this.runScheduledReminderTick();
-      }
-
-      if (now - this.lastOpsAlertTick >= OPS_ALERT_TICK_MS) {
-        this.lastOpsAlertTick = now;
-        await this.runOpsAlertTick();
-      }
-
-      if (now - this.lastDailyReportCleanupTick >= DAILY_REPORT_CLEANUP_TICK_MS) {
-        this.lastDailyReportCleanupTick = now;
-        await this.runDailyReportCleanupTick();
-      }
-    } finally {
-      this.maintenanceTickRunning = false;
-    }
+    await this.maintenanceScheduler.runDueJobs();
   }
 
   private async getRuntimeCommands(): Promise<SystemCommandConfig[]> {
@@ -525,12 +492,20 @@ export class BotApplication {
 
     const memoryCommand = matchRuntimeCommand(commandText, runtimeCommands, "memory");
     if (memoryCommand) {
+      if (!this.isCapabilityEnabled("explicit_memory")) {
+        await this.rejectCapability(groupId, "explicit_memory");
+        return;
+      }
       await this.handleMemoryCommand(groupConfig, event, memoryCommand.rewrittenText);
       return;
     }
 
     const knowledgeCommand = matchRuntimeCommand(commandText, runtimeCommands, "knowledge");
     if (knowledgeCommand) {
+      if (!this.isCapabilityEnabled("knowledge")) {
+        await this.rejectCapability(groupId, "knowledge");
+        return;
+      }
       await this.handleKnowledgeStatusCommand(groupConfig, event);
       return;
     }
@@ -550,18 +525,30 @@ export class BotApplication {
     if (groupConfig.botMuted === true) {
       const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
       if (dailyReportCommand) {
+        if (!this.isCapabilityEnabled("daily_reports")) {
+          await this.rejectCapability(groupId, "daily_reports");
+          return;
+        }
         await this.handleDailyReportCommand(groupConfig, event, dailyReportCommand.rewrittenText);
         return;
       }
 
       const holidayCountdownCommand = matchRuntimeCommand(commandText, runtimeCommands, "holiday_countdown");
       if (holidayCountdownCommand) {
+        if (!this.isCapabilityEnabled("holiday_countdown")) {
+          await this.rejectCapability(groupId, "holiday_countdown");
+          return;
+        }
         await this.handleHolidayCountdownCommand(groupConfig, event, holidayCountdownCommand.rewrittenText);
         return;
       }
 
       const scheduledReminderCommand = matchRuntimeCommand(commandText, runtimeCommands, "scheduled_reminder");
       if (scheduledReminderCommand) {
+        if (!this.isCapabilityEnabled("scheduled_reminders")) {
+          await this.rejectCapability(groupId, "scheduled_reminders");
+          return;
+        }
         await this.handleScheduledReminderCommand(groupConfig, event, scheduledReminderCommand.rewrittenText);
         return;
       }
@@ -571,6 +558,10 @@ export class BotApplication {
         ? parseChatSummaryRequest(parsedMessage.text, new Date())
         : null;
       if (chatSummaryRequest) {
+        if (!this.isCapabilityEnabled("daily_reports")) {
+          await this.rejectCapability(groupId, "daily_reports");
+          return;
+        }
         await this.groupLock.run(groupId, async () => {
           const tokenCostControl = await this.getTokenCostControl();
           const summary = await this.dailyReportService.buildChatSummary({
@@ -588,6 +579,10 @@ export class BotApplication {
 
     const liveChatCommand = matchRuntimeCommand(commandText, runtimeCommands, "live_chat");
     if (liveChatCommand) {
+      if (!this.isCapabilityEnabled("conversation")) {
+        await this.rejectCapability(groupId, "conversation");
+        return;
+      }
       await this.handleLiveChatCommand(groupConfig, event, liveChatCommand.rewrittenText);
       return;
     }
@@ -629,18 +624,30 @@ export class BotApplication {
 
     const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
     if (dailyReportCommand) {
+      if (!this.isCapabilityEnabled("daily_reports")) {
+        await this.rejectCapability(groupId, "daily_reports");
+        return;
+      }
       await this.handleDailyReportCommand(groupConfig, event, dailyReportCommand.rewrittenText);
       return;
     }
 
     const holidayCountdownCommand = matchRuntimeCommand(commandText, runtimeCommands, "holiday_countdown");
     if (holidayCountdownCommand) {
+      if (!this.isCapabilityEnabled("holiday_countdown")) {
+        await this.rejectCapability(groupId, "holiday_countdown");
+        return;
+      }
       await this.handleHolidayCountdownCommand(groupConfig, event, holidayCountdownCommand.rewrittenText);
       return;
     }
 
     const scheduledReminderCommand = matchRuntimeCommand(commandText, runtimeCommands, "scheduled_reminder");
     if (scheduledReminderCommand) {
+      if (!this.isCapabilityEnabled("scheduled_reminders")) {
+        await this.rejectCapability(groupId, "scheduled_reminders");
+        return;
+      }
       await this.handleScheduledReminderCommand(groupConfig, event, scheduledReminderCommand.rewrittenText);
       return;
     }
@@ -661,6 +668,10 @@ export class BotApplication {
     );
     const singCommand = matchRuntimeCommand(commandText, runtimeCommands, "sing");
     if (singCommand) {
+      if (!this.isCapabilityEnabled("singing")) {
+        await this.rejectCapability(groupId, "singing");
+        return;
+      }
       if (groupConfig.voiceReplyEnabled === false) {
         await this.sendText(groupId, "本群语音功能已关闭");
         return;
@@ -695,6 +706,10 @@ export class BotApplication {
     );
 
     if (voiceCommand.matched) {
+      if (!this.isCapabilityEnabled("voice")) {
+        await this.rejectCapability(groupId, "voice");
+        return;
+      }
       if (!voiceCommandEnabled) {
         logInfo("Ignored voice command because runtime command is disabled.", { groupId, userId });
         return;
@@ -732,6 +747,10 @@ export class BotApplication {
       : null;
 
     if (chatSummaryRequest) {
+      if (!this.isCapabilityEnabled("daily_reports")) {
+        await this.rejectCapability(groupId, "daily_reports");
+        return;
+      }
       await this.groupLock.run(groupId, async () => {
         const tokenCostControl = await this.getTokenCostControl();
         const summary = await this.dailyReportService.buildChatSummary({
@@ -749,6 +768,10 @@ export class BotApplication {
     if (parsedMessage.hasAtBot) {
       const reminderRequest = this.scheduledReminderService.parseCreateRequest(parsedMessage.text);
       if (reminderRequest) {
+        if (!this.isCapabilityEnabled("scheduled_reminders")) {
+          await this.rejectCapability(groupId, "scheduled_reminders");
+          return;
+        }
         if (!isRuntimeCommandEnabled(runtimeCommands, "scheduled_reminder")) {
           logInfo("Ignored natural scheduled reminder command because runtime command is disabled.", { groupId, userId });
           return;
@@ -774,11 +797,15 @@ export class BotApplication {
       explicitMemoryRequest &&
       (parsedMessage.hasAtBot || options.allowReplyWithoutMention === true)
     ) {
+      if (!this.isCapabilityEnabled("explicit_memory")) {
+        await this.rejectCapability(groupId, "explicit_memory");
+        return;
+      }
       await this.handleExplicitMemoryRequest(groupConfig, event, explicitMemoryRequest);
       return;
     }
 
-    if (allowsKeywordParticipation(groupConfig) && await this.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
+    if (await this.participationService.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
       const keywordMentionUserIds = this.resolveKeywordReplyMentionUserIds(
         userId,
         messageContext,
@@ -842,6 +869,20 @@ export class BotApplication {
     return this.botQq;
   }
 
+  /** Legacy embeddings have no V3 policy object; V3 composition always does. */
+  private isCapabilityEnabled(capability: V3RuntimeCapability): boolean {
+    return this.capabilityPolicy?.isEnabled(capability) ?? true;
+  }
+
+  private async rejectCapability(groupId: string, capability: V3RuntimeCapability): Promise<void> {
+    logInfo("Skipped disabled V3 capability.", { groupId, capability });
+    await this.sendText(groupId, "该功能当前未启用，请联系管理员处理。");
+  }
+
+  private isProviderFeatureEnabled(protocol: ProviderProtocol, feature: ProviderCapabilityFeature): boolean {
+    return this.capabilityPolicy?.isProviderFeatureEnabled(protocol, feature) ?? true;
+  }
+
   /**
    * Gives ingress/worker one explainable decision for every inbound message.
    * This is deliberately conservative in its first version: it preserves the
@@ -853,30 +894,17 @@ export class BotApplication {
     hasAtBot: boolean,
     options: { hasImages?: boolean; replyToBot?: boolean } = {},
   ): Promise<ParticipationDecision> {
-    const groupConfig = await this.groupConfigService.getGroup(groupId);
-    const normalized = text.trim();
-    const isCommand = normalized.startsWith("#");
-    const isExplicitMemoryRequest = Boolean(parseExplicitMemoryRequest(normalized));
-    const isConversationCommand = /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(normalized);
-    const keywordTriggered = groupConfig && groupConfig.enabled !== false && groupConfig.botMuted !== true && allowsKeywordParticipation(groupConfig)
-      ? await this.shouldTriggerKeyword(groupConfig, text, hasAtBot, text)
-      : false;
-
-    return this.participationPolicy.decide({
-      text,
-      hasAtBot,
-      // A bare OneBot reply segment can point at any group member. Only the
-      // worker may set this after a same-group receipt-table lookup.
-      hasReply: options.replyToBot === true,
-      hasImages: options.hasImages === true,
-      groupConfigured: Boolean(groupConfig),
-      groupEnabled: groupConfig?.enabled !== false,
-      groupMuted: groupConfig?.botMuted === true,
-      isCommand,
-      isExplicitMemoryRequest,
-      isConversationCommand,
-      keywordTriggered,
-    });
+    const decision = await this.participationService.decide(groupId, text, hasAtBot, options);
+    if (decision.action === "reply" && !this.isCapabilityEnabled("conversation")) {
+      return {
+        ...decision,
+        action: "observe",
+        reason: "ambient_observation",
+        score: 0,
+        signals: { ...decision.signals, capabilityConversation: false },
+      };
+    }
+    return decision;
   }
 
   /** Read-only trigger check used by a legacy ingress before it persists a route. */
@@ -895,45 +923,10 @@ export class BotApplication {
     this.llmGate = gate;
   }
 
-  private async shouldTriggerKeyword(
-    groupConfig: GroupBotConfig,
-    text: string,
-    hasAtBot: boolean,
-    commandText: string,
-  ): Promise<boolean> {
-    if (
-      hasAtBot ||
-      commandText.trim().startsWith("#")
-    ) {
-      return false;
-    }
-
-    const keywords = groupConfig.triggerKeywords && groupConfig.triggerKeywords.length > 0
-      ? groupConfig.triggerKeywords
-      : await this.getDefaultTriggerKeywords(groupConfig.groupId);
-    return keywords.some((item) => item.enabled !== false && item.keyword && text.includes(item.keyword));
-  }
-
-  private async getDefaultTriggerKeywords(groupId: string): Promise<SystemSettings["defaultTriggerKeywords"]> {
-    if (this.systemSettingsStore) {
-      try {
-        const settings = await this.systemSettingsStore.get();
-        if (settings.defaultTriggerKeywords.length > 0) {
-          return settings.defaultTriggerKeywords;
-        }
-      } catch (error) {
-        logWarn("Failed to load system default trigger keywords.", {
-          groupId,
-          error: (error as Error).message,
-        });
-      }
-    }
-    return groupId === CHENGFENG_TRIGGER_GROUP_ID
-      ? [{ keyword: CHENGFENG_TRIGGER_KEYWORD, enabled: true }]
-      : [];
-  }
-
   private async runLiveChatTick(): Promise<void> {
+    if (!this.isCapabilityEnabled("conversation")) {
+      return;
+    }
     const now = Date.now();
 
     try {
@@ -1034,6 +1027,9 @@ export class BotApplication {
   }
 
   private async runDailyReportTick(now = new Date()): Promise<void> {
+    if (!this.isCapabilityEnabled("daily_reports")) {
+      return;
+    }
     try {
       const groups = await this.getEnabledGroupConfigs();
       const tokenCostControl = await this.getTokenCostControl();
@@ -1071,6 +1067,9 @@ export class BotApplication {
   }
 
   private async runHolidayCountdownTick(now = new Date()): Promise<void> {
+    if (!this.isCapabilityEnabled("holiday_countdown")) {
+      return;
+    }
     try {
       const groups = await this.getEnabledGroupConfigs();
       const tokenCostControl = await this.getTokenCostControl();
@@ -1107,6 +1106,9 @@ export class BotApplication {
   }
 
   private async runScheduledReminderTick(now = new Date()): Promise<void> {
+    if (!this.isCapabilityEnabled("scheduled_reminders")) {
+      return;
+    }
     if (!isWithinWorkHours(now)) {
       return;
     }
@@ -1369,6 +1371,11 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
+
+    if (!this.isCapabilityEnabled("voice")) {
+      await this.rejectCapability(groupId, "voice");
+      return;
+    }
 
     if (!(await this.isAdmin(groupConfig, userId))) {
       await this.sendText(groupId, MSG_VOICE_REPLY_NO_PERMISSION);
@@ -1713,6 +1720,11 @@ export class BotApplication {
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
 
+    if (!this.isCapabilityEnabled("daily_reports")) {
+      await this.rejectCapability(groupId, "daily_reports");
+      return;
+    }
+
     if (
       normalized === DAILY_REPORT_PREFIX ||
       normalized === `${DAILY_REPORT_PREFIX} 状态` ||
@@ -1797,6 +1809,11 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
+
+    if (!this.isCapabilityEnabled("holiday_countdown")) {
+      await this.rejectCapability(groupId, "holiday_countdown");
+      return;
+    }
 
     if (
       normalized === HOLIDAY_COUNTDOWN_PREFIX ||
@@ -1885,6 +1902,11 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
+
+    if (!this.isCapabilityEnabled("scheduled_reminders")) {
+      await this.rejectCapability(groupId, "scheduled_reminders");
+      return;
+    }
 
     if (
       normalized === `${SCHEDULED_REMINDER_PREFIX} 状态` ||
@@ -2223,6 +2245,20 @@ export class BotApplication {
     conversationRoute?: ConversationRoute,
     signal?: AbortSignal,
   ): Promise<void> {
+    if (!this.isCapabilityEnabled("conversation")) {
+      await this.rejectCapability(groupConfig.groupId, "conversation");
+      return;
+    }
+    if (replyMode === "singing" && !this.isCapabilityEnabled("singing")) {
+      await this.rejectCapability(groupConfig.groupId, "singing");
+      return;
+    }
+    if ((replyMode === "voice" || replyMode === "singing") && !this.isCapabilityEnabled("voice")) {
+      // Default voice replies degrade to text when voice is disabled between
+      // dispatch and execution. Explicit #语音/#唱歌 requests were rejected
+      // before entering this method, so they never produce an unexpected AI call.
+      replyMode = "text";
+    }
     const conversationStartedAt = Date.now();
     if (!conversationRoute && this.conversationContextRouter && messageContext.sourceMessageId) {
       const sourceRowId = this.conversationContextRepository?.getSourceRowId(
@@ -2332,8 +2368,9 @@ export class BotApplication {
     // 分级超时（计划 §2.4）：记忆检索 1.5s/2s、实时查询 8s/10s——超时跳过该层，
     // 不阻塞回复生成。
     const [retrievedGroupMemories, knowledgeHits, realtimeLookup] = await Promise.all([
-      withTimeout(
-        this.groupMemoryStore?.listRelevantEnabled({
+      this.isCapabilityEnabled("explicit_memory")
+        ? withTimeout(
+          this.groupMemoryStore?.listRelevantEnabled({
           groupId: groupConfig.groupId,
           currentUserId: userId,
           relatedUserIds,
@@ -2342,17 +2379,19 @@ export class BotApplication {
           identityTerms: memoryIdentityTerms,
           limit: 8,
           maxChars: 3_200,
-        }) ?? Promise.resolve([]),
-        1_500,
-      ).catch((error) => {
+          }) ?? Promise.resolve([]),
+          1_500,
+        ).catch((error) => {
         logWarn("Memory retrieval timed out; skipping L1 layer.", {
           groupId: groupConfig.groupId,
           error: error instanceof Error ? error.message : String(error),
         });
-        return [];
-      }),
-      withTimeout(
-        this.knowledgeBaseStore?.search(
+          return [];
+        })
+        : Promise.resolve([]),
+      this.isCapabilityEnabled("knowledge")
+        ? withTimeout(
+          this.knowledgeBaseStore?.search(
           groupConfig.groupId,
           [
             normalizedUserInput,
@@ -2360,15 +2399,16 @@ export class BotApplication {
             ...messageContext.interactionTargets.flatMap((target) => target.names),
           ].join(" "),
           3,
-        ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
-        1_500,
-      ).catch((error) => {
+          ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
+          1_500,
+        ).catch((error) => {
         logWarn("Knowledge search timed out; skipping layer.", {
           groupId: groupConfig.groupId,
           error: error instanceof Error ? error.message : String(error),
         });
-        return [];
-      }),
+          return [];
+        })
+        : Promise.resolve([]),
       this.resolveRealtimeLookup(groupConfig, normalizedUserInput),
     ]);
     const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
@@ -2635,7 +2675,7 @@ export class BotApplication {
     groupConfig: GroupBotConfig,
     userInput: string,
   ): Promise<RealtimeLookupResult | undefined> {
-    if (!this.realtimeLookupService || groupConfig.onlineLookupEnabled !== true) {
+    if (!this.isCapabilityEnabled("realtime_lookup") || !this.realtimeLookupService || groupConfig.onlineLookupEnabled !== true) {
       return undefined;
     }
 
@@ -2736,8 +2776,16 @@ export class BotApplication {
         replyOptions.push({
           mode: model.id,
           label: this.formatConfiguredReplyModelLabel(model.id, model.model),
-          service: new ConfiguredAiService(this.aiService, this.systemSettingsStore, "reply", undefined, model.id),
-          supportsVision: model.supportsVision === true || (model.supportsVision === undefined && model.id === "gpt"),
+          service: new ConfiguredAiService(
+            this.aiService,
+            this.systemSettingsStore,
+            "reply",
+            undefined,
+            model.id,
+            this.capabilityPolicy,
+          ),
+          supportsVision: (model.supportsVision === true || (model.supportsVision === undefined && model.id === "gpt")) &&
+            this.isProviderFeatureEnabled(model.apiProtocol === "anthropic" ? "anthropic" : "openai", "vision"),
         });
         existingModes.add(model.id);
       }
@@ -2761,7 +2809,7 @@ export class BotApplication {
       mode: "gpt",
       label: await this.formatReplyModelName("gpt"),
       service: this.aiService,
-      supportsVision: true,
+      supportsVision: this.isProviderFeatureEnabled("openai", "vision"),
     };
   }
 
@@ -2939,6 +2987,10 @@ export class BotApplication {
     event: NapcatGroupMessageEvent,
     commandText: string,
   ): Promise<void> {
+    if (!this.isCapabilityEnabled("explicit_memory")) {
+      await this.rejectCapability(groupConfig.groupId, "explicit_memory");
+      return;
+    }
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
     const suffix = commandText.slice(MEMORY_PREFIX.length).trim();
@@ -3025,6 +3077,10 @@ export class BotApplication {
   }
 
   private async handleKnowledgeStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
+    if (!this.isCapabilityEnabled("knowledge")) {
+      await this.rejectCapability(groupConfig.groupId, "knowledge");
+      return;
+    }
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
@@ -3051,7 +3107,7 @@ export class BotApplication {
     event: NapcatGroupMessageEvent,
     parsedMessage: ReturnType<typeof parseGroupMessage>,
   ): Promise<void> {
-    if (groupConfig.dailyReportEnabled === false) {
+    if (!this.isCapabilityEnabled("daily_reports") || groupConfig.dailyReportEnabled === false) {
       return;
     }
 
@@ -3907,16 +3963,6 @@ function isMemoryStatusCommand(commandText: string): boolean {
   return normalized === MEMORY_PREFIX || normalized === `${MEMORY_PREFIX} 状态` || normalized === `${MEMORY_PREFIX} 查看`;
 }
 
-function parseExplicitMemoryRequest(text: string): string | undefined {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const match = normalized.match(/^(?:请(?:帮我)?|麻烦(?:你)?|帮我)?\s*(?:记住|记忆)(?:一下)?\s*[:：,，]?\s*(.+)$/u);
-  return match?.[1]?.trim() || undefined;
-}
-
-function stripExplicitMemoryLead(text: string): string {
-  return parseExplicitMemoryRequest(text) ?? text.trim();
-}
-
 function isKnowledgeStatusCommand(commandText: string): boolean {
   const normalized = commandText.replace(/\s+/g, " ").trim();
   return normalized === KNOWLEDGE_PREFIX || normalized === `${KNOWLEDGE_PREFIX} 状态` || normalized === `${KNOWLEDGE_PREFIX} 查看`;
@@ -4587,11 +4633,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function allowsKeywordParticipation(groupConfig: GroupBotConfig): boolean {
-  return groupConfig.participationMode === "mentions_and_keywords" ||
-    groupConfig.participationMode === "selected_members";
 }
 
 function allowsSelectedMemberParticipation(groupConfig: GroupBotConfig): boolean {

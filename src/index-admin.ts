@@ -19,6 +19,7 @@ import { ConfiguredAiService } from "./services/configured-ai-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { openSharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
+import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 
 /**
  * Admin process:
@@ -41,6 +42,7 @@ export async function main(): Promise<void> {
   const readClient = new IngressReadApiClient(`http://127.0.0.1:${config.ingressReadApiPort}`);
   const sharedDb = openSharedDb(config.dataDir);
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
+  const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const groupConfigService = new GroupConfigService(
     config.groupsConfigPath,
     v3State ? undefined : new GroupConfigSqliteShadowRepository(sharedDb),
@@ -66,6 +68,9 @@ export async function main(): Promise<void> {
       new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel),
       systemSettingsStore,
       "reply",
+      undefined,
+      undefined,
+      capabilityPolicy,
     ),
   );
   const adminTaskStore = new AdminTaskStore(config.adminTasksPath, v3State);
@@ -89,7 +94,7 @@ export async function main(): Promise<void> {
     modelHealthHistoryStore,
     adminOperationLogService,
     getTransportHealthStatus: () => readClient.getHealth(),
-    listGroupMembers: (groupId) => readClient.listGroupMembers(groupId),
+    listGroupMembers: (groupId) => readClient.listGroupMembersStrict(groupId),
     listGroups: () => readClient.listGroups(),
     sharedDb,
   });

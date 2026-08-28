@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { SharedDb } from "./shared/sqlite.js";
-import { StateCipher } from "./services/v3-state-repository.js";
+import { StateCipher, V3StateRepository } from "./services/v3-state-repository.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -243,7 +243,7 @@ test("V3 cutover removes untracked rollback files when a legacy source cannot be
   }
 });
 
-test("existing V3 cutover upgrades SQLite without reading or re-archiving legacy JSON", (t) => {
+test("existing V3 cutover upgrades SQLite without reading legacy JSON and applies the packaged Huixian revision once", async (t) => {
   const appRoot = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-existing-cutover-"));
   const dataDir = path.join(appRoot, "data");
   const dbPath = path.join(dataDir, "shared", "bot-shared.db");
@@ -251,7 +251,9 @@ test("existing V3 cutover upgrades SQLite without reading or re-archiving legacy
 
   mkdirSync(path.join(appRoot, "config"), { recursive: true });
   mkdirSync(path.join(dataDir, "shared"), { recursive: true });
+  mkdirSync(path.join(appRoot, "assets"), { recursive: true });
   writeFileSync(path.join(appRoot, ".env"), `UBOT_STATE_ENCRYPTION_KEY=${TEST_STATE_KEY}\n`);
+  cpSync(path.resolve("assets", "huixian-profile.json"), path.join(appRoot, "assets", "huixian-profile.json"));
   // Both files are deliberately malformed. An existing-cutover upgrade is
   // prohibited from discovering or parsing either retired source.
   writeFileSync(path.join(appRoot, "config", "groups.json"), "{ malformed groups JSON");
@@ -278,12 +280,59 @@ test("existing V3 cutover upgrades SQLite without reading or re-archiving legacy
     encoding: "utf8",
     env: { ...process.env, UBOT_STATE_ENCRYPTION_KEY: TEST_STATE_KEY },
   });
-  const report = JSON.parse(output) as { mode: string; cutover: string; legacyJson: string; migrationVersions: number[] };
+  const report = JSON.parse(output) as {
+    mode: string;
+    cutover: string;
+    legacyJson: string;
+    migrationVersions: number[];
+    huixianProfileRevision: { applied: boolean; revision: string };
+  };
   assert.equal(report.mode, "existing-cutover-upgrade");
   assert.equal(report.cutover, "already-complete");
   assert.equal(report.legacyJson, "not-read");
   assert.ok(report.migrationVersions.includes(9));
+  assert.deepEqual(report.huixianProfileRevision, { applied: true, revision: "immersive-natural-v3.0.3" });
   assert.equal(existsSync(path.join(dataDir, "v3-rollback")), false);
   assert.equal(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8"), "{ malformed groups JSON");
   assert.equal(readFileSync(path.join(dataDir, "group-memory.json"), "utf8"), "{ malformed memory JSON");
+
+  const migrated = new SharedDb(dbPath);
+  try {
+    const repository = new V3StateRepository(migrated, { stateEncryptionKey: TEST_STATE_KEY });
+    const profile = await repository.getHuixianProfile();
+    assert.equal(profile?.name, "会仙");
+    assert.match(profile?.systemPrompt ?? "", /普通对话中主动解释自己的实现方式/);
+    const revision = migrated.db.prepare(
+      "SELECT changed_by FROM v3_character_profile_revisions ORDER BY id DESC LIMIT 1",
+    ).get() as { changed_by: string };
+    assert.equal(revision.changed_by, "release:3.0.3:huixian-immersive");
+    await repository.saveHuixianProfile({ ...profile!, name: "会仙·管理员调整" }, "admin:test");
+  } finally {
+    migrated.close();
+  }
+
+  const repeated = JSON.parse(execFileSync(process.execPath, [
+    path.resolve("scripts", "migrate-v3-state.mjs"),
+    "--app-root", appRoot,
+    "--execute",
+    "--allow-existing-cutover",
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, UBOT_STATE_ENCRYPTION_KEY: TEST_STATE_KEY },
+  })) as { huixianProfileRevision: { applied: boolean; revision: string } };
+  assert.deepEqual(repeated.huixianProfileRevision, { applied: false, revision: "immersive-natural-v3.0.3" });
+
+  const afterRepeat = new SharedDb(dbPath);
+  try {
+    const profile = afterRepeat.db.prepare(
+      "SELECT name FROM v3_character_profiles WHERE id = 'huixian'",
+    ).get() as { name: string };
+    const revisions = afterRepeat.db.prepare(
+      "SELECT COUNT(*) AS count FROM v3_character_profile_revisions",
+    ).get() as { count: number };
+    assert.equal(profile.name, "会仙·管理员调整");
+    assert.equal(revisions.count, 2);
+  } finally {
+    afterRepeat.close();
+  }
 });

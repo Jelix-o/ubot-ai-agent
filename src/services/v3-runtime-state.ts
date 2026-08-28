@@ -1,19 +1,14 @@
 import type { SharedDb } from "../shared/sqlite.js";
+import {
+  V3_RUNTIME_CAPABILITIES,
+  validateV3CapabilityPolicy,
+  type V3RuntimeCapability,
+} from "./capability-policy-service.js";
 import { V3StateRepository, type V3CapabilityPolicy } from "./v3-state-repository.js";
 
-export const REQUIRED_V3_RUNTIME_CAPABILITIES = [
-  "conversation",
-  "explicit_memory",
-  "knowledge",
-  "scheduled_reminders",
-  "daily_reports",
-  "holiday_countdown",
-  "realtime_lookup",
-  "voice",
-  "singing",
-] as const;
-
-export type V3RuntimeCapability = typeof REQUIRED_V3_RUNTIME_CAPABILITIES[number];
+/** @deprecated Kept as a stable import for migration/test callers. */
+export const REQUIRED_V3_RUNTIME_CAPABILITIES = V3_RUNTIME_CAPABILITIES;
+export type { V3RuntimeCapability };
 
 /**
  * Resolves the sole runtime state authority after the one-shot V3 cutover.
@@ -44,18 +39,15 @@ export function resolveV3RuntimeState(
   return repository;
 }
 
-/** Validates the persisted V3 policy before any runtime composition begins. */
+/**
+ * Validates the persisted V3 policy before any runtime composition begins.
+ * The enabled list is deliberately not required to contain every product
+ * capability: it is the live authorization decision source, and absent
+ * entries are denied by V3CapabilityPolicyService at their use sites.
+ */
 export function assertV3RuntimeCapabilities(repository: V3StateRepository): V3CapabilityPolicy {
   repository.requireCutover();
   const policy = repository.getCapabilityPolicy();
-  if (!policy || !Array.isArray(policy.enabledCapabilities)) {
-    throw new Error("v3_capability_policy_missing");
-  }
-
-  const enabled = new Set(policy.enabledCapabilities);
-  const missing = REQUIRED_V3_RUNTIME_CAPABILITIES.filter((capability) => !enabled.has(capability));
-  if (missing.length > 0) {
-    throw new Error(`v3_capability_policy_missing_required:${missing.join(",")}`);
-  }
+  validateV3CapabilityPolicy(policy);
   return policy;
 }

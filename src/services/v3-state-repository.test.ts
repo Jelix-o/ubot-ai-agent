@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { GroupMemory, ScheduledReminderTask, SystemSettings } from "../types.js";
+import type { GroupMemory, ScheduledReminderTask, SkillDefinition, SystemSettings } from "../types.js";
 import { SharedDb } from "../shared/sqlite.js";
 import { GroupMemoryStore } from "./group-memory-store.js";
 import { KnowledgeBaseStore } from "./knowledge-base-store.js";
@@ -50,6 +50,19 @@ function dueReminder(id = "reminder-1"): ScheduledReminderTask {
     nextRunAt: "2026-08-20T01:00:00.000Z",
     enabled: true,
     recentMessages: [],
+  };
+}
+
+function huixianProfile(overrides: Partial<SkillDefinition> = {}): SkillDefinition {
+  return {
+    id: "huixian",
+    name: "会仙",
+    systemPrompt: "会仙自然聊天，不主动谈身份标签；不编造现实可核验的事实。",
+    styleRules: ["自然接话"],
+    knowledge: ["现实证明类话题自然转场，不承诺事实。"],
+    temperature: 0.8,
+    maxContextTurns: 24,
+    ...overrides,
   };
 }
 
@@ -152,6 +165,61 @@ test("V3 state strips legacy QQ administrator fields and can clear an existing c
     assert.deepEqual(repository.retireLegacyQqAdministration(), { groupsCleared: 1, controlRemoved: true });
     assert.deepEqual(repository.getGroup("10001")?.switcherUserIds, []);
     assert.equal(repository.getDocument("group-control", "default", undefined), undefined);
+  });
+});
+
+test("Huixian release profile revisions are atomic, idempotent, and preserve later admin edits", async () => {
+  await withRepository(async (repository, db) => {
+    const baseline = huixianProfile();
+    const first = repository.applyHuixianReleaseProfile({
+      revision: "immersive-natural-v3.0.3",
+      profile: baseline,
+      changedBy: "release:3.0.3:huixian-immersive",
+      now: Date.parse("2026-08-28T00:00:00.000Z"),
+    });
+
+    assert.deepEqual(first, { applied: true, revision: "immersive-natural-v3.0.3" });
+    assert.equal((await repository.getHuixianProfile())?.systemPrompt, baseline.systemPrompt);
+    assert.equal(
+      (db.db.prepare("SELECT COUNT(*) AS count FROM v3_character_profile_revisions").get() as { count: number }).count,
+      1,
+    );
+
+    const repeat = repository.applyHuixianReleaseProfile({
+      revision: "immersive-natural-v3.0.3",
+      profile: huixianProfile({ name: "不应覆盖" }),
+      changedBy: "release:3.0.3:huixian-immersive",
+    });
+    assert.equal(repeat.applied, false);
+    assert.equal((await repository.getHuixianProfile())?.name, "会仙");
+    assert.equal(
+      (db.db.prepare("SELECT COUNT(*) AS count FROM v3_character_profile_revisions").get() as { count: number }).count,
+      1,
+    );
+
+    await repository.saveHuixianProfile(huixianProfile({ name: "会仙·管理员调整" }), "admin:42");
+    const afterAdminEdit = repository.applyHuixianReleaseProfile({
+      revision: "immersive-natural-v3.0.3",
+      profile: baseline,
+      changedBy: "release:3.0.3:huixian-immersive",
+    });
+    assert.equal(afterAdminEdit.applied, false);
+    assert.equal((await repository.getHuixianProfile())?.name, "会仙·管理员调整");
+
+    const blockedOlderRelease = repository.applyHuixianReleaseProfile({
+      revision: "some-other-release",
+      profile: baseline,
+      changedBy: "release:test",
+    });
+    assert.deepEqual(blockedOlderRelease, {
+      applied: false,
+      revision: "immersive-natural-v3.0.3",
+      previousRevision: "immersive-natural-v3.0.3",
+    });
+    assert.equal(
+      (db.db.prepare("SELECT COUNT(*) AS count FROM v3_character_profile_revisions").get() as { count: number }).count,
+      2,
+    );
   });
 });
 

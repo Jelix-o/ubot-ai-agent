@@ -10,6 +10,7 @@ import {
   REQUIRED_V3_RUNTIME_CAPABILITIES,
   resolveV3RuntimeState,
 } from "./v3-runtime-state.js";
+import { V3CapabilityPolicyService } from "./capability-policy-service.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -45,7 +46,7 @@ test("V3 runtime resolver requires encryption, cutover, and persisted capabiliti
   assert.equal(resolveV3RuntimeState(db, TEST_STATE_KEY, { production: true })?.isCutover(), true);
 });
 
-test("V3 runtime resolver rejects a persisted policy missing retained capability", (t) => {
+test("V3 runtime resolver accepts a valid narrowed policy and its service denies the disabled capability", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-runtime-policy-"));
   const db = new SharedDb(path.join(dir, "bot-shared.db"));
   t.after(() => {
@@ -61,8 +62,8 @@ test("V3 runtime resolver rejects a persisted policy missing retained capability
     updatedAt: "2026-08-27T00:00:00.000Z",
   });
 
-  assert.throws(
-    () => resolveV3RuntimeState(db, TEST_STATE_KEY, { production: true }),
-    /v3_capability_policy_missing_required:knowledge/,
-  );
+  const state = resolveV3RuntimeState(db, TEST_STATE_KEY, { production: true });
+  assert.equal(state?.isCutover(), true);
+  assert.equal(new V3CapabilityPolicyService(state!).isEnabled("knowledge"), false);
+  assert.equal(new V3CapabilityPolicyService(state!).isEnabled("conversation"), true);
 });

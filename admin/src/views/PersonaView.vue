@@ -121,7 +121,7 @@ onMounted(() => void load());
       <div>
         <p class="eyebrow">唯一运行时人格</p>
         <h2>会仙人格</h2>
-        <p>会仙是原创、成年的虚拟聊天伙伴。自然、温柔、有趣，但不会伪造照片、线下活动、现实身体或真实身份。</p>
+        <p>会仙以自然、成熟、有分寸的聊天方式参与群聊。日常不主动谈身份标签；涉及现实证明时会自然转场，不编造可核验事实。</p>
       </div>
       <span class="tag">huixian</span>
     </div>
@@ -141,7 +141,7 @@ onMounted(() => void load());
           <label>普通回复偏好条数<input v-model.number="form.preferredMaxReplyMessages" class="input" type="number" min="1" max="20" /></label>
           <label class="wide">身份说明<textarea v-model="form.systemPrompt" class="textarea large" /></label>
           <label class="wide">表达规则<textarea class="textarea" :value="form.styleRules.join('\n')" placeholder="一行一条，例如：承接上下文，不重复自我介绍。" @input="form.styleRules = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
-          <label class="wide">知识与诚实边界<textarea class="textarea" :value="form.knowledge.join('\n')" placeholder="一行一条，例如：没有真实私人照片或线下行程。" @input="form.knowledge = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
+          <label class="wide">知识与现实边界<textarea class="textarea" :value="form.knowledge.join('\n')" placeholder="一行一条，例如：现实证明类话题自然转场，不编造可核验事实。" @input="form.knowledge = splitLines(($event.target as HTMLTextAreaElement).value)" /></label>
         </div>
       </section>
 
@@ -159,7 +159,7 @@ onMounted(() => void load());
           <label>TTS 音色<select v-model="config().voice" class="select"><option v-for="item in ttsVoiceOptions" :key="item" :value="item">{{ item || "跟随系统默认" }}</option></select></label>
           <label>方言<select v-model="config().dialect" class="select"><option v-for="item in ttsDialectOptions" :key="item" :value="item">{{ item || "不指定" }}</option></select></label>
           <label>声线风格<select v-model="config().personaTone" class="select"><option v-for="item in ttsPersonaToneOptions" :key="item" :value="item">{{ item || "不指定" }}</option></select></label>
-          <label class="wide">TTS 风格提示<textarea v-model="config().stylePrompt" class="textarea compact" placeholder="描述稳定、自然的说话节奏；不要编造真人声线来源。" /></label>
+          <label class="wide">TTS 风格提示<textarea v-model="config().stylePrompt" class="textarea compact" placeholder="描述稳定、自然的说话节奏；不添加无法核验的声线来源。" /></label>
         </div>
         <div class="switch-grid">
           <label><input v-model="form.respectLineBreaks" type="checkbox" /> 尊重换行</label>
@@ -172,7 +172,7 @@ onMounted(() => void load());
         <div class="section-head">
           <div>
             <h2>示例对话 <span class="tag">{{ exampleCount }}</span></h2>
-            <p>用少量典型场景校准会仙的语气。建议包含群聊圆场、照片/线下诚实回应和专业帮助，而不是大量固定口头禅。</p>
+            <p>用少量典型场景校准会仙的语气。建议包含群聊圆场、现实证明类话题的自然转场和专业帮助，而不是大量固定口头禅。</p>
           </div>
           <button class="ghost-btn" type="button" @click="addExample">新增示例</button>
         </div>

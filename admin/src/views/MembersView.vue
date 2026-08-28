@@ -2,14 +2,16 @@
 import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 
-import { api, queryString, type MemberProfile, type Pagination } from "../services/api";
+import { useRefreshEvents } from "../composables/useRefreshEvents";
+import { api, queryString, type MemberListResponse, type MemberProfile, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
 
 const app = useAppStore();
 const router = useRouter();
 const members = shallowRef<MemberProfile[]>([]);
 const loading = shallowRef(false);
-const refreshing = shallowRef(false);
+const memberLoadError = shallowRef("");
+const refreshingGroups = reactive(new Set<string>());
 const editingUserId = shallowRef("");
 const savingUserId = shallowRef("");
 const privacyBusyUserId = shallowRef("");
@@ -18,41 +20,125 @@ const pagination = reactive<Pagination>({ page: 1, pageSize: 24, total: 0, total
 const noteDraft = shallowRef("");
 
 const canReenablePrivacy = computed(() => app.role === "super_admin");
+const refreshing = computed(() => Boolean(app.groupId) && refreshingGroups.has(app.groupId));
 
-async function load(): Promise<void> {
-  if (!app.groupId) {
+let activeLoadId = 0;
+let autoRefreshAttemptedGroupId = "";
+const memberRefreshInflight = new Map<string, Promise<void>>();
+
+function isCurrentLoad(groupId: string, loadId: number): boolean {
+  return app.groupId === groupId && activeLoadId === loadId;
+}
+
+function memberListUrl(groupId: string): string {
+  return `/api/groups/${encodeURIComponent(groupId)}/members${queryString({
+    q: query.value.trim(),
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+  })}`;
+}
+
+function memberLoadErrorMessage(error: unknown): string {
+  const code = error instanceof Error ? error.message : String(error);
+  if (code === "napcat_members_unavailable") {
+    return "无法从 NapCat 读取成员，请确认机器人在线后点击刷新成员重试。";
+  }
+  return "成员列表加载失败，请确认机器人与服务在线后点击刷新成员重试。";
+}
+
+async function refreshMemberCache(groupId: string): Promise<void> {
+  const existing = memberRefreshInflight.get(groupId);
+  if (existing) {
+    return existing;
+  }
+
+  const request = (async () => {
+    refreshingGroups.add(groupId);
+    try {
+      await api<MemberListResponse>(`/api/groups/${encodeURIComponent(groupId)}/members/refresh`, {
+        method: "POST",
+        body: "{}",
+      });
+    } finally {
+      refreshingGroups.delete(groupId);
+    }
+  })();
+  memberRefreshInflight.set(groupId, request);
+  try {
+    await request;
+  } finally {
+    if (memberRefreshInflight.get(groupId) === request) {
+      memberRefreshInflight.delete(groupId);
+    }
+  }
+}
+
+async function load(): Promise<boolean> {
+  const groupId = app.groupId;
+  const loadId = ++activeLoadId;
+  if (!groupId) {
     members.value = [];
-    return;
+    memberLoadError.value = "";
+    loading.value = false;
+    return false;
   }
   loading.value = true;
+  memberLoadError.value = "";
   try {
-    const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(
-      `/api/groups/${encodeURIComponent(app.groupId)}/members${queryString({
-        q: query.value.trim(),
-        page: pagination.page,
-        pageSize: pagination.pageSize,
-      })}`,
-    );
+    let data = await api<MemberListResponse>(memberListUrl(groupId));
+    if (!isCurrentLoad(groupId, loadId)) return false;
+
+    if (data.cacheStatus === "unloaded") {
+      const refreshAlreadyRunning = memberRefreshInflight.has(groupId);
+      if (autoRefreshAttemptedGroupId === groupId && !refreshAlreadyRunning) {
+        memberLoadError.value = "成员列表尚未可用，请点击刷新成员重试。";
+        return false;
+      }
+      if (!refreshAlreadyRunning) {
+        autoRefreshAttemptedGroupId = groupId;
+      }
+      await refreshMemberCache(groupId);
+      if (!isCurrentLoad(groupId, loadId)) return false;
+      data = await api<MemberListResponse>(memberListUrl(groupId));
+      if (!isCurrentLoad(groupId, loadId)) return false;
+      if (data.cacheStatus === "unloaded") {
+        memberLoadError.value = "成员列表尚未可用，请点击刷新成员重试。";
+        return false;
+      }
+    }
+
     members.value = data.members;
     Object.assign(pagination, data.pagination);
+    return true;
   } catch (error) {
-    app.showToast((error as Error).message, "error");
+    if (isCurrentLoad(groupId, loadId)) {
+      memberLoadError.value = memberLoadErrorMessage(error);
+      app.showToast(memberLoadError.value, "error");
+    }
+    return false;
   } finally {
-    loading.value = false;
+    if (isCurrentLoad(groupId, loadId)) {
+      loading.value = false;
+    }
   }
 }
 
 async function refreshMembers(): Promise<void> {
-  if (!app.groupId) return;
-  refreshing.value = true;
+  const groupId = app.groupId;
+  if (!groupId) return;
+  memberLoadError.value = "";
   try {
-    await api(`/api/groups/${encodeURIComponent(app.groupId)}/members/refresh`, { method: "POST", body: "{}" });
-    await load();
-    app.showToast("成员列表已刷新");
+    await refreshMemberCache(groupId);
+    if (app.groupId !== groupId) return;
+    const loaded = await load();
+    if (loaded && app.groupId === groupId) {
+      app.showToast("成员列表已刷新");
+    }
   } catch (error) {
-    app.showToast((error as Error).message, "error");
-  } finally {
-    refreshing.value = false;
+    if (app.groupId === groupId) {
+      memberLoadError.value = memberLoadErrorMessage(error);
+      app.showToast(memberLoadError.value, "error");
+    }
   }
 }
 
@@ -113,17 +199,36 @@ function openMemories(member: MemberProfile): void {
 }
 
 function applyFilters(): void {
-  pagination.page = 1;
+  if (pagination.page !== 1) {
+    pagination.page = 1;
+    return;
+  }
   void load();
 }
 
 watch(() => app.groupId, () => {
-  pagination.page = 1;
+  activeLoadId += 1;
+  autoRefreshAttemptedGroupId = "";
+  members.value = [];
+  memberLoadError.value = "";
   editingUserId.value = "";
+  pagination.total = 0;
+  pagination.totalPages = 1;
+  if (!app.groupId) {
+    loading.value = false;
+    return;
+  }
+  if (pagination.page !== 1) {
+    pagination.page = 1;
+    return;
+  }
   void load();
 });
-watch(() => [pagination.page, pagination.pageSize], () => void load());
+watch(() => [pagination.page, pagination.pageSize], () => {
+  if (app.groupId) void load();
+});
 onMounted(() => void load());
+useRefreshEvents({ refresh: () => void refreshMembers() });
 </script>
 
 <template>
@@ -146,9 +251,15 @@ onMounted(() => void load());
           <option :value="48">48 / 页</option>
         </select>
       </div>
+      <div v-if="memberLoadError" class="member-load-error" role="alert">
+        <span>{{ memberLoadError }}</span>
+        <button class="ghost-btn" type="button" :disabled="refreshing" @click="refreshMembers">
+          {{ refreshing ? "刷新中..." : "重新尝试" }}
+        </button>
+      </div>
       <div v-if="loading" class="empty">正在加载成员...</div>
-      <div v-else-if="!members.length" class="empty">当前群暂无成员数据。</div>
-      <div v-else class="member-grid">
+      <div v-else-if="!members.length && !memberLoadError" class="empty">当前群暂无成员数据。</div>
+      <div v-else-if="members.length" class="member-grid">
         <article v-for="member in members" :key="member.userId" class="card member-card">
           <div class="member-head">
             <div class="avatar">{{ member.displayName.slice(0, 1) }}</div>
@@ -203,6 +314,7 @@ onMounted(() => void load());
 .toolbar, .inline-actions, .member-actions, .pagination, .member-head, .tags { display: flex; align-items: center; gap: 10px; }
 .toolbar { margin-bottom: 18px; }
 .toolbar .input { flex: 1; }
+.member-load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line)); border-radius: var(--radius-sm); color: var(--danger); padding: 12px; }
 .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .member-card { display: grid; gap: 14px; }
 .member-head { align-items: flex-start; }
@@ -215,5 +327,5 @@ onMounted(() => void load());
 .member-actions { flex-wrap: wrap; }
 .danger { color: var(--danger); }
 .pagination { justify-content: center; margin-top: 20px; }
-@media (max-width: 640px) { .toolbar { align-items: stretch; flex-direction: column; } }
+@media (max-width: 640px) { .toolbar, .member-load-error { align-items: stretch; flex-direction: column; } }
 </style>

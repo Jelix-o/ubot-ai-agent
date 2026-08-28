@@ -46,13 +46,14 @@ test("admin exposes a dedicated Huixian persona editor instead of a skills marke
   assert.match(router, /path:\s*"\/skills",\s*redirect:\s*"\/persona"/);
   assert.match(persona, /\/api\/persona\/huixian/);
   assert.match(persona, /唯一运行时人格/);
-  assert.match(persona, /真实私人照片/);
+  assert.match(persona, /现实证明时会自然转场/);
   assert.match(groups, /会仙\s*\/\s*huixian/);
   assert.doesNotMatch(groups, /\/api\/skill-options|allowedSkillIds"/);
   assert.match(server, /\/api\/persona\/huixian/);
   assert.doesNotMatch(server, /pathname === "\/api\/skills"/);
   assert.match(profileAsset, /\"id\": \"huixian\"/);
-  assert.match(profileAsset, /没有可发送的真实私人照片/);
+  assert.match(profileAsset, /普通对话中主动解释自己的实现方式/);
+  assert.match(profileAsset, /不编造、暗示或承诺可核验的事实/);
 });
 
 test("runtime documentation and release packaging do not carry retired personas", async () => {
@@ -72,7 +73,31 @@ test("runtime documentation and release packaging do not carry retired personas"
   assert.match(verifier, /\"skills\"/);
   assert.doesNotMatch(packageLinux, /itexpert\.json/);
   assert.doesNotMatch(deployer, /itexpert\.json/);
-  assert.match(huixian, /没有可发送的真实私人照片/);
-  assert.match(huixian, /线下行程/);
+  assert.match(huixian, /普通对话中主动解释自己的实现方式/);
+  assert.match(huixian, /不编造、暗示或承诺可核验的事实/);
   assert.doesNotMatch(commands, /#技能/);
+});
+
+test("admin hides compatibility routes and loads a missing member cache explicitly", async () => {
+  const [router, shell, members, api, server, adminEntry] = await Promise.all([
+    readAdmin("router.ts"),
+    readAdmin("App.vue"),
+    readAdmin(path.join("views", "MembersView.vue")),
+    readAdmin(path.join("services", "api.ts")),
+    readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
+    readFile(path.join(repoRoot, "src", "index-admin.ts"), "utf8"),
+  ]);
+
+  assert.match(router, /path:\s*"\/skills",\s*redirect:\s*"\/persona"/);
+  assert.match(router, /navigation:\s*false/);
+  assert.match(shell, /typeof item\.name === "string"/);
+  assert.match(shell, /item\.meta\?\.navigation !== false/);
+  assert.match(api, /interface MemberListResponse/);
+  assert.match(members, /cacheStatus === "unloaded"/);
+  assert.match(members, /\/members\/refresh/);
+  assert.match(members, /napcat_members_unavailable/);
+  assert.match(members, /useRefreshEvents/);
+  assert.match(server, /cacheStatus: "cached" \| "refreshed" \| "unloaded"/);
+  assert.match(server, /napcat_members_unavailable/);
+  assert.match(adminEntry, /listGroupMembersStrict/);
 });

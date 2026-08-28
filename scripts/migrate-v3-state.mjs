@@ -16,8 +16,10 @@ import dotenv from "dotenv";
 import { DatabaseSync } from "node:sqlite";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const IMPORTER_VERSION = "3.0.1";
+const IMPORTER_VERSION = "3.0.3";
 const EXPLICIT_MEMORY_SOURCES = new Set(["admin", "explicit_command", "explicit_request"]);
+const HUIXIAN_RELEASE_PROFILE_REVISION = "immersive-natural-v3.0.3";
+const HUIXIAN_RELEASE_PROFILE_CHANGED_BY = "release:3.0.3:huixian-immersive";
 
 const args = parseArgs(process.argv.slice(2));
 const appRoot = path.resolve(args.appRoot ?? process.env.UBOT_APP_ROOT ?? process.cwd());
@@ -84,10 +86,7 @@ async function runCutover() {
     const now = Date.now();
     archive = await createEncryptedRollbackArchive({ sources, cipher: new StateCipher(encryptionKey), now });
     const parsed = await parseLegacySources(sources);
-    const huixianProfile = await readJson(huixianProfilePath);
-    if (!isHuixianProfile(huixianProfile)) {
-      throw new Error("assets/huixian-profile.json must define the single huixian character profile.");
-    }
+    const huixianProfile = await loadReleaseHuixianProfile();
 
     const importReport = repository.runAtomically(() => importAllState({
       repository,
@@ -130,6 +129,11 @@ async function runExistingCutoverUpgrade() {
       appRoot,
       dataDir,
       dbPath,
+      huixianProfileRevision: {
+        target: HUIXIAN_RELEASE_PROFILE_REVISION,
+        path: huixianProfilePath,
+        available: existsSync(huixianProfilePath),
+      },
       note: "The V3 cutover marker is present. Run with --execute to apply additive SQLite migrations without reading legacy JSON.",
     });
     return;
@@ -139,13 +143,24 @@ async function runExistingCutoverUpgrade() {
   }
 
   const encryptionKey = requireStateEncryptionKey();
+  // This is release-owned packaged input, not a former runtime JSON source.
+  // Validate it before opening a write transaction so a bad bundle cannot
+  // leave a partially updated cut-over store.
+  const huixianProfile = await loadReleaseHuixianProfile();
   const { SharedDb } = await loadCompiledStateModules();
   const { V3StateRepository } = await loadCompiledRepositoryModules();
   const sharedDb = new SharedDb(dbPath);
   const repository = new V3StateRepository(sharedDb, { stateEncryptionKey: encryptionKey });
   try {
     repository.requireCutover();
-    const retiredQqAdministration = repository.retireLegacyQqAdministration();
+    const upgrade = repository.runAtomically(() => ({
+      retiredQqAdministration: repository.retireLegacyQqAdministration(),
+      huixianProfileRevision: repository.applyHuixianReleaseProfile({
+        revision: HUIXIAN_RELEASE_PROFILE_REVISION,
+        profile: huixianProfile,
+        changedBy: HUIXIAN_RELEASE_PROFILE_CHANGED_BY,
+      }),
+    }));
     writeReport({
       mode: "existing-cutover-upgrade",
       appRoot,
@@ -154,7 +169,7 @@ async function runExistingCutoverUpgrade() {
       migrationVersions: sharedDb.listSchemaMigrations().map((migration) => migration.version),
       cutover: "already-complete",
       legacyJson: "not-read",
-      retiredQqAdministration,
+      ...upgrade,
     });
   } finally {
     sharedDb.close();
@@ -682,6 +697,22 @@ function isHuixianProfile(value) {
     typeof value.systemPrompt === "string" && Array.isArray(value.styleRules) && Array.isArray(value.knowledge);
 }
 
+async function loadReleaseHuixianProfile() {
+  if (!existsSync(huixianProfilePath)) {
+    throw new Error(`V3 Huixian profile asset is missing: ${huixianProfilePath}`);
+  }
+  const profile = await readJson(huixianProfilePath);
+  if (!isHuixianProfile(profile)) {
+    throw new Error("assets/huixian-profile.json must define the single huixian character profile.");
+  }
+  const { normalizeHuixianCharacterProfile } = await loadCompiledProfileModules();
+  try {
+    return normalizeHuixianCharacterProfile(profile);
+  } catch (error) {
+    throw new Error(`Invalid Huixian profile asset: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function countImportedRows(sourceKey, value, result) {
   if (sourceKey === "groups") return result.groups;
   if (sourceKey === "group-memory") return result.explicitMemories;
@@ -813,6 +844,14 @@ async function loadCompiledRepositoryModules() {
     return await import(new URL("../dist/services/v3-state-repository.js", import.meta.url));
   } catch (error) {
     throw new Error(`V3 migration requires a built release (dist/services/v3-state-repository.js): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function loadCompiledProfileModules() {
+  try {
+    return await import(new URL("../dist/services/skill-service.js", import.meta.url));
+  } catch (error) {
+    throw new Error(`V3 migration requires a built release (dist/services/skill-service.js): ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

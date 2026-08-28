@@ -23,6 +23,22 @@ export type ExplicitMemoryCaptureResult =
   | { status: "unsafe" };
 
 /**
+ * Recognizes a member's direct request to save a memory. It intentionally
+ * accepts only an explicit imperative, never an inferred statement from
+ * ambient conversation.
+ */
+export function parseExplicitMemoryRequest(text: string): string | undefined {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const match = normalized.match(/^(?:请(?:帮我)?|麻烦(?:你)?|帮我)?\s*(?:记住|记忆)(?:一下)?\s*[:：,，]?\s*(.+)$/u);
+  return match?.[1]?.trim() || undefined;
+}
+
+/** Removes an optional natural-language memory lead from a #记忆 payload. */
+export function stripExplicitMemoryLead(text: string): string {
+  return parseExplicitMemoryRequest(text) ?? text.trim();
+}
+
+/**
  * Stores only content a member explicitly asks the bot to remember. This service
  * deliberately has no model dependency: it never infers facts from ambient chat
  * or attributes a statement to someone other than the sender.

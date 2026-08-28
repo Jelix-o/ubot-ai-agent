@@ -121,6 +121,12 @@ class AdminRequestBodyError extends Error {
   }
 }
 
+class MemberDirectoryUnavailableError extends Error {
+  constructor() {
+    super("napcat_members_unavailable");
+  }
+}
+
 const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
 const ADMIN_GZIP_MIN_BYTES = 1024;
 const ADMIN_STATIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "admin");
@@ -554,6 +560,7 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/system-settings") {
+      if (req.method === "PUT" && !this.requireRecentSuperAdminMfa(session, res)) return;
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleSystemSettings(req, res);
       return;
@@ -657,6 +664,7 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/persona/huixian") {
+      if (req.method === "PUT" && !this.requireRecentSuperAdminMfa(session, res)) return;
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleHuixianPersona(req, res);
       return;
@@ -668,6 +676,7 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/commands") {
+      if (req.method === "PUT" && !this.requireRecentSuperAdminMfa(session, res)) return;
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleCommands(req, res);
       return;
@@ -1384,15 +1393,23 @@ export class AdminHttpServer {
   }
 
   private async handleGroupMembersRefresh(res: ServerResponse, groupId: string, url: URL): Promise<void> {
-    const profiles = await this.getCachedMemberProfileData(groupId, {
-      force: true,
-      includeNapcatMembers: true,
-    });
-    if (!profiles) {
-      this.sendJson(res, { error: "not_found" }, 404);
-      return;
+    try {
+      const profiles = await this.getCachedMemberProfileData(groupId, {
+        force: true,
+        includeNapcatMembers: true,
+      });
+      if (!profiles) {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
+      this.sendMemberProfiles(res, profiles.members, url, "refreshed");
+    } catch (error) {
+      if (error instanceof MemberDirectoryUnavailableError) {
+        this.sendJson(res, { error: error.message }, 503);
+        return;
+      }
+      throw error;
     }
-    this.sendMemberProfiles(res, profiles.members, url, "refreshed");
   }
 
   private sendMemberProfiles(
@@ -1919,7 +1936,15 @@ export class AdminHttpServer {
   ): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
     const cached = this.memberProfileCache.get(groupId);
     if (options.cacheOnly === true) {
-      return cached ? { groupConfig: cached.groupConfig, members: cached.members } : undefined;
+      // The member page must never present a light identity cache as a full
+      // NapCat directory or keep a 30-second snapshot forever.
+      if (!cached || !cached.includesNapcatMembers || cached.expiresAt <= Date.now()) {
+        if (cached && cached.expiresAt <= Date.now()) {
+          this.memberProfileCache.delete(groupId);
+        }
+        return undefined;
+      }
+      return { groupConfig: cached.groupConfig, members: cached.members };
     }
     const force = options.force === true;
     const includeNapcatMembers = options.includeNapcatMembers === true;
@@ -1928,7 +1953,7 @@ export class AdminHttpServer {
     }
     const inflightKey = memberProfileInflightKey(groupId, includeNapcatMembers);
     const inflight = this.memberProfileInflight.get(inflightKey);
-    if (!force && inflight) {
+    if (inflight) {
       return inflight;
     }
 
@@ -1997,17 +2022,21 @@ export class AdminHttpServer {
 
     const [memoryCounts, napcatMembers] = await Promise.all([
       this.options.groupMemoryStore.countBySubject(groupId),
-      includeNapcatMembers ? this.safeListGroupMembers(groupId) : Promise.resolve([]),
+      includeNapcatMembers ? this.loadNapcatGroupMembers(groupId) : Promise.resolve([]),
     ]);
     const data = {
       groupConfig,
       members: buildGroupMemberProfiles({ groupConfig, napcatMembers, memoryCounts }),
     };
-    this.memberProfileCache.set(groupId, {
-      ...data,
-      includesNapcatMembers: includeNapcatMembers,
-      expiresAt: Date.now() + 30_000,
-    });
+    const existing = this.memberProfileCache.get(groupId);
+    // A slow light read cannot overwrite a newer full NapCat snapshot.
+    if (includeNapcatMembers || !existing || !existing.includesNapcatMembers || existing.expiresAt <= Date.now()) {
+      this.memberProfileCache.set(groupId, {
+        ...data,
+        includesNapcatMembers: includeNapcatMembers,
+        expiresAt: Date.now() + 30_000,
+      });
+    }
     return data;
   }
 
@@ -2086,9 +2115,10 @@ export class AdminHttpServer {
     };
   }
 
-  private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+  private async loadNapcatGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
     if (!this.options.listGroupMembers) {
-      return [];
+      logWarn("Group member directory is unavailable for admin.", { groupId, error: "listGroupMembers unavailable" });
+      throw new MemberDirectoryUnavailableError();
     }
     try {
       return await this.options.listGroupMembers(groupId);
@@ -2097,7 +2127,7 @@ export class AdminHttpServer {
         groupId,
         error: (error as Error).message,
       });
-      return [];
+      throw new MemberDirectoryUnavailableError();
     }
   }
 

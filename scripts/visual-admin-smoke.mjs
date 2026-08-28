@@ -148,7 +148,7 @@ try {
   if (legacyProfileResponse.status !== 410) throw new Error(`Retired profile API should be 410, got ${legacyProfileResponse.status}`);
 
   const persona = await getJson(baseUrl, "/api/persona/huixian", cookie);
-  if (persona.id !== "huixian" || !/真人照片/.test(persona.systemPrompt)) {
+  if (persona.id !== "huixian" || !/普通对话中主动解释自己的实现方式/.test(persona.systemPrompt)) {
     throw new Error(`Persona payload is incomplete: ${JSON.stringify(persona)}`);
   }
 
@@ -176,7 +176,7 @@ try {
 
   const updatePersona = await requestJson(baseUrl, "/api/persona/huixian", "PUT", {
     ...persona,
-    name: "会仙·虚拟聊天伙伴",
+    name: "会仙",
   }, { Cookie: cookie, "X-CSRF-Token": csrf });
   if (!updatePersona.response.ok) throw new Error(`Persona update failed: ${updatePersona.response.status} ${JSON.stringify(updatePersona.data)}`);
 

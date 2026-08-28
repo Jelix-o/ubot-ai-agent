@@ -9,10 +9,12 @@ import {
 import type { GroupBotConfig, GroupsConfigFile, SkillDefinition, SystemSettings } from "../types.js";
 import type { GroupMemory, KnowledgeBaseEntry, KnowledgePack, ScheduledReminderTask } from "../types.js";
 import type { SharedDb } from "../shared/sqlite.js";
+import { validateV3CapabilityPolicy } from "./capability-policy-service.js";
 
 const CIPHER_VERSION = "v1";
 const STATE_CUTOVER_META_KEY = "state_cutover";
 const STATE_CUTOVER_VERSION = "v3";
+const HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY = "huixian_release_profile_revision";
 
 export interface V3CapabilityPolicy {
   version: number;
@@ -45,6 +47,27 @@ export interface V3DailyReportOutput {
   dayKey: string;
   renderedText: string;
   sentAt: string;
+}
+
+/**
+ * A release-owned profile change is deliberately distinct from an admin edit.
+ * The marker lets a deployment make a one-time corrective revision without
+ * overwriting the active profile on every subsequent restart or redeploy.
+ */
+export interface HuixianReleaseProfileRevisionInput {
+  revision: string;
+  profile: SkillDefinition;
+  changedBy: string;
+  /** A later release must explicitly name the revision it is allowed to replace. */
+  replaceRevision?: string;
+  now?: number;
+}
+
+export interface HuixianReleaseProfileRevisionResult {
+  applied: boolean;
+  /** The revision currently recorded as the release-owned profile baseline. */
+  revision: string;
+  previousRevision?: string;
 }
 
 interface V3MemoryRow {
@@ -412,32 +435,61 @@ export class V3StateRepository {
     const saved = structuredClone(profile) as SkillDefinition;
     const now = Date.now();
     this.withImmediateTransaction(() => {
-      this.sharedDb.db.prepare("UPDATE v3_character_profiles SET active = 0 WHERE active = 1 AND id <> 'huixian'").run();
-      this.sharedDb.db
-        .prepare(
-          `INSERT INTO v3_character_profiles (id, name, profile_json, active, updated_at)
-           VALUES ('huixian', ?, ?, 1, ?)
-           ON CONFLICT(id) DO UPDATE SET name = excluded.name, profile_json = excluded.profile_json, active = 1, updated_at = excluded.updated_at`,
-        )
-        .run(saved.name, JSON.stringify(saved), now);
-      this.sharedDb.db
-        .prepare(
-          `INSERT INTO v3_character_profile_revisions (profile_id, profile_json, changed_at, changed_by)
-           VALUES ('huixian', ?, ?, ?)`,
-        )
-        .run(JSON.stringify(saved), now, changedBy);
+      this.writeHuixianProfile(saved, changedBy, now);
     });
     return saved;
+  }
+
+  /**
+   * Applies a packaged persona revision once. A different existing release
+   * marker is preserved unless the caller names it explicitly, preventing an
+   * accidental rollback from replacing a newer production persona.
+   */
+  applyHuixianReleaseProfile(
+    input: HuixianReleaseProfileRevisionInput,
+  ): HuixianReleaseProfileRevisionResult {
+    const revision = normalizeReleaseProfileRevision(input.revision);
+    const replaceRevision = input.replaceRevision === undefined
+      ? undefined
+      : normalizeReleaseProfileRevision(input.replaceRevision);
+    if (input.profile.id !== "huixian") {
+      throw new Error("v3_only_huixian_profile_supported");
+    }
+    const changedBy = String(input.changedBy ?? "").trim();
+    if (!changedBy) {
+      throw new Error("v3_huixian_release_changed_by_required");
+    }
+    const profile = structuredClone(input.profile) as SkillDefinition;
+    const now = input.now ?? Date.now();
+
+    return this.withImmediateTransaction(() => {
+      const previousRevision = this.getMeta(HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY);
+      if (previousRevision === revision) {
+        return { applied: false, revision };
+      }
+      if (previousRevision && previousRevision !== replaceRevision) {
+        return { applied: false, revision: previousRevision, previousRevision };
+      }
+
+      this.writeHuixianProfile(profile, changedBy, now);
+      this.setMeta(HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY, revision, now);
+      return { applied: true, revision, ...(previousRevision ? { previousRevision } : {}) };
+    });
   }
 
   getCapabilityPolicy(): V3CapabilityPolicy | undefined {
     const row = this.sharedDb.db
       .prepare("SELECT policy_json FROM v3_capability_policies WHERE policy_key = 'default'")
       .get() as { policy_json: string } | undefined;
-    return row ? parseJson<V3CapabilityPolicy>(row.policy_json) : undefined;
+    const policy = row ? parseJson<V3CapabilityPolicy>(row.policy_json) : undefined;
+    if (policy !== undefined) {
+      validateV3CapabilityPolicy(policy);
+    }
+    return policy;
   }
 
   saveCapabilityPolicy(policy: V3CapabilityPolicy, now = Date.now()): void {
+    validateV3CapabilityPolicy(policy);
     this.sharedDb.db
       .prepare(
         `INSERT INTO v3_capability_policies (policy_key, policy_json, updated_at)
@@ -1039,6 +1091,23 @@ export class V3StateRepository {
       .run(now, groupId);
   }
 
+  private writeHuixianProfile(profile: SkillDefinition, changedBy: string, now: number): void {
+    this.sharedDb.db.prepare("UPDATE v3_character_profiles SET active = 0 WHERE active = 1 AND id <> 'huixian'").run();
+    this.sharedDb.db
+      .prepare(
+        `INSERT INTO v3_character_profiles (id, name, profile_json, active, updated_at)
+         VALUES ('huixian', ?, ?, 1, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, profile_json = excluded.profile_json, active = 1, updated_at = excluded.updated_at`,
+      )
+      .run(profile.name, JSON.stringify(profile), now);
+    this.sharedDb.db
+      .prepare(
+        `INSERT INTO v3_character_profile_revisions (profile_id, profile_json, changed_at, changed_by)
+         VALUES ('huixian', ?, ?, ?)`,
+      )
+      .run(JSON.stringify(profile), now, changedBy);
+  }
+
   private withImmediateTransaction<T>(callback: () => T): T {
     if (this.transactionDepth > 0) {
       return callback();
@@ -1056,6 +1125,14 @@ export class V3StateRepository {
       this.transactionDepth -= 1;
     }
   }
+}
+
+function normalizeReleaseProfileRevision(value: unknown): string {
+  const revision = String(value ?? "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(revision)) {
+    throw new Error("invalid_v3_huixian_release_revision");
+  }
+  return revision;
 }
 
 /**

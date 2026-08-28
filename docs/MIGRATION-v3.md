@@ -61,8 +61,12 @@ restricted backup.
 
 ## Completion Checks
 
-1. Confirm the SQLite migration ledger contains versions `1` through `8` and
+1. Confirm the SQLite migration ledger contains versions `1` through `9` and
    `v3_state_meta` contains the V3 cutover marker.
+   An existing-cutover upgrade can also record an audited, one-time packaged
+   Huixian profile revision. It reads only the release asset, not retired
+   runtime JSON; the revision marker prevents later redeploys from replacing
+   an administrator's subsequent persona edits.
 2. Start `ubot.target`, then confirm `ubot-ingress.service`,
    `ubot-worker.service`, and `ubot-admin.service` are active.
 3. Confirm `ubot-maintenance.timer` is enabled. It removes expired raw message

@@ -11,6 +11,7 @@ import { CircuitOpenError, degradedMessage, GatewayProxy } from "./services/gate
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
+import { isAiConversationCommand } from "./services/group-participation-service.js";
 import type { ParticipationDecision } from "./services/participation-policy.js";
 import { BotApplication, type MessageTransport } from "./bot.js";
 import { GroupLock } from "./services/group-lock.js";
@@ -38,6 +39,7 @@ import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { ImagePipeline } from "./services/image-pipeline.js";
 import { CharacterProfileService } from "./services/character-profile-service.js";
+import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { SkillService } from "./services/skill-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
@@ -484,6 +486,7 @@ async function buildBotApp(
   const dataDir = config.dataDir;
   const sharedDb = openSharedDb(dataDir);
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
+  const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const contextRepository = new ConversationContextRepository(sharedDb);
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
   const groupConfigService = new GroupConfigService(
@@ -500,7 +503,14 @@ async function buildBotApp(
     v3State,
   );
   await systemSettingsStore.syncShadowFromAuthoritative();
-  const runtimeReplyAiService = new ConfiguredAiService(replyAiService, systemSettingsStore, "reply");
+  const runtimeReplyAiService = new ConfiguredAiService(
+    replyAiService,
+    systemSettingsStore,
+    "reply",
+    undefined,
+    undefined,
+    capabilityPolicy,
+  );
   const defaultTtsService = new TtsService(
     config.ttsBaseUrl,
     config.ttsApiKey,
@@ -574,6 +584,7 @@ async function buildBotApp(
     false, // worker 不发送启动运维告警（多进程下由 ingress 感知连接状态）
     contextRepository,
     new ConversationContextRouter(contextRepository),
+    capabilityPolicy,
   );
 }
 
@@ -649,10 +660,6 @@ function degradedReply(tier: string, botQq: string): AiReply {
     skillId: "degraded",
     promptChars: 0,
   };
-}
-
-function isAiConversationCommand(text: string): boolean {
-  return /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(text.trim());
 }
 
 function parseImages(imagesJson?: string): Array<{ url?: string; file?: string; summary?: string }> {

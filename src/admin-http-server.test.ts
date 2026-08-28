@@ -15,7 +15,7 @@ import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
-import type { CharacterProfile } from "./types.js";
+import type { CharacterProfile, NapcatGroupMember } from "./types.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -24,14 +24,17 @@ type Auth = { cookie: string; csrf: string; session: { userId: string; username:
 const huixian: CharacterProfile = {
   id: "huixian",
   name: "会仙",
-  systemPrompt: "会仙是原创成年女性虚拟聊天伙伴，不伪造真人照片或线下经历。",
+  systemPrompt: "会仙自然聊天，不主动谈身份标签，不编造现实可核验的事实。",
   styleRules: ["自然、诚实、有边界。"],
-  knowledge: ["没有真实私人照片。"],
+  knowledge: ["现实证明类话题自然转场，不承诺事实。"],
   temperature: 0.8,
   maxContextTurns: 24,
 };
 
-async function startFixture(t: test.TestContext) {
+async function startFixture(
+  t: test.TestContext,
+  options: { listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]> } = {},
+) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-v3-"));
   const db = new SharedDb(path.join(dir, "bot-shared.db"));
   const repository = new V3StateRepository(db, { stateEncryptionKey: TEST_STATE_KEY });
@@ -89,6 +92,7 @@ async function startFixture(t: test.TestContext) {
     systemSettingsStore: settings,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
+    ...(options.listGroupMembers ? { listGroupMembers: options.listGroupMembers } : {}),
   });
   server.start();
   const rawServer = (server as unknown as {
@@ -310,6 +314,12 @@ test("group administrators are limited to authorized groups and operational feat
 
   const crossGroup = await request(baseUrl, "/api/groups/100200/config", { headers: { Cookie: cookie } });
   assert.equal(crossGroup.status, 403);
+  const crossGroupMemberRefresh = await request(baseUrl, "/api/groups/100200/members/refresh", {
+    method: "POST",
+    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(crossGroupMemberRefresh.status, 403);
   const systemSettings = await request(baseUrl, "/api/system-settings", { headers: { Cookie: cookie } });
   assert.equal(systemSettings.status, 403);
   const accountList = await request(baseUrl, "/api/admin-accounts", { headers: { Cookie: cookie } });
@@ -344,6 +354,86 @@ test("group administrators are limited to authorized groups and operational feat
   assert.equal(restore.status, 403);
 });
 
+test("member directory stays cache-only until refresh, then returns a cached NapCat snapshot", async (t) => {
+  let upstreamCalls = 0;
+  const { baseUrl } = await startFixture(t, {
+    async listGroupMembers(groupId) {
+      assert.equal(groupId, "67890");
+      upstreamCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 12));
+      return [
+        { user_id: 20002, nickname: "Operator", card: "值班同学", role: "member" },
+        { user_id: 20003, nickname: "Another", role: "admin" },
+      ];
+    },
+  });
+  const auth = await login(baseUrl);
+
+  const initial = await request(baseUrl, "/api/groups/67890/members", { headers: { Cookie: auth.cookie } });
+  assert.equal(initial.status, 200);
+  assert.deepEqual(await initial.json(), {
+    members: [],
+    cacheStatus: "unloaded",
+    pagination: { page: 1, pageSize: 24, total: 0, totalPages: 1 },
+  });
+  assert.equal(upstreamCalls, 0);
+
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const refreshed = await request(baseUrl, "/api/groups/67890/members/refresh", {
+    method: "POST",
+    headers,
+    body: "{}",
+  });
+  assert.equal(refreshed.status, 200);
+  const refreshedData = await refreshed.json() as { members: Array<{ userId: string; displayName: string }>; cacheStatus: string };
+  assert.equal(refreshedData.cacheStatus, "refreshed");
+  assert.equal(refreshedData.members.some((member) => member.userId === "20002" && member.displayName === "值班同学"), true);
+  assert.equal(upstreamCalls, 1);
+
+  const cached = await request(baseUrl, "/api/groups/67890/members?q=operator", { headers: { Cookie: auth.cookie } });
+  assert.equal(cached.status, 200);
+  const cachedData = await cached.json() as { members: Array<{ userId: string }>; cacheStatus: string; pagination: { total: number } };
+  assert.equal(cachedData.cacheStatus, "cached");
+  assert.deepEqual(cachedData.members.map((member) => member.userId), ["20002"]);
+  assert.equal(cachedData.pagination.total, 1);
+  assert.equal(upstreamCalls, 1);
+
+  const [firstRefresh, secondRefresh] = await Promise.all([
+    request(baseUrl, "/api/groups/67890/members/refresh", { method: "POST", headers, body: "{}" }),
+    request(baseUrl, "/api/groups/67890/members/refresh", { method: "POST", headers, body: "{}" }),
+  ]);
+  assert.equal(firstRefresh.status, 200);
+  assert.equal(secondRefresh.status, 200);
+  assert.equal(upstreamCalls, 2);
+});
+
+test("member refresh reports an unavailable NapCat directory without caching an empty result", async (t) => {
+  let upstreamCalls = 0;
+  const { baseUrl } = await startFixture(t, {
+    async listGroupMembers() {
+      upstreamCalls += 1;
+      throw new Error("ingress is unavailable");
+    },
+  });
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+
+  const refresh = await request(baseUrl, "/api/groups/67890/members/refresh", {
+    method: "POST",
+    headers,
+    body: "{}",
+  });
+  assert.equal(refresh.status, 503);
+  assert.deepEqual(await refresh.json(), { error: "napcat_members_unavailable" });
+  assert.equal(upstreamCalls, 1);
+
+  const afterFailure = await request(baseUrl, "/api/groups/67890/members", { headers: { Cookie: auth.cookie } });
+  assert.equal(afterFailure.status, 200);
+  const data = await afterFailure.json() as { members: unknown[]; cacheStatus: string };
+  assert.deepEqual(data.members, []);
+  assert.equal(data.cacheStatus, "unloaded");
+});
+
 test("super admin config updates cannot bypass recent MFA for privacy opt-outs", async (t) => {
   const { baseUrl, db } = await startFixture(t);
   const auth = await login(baseUrl);
@@ -365,6 +455,41 @@ test("super admin config updates cannot bypass recent MFA for privacy opt-outs",
 
   const group = await request(baseUrl, "/api/groups/67890/config", { headers: { Cookie: auth.cookie } });
   assert.deepEqual((await group.json() as { memoryDisabledUserIds: string[] }).memoryDisabledUserIds, ["20001"]);
+});
+
+test("sensitive global writes require recent MFA while their read views remain available", async (t) => {
+  const { baseUrl, db } = await startFixture(t);
+  const auth = await login(baseUrl);
+  db.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+
+  const settings = await request(baseUrl, "/api/system-settings", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ onlineLookupEnabled: true }),
+  });
+  assert.equal(settings.status, 403);
+  assert.equal((await settings.json() as { error: string }).error, "recent_mfa_required");
+
+  const persona = await request(baseUrl, "/api/persona/huixian", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ name: "会仙", systemPrompt: "updated" }),
+  });
+  assert.equal(persona.status, 403);
+  assert.equal((await persona.json() as { error: string }).error, "recent_mfa_required");
+
+  const commands = await request(baseUrl, "/api/commands", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ commands: [] }),
+  });
+  assert.equal(commands.status, 403);
+  assert.equal((await commands.json() as { error: string }).error, "recent_mfa_required");
+
+  assert.equal((await request(baseUrl, "/api/system-settings", { headers: { Cookie: auth.cookie } })).status, 200);
+  assert.equal((await request(baseUrl, "/api/persona/huixian", { headers: { Cookie: auth.cookie } })).status, 200);
+  assert.equal((await request(baseUrl, "/api/commands", { headers: { Cookie: auth.cookie } })).status, 200);
 });
 
 function makeTotp(secret: string, now = Date.now()): string {

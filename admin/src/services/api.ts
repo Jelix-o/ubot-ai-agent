@@ -104,6 +104,14 @@ export interface MemberProfile {
   memoryDisabled?: boolean;
 }
 
+export type MemberCacheStatus = "cached" | "refreshed" | "unloaded";
+
+export interface MemberListResponse {
+  members: MemberProfile[];
+  pagination: Pagination;
+  cacheStatus: MemberCacheStatus;
+}
+
 export interface HealthStatus {
   ok: boolean;
   detail: string;
@@ -223,6 +231,15 @@ export interface AdminInvite {
   expiresAt: string;
   revokedAt?: string;
   usedAt?: string;
+}
+
+export interface AdminAuthAuditEntry {
+  id: number;
+  accountId?: string;
+  action: string;
+  targetAccountId?: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
 }
 
 export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "custom";
@@ -451,9 +468,17 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
   }
   const data = await res.json() as T;
   if (url === "/api/session" || url.startsWith("/api/auth/")) {
-    const session = (data as { session?: AdminSession; csrfToken?: string });
-    setCsrfToken(session.session?.csrfToken ?? session.csrfToken);
-    setReadonlySession(session.session ?? data as AdminSession);
+    const authResponse = data as { session?: AdminSession; csrfToken?: string };
+    const nextCsrfToken = authResponse.session?.csrfToken ?? authResponse.csrfToken;
+    // Security actions such as recovery-code rotation return `{ ok: true }`.
+    // They must retain the opaque session's existing CSRF token instead of
+    // accidentally clearing it for every following management request.
+    if (typeof nextCsrfToken === "string") {
+      setCsrfToken(nextCsrfToken);
+    }
+    if (authResponse.session) {
+      setReadonlySession(authResponse.session);
+    }
   }
   return data;
 }

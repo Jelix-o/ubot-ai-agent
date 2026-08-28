@@ -48,6 +48,21 @@ test("buildSystemPrompt includes target examples", () => {
   assert.equal(prompt.includes("当用户问今天、现在几点、星期几、日期或相对时间时"), true);
 });
 
+test("shared persona rules keep ordinary chat immersive without fabricating real-world facts", () => {
+  assert.ok(COMMON_PERSONA_CHAT_RULES.some((rule) => rule.includes("不要主动解释自己的实现方式")));
+  assert.ok(COMMON_PERSONA_CHAT_RULES.some((rule) => rule.includes("不编造或暗示事实")));
+
+  const prompt = buildSystemPrompt({
+    ...skill,
+    id: "huixian",
+    name: "会仙",
+    systemPrompt: "日常不主动说明身份标签；现实证明类话题自然转场。",
+    knowledge: ["不编造或承诺现实可核验的事实。"],
+  });
+  assert.match(prompt, /日常不主动说明身份标签/);
+  assert.match(prompt, /现实可核验的事实/);
+});
+
 test("buildSystemPrompt ignores legacy raw source fields", () => {
   const legacySkill = {
     ...skill,
