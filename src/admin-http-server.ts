@@ -1554,6 +1554,13 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "shared_admin_secret_retired" }, 410);
         return;
       }
+      // Privacy opt-outs are a sensitive collection decision. Keep the
+      // generic configuration endpoint from bypassing the dedicated route's
+      // recent-MFA requirement for a super administrator.
+      if (session.role === "super_admin" && "memoryDisabledUserIds" in body &&
+        !this.requireRecentSuperAdminMfa(session, res)) {
+        return;
+      }
       if (session.role === "super_admin" && this.options.groupConfigService.isV3Runtime() && "switcherUserIds" in body) {
         this.sendJson(res, { error: "legacy_qq_admin_retired" }, 410);
         return;

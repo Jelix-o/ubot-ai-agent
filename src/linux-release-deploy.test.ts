@@ -158,12 +158,19 @@ test("continuous integration validates the complete suite on Windows and Linux",
   assert.match(ciWorkflow, /npm test/);
 });
 
-test("V3 Nginx terminates HTTPS and does not trust client forwarded protocol", () => {
+test("V3 Nginx terminates HTTPS and safely accommodates Cloudflare Flexible origin traffic", () => {
+  assert.match(nginx, /geo \$realip_remote_addr \$ubot_cloudflare_edge/);
+  assert.match(nginx, /173\.245\.48\.0\/20 1;/);
+  assert.match(nginx, /2c0f:f248::\/32 1;/);
+  assert.match(nginx, /map "\$ubot_cloudflare_edge:\$http_cf_visitor" \$ubot_cloudflare_https/);
+  assert.match(nginx, /~\*\^1:\.\*"scheme"\\s\*:\\s\*"https"\.\*\$ 1;/);
+  assert.match(nginx, /if \(\$ubot_cloudflare_https = 0\) \{/);
   assert.match(nginx, /return 301 https:\/\/\$host\$request_uri/);
   assert.match(nginx, /proxy_pass http:\/\/127\.0\.0\.1:6200/);
   assert.match(nginx, /proxy_set_header X-Forwarded-Proto https/);
+  assert.match(nginx, /proxy_set_header X-Forwarded-Port 443/);
   assert.doesNotMatch(nginx, /\$http_x_forwarded_proto/);
   assert.match(nginx, /Content-Security-Policy/);
-  assert.match(nginx, /location ~ \^\/\(\?:\\\.env/);
+  assert.equal((nginx.match(/location ~ \^\/\(\?:\\\.env/g) ?? []).length, 2);
   assert.doesNotMatch(nginx, /assets\(\?:\/\|\$\)/);
 });

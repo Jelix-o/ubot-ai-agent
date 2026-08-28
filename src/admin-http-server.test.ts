@@ -103,7 +103,7 @@ async function startFixture(t: test.TestContext) {
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, memories, operations };
+  return { baseUrl, db, memories, operations };
 }
 
 async function request(baseUrl: string, pathname: string, options: RequestInit = {}): Promise<Response> {
@@ -342,6 +342,29 @@ test("group administrators are limited to authorized groups and operational feat
     headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken },
   });
   assert.equal(restore.status, 403);
+});
+
+test("super admin config updates cannot bypass recent MFA for privacy opt-outs", async (t) => {
+  const { baseUrl, db } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const optOut = await request(baseUrl, "/api/groups/67890/members/20001/privacy-opt-out", {
+    method: "POST",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(optOut.status, 200);
+
+  db.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
+  const bypass = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PUT",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ memoryDisabledUserIds: [] }),
+  });
+  assert.equal(bypass.status, 403);
+  assert.equal((await bypass.json() as { error: string }).error, "recent_mfa_required");
+
+  const group = await request(baseUrl, "/api/groups/67890/config", { headers: { Cookie: auth.cookie } });
+  assert.deepEqual((await group.json() as { memoryDisabledUserIds: string[] }).memoryDisabledUserIds, ["20001"]);
 });
 
 function makeTotp(secret: string, now = Date.now()): string {
