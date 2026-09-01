@@ -43,6 +43,7 @@ import { V3CapabilityPolicyService } from "./services/capability-policy-service.
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { SkillService } from "./services/skill-service.js";
 import { HtmlPreviewService } from "./services/html-preview-service.js";
+import { QqAdminAuthorizationService } from "./services/qq-admin-authorization-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
@@ -654,6 +655,7 @@ async function buildBotApp(
       label: "ds",
       service: htmlPreviewFallbackAiService,
     },
+    v3State ? new QqAdminAuthorizationService(sharedDb) : undefined,
   );
 }
 

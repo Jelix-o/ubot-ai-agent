@@ -641,6 +641,9 @@ class FakeAdminOperationLogService {
       timestamp: entry.timestamp ?? new Date().toISOString(),
       groupId: entry.groupId,
       operatorUserId: entry.operatorUserId,
+      ...(entry.operatorAccountId ? { operatorAccountId: entry.operatorAccountId } : {}),
+      ...(entry.operatorUsername ? { operatorUsername: entry.operatorUsername } : {}),
+      ...(entry.operatorRole ? { operatorRole: entry.operatorRole } : {}),
       action: entry.action,
       ...(entry.target ? { target: entry.target } : {}),
       ...(entry.detail ? { detail: entry.detail } : {}),
@@ -937,6 +940,14 @@ function createApp(options?: {
     cleanup(): Promise<{ expired: number; temp: number; orphans: number }>;
   };
   htmlPreviewFallbackRoute?: HtmlPreviewFallbackRoute;
+  qqAdminAuthorization?: {
+    resolve(qqUserId: string, groupId: string): {
+      accountId: string;
+      username: string;
+      role: "super_admin" | "group_admin";
+      qqUserId: string;
+    } | undefined;
+  };
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1039,6 +1050,7 @@ function createApp(options?: {
     undefined,
     options?.htmlPreviewService as never,
     options?.htmlPreviewFallbackRoute,
+    options?.qqAdminAuthorization,
   );
 
   return {
@@ -5167,6 +5179,40 @@ test("V3 ignores legacy QQ administrators and retires the administrator command"
   assert.equal(groupConfigService.groups[0]?.switcherUserIds.includes("77777"), false);
   assert.match(transport.sent[0]?.text ?? "", /没有让机器人闭嘴或说话的权限/);
   assert.match(transport.sent[1]?.text ?? "", /QQ 管理员已退休/);
+});
+
+test("V3 authorizes a QQ sender through its bound backend account while keeping #管理员 retired", async () => {
+  const groupConfigService = new FakeGroupConfigService(
+    [{
+      groupId: "67890",
+      currentSkillId: "huixian",
+      allowedSkillIds: ["huixian"],
+      switcherUserIds: [],
+      liveChatUserIds: [],
+    }],
+    [],
+    true,
+  );
+  const { app, transport, adminOperationLogService } = createApp({
+    groupConfigService,
+    qqAdminAuthorization: {
+      resolve(qqUserId, groupId) {
+        return qqUserId === "1569671790" && groupId === "67890"
+          ? { accountId: "admin-id", username: "admin", role: "super_admin", qqUserId }
+          : undefined;
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#管理员 列表" } }], 1569671790));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 1569671790));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#服务器" } }], 20001));
+
+  assert.equal(groupConfigService.groups[0]?.botMuted, true);
+  assert.equal(adminOperationLogService.entries[0]?.operatorAccountId, "admin-id");
+  assert.equal(adminOperationLogService.entries[0]?.operatorUsername, "admin");
+  assert.match(transport.sent[0]?.text ?? "", /QQ 管理员已退休/);
+  assert.match(transport.sent[2]?.text ?? "", /没有查看服务器状态的权限/);
 });
 
 test("creates scheduled reminder through natural bot mention and sends due reminders", async () => {

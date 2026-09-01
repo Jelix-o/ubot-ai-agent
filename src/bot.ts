@@ -55,6 +55,7 @@ import type {
 import { GroupParticipationService } from "./services/group-participation-service.js";
 import { BOT_MAINTENANCE_INTERVALS, MaintenanceScheduler } from "./services/maintenance-scheduler.js";
 import type { ParticipationDecision } from "./services/participation-policy.js";
+import type { QqAdminAuthorization } from "./services/qq-admin-authorization-service.js";
 import type {
   AiInteractionTarget,
   AiIdentityContext,
@@ -379,6 +380,8 @@ export class BotApplication {
     private readonly htmlPreviewService?: Pick<HtmlPreviewService, "enqueue" | "processNext" | "cleanup">,
     /** Strictly bound fallback; it must never resolve back to the primary model. */
     private readonly htmlPreviewFallbackRoute?: HtmlPreviewFallbackRoute,
+    /** V3 bridge from a QQ sender to an authenticated administrator account. */
+    private readonly qqAdminAuthorization?: QqAdminAuthorization,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -3418,7 +3421,7 @@ export class BotApplication {
 
   private async isAdmin(groupConfig: GroupBotConfig, userId: string): Promise<boolean> {
     if (this.usesV3AdminAuthority()) {
-      return false;
+      return Boolean(this.qqAdminAuthorization?.resolve(userId, groupConfig.groupId));
     }
     if (groupConfig.switcherUserIds.includes(userId)) {
       return true;
@@ -3512,9 +3515,15 @@ export class BotApplication {
     detail?: string,
   ): Promise<void> {
     try {
+      const principal = this.qqAdminAuthorization?.resolve(operatorUserId, groupId);
       await this.adminOperationLogService.record({
         groupId,
         operatorUserId,
+        ...(principal ? {
+          operatorAccountId: principal.accountId,
+          operatorUsername: principal.username,
+          operatorRole: principal.role,
+        } : {}),
         action,
         target,
         detail,

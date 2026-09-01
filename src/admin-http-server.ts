@@ -797,6 +797,24 @@ export class AdminHttpServer {
       return;
     }
 
+    const qqBindingMatch = /^\/api\/admin-accounts\/([^/]+)\/qq-binding$/.exec(pathname);
+    if (qqBindingMatch && (req.method === "POST" || req.method === "DELETE")) {
+      if (!this.requireRecentSuperAdminMfa(session, res)) return;
+      try {
+        const accountId = decodeURIComponent(qqBindingMatch[1]!);
+        if (req.method === "POST") {
+          const body = await readJsonBody(req);
+          this.auth.setQqBinding(accountId, String(body.qqUserId ?? ""), session.userId!);
+        } else {
+          this.auth.removeQqBinding(accountId, session.userId!);
+        }
+        this.sendJson(res, { ok: true, accounts: this.auth.listAccounts() });
+      } catch (error) {
+        this.sendAuthError(res, error);
+      }
+      return;
+    }
+
     if (pathname === "/api/html-previews") {
       await this.handleHtmlPreviews(req, res, url, session);
       return;

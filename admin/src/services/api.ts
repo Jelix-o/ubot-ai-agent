@@ -235,6 +235,7 @@ export interface AdminAccount {
   username: string;
   role: "super_admin" | "group_admin";
   groupIds: string[];
+  qqUserId?: string;
   totpEnabled: boolean;
   disabledAt?: string;
   createdAt: string;

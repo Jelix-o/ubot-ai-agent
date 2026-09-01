@@ -439,6 +439,43 @@ test("group administrators are limited to authorized groups and operational feat
   assert.equal(restore.status, 403);
 });
 
+test("super admin can bind and unbind an account QQ identity after recent MFA", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const unauthenticated = await request(baseUrl, "/api/admin-accounts/missing/qq-binding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ qqUserId: "1569671790" }),
+  });
+  assert.equal(unauthenticated.status, 401);
+
+  const auth = await login(baseUrl);
+  const accountsResponse = await request(baseUrl, "/api/admin-accounts", { headers: { Cookie: auth.cookie } });
+  const account = (await accountsResponse.json() as { accounts: Array<{ id: string; qqUserId?: string }> }).accounts[0];
+  assert.ok(account);
+
+  const invalid = await request(baseUrl, `/api/admin-accounts/${encodeURIComponent(account.id)}/qq-binding`, {
+    method: "POST",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ qqUserId: "invalid" }),
+  });
+  assert.equal(invalid.status, 400);
+
+  const bound = await request(baseUrl, `/api/admin-accounts/${encodeURIComponent(account.id)}/qq-binding`, {
+    method: "POST",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ qqUserId: "1569671790" }),
+  });
+  assert.equal(bound.status, 200);
+  assert.equal((await bound.json() as { accounts: Array<{ qqUserId?: string }> }).accounts[0]?.qqUserId, "1569671790");
+
+  const removed = await request(baseUrl, `/api/admin-accounts/${encodeURIComponent(account.id)}/qq-binding`, {
+    method: "DELETE",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf },
+  });
+  assert.equal(removed.status, 200);
+  assert.equal((await removed.json() as { accounts: Array<{ qqUserId?: string }> }).accounts[0]?.qqUserId, undefined);
+});
+
 test("HTML preview admin endpoints expose metadata only, enforce group scope, CSRF, and audit deletion", async (t) => {
   const { baseUrl, operations } = await startFixture(t);
   const superAdmin = await login(baseUrl);

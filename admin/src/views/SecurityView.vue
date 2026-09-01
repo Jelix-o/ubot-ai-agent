@@ -22,6 +22,7 @@ const allGroups = shallowRef<GroupConfig[]>([]);
 const recoveryCodes = shallowRef<string[]>([]);
 const inviteUrl = shallowRef("");
 const grantDrafts = reactive<Record<string, string[]>>({});
+const qqDrafts = reactive<Record<string, string>>({});
 const enrollment = shallowRef<{ token: string; secret: string; uri: string }>();
 
 const securityForm = reactive({
@@ -66,6 +67,7 @@ async function load(): Promise<void> {
     authAudit.value = auditData.entries;
     for (const account of accounts.value) {
       grantDrafts[account.id] = [...account.groupIds];
+      qqDrafts[account.id] = account.qqUserId ?? "";
     }
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -254,6 +256,41 @@ async function saveGrants(account: AdminAccount): Promise<void> {
   }
 }
 
+async function saveQqBinding(account: AdminAccount): Promise<void> {
+  const qqUserId = (qqDrafts[account.id] ?? "").trim();
+  if (!/^[1-9]\d{4,11}$/.test(qqUserId)) {
+    app.showToast("请输入 5–12 位有效 QQ 号", "error");
+    return;
+  }
+  setBusy(`qq:${account.id}`);
+  try {
+    await api(`/api/admin-accounts/${encodeURIComponent(account.id)}/qq-binding`, {
+      method: "POST",
+      body: JSON.stringify({ qqUserId }),
+    });
+    await load();
+    app.showToast(`已将 QQ ${qqUserId} 绑定到「${account.username}」`);
+  } catch (error) {
+    app.showToast((error as Error).message, "error");
+  } finally {
+    setBusy("");
+  }
+}
+
+async function removeQqBinding(account: AdminAccount): Promise<void> {
+  if (!account.qqUserId || !window.confirm(`确定解除 QQ ${account.qqUserId} 与「${account.username}」的绑定吗？`)) return;
+  setBusy(`qq:${account.id}`);
+  try {
+    await api(`/api/admin-accounts/${encodeURIComponent(account.id)}/qq-binding`, { method: "DELETE" });
+    await load();
+    app.showToast(`已解除「${account.username}」的 QQ 绑定`);
+  } catch (error) {
+    app.showToast((error as Error).message, "error");
+  } finally {
+    setBusy("");
+  }
+}
+
 function accountStatus(account: AdminAccount): string {
   if (account.disabledAt) return "已停用";
   if (!account.totpEnabled) return "待绑定 TOTP";
@@ -393,6 +430,11 @@ useRefreshEvents({ refresh: () => void load() });
               <div class="row-top"><strong>{{ account.username }}</strong><span class="tag" :class="{ warn: !account.totpEnabled, danger: Boolean(account.disabledAt) }">{{ accountStatus(account) }}</span></div>
               <p>{{ account.role === "super_admin" ? "超级管理员 / 全部群" : `群管理员 / ${account.groupIds.length} 个群` }}</p>
               <small>创建于 {{ formatDateTime(account.createdAt) }} · 最近登录 {{ account.lastLoginAt ? formatDateTime(account.lastLoginAt) : "从未" }}</small>
+              <form class="inline-form" @submit.prevent="saveQqBinding(account)">
+                <input v-model="qqDrafts[account.id]" class="input" inputmode="numeric" maxlength="12" placeholder="绑定 QQ 号" :disabled="Boolean(account.disabledAt)" />
+                <button class="link-btn" type="submit" :disabled="Boolean(account.disabledAt) || busyAction === `qq:${account.id}`">{{ account.qqUserId ? "更新绑定" : "绑定 QQ" }}</button>
+                <button v-if="account.qqUserId" class="link-btn danger-link" type="button" :disabled="busyAction === `qq:${account.id}`" @click="removeQqBinding(account)">解绑</button>
+              </form>
             </div>
             <fieldset v-if="account.role === 'group_admin'" class="grant-picker compact-picker">
               <legend>群授权</legend>

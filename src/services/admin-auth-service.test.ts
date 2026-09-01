@@ -64,6 +64,39 @@ test("AdminAuthService bootstraps legacy credentials once and never uses later e
   });
 });
 
+test("AdminAuthService manages unique QQ bindings and records their audit trail", async () => {
+  await withAuth(async (auth, db) => {
+    await auth.ensureInitialized();
+    const account = auth.listAccounts()[0];
+    assert.ok(account);
+
+    auth.setQqBinding(account.id, "1569671790", account.id);
+    assert.equal(auth.listAccounts()[0]?.qqUserId, "1569671790");
+    assert.throws(() => auth.setQqBinding(account.id, "abc", account.id), (error: unknown) => (
+      error instanceof AdminAuthError && error.code === "invalid_qq_user_id"
+    ));
+
+    const secondId = "second-admin";
+    db.db.prepare(
+      `INSERT INTO admin_accounts (id, username, password_hash, role, created_at, updated_at)
+       VALUES (?, ?, ?, 'super_admin', ?, ?)`,
+    ).run(secondId, "second", "unused", Date.now(), Date.now());
+    assert.throws(() => auth.setQqBinding(secondId, "1569671790", account.id), (error: unknown) => (
+      error instanceof AdminAuthError && error.code === "qq_user_id_already_bound"
+    ));
+
+    auth.removeQqBinding(account.id, account.id);
+    assert.equal(auth.listAccounts()[0]?.qqUserId, undefined);
+    const actions = auth.listAuthAudit().map((entry) => entry.action);
+    assert.ok(actions.includes("admin_qq_binding_updated"));
+    assert.ok(actions.includes("admin_qq_binding_removed"));
+
+    auth.setQqBinding(secondId, "1569671790", account.id);
+    db.db.prepare("DELETE FROM admin_accounts WHERE id = ?").run(secondId);
+    assert.equal((db.db.prepare("SELECT COUNT(*) AS count FROM admin_qq_bindings").get() as { count: number }).count, 0);
+  });
+});
+
 test("AdminAuthService enrollment encrypts TOTP state, rejects replay, and issues revocable opaque sessions", async () => {
   await withAuth(async (auth, db) => {
     const enrolled = await enrollBootstrap(auth);

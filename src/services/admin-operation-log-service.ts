@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import type { V3StateRepository } from "./v3-state-repository.js";
+import type { AdminRole } from "../types.js";
 
 const V3_OPERATION_DOCUMENT_TYPE = "admin-operation";
 const MAX_V3_OPERATION_LOG_ENTRIES = 2_000;
@@ -11,6 +12,9 @@ export interface AdminOperationLogEntry {
   timestamp: string;
   groupId: string;
   operatorUserId: string;
+  operatorAccountId?: string;
+  operatorUsername?: string;
+  operatorRole?: AdminRole;
   action: string;
   target?: string;
   detail?: string;
@@ -27,6 +31,9 @@ export class AdminOperationLogService {
       timestamp: entry.timestamp ?? new Date().toISOString(),
       groupId: entry.groupId,
       operatorUserId: entry.operatorUserId,
+      ...(entry.operatorAccountId ? { operatorAccountId: entry.operatorAccountId } : {}),
+      ...(entry.operatorUsername ? { operatorUsername: entry.operatorUsername } : {}),
+      ...(entry.operatorRole ? { operatorRole: entry.operatorRole } : {}),
       action: entry.action,
       ...(entry.target ? { target: entry.target } : {}),
       ...(entry.detail ? { detail: entry.detail } : {}),
@@ -58,6 +65,8 @@ export class AdminOperationLogService {
         .filter((entry) => !query || [
           entry.groupId,
           entry.operatorUserId,
+          entry.operatorAccountId,
+          entry.operatorUsername,
           entry.action,
           entry.target,
           entry.detail,
@@ -94,6 +103,8 @@ export class AdminOperationLogService {
           if (query && ![
             entry.groupId,
             entry.operatorUserId,
+            entry.operatorAccountId,
+            entry.operatorUsername,
             entry.action,
             entry.target,
             entry.detail,
@@ -135,6 +146,9 @@ function normalizeEntry(value: unknown): AdminOperationLogEntry | undefined {
     timestamp: parsed.timestamp,
     groupId: parsed.groupId,
     operatorUserId: parsed.operatorUserId,
+    ...(typeof parsed.operatorAccountId === "string" && parsed.operatorAccountId ? { operatorAccountId: parsed.operatorAccountId } : {}),
+    ...(typeof parsed.operatorUsername === "string" && parsed.operatorUsername ? { operatorUsername: parsed.operatorUsername } : {}),
+    ...(parsed.operatorRole === "super_admin" || parsed.operatorRole === "group_admin" ? { operatorRole: parsed.operatorRole } : {}),
     action: parsed.action,
     ...(typeof parsed.target === "string" && parsed.target ? { target: parsed.target } : {}),
     ...(typeof parsed.detail === "string" && parsed.detail ? { detail: parsed.detail } : {}),

@@ -40,6 +40,7 @@ export interface AdminAuthAccount {
   username: string;
   role: AdminRole;
   groupIds: string[];
+  qqUserId?: string;
   totpEnabled: boolean;
   disabledAt?: string;
   createdAt: string;
@@ -582,16 +583,63 @@ export class AdminAuthService {
       `SELECT id, username, role, totp_enabled_at, disabled_at, created_at, last_login_at
          FROM admin_accounts ORDER BY created_at ASC, username COLLATE NOCASE ASC`,
     ).all() as Array<Pick<AccountRow, "id" | "username" | "role" | "totp_enabled_at" | "disabled_at" | "created_at" | "last_login_at">>;
-    return rows.map((row) => ({
-      id: row.id,
-      username: row.username,
-      role: row.role,
-      groupIds: this.listGrantedGroupIds(row.id),
-      totpEnabled: Boolean(row.totp_enabled_at),
-      ...(row.disabled_at ? { disabledAt: new Date(row.disabled_at).toISOString() } : {}),
-      createdAt: new Date(row.created_at).toISOString(),
-      ...(row.last_login_at ? { lastLoginAt: new Date(row.last_login_at).toISOString() } : {}),
-    }));
+    return rows.map((row) => {
+      const qqUserId = this.getQqBinding(row.id);
+      return {
+        id: row.id,
+        username: row.username,
+        role: row.role,
+        groupIds: this.listGrantedGroupIds(row.id),
+        ...(qqUserId ? { qqUserId } : {}),
+        totpEnabled: Boolean(row.totp_enabled_at),
+        ...(row.disabled_at ? { disabledAt: new Date(row.disabled_at).toISOString() } : {}),
+        createdAt: new Date(row.created_at).toISOString(),
+        ...(row.last_login_at ? { lastLoginAt: new Date(row.last_login_at).toISOString() } : {}),
+      };
+    });
+  }
+
+  setQqBinding(accountId: string, qqUserId: string, actorAccountId: string): void {
+    const account = this.findAccountById(accountId);
+    if (!account) throw new AdminAuthError("not_found", 404);
+    const normalized = normalizeQqUserId(qqUserId);
+    if (!normalized) throw new AdminAuthError("invalid_qq_user_id", 400);
+    const now = Date.now();
+    try {
+      this.sharedDb.db.prepare(
+        `INSERT INTO admin_qq_bindings (qq_user_id, account_id, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(account_id) DO UPDATE SET
+           qq_user_id = excluded.qq_user_id,
+           created_by = excluded.created_by,
+           updated_at = excluded.updated_at`,
+      ).run(normalized, accountId, actorAccountId, now, now);
+    } catch (error) {
+      if (String((error as Error).message).includes("UNIQUE constraint failed: admin_qq_bindings.qq_user_id")) {
+        throw new AdminAuthError("qq_user_id_already_bound", 409);
+      }
+      throw error;
+    }
+    this.writeAudit({
+      accountId: actorAccountId,
+      targetAccountId: accountId,
+      action: "admin_qq_binding_updated",
+      detail: { qqUserId: normalized },
+    });
+  }
+
+  removeQqBinding(accountId: string, actorAccountId: string): void {
+    const account = this.findAccountById(accountId);
+    if (!account) throw new AdminAuthError("not_found", 404);
+    const existing = this.getQqBinding(accountId);
+    if (!existing) throw new AdminAuthError("qq_binding_not_found", 404);
+    this.sharedDb.db.prepare("DELETE FROM admin_qq_bindings WHERE account_id = ?").run(accountId);
+    this.writeAudit({
+      accountId: actorAccountId,
+      targetAccountId: accountId,
+      action: "admin_qq_binding_removed",
+      detail: { qqUserId: existing },
+    });
   }
 
   listInvites(): AdminInvite[] {
@@ -758,6 +806,12 @@ export class AdminAuthService {
     return (this.sharedDb.db.prepare(
       "SELECT group_id FROM admin_group_grants WHERE account_id = ? ORDER BY group_id ASC",
     ).all(accountId) as Array<{ group_id: string }>).map((row) => row.group_id);
+  }
+
+  private getQqBinding(accountId: string): string | undefined {
+    return (this.sharedDb.db.prepare(
+      "SELECT qq_user_id FROM admin_qq_bindings WHERE account_id = ?",
+    ).get(accountId) as { qq_user_id: string } | undefined)?.qq_user_id;
   }
 
   hasGroupGrant(accountId: string, groupId: string): boolean {
@@ -1218,6 +1272,11 @@ function decodeBase32(value: string): Buffer {
 function normalizeUsername(value: string): string | undefined {
   const username = value.trim();
   return /^[\p{L}\p{N}_.-]{3,64}$/u.test(username) ? username : undefined;
+}
+
+function normalizeQqUserId(value: string): string | undefined {
+  const normalized = String(value ?? "").trim();
+  return /^[1-9]\d{4,11}$/.test(normalized) ? normalized : undefined;
 }
 
 function randomToken(): string {

@@ -617,6 +617,17 @@ CREATE INDEX IF NOT EXISTS idx_v3_daily_report_outputs_sent_at
   ON v3_daily_report_outputs (sent_at DESC);
 `;
 
+const V3_ADMIN_QQ_BINDING_SCHEMA = `
+CREATE TABLE IF NOT EXISTS admin_qq_bindings (
+  qq_user_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL UNIQUE REFERENCES admin_accounts(id) ON DELETE CASCADE,
+  created_by TEXT REFERENCES admin_accounts(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_admin_qq_bindings_account ON admin_qq_bindings(account_id);
+`;
+
 /**
  * Generated static pages deliberately retain only publication metadata. The
  * request, model output and generated HTML stay out of SQLite: HTML is served
@@ -752,6 +763,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     version: 10,
     name: "add-static-html-preview-publications",
     apply: (db) => db.exec(HTML_PREVIEW_SCHEMA),
+  },
+  {
+    version: 11,
+    name: "add-admin-qq-account-bindings",
+    apply: (db) => db.exec(V3_ADMIN_QQ_BINDING_SCHEMA),
   },
 ];
 
