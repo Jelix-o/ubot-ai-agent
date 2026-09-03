@@ -18,6 +18,7 @@ const schedulePreview = shallowRef<SchedulePreviewDay[]>([]);
 const replyModels = shallowRef<ModelOption[]>([]);
 const memberOptions = shallowRef<MemberProfile[]>([]);
 const editingReminderId = shallowRef<string | null>(null);
+const activeTab = shallowRef<"basic" | "schedule" | "permissions">("basic");
 let loadSerial = 0;
 const reminderForm = reactive({
   intervalMinutes: 60,
@@ -424,84 +425,132 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
       </article>
     </div>
 
+    <div class="tabs-bar">
+      <div class="tabs-group">
+        <button
+          class="tab-btn"
+          :class="{ active: activeTab === 'basic' }"
+          type="button"
+          @click="activeTab = 'basic'"
+        >
+          <AppIcon name="settings" :size="16" />
+          <span>回复与特性</span>
+        </button>
+        <button
+          class="tab-btn"
+          :class="{ active: activeTab === 'schedule' }"
+          type="button"
+          @click="activeTab = 'schedule'"
+        >
+          <AppIcon name="overview" :size="16" />
+          <span>定时与播报</span>
+        </button>
+        <button
+          class="tab-btn"
+          :class="{ active: activeTab === 'permissions' }"
+          type="button"
+          @click="activeTab = 'permissions'"
+        >
+          <AppIcon name="users" :size="16" />
+          <span>成员与黑名单</span>
+        </button>
+      </div>
+
+      <div class="tab-actions">
+        <button class="btn tab-save-btn" type="button" :disabled="readonly || loading || saving" @click="save">
+          {{ readonly ? "只读" : saving ? "保存中..." : "保存群配置" }}
+        </button>
+      </div>
+    </div>
+
     <form class="settings-grid" @submit.prevent="save">
-      <section class="panel group-config-card">
-        <h3>基础设置</h3>
-        <div class="field-grid">
-          <label class="switch-line"><input v-model="form.enabled" :disabled="readonly" type="checkbox" /> 显示并启用该群</label>
-          <label>当前人格
-            <div class="fixed-persona">会仙 / huixian</div>
-            <small class="muted">所有群统一使用会仙人格；人格细节由超级管理员在“会仙人格”页面维护。</small>
-          </label>
-          <label>回复模型
-            <select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels">
-              <option v-if="!hasReplyModels" value="">请先在系统设置启用对话模型</option>
-              <option v-for="model in replyModels" :key="model.id" :value="model.id">
-                {{ model.label }}
-              </option>
-            </select>
-            <small class="muted">系统设置中启用的对话模型会同步进入群内 #模型 切换列表</small>
-          </label>
-          <label>参与方式
-            <select v-model="form.participationMode" class="select" :disabled="readonly">
-              <option value="mentions_only">仅在 @ / 引用时回复</option>
-              <option value="mentions_and_keywords">@ / 引用 + 关键词</option>
-              <option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option>
-            </select>
-            <small class="muted">默认不主动插话；“指定成员低频参与”仅对下方实时对话 QQ 生效，并仍遵守延迟与静音。</small>
-          </label>
-          <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /></label>
-          <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
-          <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
-          <label>节日倒计时时间<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
-        </div>
-      </section>
-
-      <section class="panel group-config-card">
-        <h3>回复策略</h3>
-        <p class="muted">当前群固定使用会仙人格。群级配置仍可控制参与方式、模型、语音和功能开关。</p>
-        <div class="switch-grid">
-          <label><input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" /> 群聊日报</label>
-          <label><input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" /> 节日倒计时</label>
-          <label><input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" /> 定时提醒</label>
-          <label><input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" /> 运维告警</label>
-          <label><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /> 机器人静音</label>
-          <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
-          <label><input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" /> 自动查询实时资料</label>
-          <label><input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" /> 图片理解</label>
-          <label><input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" /> 静态网页预览</label>
-          <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
-            <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
-          </label>
-        </div>
-      </section>
-
-      <section class="panel group-config-card">
-        <h3>触发关键词</h3>
-        <div class="keyword-list">
-          <div v-for="(item, index) in form.triggerKeywords" :key="index" class="keyword-row">
-            <input v-model="item.keyword" class="input" placeholder="例如：乘风" :disabled="readonly" />
-            <label class="mini-check"><input v-model="item.enabled" :disabled="readonly" type="checkbox" /> 启用</label>
-            <button class="ghost-btn danger" type="button" :disabled="readonly" @click="removeTriggerKeyword(index)">删除</button>
+      <template v-if="activeTab === 'basic'">
+        <section class="panel group-config-card">
+          <h3>基础设置</h3>
+          <div class="field-grid">
+            <label class="switch-line"><input v-model="form.enabled" :disabled="readonly" type="checkbox" /> 显示并启用该群</label>
+            <label>当前人格
+              <div class="fixed-persona">会仙 / huixian</div>
+              <small class="muted">所有群统一使用会仙人格；人格细节由超级管理员在“会仙人格”页面维护。</small>
+            </label>
+            <label>回复模型
+              <select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels">
+                <option v-if="!hasReplyModels" value="">请先在系统设置启用对话模型</option>
+                <option v-for="model in replyModels" :key="model.id" :value="model.id">
+                  {{ model.label }}
+                </option>
+              </select>
+              <small class="muted">系统设置中启用的对话模型会同步进入群内 #模型 切换列表</small>
+            </label>
+            <label>参与方式
+              <select v-model="form.participationMode" class="select" :disabled="readonly">
+                <option value="mentions_only">仅在 @ / 引用时回复</option>
+                <option value="mentions_and_keywords">@ / 引用 + 关键词</option>
+                <option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option>
+              </select>
+              <small class="muted">默认不主动插话；“指定成员低频参与”仅对下方实时对话 QQ 生效，并仍遵守延迟与静音。</small>
+            </label>
+            <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /></label>
+            <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
+            <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
+            <label>节日倒计时时间<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
           </div>
-        </div>
-        <button class="ghost-btn" type="button" :disabled="readonly" @click="addTriggerKeyword">新增关键词</button>
-      </section>
+        </section>
 
-      <section class="panel group-config-card">
-        <h3>群管理</h3>
-        <div class="field-grid">
-          <label>实时对话 QQ
-            <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" />
-          </label>
-          <label>嘴臭模式 QQ
-            <MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-          </label>
-          <label class="wide">黑名单 QQ
-            <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-          </label>
-        </div>
-      </section>
+        <section class="panel group-config-card">
+          <h3>回复策略</h3>
+          <p class="muted">当前群固定使用会仙人格。群级配置仍可控制参与方式、模型、语音和功能开关。</p>
+          <div class="switch-grid">
+            <label><input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" /> 群聊日报</label>
+            <label><input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" /> 节日倒计时</label>
+            <label><input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" /> 定时提醒</label>
+            <label><input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" /> 运维告警</label>
+            <label><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /> 机器人静音</label>
+            <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
+            <label><input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" /> 自动查询实时资料</label>
+            <label><input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" /> 图片理解</label>
+            <label><input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" /> 静态网页预览</label>
+            <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
+              <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
+            </label>
+          </div>
+        </section>
+
+        <section class="panel group-config-card">
+          <h3>触发关键词</h3>
+          <div class="keyword-list">
+            <div v-for="(item, index) in form.triggerKeywords" :key="index" class="keyword-row">
+              <input v-model="item.keyword" class="input" placeholder="例如：乘风" :disabled="readonly" />
+              <label class="mini-check"><input v-model="item.enabled" :disabled="readonly" type="checkbox" /> 启用</label>
+              <button class="ghost-btn danger" type="button" :disabled="readonly" @click="removeTriggerKeyword(index)">删除</button>
+            </div>
+          </div>
+          <button class="ghost-btn" type="button" :disabled="readonly" @click="addTriggerKeyword">新增关键词</button>
+        </section>
+      </template>
+
+      <template v-else-if="activeTab === 'permissions'">
+        <section class="panel group-config-card">
+          <h3>群管理与权限成员</h3>
+          <p class="muted">指定在不同模式下被机器人特殊关注或受限的成员列表。</p>
+          <div class="field-grid">
+            <label>实时对话 QQ
+              <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" />
+              <small class="muted">仅在参与方式设置为“指定成员低频参与”时生效。</small>
+            </label>
+            <label>嘴臭模式 QQ
+              <MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
+              <small class="muted">开启后机器人对此 QQ 发送的消息会采用幽默调侃的语气回复。</small>
+            </label>
+            <label class="wide">黑名单 QQ
+              <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
+              <small class="muted">黑名单中的 QQ 发送的任何消息都会被机器人完全忽略。</small>
+            </label>
+          </div>
+        </section>
+      </template>
+
+      <template v-else-if="activeTab === 'schedule'">
 
       <section class="panel group-config-card schedule-card">
         <div class="schedule-head">
@@ -680,6 +729,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           </article>
         </div>
       </section>
+      </template>
 
       <div class="save-bar">
         <button class="btn" type="submit" :disabled="readonly || loading || saving">{{ readonly ? "只读模式不可保存" : saving ? "保存中..." : "保存群配置" }}</button>
@@ -691,6 +741,57 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
 </template>
 
 <style scoped>
+.tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  box-shadow: var(--shadow-sm);
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.tabs-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.tab-save-btn {
+  min-height: 34px;
+  padding: 0 16px;
+}
+
 .group-top {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);

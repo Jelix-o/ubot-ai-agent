@@ -49,6 +49,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
       <MetricCard title="已配置群" :value="data?.stats.groupCount ?? '-'" icon="users" tone="green" />
       <MetricCard title="当前群记忆" :value="data?.stats.memoryCount ?? '-'" icon="memory" tone="blue" />
       <MetricCard title="当前群 FAQ" :value="data?.stats.knowledgeCount ?? '-'" icon="knowledge" tone="purple" />
+      <MetricCard title="核心服务" :value="data?.transportHealth?.ok ? '运行中' : '检查中'" icon="health" tone="orange" />
     </div>
 
     <div class="overview-main-grid">
@@ -105,11 +106,17 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>知识库（FAQ）<span class="tag">{{ data?.stats.knowledgeCount ?? 0 }}</span></h2>
-            <p>帮助机器人更好地回答群成员问题。</p>
+            <p>维护群专属问答与高频知识，加速精准应答。</p>
           </div>
           <RouterLink class="ghost-btn" to="/knowledge">管理知识库</RouterLink>
         </div>
-        <div class="empty">已配置 {{ data?.stats.knowledgeCount ?? 0 }} 条 FAQ</div>
+        <div class="faq-summary-box">
+          <div class="faq-summary-count">
+            <strong>{{ data?.stats.knowledgeCount ?? 0 }}</strong>
+            <span>条群知识条目</span>
+          </div>
+          <p class="muted">可进入知识库页面查看条目明细、添加新问答或调整匹配关键词。</p>
+        </div>
       </section>
     </div>
   </section>
@@ -165,6 +172,38 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.faq-summary-box {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 20px;
+  background: var(--surface-soft);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  text-align: center;
+}
+
+.faq-summary-count {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.faq-summary-count strong {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--purple);
+  line-height: 1;
+}
+
+.faq-summary-count span {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 @media (max-width: 760px) {

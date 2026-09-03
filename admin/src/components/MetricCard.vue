@@ -27,38 +27,57 @@ defineProps<{
 .metric-card {
   position: relative;
   display: flex;
-  gap: 20px;
-  min-height: 150px;
+  align-items: center;
+  gap: 16px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  padding: 28px 26px;
+  padding: 18px 20px;
+  transition: all 0.15s ease;
+}
+
+.metric-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
 }
 
 .metric-icon {
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: color-mix(in oklch, var(--metric-color) 16%, transparent);
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--metric-color) 12%, transparent);
   color: var(--metric-color);
+  flex-shrink: 0;
 }
 
-.metric-card span,
-.metric-card em {
+.metric-card span {
   display: block;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--muted);
-  font-style: normal;
 }
 
 .metric-card strong {
   display: block;
-  margin: 8px 0 0;
-  font-size: 36px;
-  line-height: 1;
+  margin: 4px 0 0;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.metric-card em {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: normal;
+  margin-top: 2px;
 }
 
 [data-tone="green"] {

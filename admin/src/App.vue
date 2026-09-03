@@ -43,6 +43,18 @@ const pageCommandItems = computed(() => {
 });
 const hasCommandQuery = computed(() => commandQuery.value.trim().length > 0);
 
+const navSections = computed(() => {
+  const sections = [
+    { title: "群聊运营", names: ["overview", "groups", "members"] },
+    { title: "智能与内容", names: ["memories", "knowledge", "html-previews", "persona"] },
+    { title: "系统控制", names: ["commands", "tasks", "audit", "security", "health", "settings"] },
+  ];
+  return sections.map((sec) => ({
+    title: sec.title,
+    items: navItems.value.filter((item) => sec.names.includes(String(item.name))),
+  })).filter((sec) => sec.items.length > 0);
+});
+
 function iconFor(name: unknown): string {
   return ({
     overview: "overview",
@@ -223,16 +235,26 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       </div>
 
       <nav class="nav-list">
-        <RouterLink v-for="item in navItems" :key="String(item.name)" :to="item.path" class="nav-item" rel="nofollow" @click="mobileNavOpen = false">
-          <AppIcon :name="iconFor(item.name)" />
-          <span>{{ item.meta?.title }}</span>
-        </RouterLink>
+        <div v-for="section in navSections" :key="section.title" class="nav-section">
+          <div class="nav-section-label">{{ section.title }}</div>
+          <RouterLink
+            v-for="item in section.items"
+            :key="String(item.name)"
+            :to="item.path"
+            class="nav-item"
+            rel="nofollow"
+            @click="mobileNavOpen = false"
+          >
+            <AppIcon :name="iconFor(item.name)" />
+            <span>{{ item.meta?.title }}</span>
+          </RouterLink>
+        </div>
       </nav>
 
       <div class="sidebar-footer">
         <div class="side-status">
-          <strong><span /> 系统运行中</strong>
-          <small>UBot v3.0.3</small>
+          <strong><span class="status-dot" /> 系统运行中</strong>
+          <small>UBot v3.0.16</small>
         </div>
       </div>
     </aside>
@@ -358,8 +380,8 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   height: 100dvh;
   overflow: hidden;
   border-right: 1px solid var(--line);
-  background: color-mix(in oklch, var(--surface) 90%, transparent);
-  padding: 24px 18px 18px;
+  background: var(--surface);
+  padding: 20px 14px 16px;
 }
 
 .brand,
@@ -371,29 +393,32 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
 }
 
 .brand {
-  gap: 14px;
-  padding: 0 10px;
+  gap: 12px;
+  padding: 4px 8px;
 }
 
 .brand-mark,
 .user-chip {
   display: grid;
   place-items: center;
-  background: var(--accent-strong);
-  color: oklch(0.99 0.004 160);
-  font-weight: 900;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 800;
 }
 
 .brand-mark {
-  width: 42px;
-  height: 42px;
-  border-radius: 13px;
-  box-shadow: 0 12px 30px oklch(0.55 0.16 164 / 24%);
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+  font-size: 15px;
 }
 
 .brand strong {
   display: block;
-  font-size: 28px;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
 .brand small,
@@ -401,59 +426,85 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
 .notify-item small,
 .top-popover p {
   color: var(--muted);
+  font-size: 12px;
 }
 
 .nav-list {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 12px;
   min-height: 0;
-  margin-top: 34px;
-  overflow: auto;
+  margin-top: 24px;
+  overflow-y: auto;
   padding-right: 2px;
 }
 
+.nav-section {
+  display: grid;
+  gap: 3px;
+}
+
+.nav-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--subtle);
+  padding: 4px 10px 4px;
+}
+
 .nav-item {
-  gap: 14px;
-  min-height: 46px;
+  gap: 10px;
+  min-height: 38px;
   border-radius: var(--radius-sm);
   color: var(--muted);
-  padding: 0 18px;
-  font-weight: 800;
+  padding: 0 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  transition: all 0.15s ease;
+}
+
+.nav-item:hover {
+  background: var(--surface-soft);
+  color: var(--text);
 }
 
 .nav-item.router-link-active {
   background: var(--accent-soft);
   color: var(--accent-strong);
+  font-weight: 700;
 }
 
 .sidebar-footer {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-height: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
 }
 
 .side-status {
   display: grid;
-  gap: 8px;
-  border: 1px solid var(--line);
+  gap: 4px;
   border-radius: var(--radius-sm);
-  background: var(--surface);
-  padding: 12px;
+  background: var(--surface-soft);
+  padding: 8px 12px;
 }
 
 .side-status strong {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--accent-strong);
+  font-size: 12px;
+  color: var(--text);
 }
 
-.side-status span {
-  width: 9px;
-  height: 9px;
+.side-status .status-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--ok);
+  box-shadow: 0 0 0 2px var(--ok-soft);
 }
 
 .main-area {
