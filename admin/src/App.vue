@@ -45,9 +45,9 @@ const hasCommandQuery = computed(() => commandQuery.value.trim().length > 0);
 
 const navSections = computed(() => {
   const sections = [
-    { title: "群聊运营", names: ["overview", "groups", "members"] },
-    { title: "智能与内容", names: ["memories", "knowledge", "html-previews", "persona"] },
-    { title: "系统控制", names: ["commands", "tasks", "audit", "security", "health", "settings"] },
+    { title: "群聊运营 WORKSPACE", names: ["overview", "groups", "members"] },
+    { title: "智能与内容 INTELLIGENCE", names: ["memories", "knowledge", "html-previews", "persona"] },
+    { title: "系统控制 SYSTEM", names: ["commands", "tasks", "audit", "security", "health", "settings"] },
   ];
   return sections.map((sec) => ({
     title: sec.title,
@@ -253,8 +253,8 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
 
       <div class="sidebar-footer">
         <div class="side-status">
-          <strong><span class="status-dot" /> 系统运行中</strong>
-          <small>UBot v3.0.16</small>
+          <strong><span class="pulse-dot pulsing" /> 系统运行中</strong>
+          <small>UBot v3.0.17 · 在线</small>
         </div>
       </div>
     </aside>
@@ -267,8 +267,13 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
         </button>
 
         <div class="top-title">
-          <h1>{{ title }}</h1>
-          <p>{{ subtitle }}</p>
+          <div class="top-breadcrumb">
+            <span class="crumb-root">控制台</span>
+            <span class="crumb-sep">/</span>
+            <span class="crumb-current">{{ title }}</span>
+            <span v-if="app.groupId" class="crumb-group-badge">群 {{ app.groupId }}</span>
+          </div>
+          <p class="top-subtitle">{{ subtitle }}</p>
         </div>
 
         <div class="top-actions">
@@ -525,28 +530,61 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
   top: 0;
   z-index: 30;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  margin: -22px -28px 20px;
-  padding: 22px 28px 12px;
-  border: 1px solid color-mix(in oklch, var(--line) 72%, transparent);
-  border-top: 0;
-  border-radius: 0 0 18px 18px;
-  background: color-mix(in oklch, var(--surface) 94%, transparent);
+  gap: 20px;
+  margin: -22px -28px 22px;
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-sm);
 }
 
 .top-title {
   min-width: 220px;
 }
 
-.topbar h1 {
-  margin: 0 0 8px;
-  font-size: 28px;
+.top-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
-.topbar p {
-  margin: 0;
+.crumb-root {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.crumb-sep {
+  color: var(--line-strong);
+  font-weight: 400;
+  font-size: 14px;
+}
+
+.crumb-current {
+  color: var(--text);
+}
+
+.crumb-group-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.top-subtitle {
+  margin: 3px 0 0;
+  font-size: 12.5px;
   color: var(--muted);
 }
 

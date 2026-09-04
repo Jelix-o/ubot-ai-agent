@@ -931,8 +931,18 @@ function createApp(options?: {
   realtimeLookupService?: FakeRealtimeLookupService;
   imagePipeline?: FakeImagePipeline;
   conversationContextRepository?: {
+    getSourceRowId?(groupId: string, sourceMessageId: string): number | undefined;
     getCausalTurnsBeforeTurn(branchId: string, turnId: number): ConversationTurn[];
     appendAssistantTurn(input: unknown): never;
+  };
+  recentGroupEvidenceService?: {
+    list(input: {
+      groupId: string;
+      beforeSourceRowId: number;
+      sinceMs: number;
+      excludedUserIds?: string[];
+      limit?: number;
+    }): NonNullable<AiIdentityContext["recentGroupEvidence"]>;
   };
   htmlPreviewService?: {
     enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string; request?: string }): Promise<{ page: HtmlPreviewMetadata; created: boolean }>;
@@ -1051,6 +1061,7 @@ function createApp(options?: {
     options?.htmlPreviewService as never,
     options?.htmlPreviewFallbackRoute,
     options?.qqAdminAuthorization,
+    options?.recentGroupEvidenceService,
   );
 
   return {
@@ -2197,6 +2208,67 @@ test("does not authorize identity, memory, or controlled @ from a typed third-pa
   assert.equal(transport.sent[0]?.text, "AI reply");
 });
 
+test("injects durable group evidence only for a verified person-evaluation request", async () => {
+  const evidenceCalls: Array<{ groupId: string; beforeSourceRowId: number; limit?: number }> = [];
+  const recentGroupEvidenceService = {
+    list(input: { groupId: string; beforeSourceRowId: number; limit?: number }) {
+      evidenceCalls.push(input);
+      return [{
+        role: "member" as const,
+        userId: "2409332588",
+        senderNickname: "飞翔的企鹅",
+        text: "一切根源都是能源",
+        timestamp: "2026-09-03T09:25:00.000Z",
+      }];
+    },
+  };
+  const conversationContextRepository = {
+    getSourceRowId: () => 99,
+    getCausalTurnsBeforeTurn: () => [],
+    appendAssistantTurn: () => { throw new Error("not used without a route"); },
+  };
+  const { app, aiService } = createApp({
+    recentGroupEvidenceService,
+    conversationContextRepository,
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "at", data: { qq: "2409332588" } },
+    { type: "text", data: { text: " 根据现有聊天记录锐评一下 " } },
+  ], 20001, 67890, 7001));
+
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0]?.groupId, "67890");
+  assert.equal(evidenceCalls[0]?.beforeSourceRowId, 99);
+  assert.equal(evidenceCalls[0]?.limit, 30);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "2409332588");
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidence?.[0]?.text, "一切根源都是能源");
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "at", data: { qq: "2409332588" } },
+    { type: "text", data: { text: " 你今天忙吗 " } },
+  ], 20001, 67890, 7002));
+
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(aiService.calls[1]?.identityContext?.recentGroupEvidence, undefined);
+  assert.equal(aiService.calls[1]?.identityContext?.recentGroupEvidenceRequested, undefined);
+});
+
+test("person evaluation without one verified target asks for an explicit at or reply", async () => {
+  const { app, aiService, transport } = createApp();
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 评价一下飞翔的企鹅 " } },
+  ]));
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent[0]?.text, "请明确 @ 一位要评价的群友，或者直接回复他的消息再让我评价。");
+});
+
 test("unrouted calls fail closed instead of reading legacy personal context", async () => {
   const conversationStore = new FakeConversationStore();
   const { app, aiService } = createApp({ conversationStore });
@@ -2340,7 +2412,7 @@ test("keeps shared-topic speakers separate from mentioned targets", async () => 
   ]);
 });
 
-test("keeps ambiguous manual aliases unresolved instead of choosing a member", async () => {
+test("asks for a verified target when a person-evaluation alias is ambiguous", async () => {
   const groupConfigService = new FakeGroupConfigService([
     {
       groupId: "67890",
@@ -2354,7 +2426,7 @@ test("keeps ambiguous manual aliases unresolved instead of choosing a member", a
       ],
     },
   ]);
-  const { app, aiService } = createApp({ groupConfigService });
+  const { app, aiService, transport } = createApp({ groupConfigService });
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
@@ -2362,9 +2434,8 @@ test("keeps ambiguous manual aliases unresolved instead of choosing a member", a
     { type: "text", data: { text: "你怎么看他" } },
   ]));
 
-  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [
-    { names: ["同名"], source: "mention" },
-  ]);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent[0]?.text, "请明确 @ 一位要评价的群友，或者直接回复他的消息再让我评价。");
 });
 
 test("does not join an unrelated shared topic without an explicit reply anchor", async () => {

@@ -95,6 +95,7 @@ export function loadConfig(): AppConfig {
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,
+    adminMfaRequired: (process.env.ADMIN_MFA_REQUIRED ?? "false").trim().toLowerCase() === "true",
     adminPublicBaseUrl: optionalEnv("ADMIN_PUBLIC_BASE_URL") ?? "https://bot.9958.uk",
     adminUsername: optionalEnv("ADMIN_USERNAME"),
     adminPassword: optionalEnv("ADMIN_PASSWORD"),

@@ -95,6 +95,7 @@ try {
     systemSettingsStore: settingsStore,
     adminTaskStore: taskStore,
     adminOperationLogService: operations,
+    mfaRequired: true,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
   });
   server.start();

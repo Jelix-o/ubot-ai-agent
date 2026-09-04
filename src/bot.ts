@@ -45,6 +45,7 @@ import {
 import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
+import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { TtsServiceError } from "./services/tts-service.js";
 import type {
   ProviderCapabilityFeature,
@@ -382,6 +383,8 @@ export class BotApplication {
     private readonly htmlPreviewFallbackRoute?: HtmlPreviewFallbackRoute,
     /** V3 bridge from a QQ sender to an authenticated administrator account. */
     private readonly qqAdminAuthorization?: QqAdminAuthorization,
+    /** Read-only, intent-gated access to the durable recent group transcript. */
+    private readonly recentGroupEvidenceService?: Pick<RecentGroupEvidenceService, "list">,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -2455,11 +2458,13 @@ export class BotApplication {
       replyMode = "text";
     }
     const conversationStartedAt = Date.now();
-    if (!conversationRoute && this.conversationContextRouter && messageContext.sourceMessageId) {
-      const sourceRowId = this.conversationContextRepository?.getSourceRowId(
+    const sourceRowId = messageContext.sourceMessageId
+      ? this.conversationContextRepository?.getSourceRowId?.(
         groupConfig.groupId,
         messageContext.sourceMessageId,
-      );
+      )
+      : undefined;
+    if (!conversationRoute && this.conversationContextRouter && messageContext.sourceMessageId) {
       if (sourceRowId !== undefined) {
         conversationRoute = this.conversationContextRouter.resolve({
           sourceRowId,
@@ -2528,6 +2533,52 @@ export class BotApplication {
         timestamp: new Date(turn.createdAt).toISOString(),
       }));
     const normalizedUserInput = userInput.trim() || "[图片消息]";
+    const evaluationTargetUserIds = [...new Set(
+      messageContext.interactionTargets
+        .map((target) => target.userId?.trim())
+        .filter((target): target is string => Boolean(target) && target !== this.botQq),
+    )];
+    const personEvaluationRequested = isPersonEvaluationRequest(
+      normalizedUserInput,
+      messageContext.interactionTargets.length > 0,
+    );
+    if (personEvaluationRequested && evaluationTargetUserIds.length !== 1) {
+      const clarificationText = "请明确 @ 一位要评价的群友，或者直接回复他的消息再让我评价。";
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, clarificationText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, clarificationText, receipt ? [receipt] : []);
+      logInfo("Skipped group evidence because the evaluation target was not uniquely verified.", {
+        groupId: groupConfig.groupId,
+        verifiedTargetCount: evaluationTargetUserIds.length,
+      });
+      return;
+    }
+    const recentGroupEvidenceTriggered = personEvaluationRequested;
+    const targetPrivacyOptedOut = recentGroupEvidenceTriggered &&
+      (groupConfig.memoryDisabledUserIds ?? []).includes(evaluationTargetUserIds[0]!);
+    if (targetPrivacyOptedOut) {
+      const unavailableText = "当前没有可用于评价这位群友的聊天记录。";
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
+      logInfo("Skipped group evidence for a privacy-opted-out target.", { groupId: groupConfig.groupId });
+      return;
+    }
+    let recentGroupEvidence: NonNullable<AiIdentityContext["recentGroupEvidence"]> = [];
+    if (recentGroupEvidenceTriggered && sourceRowId !== undefined) {
+      try {
+        recentGroupEvidence = this.recentGroupEvidenceService?.list({
+          groupId: groupConfig.groupId,
+          beforeSourceRowId: sourceRowId,
+          sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1_000,
+          excludedUserIds: groupConfig.memoryDisabledUserIds,
+          limit: 30,
+        }) ?? [];
+      } catch (error) {
+        logWarn("Recent group evidence read failed closed.", {
+          groupId: groupConfig.groupId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
     const atmosphere = this.atmosphereSummarizer
       ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
@@ -2685,6 +2736,11 @@ export class BotApplication {
         : {}),
       ...(replyContextForAi ? { replyContext: replyContextForAi } : {}),
       ...(realtimeLookup ? { realtimeLookup } : {}),
+      ...(recentGroupEvidence.length > 0 ? { recentGroupEvidence } : {}),
+      ...(recentGroupEvidenceTriggered ? {
+        recentGroupEvidenceRequested: true,
+        recentGroupEvidenceTargetUserId: evaluationTargetUserIds[0],
+      } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
     const replyArgs = {
@@ -2799,6 +2855,7 @@ export class BotApplication {
           .map((entry) => `${entry.title}\n${entry.question}\n${entry.answer}`)
           .join("\n"),
         atmosphere: atmosphere?.summary ?? "",
+        recentGroupEvidence: formatRecentGroupEvidenceForMetrics(recentGroupEvidence),
         currentInput: normalizedUserInput,
       };
 
@@ -2813,6 +2870,9 @@ export class BotApplication {
         modelMs,
         totalMs: Date.now() - conversationStartedAt,
         memoryCount: groupMemories.length,
+        recentGroupEvidenceTriggered,
+        recentGroupEvidenceCount: recentGroupEvidence.length,
+        recentGroupEvidenceTargetPrivacyOptedOut: targetPrivacyOptedOut,
         promptChars: reply.promptChars ?? 0,
         promptSourceChars: mapTextMetrics(promptSources, (text) => text.length),
         promptSourceTokensEstimated: mapTextMetrics(promptSources, estimateTextTokens),
@@ -4866,6 +4926,18 @@ function collectMemoryIdentityTerms(groupConfig: GroupBotConfig, userIds: string
     .flatMap((identity) => identity.names)
     .map((name) => name.trim())
     .filter((name) => name.length >= 2);
+}
+
+function isPersonEvaluationRequest(text: string, hasInteractionTarget: boolean): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (/(?:评价|锐评|点评|评一评|吐槽一下)/u.test(normalized)) return true;
+  return hasInteractionTarget && /(?:怎么看|如何看待|分析一下|说说.{0,8}(?:印象|看法))/u.test(normalized);
+}
+
+function formatRecentGroupEvidenceForMetrics(
+  messages: NonNullable<AiIdentityContext["recentGroupEvidence"]>,
+): string {
+  return messages.map((message) => message.text).join("\n");
 }
 
 function selectManualIdentitiesForUserIds(

@@ -541,22 +541,50 @@ export function parseStaticHtmlGeneration(text: string): ParsedModelPage {
   if (!raw || raw.length > MAX_HTML_PREVIEW_BYTES * 3) {
     throw new HtmlPreviewError("html_preview_model_output_invalid");
   }
+
+  // 1. Strip markdown code fence if present
+  let candidate = raw;
+  const fenceMatch = candidate.match(/^```(?:json|html)?\s*([\s\S]*?)\s*```$/i);
+  if (fenceMatch) {
+    candidate = fenceMatch[1]!.trim();
+  }
+
   let value: unknown;
   try {
-    value = JSON.parse(raw);
+    value = JSON.parse(candidate);
   } catch {
-    throw new HtmlPreviewError("html_preview_model_output_not_json");
+    // 2. Try extracting outer JSON { ... } if wrapped with commentary
+    const firstBrace = candidate.indexOf("{");
+    const lastBrace = candidate.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        value = JSON.parse(candidate.slice(firstBrace, lastBrace + 1));
+      } catch {
+        // Continue to fallback
+      }
+    }
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const object = value as Record<string, unknown>;
+    if (typeof object.title === "string" && typeof object.html === "string") {
+      const title = normalizeTitle(object.title);
+      if (title && object.html.trim()) {
+        return { title, html: object.html };
+      }
+    }
     throw new HtmlPreviewError("html_preview_model_output_schema_invalid");
   }
-  const object = value as Record<string, unknown>;
-  if (Object.keys(object).some((key) => key !== "title" && key !== "html") || typeof object.title !== "string" || typeof object.html !== "string") {
-    throw new HtmlPreviewError("html_preview_model_output_schema_invalid");
+
+  // 3. Fallback: If model directly returned valid HTML document
+  const trimmedCandidate = candidate.trim();
+  if (/^<!doctype\s+html/i.test(trimmedCandidate) && /<\/html>/i.test(trimmedCandidate)) {
+    const titleMatch = trimmedCandidate.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const title = titleMatch ? normalizeTitle(titleMatch[1]!) : "网页预览";
+    return { title: title || "网页预览", html: trimmedCandidate };
   }
-  const title = normalizeTitle(object.title);
-  if (!title || !object.html.trim()) throw new HtmlPreviewError("html_preview_model_output_schema_invalid");
-  return { title, html: object.html };
+
+  throw new HtmlPreviewError("html_preview_model_output_not_json");
 }
 
 /**

@@ -176,6 +176,7 @@ async function startFixture(
     systemSettingsStore: settings,
     htmlPreviewService,
     adminOperationLogService: operations,
+    mfaRequired: true,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
     ...(options.listGroupMembers ? { listGroupMembers: options.listGroupMembers } : {}),
   });

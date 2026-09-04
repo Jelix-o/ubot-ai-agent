@@ -270,6 +270,15 @@ export interface RecentGroupMessage {
   senderNickname?: string;
 }
 
+export interface RecentGroupEvidenceMessage {
+  role: "member" | "bot";
+  text: string;
+  timestamp: string;
+  userId?: string;
+  senderCard?: string;
+  senderNickname?: string;
+}
+
 export interface AiIdentityContext {
   groupId: string;
   currentUserId: string;
@@ -286,6 +295,10 @@ export interface AiIdentityContext {
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
   realtimeLookup?: RealtimeLookupResult;
+  /** Explicitly requested, bounded group transcript evidence for person evaluation. */
+  recentGroupEvidence?: RecentGroupEvidenceMessage[];
+  recentGroupEvidenceRequested?: boolean;
+  recentGroupEvidenceTargetUserId?: string;
   /** 脱敏后的群氛围摘要；不得包含聊天原文或成员身份。 */
   atmosphereSummary?: string;
 }
@@ -532,6 +545,7 @@ export interface AppConfig {
   adminHttpEnabled: boolean;
   adminHttpHost: string;
   adminHttpPort: number;
+  adminMfaRequired?: boolean;
   adminPublicBaseUrl: string;
   adminUsername?: string;
   adminPassword?: string;

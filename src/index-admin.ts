@@ -104,6 +104,7 @@ export async function main(): Promise<void> {
     listGroupMembers: (groupId) => readClient.listGroupMembersStrict(groupId),
     listGroups: () => readClient.listGroups(),
     sharedDb,
+    mfaRequired: config.adminMfaRequired,
   });
 
   server.start();

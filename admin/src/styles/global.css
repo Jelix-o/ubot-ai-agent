@@ -14,11 +14,20 @@ body {
   min-width: 320px;
   overflow-x: hidden;
   overflow-y: auto;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.03) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.03) 0px, transparent 50%);
   color: var(--text);
   font-family: var(--font);
   letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="dark"] body {
+  background-image:
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.07) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.05) 0px, transparent 50%);
 }
 
 button,
@@ -553,4 +562,98 @@ a {
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow-sm);
+}
+
+/* iOS-style toggle switch */
+.switch-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: all 0.15s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-card:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+}
+
+.switch-card.checked {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+}
+
+.switch-toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.switch-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--line-strong);
+  transition: 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 999px;
+}
+
+.switch-slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.switch-toggle input:checked + .switch-slider {
+  background-color: var(--accent);
+}
+
+.switch-toggle input:checked + .switch-slider:before {
+  transform: translateX(18px);
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 2px var(--ok-soft);
+  position: relative;
+}
+
+.pulse-dot.pulsing::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: var(--ok);
+  opacity: 0.6;
+  animation: pulse-ring 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.7; }
+  50% { transform: scale(1.8); opacity: 0; }
+  100% { transform: scale(1.8); opacity: 0; }
 }

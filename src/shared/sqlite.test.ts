@@ -656,6 +656,64 @@ test("token bucket counting uses received-time window", (t) => {
   db.close();
 });
 
+test("recent group evidence is bounded before the source message and merges only sent bot text", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const now = 1_800_000_000_000;
+  db.insertMessage({
+    groupId: "10001", userId: "20001", selfId: "30001", msgId: "old",
+    msgTime: now - 8 * 24 * 60 * 60 * 1_000, text: "expired", imagesJson: "[]",
+    hasAtBot: false, isBotMsg: false, createdAt: now - 8 * 24 * 60 * 60 * 1_000,
+  });
+  db.insertMessage({
+    groupId: "10001", userId: "20001", selfId: "30001", msgId: "member",
+    msgTime: now - 5_000, text: "能源是根源", imagesJson: "[]", senderNickname: "企鹅",
+    hasAtBot: false, isBotMsg: false, createdAt: now - 5_000,
+  });
+  db.insertMessage({
+    groupId: "10001", userId: "opted-out", selfId: "30001", msgId: "private",
+    msgTime: now - 4_000, text: "private text", imagesJson: "[]",
+    hasAtBot: false, isBotMsg: false, createdAt: now - 4_000,
+  });
+  db.insertMessage({
+    groupId: "10001", userId: "20002", selfId: "30001", msgId: "command",
+    msgTime: now - 3_000, text: "#模型 secret", imagesJson: "[]",
+    hasAtBot: false, isBotMsg: false, createdAt: now - 3_000,
+  });
+  const sent = db.enqueueOutbox("10001", null, "机器人回复");
+  db.ackOutboxDelivery(sent, "bot-message", now - 2_000);
+  db.enqueueOutbox("10001", null, "pending reply");
+  const sourceRowId = db.insertMessage({
+    groupId: "10001", userId: "20003", selfId: "30001", msgId: "source",
+    msgTime: now, text: "评价一下", imagesJson: "[]",
+    hasAtBot: true, isBotMsg: false, createdAt: now,
+  });
+  db.insertMessage({
+    groupId: "10001", userId: "20001", selfId: "30001", msgId: "later",
+    msgTime: now + 1, text: "later text", imagesJson: "[]",
+    hasAtBot: false, isBotMsg: false, createdAt: now + 1,
+  });
+  db.insertMessage({
+    groupId: "other", userId: "20001", selfId: "30001", msgId: "other",
+    msgTime: now - 1_000, text: "other group", imagesJson: "[]",
+    hasAtBot: false, isBotMsg: false, createdAt: now - 1_000,
+  });
+
+  const evidence = db.listRecentGroupEvidence({
+    groupId: "10001",
+    beforeSourceRowId: sourceRowId,
+    sinceMs: now - 7 * 24 * 60 * 60 * 1_000,
+    excludedUserIds: ["opted-out"],
+    limit: 30,
+  });
+
+  assert.deepEqual(evidence.map((row) => [row.role, row.text]), [
+    ["member", "能源是根源"],
+    ["bot", "机器人回复"],
+  ]);
+  assert.equal(evidence[0]?.sender_nickname, "企鹅");
+  db.close();
+});
+
 test("bot messages recorded and pruned", (t) => {
   const db = new SharedDb(tempDb(t));
   db.recordBotMessage("10001", "b1", 1000);

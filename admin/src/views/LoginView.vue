@@ -13,7 +13,7 @@ const enrollmentUri = shallowRef("");
 const recoveryCodes = shallowRef<string[]>([]);
 const inviteToken = new URLSearchParams(window.location.search).get("invite") || "";
 const actionLabel = computed(() => {
-  if (step.value === "password") return inviteToken ? "创建受邀账号" : "继续";
+  if (step.value === "password") return inviteToken ? "创建受邀账号并登录" : "登录控制台";
   if (step.value === "recovery") return "使用恢复码重置验证器";
   return "验证并登录";
 });
@@ -74,6 +74,10 @@ async function login(): Promise<void> {
             username: form.username.trim(),
             password: form.password,
           });
+      if (data.ok === true || String(data.status || "") === "authenticated") {
+        window.location.href = "/";
+        return;
+      }
       const status = String(data.status || "");
       if (status === "totp_required") {
         challengeToken.value = String(data.loginToken || "");
@@ -198,21 +202,22 @@ function loginError(code: string): string {
 <style scoped>
 .login-page {
   display: grid;
-  grid-template-columns: minmax(380px, 0.95fr) minmax(360px, 0.75fr);
-  gap: 52px;
+  grid-template-columns: minmax(360px, 1.1fr) minmax(360px, 0.9fr);
+  gap: 48px;
   align-items: center;
   min-height: 100vh;
-  width: min(1180px, calc(100% - 48px));
+  width: min(1120px, calc(100% - 48px));
   margin: 0 auto;
 }
 
 .login-copy,
 .login-panel {
   border: 1px solid var(--line);
-  border-radius: 24px;
-  background: color-mix(in oklch, var(--surface) 86%, transparent);
-  box-shadow: var(--shadow-md);
-  padding: 44px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  padding: 42px;
+  backdrop-filter: blur(12px);
 }
 
 .brand {
@@ -224,17 +229,22 @@ function loginError(code: string): string {
 .brand span {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 15px;
-  background: var(--accent-strong);
-  color: oklch(0.99 0.004 160);
-  font-weight: 900;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 800;
+  font-size: 16px;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
 }
 
 .brand strong {
   display: block;
-  font-size: 30px;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
 .brand small,
@@ -245,62 +255,98 @@ function loginError(code: string): string {
 }
 
 .login-copy h1 {
-  margin: 72px 0 12px;
-  font-size: 44px;
+  margin: 48px 0 12px;
+  font-size: 38px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  line-height: 1.15;
+}
+
+.login-copy p {
+  font-size: 16px;
+  line-height: 1.6;
 }
 
 .login-visual {
   display: grid;
-  gap: 16px;
-  margin-top: 72px;
+  gap: 14px;
+  margin-top: 48px;
 }
 
 .login-visual i {
   display: block;
-  height: 68px;
-  border-radius: 18px;
-  background: linear-gradient(90deg, var(--accent-soft), var(--surface));
+  height: 52px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(90deg, var(--accent-soft), var(--surface-soft));
+  border: 1px solid var(--line);
+}
+
+.login-visual i:nth-child(2) {
+  opacity: 0.7;
+  width: 85%;
+}
+
+.login-visual i:nth-child(3) {
+  opacity: 0.4;
+  width: 65%;
 }
 
 .login-panel h2 {
-  margin: 18px 0 8px;
-  font-size: 34px;
+  margin: 14px 0 6px;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 form {
   display: grid;
-  gap: 18px;
-  margin-top: 28px;
+  gap: 16px;
+  margin-top: 24px;
 }
 
 label {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.login-panel .btn {
+  min-height: 42px;
+  font-size: 14.5px;
   font-weight: 700;
+  margin-top: 6px;
 }
 
 .login-row {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 12px;
   font-size: 13px;
-}
-
-.login-row label {
-  display: inline-flex;
-  align-items: center;
 }
 
 .message {
   min-height: 20px;
   color: var(--danger);
+  font-size: 13px;
 }
 
 .link-btn {
   min-height: 28px;
   background: transparent;
-  color: var(--accent-strong);
+  color: var(--accent);
   padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
 }
 
 .totp-secret,

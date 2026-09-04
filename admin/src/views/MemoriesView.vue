@@ -125,13 +125,25 @@ async function load(): Promise<void> {
 }
 
 async function loadMemberOptions(): Promise<void> {
-  if (!app.groupId) return;
+  const groupId = app.groupId;
+  if (!groupId) return;
   try {
-    const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(`/api/groups/${encodeURIComponent(app.groupId)}/members${queryString({
-      page: 1,
-      pageSize: 1000,
-    })}`);
-    memberOptions.value = data.members;
+    let data = await api<{ members: MemberProfile[]; cacheStatus?: string }>(
+      `/api/groups/${encodeURIComponent(groupId)}/members?all=1`,
+    );
+    if (data.cacheStatus === "unloaded" || (!data.members?.length && app.groupId === groupId)) {
+      try {
+        await api(`/api/groups/${encodeURIComponent(groupId)}/members/refresh`, { method: "POST", body: "{}" });
+        data = await api<{ members: MemberProfile[]; cacheStatus?: string }>(
+          `/api/groups/${encodeURIComponent(groupId)}/members?all=1`,
+        );
+      } catch {
+        // ignore
+      }
+    }
+    if (groupId === app.groupId) {
+      memberOptions.value = data.members || [];
+    }
   } catch (error) {
     app.showToast((error as Error).message, "error");
   }

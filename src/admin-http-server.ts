@@ -74,6 +74,7 @@ interface AdminHttpServerOptions {
   listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
   listGroups?: () => Promise<NapcatGroupInfo[]>;
   sharedDb?: SharedDb;
+  mfaRequired?: boolean;
 }
 
 type RouteParams = Record<string, string>;
@@ -200,12 +201,14 @@ export class AdminHttpServer {
     status: ModelHealthStatus;
   }>();
   private readonly auth: AdminAuthService;
+  readonly mfaRequired: boolean;
 
   private readonly server = createServer((req, res) => {
     void this.handleRequest(req, res);
   });
 
   constructor(private readonly options: AdminHttpServerOptions) {
+    this.mfaRequired = options.mfaRequired ?? (process.env.ADMIN_MFA_REQUIRED === "true");
     if (options.authService) {
       this.auth = options.authService;
       return;
@@ -215,6 +218,7 @@ export class AdminHttpServer {
     }
     const authOptions: AdminAuthServiceOptions = {
       stateEncryptionKey: options.stateEncryptionKey,
+      mfaRequired: this.mfaRequired,
       ...(options.username && options.password ? { bootstrap: { username: options.username, password: options.password } } : {}),
     };
     this.auth = new AdminAuthService(options.sharedDb, authOptions);
@@ -967,6 +971,18 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "invalid_credentials" }, 401);
       } else if (result.kind === "locked") {
         this.sendJson(res, { error: "too_many_login_attempts", retryAfterSeconds: result.retryAfterSeconds }, 429);
+      } else if (result.kind === "authenticated") {
+        this.setSessionCookie(res, result.session.opaqueToken, new Date(result.session.expiresAt));
+        this.sendJson(res, {
+          ok: true,
+          status: "authenticated",
+          session: {
+            username: result.session.username,
+            role: result.session.role,
+            allowedGroupIds: result.session.allowedGroupIds,
+            csrfToken: result.session.csrfToken,
+          },
+        }, 200);
       } else if (result.kind === "totp_required") {
         this.sendJson(res, { status: "totp_required", loginToken: result.loginToken, username: result.username });
       } else {
@@ -2078,13 +2094,12 @@ export class AdminHttpServer {
   ): Promise<{ groupConfig: GroupBotConfig; members: GroupMemberProfile[] } | undefined> {
     const cached = this.memberProfileCache.get(groupId);
     if (options.cacheOnly === true) {
-      // The member page must never present a light identity cache as a full
-      // NapCat directory or keep a 30-second snapshot forever.
-      if (!cached || !cached.includesNapcatMembers || cached.expiresAt <= Date.now()) {
-        if (cached && cached.expiresAt <= Date.now()) {
-          this.memberProfileCache.delete(groupId);
-        }
+      if (!cached || !cached.includesNapcatMembers) {
         return undefined;
+      }
+      // Stale-while-revalidate: keep serving cached snapshot and refresh in background if expired
+      if (cached.expiresAt <= Date.now() && this.options.listGroupMembers) {
+        void this.getCachedMemberProfileData(groupId, { force: true, includeNapcatMembers: true }).catch(() => {});
       }
       return { groupConfig: cached.groupConfig, members: cached.members };
     }
@@ -2176,7 +2191,7 @@ export class AdminHttpServer {
       this.memberProfileCache.set(groupId, {
         ...data,
         includesNapcatMembers: includeNapcatMembers,
-        expiresAt: Date.now() + 30_000,
+        expiresAt: Date.now() + 15 * 60_000,
       });
     }
     return data;
@@ -2218,7 +2233,7 @@ export class AdminHttpServer {
         ? cached.members.map((item) => item.userId === member.userId ? member : item)
         : [...cached.members, member],
       includesNapcatMembers: cached.includesNapcatMembers,
-      expiresAt: Date.now() + 30_000,
+      expiresAt: Date.now() + 15 * 60_000,
     });
   }
 
@@ -2674,7 +2689,7 @@ export class AdminHttpServer {
       this.sendJson(res, { error: "forbidden" }, 403);
       return false;
     }
-    if (!this.auth.hasRecentMfa(session as AdminAuthSession)) {
+    if (this.mfaRequired && !this.auth.hasRecentMfa(session as AdminAuthSession)) {
       this.sendJson(res, { error: "recent_mfa_required" }, 403);
       return false;
     }

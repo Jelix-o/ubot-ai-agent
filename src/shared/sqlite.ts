@@ -83,6 +83,16 @@ export interface RecentGroupMessageRow {
   images_json: string;
 }
 
+export interface RecentGroupEvidenceRow {
+  role: "member" | "bot";
+  user_id: string | null;
+  text: string;
+  images_json: string;
+  sender_card: string | null;
+  sender_nickname: string | null;
+  occurred_at: number;
+}
+
 export interface ParticipationDecisionRow {
   id: number;
   source_row_id: number;
@@ -1071,6 +1081,62 @@ export class SharedDb {
       )
       .all(groupId, sinceMs, Math.max(1, Math.min(500, limit)))
       .reverse() as unknown as RecentGroupMessageRow[];
+  }
+
+  /** Bounded transcript available before one inbound message. */
+  listRecentGroupEvidence(args: {
+    groupId: string;
+    beforeSourceRowId: number;
+    sinceMs: number;
+    excludedUserIds?: string[];
+    limit?: number;
+  }): RecentGroupEvidenceRow[] {
+    const limit = Math.max(1, Math.min(30, args.limit ?? 30));
+    const excludedUserIds = new Set((args.excludedUserIds ?? []).map((value) => value.trim()).filter(Boolean));
+    const source = this.db
+      .prepare("SELECT created_at FROM messages WHERE id = ? AND group_id = ?")
+      .get(args.beforeSourceRowId, args.groupId) as { created_at: number } | undefined;
+    if (!source) return [];
+
+    const excluded = [...excludedUserIds];
+    const exclusionClause = excluded.length > 0
+      ? `AND user_id NOT IN (${excluded.map(() => "?").join(",")})`
+      : "";
+    const memberRows = this.db
+      .prepare(
+        `SELECT 'member' AS role, user_id, text, images_json, sender_card, sender_nickname,
+                created_at AS occurred_at
+           FROM messages
+          WHERE group_id = ?
+            AND id < ?
+            AND created_at >= ?
+            AND is_bot_msg = 0
+            AND processable = 1
+            AND (text = '' OR ltrim(text) NOT LIKE '#%')
+            ${exclusionClause}
+          ORDER BY id DESC
+          LIMIT ?`,
+      )
+      .all(args.groupId, args.beforeSourceRowId, args.sinceMs, ...excluded, limit) as unknown as RecentGroupEvidenceRow[];
+    const botRows = this.db
+      .prepare(
+        `SELECT 'bot' AS role, NULL AS user_id, text, '[]' AS images_json,
+                NULL AS sender_card, NULL AS sender_nickname, sent_at AS occurred_at
+           FROM outbox
+          WHERE group_id = ?
+            AND status = 'sent'
+            AND kind = 'text'
+            AND sent_at IS NOT NULL
+            AND sent_at >= ?
+            AND sent_at < ?
+          ORDER BY sent_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(args.groupId, args.sinceMs, source.created_at, limit) as unknown as RecentGroupEvidenceRow[];
+
+    return [...memberRows, ...botRows]
+      .sort((left, right) => left.occurred_at - right.occurred_at)
+      .slice(-limit);
   }
 
   /**

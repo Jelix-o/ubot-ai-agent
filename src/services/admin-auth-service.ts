@@ -33,6 +33,7 @@ export interface AdminAuthServiceOptions {
     password: string;
   };
   sessionTtlMs?: number;
+  mfaRequired?: boolean;
 }
 
 export interface AdminAuthAccount {
@@ -62,6 +63,7 @@ export interface AdminAuthRequestMeta {
 export type PasswordLoginResult =
   | { kind: "invalid_credentials" }
   | { kind: "locked"; retryAfterSeconds: number }
+  | { kind: "authenticated"; session: AdminAuthSession }
   | {
     kind: "totp_required";
     loginToken: string;
@@ -159,6 +161,7 @@ interface InviteRow {
 export class AdminAuthService {
   private readonly encryptionKey: Buffer;
   private readonly sessionTtlMs: number;
+  readonly mfaRequired: boolean;
   private bootstrapPromise?: Promise<void>;
 
   constructor(
@@ -167,6 +170,7 @@ export class AdminAuthService {
   ) {
     this.encryptionKey = deriveTotpEncryptionKey(options.stateEncryptionKey);
     this.sessionTtlMs = Math.max(60_000, options.sessionTtlMs ?? SESSION_TTL_MS);
+    this.mfaRequired = options.mfaRequired ?? true;
   }
 
   async ensureInitialized(): Promise<void> {
@@ -206,6 +210,12 @@ export class AdminAuthService {
     }
 
     this.clearRateLimit("password_login", input.loginKey);
+    if (!this.mfaRequired) {
+      const session = this.createSession(account, input.meta, now);
+      this.writeAudit({ accountId: account.id, action: "login_password_success", meta: input.meta });
+      return { kind: "authenticated", session };
+    }
+
     if (!account.totp_enabled_at || !account.totp_secret_ciphertext) {
       const secret = encodeBase32(randomBytes(TOTP_SECRET_BYTES));
       const token = randomToken();
@@ -477,6 +487,7 @@ export class AdminAuthService {
   }
 
   hasRecentMfa(session: AdminAuthSession): boolean {
+    if (!this.mfaRequired) return true;
     return session.mfaVerifiedAt >= Date.now() - RECENT_MFA_MS;
   }
 

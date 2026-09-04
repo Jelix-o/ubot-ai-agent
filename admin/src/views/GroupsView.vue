@@ -140,11 +140,20 @@ function reconcileReplyModelSelection(): void {
 
 async function loadMemberOptions(groupId = app.groupId): Promise<void> {
   if (!groupId) return;
-  const data = await api<{ members: MemberProfile[]; pagination: Pagination }>(`/api/groups/${encodeURIComponent(groupId)}/members${queryString({
-    page: 1,
-    pageSize: 1000,
-  })}`);
-  if (groupId === app.groupId) memberOptions.value = data.members;
+  let data = await api<{ members: MemberProfile[]; cacheStatus?: string }>(
+    `/api/groups/${encodeURIComponent(groupId)}/members?all=1`,
+  );
+  if (data.cacheStatus === "unloaded" || (!data.members?.length && app.groupId === groupId)) {
+    try {
+      await api(`/api/groups/${encodeURIComponent(groupId)}/members/refresh`, { method: "POST", body: "{}" });
+      data = await api<{ members: MemberProfile[]; cacheStatus?: string }>(
+        `/api/groups/${encodeURIComponent(groupId)}/members?all=1`,
+      );
+    } catch {
+      // ignore
+    }
+  }
+  if (groupId === app.groupId) memberOptions.value = data.members || [];
 }
 
 async function loadReminders(groupId = app.groupId, serial = loadSerial): Promise<void> {
@@ -498,20 +507,117 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
         </section>
 
         <section class="panel group-config-card">
-          <h3>回复策略</h3>
-          <p class="muted">当前群固定使用会仙人格。群级配置仍可控制参与方式、模型、语音和功能开关。</p>
+          <h3>回复策略与能力开关</h3>
+          <p class="muted">当前群固定使用会仙人格。群级配置可灵活控制自动化功能、模型模式与多模态特性。</p>
           <div class="switch-grid">
-            <label><input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" /> 群聊日报</label>
-            <label><input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" /> 节日倒计时</label>
-            <label><input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" /> 定时提醒</label>
-            <label><input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" /> 运维告警</label>
-            <label><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /> 机器人静音</label>
-            <label><input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" /> 语音功能</label>
-            <label><input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" /> 自动查询实时资料</label>
-            <label><input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" /> 图片理解</label>
-            <label><input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" /> 静态网页预览</label>
-            <label class="voice-child" :class="{ disabled: !form.voiceReplyEnabled }">
-              <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" /> 默认语音回复
+            <label class="switch-card" :class="{ checked: form.dailyReportEnabled }">
+              <div>
+                <strong>群聊日报</strong>
+                <small class="muted">定时提炼每日核心话题与成员互动</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.holidayCountdownEnabled }">
+              <div>
+                <strong>节日倒计时</strong>
+                <small class="muted">工作日推送节假日倒数与温馨贴士</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.scheduledRemindersEnabled }">
+              <div>
+                <strong>定时提醒</strong>
+                <small class="muted">执行自定义周期性定时播报任务</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.opsAlertsEnabled }">
+              <div>
+                <strong>运维告警</strong>
+                <small class="muted">服务及网络异常时静默或发送告警</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.botMuted }">
+              <div>
+                <strong>机器人静音</strong>
+                <small class="muted">暂停当前群内全部被动与主动发言</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.botMuted" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.voiceReplyEnabled }">
+              <div>
+                <strong>语音功能</strong>
+                <small class="muted">支持 #语音 指令或语音回复</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.onlineLookupEnabled }">
+              <div>
+                <strong>自动查询实时资料</strong>
+                <small class="muted">天气、股票与网络公开数据检索</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.visionEnabled }">
+              <div>
+                <strong>图片理解</strong>
+                <small class="muted">支持识图对话与图片场景解析</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.htmlPreviewEnabled }">
+              <div>
+                <strong>静态网页预览</strong>
+                <small class="muted">生成 HTML 静态页面并输出预览链接</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.defaultVoiceReplyEnabled, disabled: !form.voiceReplyEnabled }">
+              <div>
+                <strong>默认语音回复</strong>
+                <small class="muted">所有回复默认转为语音音频消息</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
             </label>
           </div>
         </section>
@@ -890,23 +996,50 @@ dd {
 
 .switch-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
 }
 
-.switch-grid label {
+.switch-grid .switch-card {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: all 0.15s ease;
+  cursor: pointer;
 }
 
-.switch-grid .voice-child {
-  margin-left: 18px;
-  color: var(--muted);
+.switch-grid .switch-card:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
 }
 
-.switch-grid .voice-child.disabled {
-  opacity: 0.58;
+.switch-grid .switch-card.checked {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+}
+
+.switch-grid .switch-card strong {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.switch-grid .switch-card small {
+  display: block;
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.switch-grid .switch-card.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .fixed-persona {
