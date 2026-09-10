@@ -21,6 +21,7 @@ import { openSharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { HtmlPreviewService } from "./services/html-preview-service.js";
+import { MemeLibraryService } from "./services/meme-library-service.js";
 
 /**
  * Admin process:
@@ -82,6 +83,11 @@ export async function main(): Promise<void> {
     rootDir: config.htmlPreviewRoot,
     publicBaseUrl: config.htmlPreviewPublicBaseUrl,
   });
+  // The library is intentionally unavailable on a non-V3 rollback runtime.
+  // This prevents an admin process from accepting image uploads that a worker
+  // on the other side of a rolling upgrade cannot safely consume.
+  const memeLibraryService = v3State ? new MemeLibraryService(config.dataDir, v3State) : undefined;
+  await memeLibraryService?.initialize();
 
   const server = new AdminHttpServer({
     host: config.adminHttpHost,
@@ -99,6 +105,7 @@ export async function main(): Promise<void> {
     adminTaskStore,
     modelHealthHistoryStore,
     htmlPreviewService,
+    ...(memeLibraryService ? { memeLibraryService } : {}),
     adminOperationLogService,
     getTransportHealthStatus: () => readClient.getHealth(),
     listGroupMembers: (groupId) => readClient.listGroupMembersStrict(groupId),

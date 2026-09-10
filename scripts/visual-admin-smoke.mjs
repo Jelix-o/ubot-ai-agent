@@ -11,6 +11,7 @@ import { CharacterProfileService } from "../dist/services/character-profile-serv
 import { GroupConfigService } from "../dist/services/group-config-service.js";
 import { GroupMemoryStore } from "../dist/services/group-memory-store.js";
 import { KnowledgeBaseStore } from "../dist/services/knowledge-base-store.js";
+import { MemeLibraryService } from "../dist/services/meme-library-service.js";
 import { SystemSettingsStore } from "../dist/services/system-settings-store.js";
 import { V3StateRepository } from "../dist/services/v3-state-repository.js";
 
@@ -63,6 +64,8 @@ try {
   const settingsStore = new SystemSettingsStore(path.join(root, "retired-settings.json"), [], undefined, v3State);
   const operations = new AdminOperationLogService(path.join(root, "retired-operations.jsonl"), v3State);
   const characterProfileService = new CharacterProfileService(v3State);
+  const memeLibraryService = new MemeLibraryService(path.join(root, "data"), v3State);
+  await memeLibraryService.initialize();
 
   await memoryStore.create({
     groupId: GROUP_ID,
@@ -94,6 +97,7 @@ try {
     characterProfileService,
     systemSettingsStore: settingsStore,
     adminTaskStore: taskStore,
+    memeLibraryService,
     adminOperationLogService: operations,
     mfaRequired: true,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
@@ -127,7 +131,7 @@ try {
   const csrf = completed.data.session?.csrfToken;
   if (!cookie || typeof csrf !== "string") throw new Error("V3 enrollment did not issue an opaque session and CSRF token.");
 
-  const pages = ["/", "/login", "/groups", "/members", "/memories", "/knowledge", "/tasks", "/audit", "/health", "/persona", "/commands", "/settings"];
+  const pages = ["/", "/login", "/groups", "/members", "/memories", "/knowledge", "/memes", "/tasks", "/audit", "/health", "/persona", "/commands", "/settings"];
   for (const page of pages) {
     const response = await fetch(`${baseUrl}${page}`, { headers: { Cookie: cookie } });
     if (!response.ok) throw new Error(`Admin page failed: ${page} ${response.status}`);
@@ -140,6 +144,20 @@ try {
     throw new Error("Overview still exposes retired candidate data.");
   }
   if (overview.stats.memoryCount !== 1) throw new Error(`Unexpected V3 memory count: ${JSON.stringify(overview.stats)}`);
+
+  const memes = await getJson(baseUrl, "/api/meme-library", cookie);
+  if (!Array.isArray(memes.assets) || !memes.assets.some((asset) => asset.id === "blacklisted-at-meme-seed" && asset.protected === true)) {
+    throw new Error(`Meme library seed is unavailable: ${JSON.stringify(memes)}`);
+  }
+
+  const memeTag = await postJson(baseUrl, "/api/meme-library/tags", {
+    name: "冒烟关键词",
+    description: "验证本地关键词触发配置",
+    keywords: ["  天气  ", "惊讶"],
+  }, { Cookie: cookie, "X-CSRF-Token": csrf });
+  if (memeTag.response.status !== 201 || !Array.isArray(memeTag.data.keywords) || !memeTag.data.keywords.includes("天气")) {
+    throw new Error(`Meme tag keyword create failed: ${memeTag.response.status} ${JSON.stringify(memeTag.data)}`);
+  }
 
   const candidateResponse = await fetch(`${baseUrl}/api/memory-candidates?groupId=${GROUP_ID}`, { headers: { Cookie: cookie } });
   if (candidateResponse.status !== 410) throw new Error(`Retired candidate API should be 410, got ${candidateResponse.status}`);

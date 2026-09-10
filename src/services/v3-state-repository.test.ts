@@ -168,6 +168,70 @@ test("V3 state strips legacy QQ administrator fields and can clear an existing c
   });
 });
 
+test("V3 group vision migration is one-time and preserves later administrator opt-outs", async () => {
+  await withRepository((repository) => {
+    repository.saveGroups({
+      groups: [
+        {
+          groupId: "10001",
+          currentSkillId: "huixian",
+          allowedSkillIds: ["huixian"],
+          switcherUserIds: [],
+          liveChatUserIds: [],
+          visionEnabled: false,
+        },
+        {
+          groupId: "10002",
+          currentSkillId: "huixian",
+          allowedSkillIds: ["huixian"],
+          switcherUserIds: [],
+          liveChatUserIds: [],
+        },
+      ],
+    });
+
+    assert.deepEqual(repository.enableVisionForExistingGroupsOnce(1_800_000_000_000), {
+      applied: true,
+      groupsUpdated: 2,
+    });
+    assert.equal(repository.getGroup("10001")?.visionEnabled, true);
+    assert.equal(repository.getGroup("10002")?.visionEnabled, true);
+    assert.equal(repository.getMeta("group_vision_enabled_v3_0_18"), "complete");
+
+    repository.saveGroup({ ...repository.getGroup("10001")!, visionEnabled: false });
+    assert.deepEqual(repository.enableVisionForExistingGroupsOnce(1_800_000_010_000), {
+      applied: false,
+      groupsUpdated: 0,
+    });
+    assert.equal(repository.getGroup("10001")?.visionEnabled, false);
+  });
+});
+
+test("V3 group vision migration rolls back every group when a stored config is malformed", async () => {
+  await withRepository((repository, db) => {
+    repository.saveGroups({
+      groups: [{
+        groupId: "10001",
+        currentSkillId: "huixian",
+        allowedSkillIds: ["huixian"],
+        switcherUserIds: [],
+        liveChatUserIds: [],
+        visionEnabled: false,
+      }],
+    });
+    db.db.prepare(
+      "INSERT INTO v3_groups (group_id, config_json, updated_at) VALUES ('malformed', '{', ?)",
+    ).run(1_800_000_000_000);
+
+    assert.throws(
+      () => repository.enableVisionForExistingGroupsOnce(1_800_000_010_000),
+      /invalid_v3_group_config_for_vision_migration/,
+    );
+    assert.equal(repository.getGroup("10001")?.visionEnabled, false);
+    assert.equal(repository.getMeta("group_vision_enabled_v3_0_18"), undefined);
+  });
+});
+
 test("Huixian release profile revisions are atomic, idempotent, and preserve later admin edits", async () => {
   await withRepository(async (repository, db) => {
     const baseline = huixianProfile();

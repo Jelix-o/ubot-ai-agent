@@ -28,6 +28,7 @@ export interface IngressMessageRow {
   sender_card: string | null;
   sender_nickname: string | null;
   reply_to: string | null;
+  verified_mention_user_ids_json: string;
   has_at_bot: number;
   is_bot_msg: number;
   created_at: number;
@@ -85,6 +86,7 @@ export interface RecentGroupMessageRow {
 
 export interface RecentGroupEvidenceRow {
   role: "member" | "bot";
+  message_id: string | null;
   user_id: string | null;
   text: string;
   images_json: string;
@@ -154,6 +156,7 @@ CREATE TABLE IF NOT EXISTS messages (
   sender_card TEXT,
   sender_nickname TEXT,
   reply_to TEXT,
+  verified_mention_user_ids_json TEXT NOT NULL DEFAULT '[]',
   has_at_bot INTEGER NOT NULL DEFAULT 0,
   is_bot_msg INTEGER NOT NULL DEFAULT 0,
   processable INTEGER NOT NULL DEFAULT 1,
@@ -723,6 +726,13 @@ function addOutboxAttemptColumn(db: DatabaseSync): void {
   }
 }
 
+function addVerifiedMentionUserIdsColumn(db: DatabaseSync): void {
+  const messageCols = db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+  if (!messageCols.some((col) => col.name === "verified_mention_user_ids_json")) {
+    db.exec("ALTER TABLE messages ADD COLUMN verified_mention_user_ids_json TEXT NOT NULL DEFAULT '[]'");
+  }
+}
+
 const MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -778,6 +788,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     version: 11,
     name: "add-admin-qq-account-bindings",
     apply: (db) => db.exec(V3_ADMIN_QQ_BINDING_SCHEMA),
+  },
+  {
+    version: 12,
+    name: "persist-verified-message-mention-targets",
+    apply: addVerifiedMentionUserIdsColumn,
   },
 ];
 
@@ -1013,6 +1028,7 @@ export class SharedDb {
     senderCard?: string;
     senderNickname?: string;
     replyTo?: string;
+    verifiedMentionUserIds?: string[];
     hasAtBot: boolean;
     isBotMsg: boolean;
     processable?: boolean;
@@ -1024,8 +1040,9 @@ export class SharedDb {
         .prepare(
           `INSERT INTO messages
              (group_id, user_id, self_id, msg_id, msg_time, text, images_json,
-              sender_card, sender_nickname, reply_to, has_at_bot, is_bot_msg, processable, drop_reason, created_at, dedup_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              sender_card, sender_nickname, reply_to, verified_mention_user_ids_json,
+              has_at_bot, is_bot_msg, processable, drop_reason, created_at, dedup_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.groupId,
@@ -1038,6 +1055,7 @@ export class SharedDb {
           normalizeOptionalText(row.senderCard),
           normalizeOptionalText(row.senderNickname),
           row.replyTo ?? null,
+          JSON.stringify(normalizeVerifiedMentionUserIds(row.verifiedMentionUserIds)),
           row.hasAtBot ? 1 : 0,
           row.isBotMsg ? 1 : 0,
           row.processable === false ? 0 : 1,
@@ -1091,25 +1109,76 @@ export class SharedDb {
     excludedUserIds?: string[];
     limit?: number;
   }): RecentGroupEvidenceRow[] {
-    const limit = Math.max(1, Math.min(30, args.limit ?? 30));
-    const excludedUserIds = new Set((args.excludedUserIds ?? []).map((value) => value.trim()).filter(Boolean));
     const source = this.db
       .prepare("SELECT created_at FROM messages WHERE id = ? AND group_id = ?")
       .get(args.beforeSourceRowId, args.groupId) as { created_at: number } | undefined;
     if (!source) return [];
 
+    return this.listGroupTranscriptBefore({
+      groupId: args.groupId,
+      beforeSourceRowId: args.beforeSourceRowId,
+      beforeOccurredAt: source.created_at,
+      sinceMs: args.sinceMs,
+      excludedUserIds: args.excludedUserIds,
+      limit: Math.max(1, Math.min(30, args.limit ?? 30)),
+    });
+  }
+
+  /** Short group-conversation window anchored to the source row's receipt time. */
+  listAmbientGroupContext(args: {
+    groupId: string;
+    beforeSourceRowId: number;
+    lookbackMs: number;
+    excludedUserIds?: string[];
+    limit?: number;
+  }): RecentGroupEvidenceRow[] {
+    const source = this.db
+      .prepare("SELECT created_at FROM messages WHERE id = ? AND group_id = ?")
+      .get(args.beforeSourceRowId, args.groupId) as { created_at: number } | undefined;
+    if (!source) return [];
+
+    const requestedLookbackMs = Number.isFinite(args.lookbackMs)
+      ? Math.trunc(args.lookbackMs)
+      : 3 * 60 * 1_000;
+    const lookbackMs = Math.max(1, Math.min(10 * 60 * 1_000, requestedLookbackMs));
+    return this.listGroupTranscriptBefore({
+      groupId: args.groupId,
+      beforeSourceRowId: args.beforeSourceRowId,
+      beforeOccurredAt: source.created_at,
+      memberBeforeOccurredAt: source.created_at,
+      sinceMs: source.created_at - lookbackMs,
+      excludedUserIds: args.excludedUserIds,
+      limit: Math.max(1, Math.min(12, args.limit ?? 12)),
+    });
+  }
+
+  private listGroupTranscriptBefore(args: {
+    groupId: string;
+    beforeSourceRowId: number;
+    beforeOccurredAt: number;
+    memberBeforeOccurredAt?: number;
+    sinceMs: number;
+    excludedUserIds?: string[];
+    limit: number;
+  }): RecentGroupEvidenceRow[] {
+    const excludedUserIds = new Set((args.excludedUserIds ?? []).map((value) => value.trim()).filter(Boolean));
+
     const excluded = [...excludedUserIds];
     const exclusionClause = excluded.length > 0
       ? `AND user_id NOT IN (${excluded.map(() => "?").join(",")})`
       : "";
+    const memberTimeUpperBoundClause = args.memberBeforeOccurredAt === undefined
+      ? ""
+      : "AND created_at <= ?";
     const memberRows = this.db
       .prepare(
-        `SELECT 'member' AS role, user_id, text, images_json, sender_card, sender_nickname,
+        `SELECT 'member' AS role, msg_id AS message_id, user_id, text, images_json, sender_card, sender_nickname,
                 created_at AS occurred_at
            FROM messages
           WHERE group_id = ?
             AND id < ?
             AND created_at >= ?
+            ${memberTimeUpperBoundClause}
             AND is_bot_msg = 0
             AND processable = 1
             AND (text = '' OR ltrim(text) NOT LIKE '#%')
@@ -1117,10 +1186,17 @@ export class SharedDb {
           ORDER BY id DESC
           LIMIT ?`,
       )
-      .all(args.groupId, args.beforeSourceRowId, args.sinceMs, ...excluded, limit) as unknown as RecentGroupEvidenceRow[];
+      .all(
+        args.groupId,
+        args.beforeSourceRowId,
+        args.sinceMs,
+        ...(args.memberBeforeOccurredAt === undefined ? [] : [args.memberBeforeOccurredAt]),
+        ...excluded,
+        args.limit,
+      ) as unknown as RecentGroupEvidenceRow[];
     const botRows = this.db
       .prepare(
-        `SELECT 'bot' AS role, NULL AS user_id, text, '[]' AS images_json,
+        `SELECT 'bot' AS role, platform_message_id AS message_id, NULL AS user_id, text, '[]' AS images_json,
                 NULL AS sender_card, NULL AS sender_nickname, sent_at AS occurred_at
            FROM outbox
           WHERE group_id = ?
@@ -1132,11 +1208,11 @@ export class SharedDb {
           ORDER BY sent_at DESC, id DESC
           LIMIT ?`,
       )
-      .all(args.groupId, args.sinceMs, source.created_at, limit) as unknown as RecentGroupEvidenceRow[];
+      .all(args.groupId, args.sinceMs, args.beforeOccurredAt, args.limit) as unknown as RecentGroupEvidenceRow[];
 
     return [...memberRows, ...botRows]
       .sort((left, right) => left.occurred_at - right.occurred_at)
-      .slice(-limit);
+      .slice(-args.limit);
   }
 
   /**
@@ -1150,6 +1226,7 @@ export class SharedDb {
       .prepare(
         `SELECT m.id, m.group_id, m.user_id, m.self_id, m.msg_id, m.msg_time, m.text,
                 m.images_json, m.sender_card, m.sender_nickname, m.reply_to,
+                m.verified_mention_user_ids_json,
                 m.has_at_bot, m.is_bot_msg, m.processable, m.drop_reason, m.created_at,
                 r.topic_id AS context_topic_id,
                 r.branch_id AS context_branch_id,
@@ -1682,6 +1759,14 @@ function parseOutboxDeliveryId(value: string): number | undefined {
 function normalizeOptionalText(value: string | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function normalizeVerifiedMentionUserIds(values: string[] | undefined): string[] {
+  return [...new Set(
+    (values ?? [])
+      .map((value) => value.trim())
+      .filter((value) => /^\d{5,12}$/.test(value)),
+  )];
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

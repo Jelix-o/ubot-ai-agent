@@ -20,7 +20,16 @@ test("V3 cutover excludes daily-report raw messages older than seven days", (t) 
   mkdirSync(path.join(dataDir, "shared"), { recursive: true });
   mkdirSync(path.join(appRoot, "assets"), { recursive: true });
   writeFileSync(path.join(appRoot, ".env"), `UBOT_STATE_ENCRYPTION_KEY=${TEST_STATE_KEY}\n`);
-  writeFileSync(path.join(appRoot, "config", "groups.json"), JSON.stringify({ groups: [] }));
+  writeFileSync(path.join(appRoot, "config", "groups.json"), JSON.stringify({
+    groups: [{
+      groupId: "10001",
+      currentSkillId: "huixian",
+      allowedSkillIds: ["huixian"],
+      switcherUserIds: [],
+      liveChatUserIds: [],
+      visionEnabled: false,
+    }],
+  }));
   cpSync(path.resolve("assets", "huixian-profile.json"), path.join(appRoot, "assets", "huixian-profile.json"));
   writeFileSync(path.join(dataDir, "daily-report-store.json"), JSON.stringify({
     days: {
@@ -134,11 +143,13 @@ test("V3 cutover excludes daily-report raw messages older than seven days", (t) 
       retiredProfileTasks: number;
       initialRawRetention: { messages: number; reportMessages: number; userTurns: number };
       shortTermConversationCutoverMessageId: number;
+      groupVisionEnabled: { applied: boolean; groupsUpdated: number };
     };
   };
   assert.equal(report.imported.dailyReportMessages, 1);
   assert.equal(report.imported.expiredDailyReportMessages, 1);
   assert.equal(report.imported.retiredProfileTasks, 1);
+  assert.deepEqual(report.imported.groupVisionEnabled, { applied: true, groupsUpdated: 1 });
   assert.deepEqual(report.imported.initialRawRetention, { messages: 1, reportMessages: 0, userTurns: 0 });
   assert.equal(report.imported.shortTermConversationCutoverMessageId, freshIngressRowId);
 
@@ -194,6 +205,8 @@ test("V3 cutover excludes daily-report raw messages older than seven days", (t) 
       "SELECT status, topic_id, branch_id FROM outbox WHERE id = ?",
     ).get(legacySentOutboxId) as { status: string; topic_id: string | null; branch_id: string | null };
     assert.deepEqual({ ...retiredOutbox }, { status: "sent", topic_id: null, branch_id: null });
+    const repository = new V3StateRepository(migrated, { stateEncryptionKey: TEST_STATE_KEY });
+    assert.equal(repository.getGroup("10001")?.visionEnabled, true);
   } finally {
     migrated.close();
   }
@@ -267,6 +280,16 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     // Emulate a deployed 3.0.0 database before the additive v9 migration.
     initial.db.exec("DROP TABLE v3_daily_report_outputs");
     initial.db.prepare("DELETE FROM schema_migrations WHERE version = 9").run();
+    initial.db.prepare(
+      `INSERT INTO v3_groups (group_id, config_json, updated_at) VALUES (?, ?, ?)`,
+    ).run("10001", JSON.stringify({
+      groupId: "10001",
+      currentSkillId: "huixian",
+      allowedSkillIds: ["huixian"],
+      switcherUserIds: [],
+      liveChatUserIds: [],
+      visionEnabled: false,
+    }), Date.now());
   } finally {
     initial.close();
   }
@@ -286,12 +309,14 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     legacyJson: string;
     migrationVersions: number[];
     huixianProfileRevision: { applied: boolean; revision: string };
+    groupVisionEnabled: { applied: boolean; groupsUpdated: number };
   };
   assert.equal(report.mode, "existing-cutover-upgrade");
   assert.equal(report.cutover, "already-complete");
   assert.equal(report.legacyJson, "not-read");
   assert.ok(report.migrationVersions.includes(9));
   assert.deepEqual(report.huixianProfileRevision, { applied: true, revision: "immersive-natural-v3.0.3" });
+  assert.deepEqual(report.groupVisionEnabled, { applied: true, groupsUpdated: 1 });
   assert.equal(existsSync(path.join(dataDir, "v3-rollback")), false);
   assert.equal(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8"), "{ malformed groups JSON");
   assert.equal(readFileSync(path.join(dataDir, "group-memory.json"), "utf8"), "{ malformed memory JSON");
@@ -307,6 +332,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     ).get() as { changed_by: string };
     assert.equal(revision.changed_by, "release:3.0.3:huixian-immersive");
     await repository.saveHuixianProfile({ ...profile!, name: "会仙·管理员调整" }, "admin:test");
+    repository.saveGroup({ ...repository.getGroup("10001")!, visionEnabled: false });
   } finally {
     migrated.close();
   }
@@ -319,11 +345,16 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
   ], {
     encoding: "utf8",
     env: { ...process.env, UBOT_STATE_ENCRYPTION_KEY: TEST_STATE_KEY },
-  })) as { huixianProfileRevision: { applied: boolean; revision: string } };
+  })) as {
+    huixianProfileRevision: { applied: boolean; revision: string };
+    groupVisionEnabled: { applied: boolean; groupsUpdated: number };
+  };
   assert.deepEqual(repeated.huixianProfileRevision, { applied: false, revision: "immersive-natural-v3.0.3" });
+  assert.deepEqual(repeated.groupVisionEnabled, { applied: false, groupsUpdated: 0 });
 
   const afterRepeat = new SharedDb(dbPath);
   try {
+    const repository = new V3StateRepository(afterRepeat, { stateEncryptionKey: TEST_STATE_KEY });
     const profile = afterRepeat.db.prepare(
       "SELECT name FROM v3_character_profiles WHERE id = 'huixian'",
     ).get() as { name: string };
@@ -332,6 +363,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     ).get() as { count: number };
     assert.equal(profile.name, "会仙·管理员调整");
     assert.equal(revisions.count, 2);
+    assert.equal(repository.getGroup("10001")?.visionEnabled, false);
   } finally {
     afterRepeat.close();
   }

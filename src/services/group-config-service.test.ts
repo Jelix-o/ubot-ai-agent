@@ -116,7 +116,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal((await service.getGroup("67890"))?.defaultVoiceReplyEnabled, false);
       assert.equal((await service.getGroup("67890"))?.opsAlertsEnabled, false);
       assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, false);
-      assert.equal((await service.getGroup("67890"))?.visionEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.visionEnabled, true);
+      assert.equal((await service.getGroup("67890"))?.ambientGroupContextEnabled, true);
       assert.equal((await service.getGroup("67890"))?.participationMode, "mentions_only");
 
       const enabled = await service.updateGroupConfig("67891", {
@@ -127,7 +128,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
         defaultVoiceReplyEnabled: true,
         opsAlertsEnabled: true,
         onlineLookupEnabled: true,
-        visionEnabled: true,
+        visionEnabled: false,
+        ambientGroupContextEnabled: false,
       });
       assert.equal(enabled.dailyReportEnabled, true);
       assert.equal(enabled.holidayCountdownEnabled, true);
@@ -136,7 +138,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal(enabled.defaultVoiceReplyEnabled, true);
       assert.equal(enabled.opsAlertsEnabled, true);
       assert.equal(enabled.onlineLookupEnabled, true);
-      assert.equal(enabled.visionEnabled, true);
+      assert.equal(enabled.visionEnabled, false);
+      assert.equal(enabled.ambientGroupContextEnabled, false);
     },
   );
 });
@@ -151,6 +154,7 @@ test("NapCat bootstrap uses the packaged huixian skill and inactive broadcasts",
       assert.equal(groups[0]?.currentSkillId, "huixian");
       assert.equal(groups[0]?.enabled, false);
       assert.equal(groups[0]?.opsAlertsEnabled, false);
+      assert.equal(groups[0]?.visionEnabled, true);
     },
   );
 });
@@ -219,6 +223,7 @@ test("group config updates full editable config with validation", async () => {
         opsAlertsEnabled: false,
         onlineLookupEnabled: false,
         visionEnabled: true,
+        ambientGroupContextEnabled: false,
       });
 
       assert.equal(updated.currentSkillId, "huixian");
@@ -246,6 +251,7 @@ test("group config updates full editable config with validation", async () => {
       assert.equal(updated.opsAlertsEnabled, false);
       assert.equal(updated.onlineLookupEnabled, false);
       assert.equal(updated.visionEnabled, true);
+      assert.equal(updated.ambientGroupContextEnabled, false);
       assert.deepEqual(updated.manualIdentities?.[0], { userIds: ["20001"], names: ["Tester"], note: "note" });
 
       await assert.rejects(

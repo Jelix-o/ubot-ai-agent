@@ -46,7 +46,7 @@ const hasCommandQuery = computed(() => commandQuery.value.trim().length > 0);
 const navSections = computed(() => {
   const sections = [
     { title: "群聊运营 WORKSPACE", names: ["overview", "groups", "members"] },
-    { title: "智能与内容 INTELLIGENCE", names: ["memories", "knowledge", "html-previews", "persona"] },
+    { title: "智能与内容 INTELLIGENCE", names: ["memories", "knowledge", "html-previews", "memes", "persona"] },
     { title: "系统控制 SYSTEM", names: ["commands", "tasks", "audit", "security", "health", "settings"] },
   ];
   return sections.map((sec) => ({
@@ -63,6 +63,7 @@ function iconFor(name: unknown): string {
     memories: "memory",
     knowledge: "knowledge",
     "html-previews": "overview",
+    memes: "knowledge",
     tasks: "tasks",
     audit: "audit",
     security: "health",
@@ -254,7 +255,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span class="pulse-dot pulsing" /> 系统运行中</strong>
-          <small>UBot v3.0.17 · 在线</small>
+          <small>UBot v3.0.18 · 在线</small>
         </div>
       </div>
     </aside>

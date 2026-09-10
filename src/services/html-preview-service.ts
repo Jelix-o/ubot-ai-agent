@@ -19,6 +19,7 @@ export const DEFAULT_HTML_PREVIEW_MIN_FREE_BYTES = 32 * 1024 * 1024;
 const HTML_PREVIEW_TEMP_RETENTION_MS = 15 * 60 * 1_000;
 export const HTML_PREVIEW_FAILURE_MESSAGE = "网页生成失败了，这次没能发布预览链接。请换个说法后再试一次。";
 export const HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE = "网页生成服务暂时繁忙，请稍后再试。";
+export const HTML_PREVIEW_OUTPUT_TRUNCATED_MESSAGE = "网页内容过于复杂，生成达到长度上限，这次没能发布预览链接。请减少细节后再试。";
 
 export interface ParsedHtmlPreviewRequest {
   request: string;
@@ -678,9 +679,9 @@ function errorCodeOf(error: unknown): string {
 }
 
 function failureMessageFor(errorCode: string | undefined): string {
-  return errorCode === "html_preview_provider_unavailable"
-    ? HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE
-    : HTML_PREVIEW_FAILURE_MESSAGE;
+  if (errorCode === "html_preview_provider_unavailable") return HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE;
+  if (errorCode === "html_preview_output_truncated") return HTML_PREVIEW_OUTPUT_TRUNCATED_MESSAGE;
+  return HTML_PREVIEW_FAILURE_MESSAGE;
 }
 
 function extractOutboxId(value: unknown): number | undefined {

@@ -15,6 +15,8 @@ const CIPHER_VERSION = "v1";
 const STATE_CUTOVER_META_KEY = "state_cutover";
 const STATE_CUTOVER_VERSION = "v3";
 const HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY = "huixian_release_profile_revision";
+const GROUP_VISION_ENABLED_MIGRATION_META_KEY = "group_vision_enabled_v3_0_18";
+const GROUP_VISION_ENABLED_MIGRATION_VERSION = "complete";
 
 export interface V3CapabilityPolicy {
   version: number;
@@ -306,6 +308,45 @@ export class V3StateRepository {
       }
       const controlRemoved = this.deleteDocument("group-control", "default");
       return { groupsCleared, controlRemoved };
+    });
+  }
+
+  /**
+   * Applies the 3.0.18 image-understanding default to groups that already
+   * existed before this release. The marker is committed with the group rows,
+   * so an administrator can later turn an individual group back off without a
+   * future release undoing that choice.
+   */
+  enableVisionForExistingGroupsOnce(now = Date.now()): { applied: boolean; groupsUpdated: number } {
+    return this.withImmediateTransaction(() => {
+      if (this.getMeta(GROUP_VISION_ENABLED_MIGRATION_META_KEY) === GROUP_VISION_ENABLED_MIGRATION_VERSION) {
+        return { applied: false, groupsUpdated: 0 };
+      }
+
+      const rows = this.sharedDb.db.prepare(
+        "SELECT group_id, config_json FROM v3_groups ORDER BY group_id",
+      ).all() as Array<{ group_id: string; config_json: string }>;
+      const update = this.sharedDb.db.prepare(
+        "UPDATE v3_groups SET config_json = ?, updated_at = ? WHERE group_id = ?",
+      );
+      let groupsUpdated = 0;
+      for (const row of rows) {
+        const group = parseJson<GroupBotConfig>(row.config_json);
+        if (!group || typeof group !== "object" || Array.isArray(group)) {
+          throw new Error("invalid_v3_group_config_for_vision_migration");
+        }
+        if (group.visionEnabled === true) {
+          continue;
+        }
+        update.run(JSON.stringify({ ...group, visionEnabled: true }), now, row.group_id);
+        groupsUpdated += 1;
+      }
+      this.setMeta(
+        GROUP_VISION_ENABLED_MIGRATION_META_KEY,
+        GROUP_VISION_ENABLED_MIGRATION_VERSION,
+        now,
+      );
+      return { applied: true, groupsUpdated };
     });
   }
 

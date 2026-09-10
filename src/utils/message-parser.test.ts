@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseGroupMessage } from "./message-parser.js";
+import { extractImagesFromMessage, extractTextFromMessage, parseGroupMessage } from "./message-parser.js";
 
 test("parseGroupMessage extracts reply segment ids without changing trigger rules", () => {
   const result = parseGroupMessage(
@@ -141,4 +141,33 @@ test("parseGroupMessage identifies non-bot CQ at segments as verified targets", 
   assert.equal(result.text, "@67890 请提醒他");
   assert.deepEqual(result.verifiedMentionUserIds, ["67890"]);
   assert.deepEqual(result.plainTextMentionCandidates, []);
+});
+
+test("parseGroupMessage extracts CQ image segments from a raw string message", () => {
+  const result = parseGroupMessage(
+    "[CQ:at,qq=12345][CQ:image,file=8a7b.image,url=https://example.com/a.png?x=1&amp;y=2,summary=&#91;图片&#93;] 这是什么",
+    "12345",
+  );
+
+  assert.equal(result.hasAtBot, true);
+  assert.equal(result.text, "这是什么");
+  assert.deepEqual(result.images, [{
+    file: "8a7b.image",
+    url: "https://example.com/a.png?x=1&y=2",
+    summary: "[图片]",
+  }]);
+});
+
+test("CQ image and reply fields are retained for string segments in referenced messages", () => {
+  const message = "[CQ:reply,id=987654][CQ:image,file=reply-image.image,summary=截图] 回复内容";
+  const parsed = parseGroupMessage(message, "12345");
+
+  assert.equal(parsed.replyMessageId, "987654");
+  assert.equal(parsed.text, "回复内容");
+  assert.deepEqual(extractImagesFromMessage(message), [{
+    file: "reply-image.image",
+    summary: "截图",
+    url: undefined,
+  }]);
+  assert.equal(extractTextFromMessage(message), "回复内容");
 });

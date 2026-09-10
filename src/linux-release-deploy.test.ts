@@ -138,6 +138,12 @@ test("V3 release source verification restricts artifacts to the audited runtime 
   assert.match(linuxPackager, /npm ci --omit=dev --ignore-scripts/);
   assert.match(windowsPackager, /npm ci --omit=dev --ignore-scripts/);
   assert.match(windowsPackager, /set "NODE_ENV=production"/);
+  for (const asset of ["assets/huixian-profile.json", "assets/blacklisted-at-meme.jpg"]) {
+    const pathPattern = new RegExp(asset.replaceAll(".", "\\."));
+    assert.match(verifier, pathPattern);
+    assert.match(linuxPackager, pathPattern);
+    assert.match(windowsPackager, pathPattern);
+  }
   for (const document of ["MIGRATION-v3.md", "ROLLBACK-v3.md"]) {
     const pathPattern = new RegExp(`docs/${document.replace(".", "\\.")}`);
     assert.match(verifier, pathPattern);

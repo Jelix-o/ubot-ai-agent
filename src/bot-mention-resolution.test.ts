@@ -24,6 +24,10 @@ class MentionTransport implements MessageTransport {
     this.sent.push({ groupId, text });
   }
 
+  async sendGroupImage(): Promise<void> {
+    throw new Error("not used");
+  }
+
   async sendGroupRecord(): Promise<void> {
     throw new Error("not used");
   }

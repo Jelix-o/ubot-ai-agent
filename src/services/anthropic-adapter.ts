@@ -40,13 +40,19 @@ export class AnthropicChatCompletions implements ProviderCapabilitiesCarrier {
     });
   }
 
-  async create(params: ChatCompletionCreateParams): Promise<ChatCompletion> {
+  async create(
+    params: ChatCompletionCreateParams,
+    options?: { signal?: AbortSignal; timeout?: number },
+  ): Promise<ChatCompletion> {
     if ((params as { stream?: boolean }).stream === true) {
       throw new Error("anthropic_stream_unsupported");
     }
     const request = toAnthropicRequest(params);
-    const signal = (params as { signal?: AbortSignal }).signal;
-    const result = await this.client.messages.create(request as never, signal ? { signal } : undefined) as Anthropic.Message;
+    const signal = options?.signal ?? (params as { signal?: AbortSignal }).signal;
+    const requestOptions = signal || options?.timeout
+      ? { ...(signal ? { signal } : {}), ...(options?.timeout ? { timeout: options.timeout } : {}) }
+      : undefined;
+    const result = await this.client.messages.create(request as never, requestOptions) as Anthropic.Message;
 
     const textContent = result.content
       .flatMap((block) => block.type === "text" ? [block.text] : [])

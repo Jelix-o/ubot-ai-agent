@@ -4,6 +4,7 @@ import { logError, logInfo, logWarn } from "./logger.js";
 import {
   getAiProviderFailureDetails,
   isRetryableAiProviderFailure,
+  StaticHtmlOutputTruncatedError,
   type AiService,
 } from "./services/ai-service.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
@@ -46,6 +47,7 @@ import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
+import { getBlacklistedAtMemeImageFile } from "./services/blacklisted-at-meme.js";
 import { TtsServiceError } from "./services/tts-service.js";
 import type {
   ProviderCapabilityFeature,
@@ -118,6 +120,8 @@ const HTML_PREVIEW_PREFIX = "#网页";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
+const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 3 * 60 * 1_000;
+const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 12;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 const SEND_FAILURE_ALERT_THRESHOLD = 3;
@@ -208,6 +212,7 @@ interface ReplyAiResult {
   reply: AiReply;
   usedMode: ReplyModelMode;
   fallbackUsed: boolean;
+  visionFallback: boolean;
 }
 
 export interface HtmlPreviewFallbackRoute {
@@ -224,10 +229,10 @@ export interface HtmlPreviewFallbackRoute {
  */
 export type BackgroundLlmGate = <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 
-class VisionUnsupportedModelError extends Error {
+class VisionFallbackUnavailableError extends Error {
   constructor(modelLabel: string) {
-    super(`The selected reply model does not support image input: ${modelLabel}`);
-    this.name = "VisionUnsupportedModelError";
+    super(`No configured GPT vision route is available for image input while ${modelLabel} is selected.`);
+    this.name = "VisionFallbackUnavailableError";
   }
 }
 
@@ -252,6 +257,7 @@ export interface TransportHealthStatus {
 
 export interface MessageTransport {
   sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
+  sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
   sendGroupRecord(groupId: string, recordFile: string): Promise<void | MessageReceipt>;
   sendGroupAiRecord(groupId: string, text: string): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
@@ -290,7 +296,40 @@ interface MessageInteractionContext {
 
 interface ConversationOptions {
   allowControlledMention?: boolean;
+  /** Explicit normal text paths only; live chat, commands and voice omit this. */
+  allowNormalChatMeme?: boolean;
   scenarioInstruction?: string;
+}
+
+/**
+ * The bot deliberately sees only selection operations. Library persistence,
+ * probability, cooldowns and file validation remain owned by the meme service.
+ */
+export interface MemeLibraryRuntimeService {
+  selectBlacklistedAtImage(groupId?: string): Promise<MemeImageSelection | undefined>;
+  claimNormalChatImage(input: {
+    groupId: string;
+    userText: string;
+    now?: number;
+  }): Promise<MemeNormalChatClaimResult>;
+}
+
+export interface MemeImageSelection {
+  imageFile: string;
+}
+
+export type MemeNormalChatClaimReason =
+  | "sent_candidate"
+  | "no_match"
+  | "policy_disabled"
+  | "probability_miss"
+  | "cooldown"
+  | "asset_unavailable";
+
+export interface MemeNormalChatClaimResult {
+  reason: MemeNormalChatClaimReason;
+  selection?: MemeImageSelection;
+  matchedTagIds: string[];
 }
 
 /**
@@ -383,8 +422,11 @@ export class BotApplication {
     private readonly htmlPreviewFallbackRoute?: HtmlPreviewFallbackRoute,
     /** V3 bridge from a QQ sender to an authenticated administrator account. */
     private readonly qqAdminAuthorization?: QqAdminAuthorization,
-    /** Read-only, intent-gated access to the durable recent group transcript. */
-    private readonly recentGroupEvidenceService?: Pick<RecentGroupEvidenceService, "list">,
+    /** Read-only, bounded access to the durable recent group transcript. */
+    private readonly recentGroupEvidenceService?: Pick<RecentGroupEvidenceService, "list"> &
+      Partial<Pick<RecentGroupEvidenceService, "listAmbient">>,
+    /** Optional during the V3 library rollout so legacy embeddings remain valid. */
+    private readonly memeLibraryService?: MemeLibraryRuntimeService,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -497,21 +539,30 @@ export class BotApplication {
     const commandText = extractCommandText(event.message);
     const runtimeCommands = await this.getRuntimeCommands();
 
-    if (isRetiredPersonaCommand(commandText)) {
-      await this.sendText(groupId, "会仙人格是唯一固定角色；人格市场已退休，角色切换已关闭。");
-      return;
-    }
-
     const blacklistCommand = matchRuntimeCommand(commandText, runtimeCommands, "blacklist");
     if (blacklistCommand) {
       const handled = await this.handleBlacklistCommand(groupConfig, event, blacklistCommand.rewrittenText);
       if (handled) {
         return;
       }
+      // A blacklisted member's blacklist-management command remains silent.
+      // It must not fall through into the general mention-triggered image path.
+      if (this.isBlacklistedUser(groupConfig, userId)) {
+        await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
+        return;
+      }
     }
 
     if (this.isBlacklistedUser(groupConfig, userId)) {
       await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
+      if (parsedMessage.hasAtBot) {
+        await this.maybeSendBlacklistedAtMeme(groupId);
+      }
+      return;
+    }
+
+    if (isRetiredPersonaCommand(commandText)) {
+      await this.sendText(groupId, "会仙人格是唯一固定角色；人格市场已退休，角色切换已关闭。");
       return;
     }
 
@@ -742,6 +793,14 @@ export class BotApplication {
       event.sender?.card,
       event.sender?.nickname,
     );
+    // Random reactions are intentionally limited to messages that are text
+    // only. A vision turn can already return or discuss an image; appending an
+    // unrelated meme there makes the response noisy and breaks the normal
+    // text-conversation scope of the library.
+    const allowNormalChatMeme =
+      parsedMessage.text.trim().length > 0 &&
+      parsedMessage.images.length === 0 &&
+      (messageContext.replyContext?.images?.length ?? 0) === 0;
     const singCommand = matchRuntimeCommand(commandText, runtimeCommands, "sing");
     if (singCommand) {
       if (!this.isCapabilityEnabled("singing")) {
@@ -895,7 +954,7 @@ export class BotApplication {
           resolveDefaultReplyMode(groupConfig),
           keywordMentionUserIds,
           messageContext,
-          false,
+          { allowNormalChatMeme },
           conversationRoute,
         );
       });
@@ -930,7 +989,10 @@ export class BotApplication {
         resolveDefaultReplyMode(groupConfig),
         [],
         messageContext,
-        parsedMessage.hasAtBot,
+        {
+          allowControlledMention: parsedMessage.hasAtBot,
+          allowNormalChatMeme,
+        },
         conversationRoute,
         signal,
       );
@@ -1307,19 +1369,25 @@ export class BotApplication {
             return await (this.backgroundLlmGate ? this.backgroundLlmGate(call, requestSignal) : call());
           } catch (error) {
             const fallback = this.htmlPreviewFallbackRoute;
-            if (!isRetryableAiProviderFailure(error, requestSignal)) throw error;
+            const outputTruncated = error instanceof StaticHtmlOutputTruncatedError;
+            if (!outputTruncated && !isRetryableAiProviderFailure(error, requestSignal)) throw error;
             if (fallbackUsed || !fallback || fallback.mode === generationRoute.mode) {
-              throw new HtmlPreviewError("html_preview_provider_unavailable");
+              throw new HtmlPreviewError(outputTruncated ? "html_preview_output_truncated" : "html_preview_provider_unavailable");
             }
-            const primaryFailure = getAiProviderFailureDetails(error);
-            logWarn("HTML preview provider unavailable; switching to fallback model.", {
+            const primaryFailure = outputTruncated ? undefined : getAiProviderFailureDetails(error);
+            logWarn("HTML preview primary generation failed; switching to fallback model.", {
               groupId,
               sourceMessageId: String(event.message_id),
               primaryMode: generationRoute.mode,
               fallbackMode: fallback.mode,
-              failureKind: primaryFailure.kind,
-              ...(primaryFailure.statusCode === undefined ? {} : { statusCode: primaryFailure.statusCode }),
-              errorName: primaryFailure.errorName,
+              failureKind: outputTruncated ? "output_truncated" : primaryFailure!.kind,
+              ...(primaryFailure?.statusCode === undefined ? {} : { statusCode: primaryFailure.statusCode }),
+              errorName: error instanceof Error ? error.name : typeof error,
+              ...(outputTruncated ? {
+                finishReason: error.finishReason,
+                completionTokens: error.completionTokens,
+                outputChars: error.outputChars,
+              } : {}),
             });
             generationRoute = fallback;
             fallbackUsed = true;
@@ -1327,6 +1395,18 @@ export class BotApplication {
             try {
               return await (this.backgroundLlmGate ? this.backgroundLlmGate(fallbackCall, requestSignal) : fallbackCall());
             } catch (fallbackError) {
+              const fallbackOutputTruncated = fallbackError instanceof StaticHtmlOutputTruncatedError;
+              if (fallbackOutputTruncated) {
+                logWarn("HTML preview fallback output was truncated.", {
+                  groupId,
+                  sourceMessageId: String(event.message_id),
+                  fallbackMode: fallback.mode,
+                  finishReason: fallbackError.finishReason,
+                  completionTokens: fallbackError.completionTokens,
+                  outputChars: fallbackError.outputChars,
+                });
+                throw new HtmlPreviewError("html_preview_output_truncated");
+              }
               if (isRetryableAiProviderFailure(fallbackError, requestSignal)) {
                 const fallbackFailure = getAiProviderFailureDetails(fallbackError);
                 logWarn("HTML preview fallback model is unavailable.", {
@@ -1905,7 +1985,7 @@ export class BotApplication {
 
     await this.groupConfigService.addBlacklistedUser(groupId, targetQq);
     await this.logAdminOperation(groupId, userId, "拉黑", targetQq);
-    await this.sendText(groupId, `已拉黑 ${targetQq}，之后不会回复他的消息`);
+    await this.sendText(groupId, `已拉黑 ${targetQq}，之后 @机器人将收到表情包`);
     return true;
   }
 
@@ -2486,7 +2566,34 @@ export class BotApplication {
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
+    const normalizedUserInput = userInput.trim() || "[图片消息]";
+    const imageInputCount = images.length + (messageContext.replyContext?.images?.length ?? 0);
+    if (imageInputCount > 0 && groupConfig.visionEnabled !== true) {
+      const disabledText = "本群未开启图片理解，请联系群管理员在后台开启后再发送图片。";
+      logInfo("Skipped image reply because vision is disabled for this group.", {
+        groupId: groupConfig.groupId,
+        imageCount: imageInputCount,
+        visionEnabled: false,
+      });
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, disabledText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, disabledText, receipt ? [receipt] : []);
+      return;
+    }
     const skill = await this.resolveSkill(groupConfig);
+    const explicitEvaluationTargetUserIds = collectEvaluationTargetUserIds(
+      messageContext.interactionTargets,
+      this.botQq,
+    );
+    const savedAliasResolution = explicitEvaluationTargetUserIds.length === 0 &&
+      isPersonEvaluationRequest(normalizedUserInput, true)
+      ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
+      : { status: "none" as const };
+    if (savedAliasResolution.status === "resolved") {
+      messageContext = {
+        ...messageContext,
+        interactionTargets: [savedAliasResolution.target],
+      };
+    }
     const relatedUserIds = messageContext.interactionTargets
       .map((target) => target.userId)
       .filter((target): target is string => Boolean(target));
@@ -2532,27 +2639,48 @@ export class BotApplication {
         ...(turn.userId ? { userId: turn.userId } : {}),
         timestamp: new Date(turn.createdAt).toISOString(),
       }));
-    const normalizedUserInput = userInput.trim() || "[图片消息]";
-    const evaluationTargetUserIds = [...new Set(
-      messageContext.interactionTargets
-        .map((target) => target.userId?.trim())
-        .filter((target): target is string => Boolean(target) && target !== this.botQq),
-    )];
+    const evaluationTargetUserIds = collectEvaluationTargetUserIds(
+      messageContext.interactionTargets,
+      this.botQq,
+    );
     const personEvaluationRequested = isPersonEvaluationRequest(
       normalizedUserInput,
       messageContext.interactionTargets.length > 0,
-    );
-    if (personEvaluationRequested && evaluationTargetUserIds.length !== 1) {
-      const clarificationText = "请明确 @ 一位要评价的群友，或者直接回复他的消息再让我评价。";
+    ) || savedAliasResolution.status === "ambiguous";
+    const explicitGroupEvaluationRequested = isExplicitGroupEvaluationRequest(normalizedUserInput);
+    const ordinaryEvaluationFallback =
+      personEvaluationRequested &&
+      evaluationTargetUserIds.length === 0 &&
+      savedAliasResolution.status === "none" &&
+      !explicitGroupEvaluationRequested;
+    const requiresClarification =
+      savedAliasResolution.status === "ambiguous" ||
+      (personEvaluationRequested && evaluationTargetUserIds.length > 1) ||
+      (personEvaluationRequested && explicitGroupEvaluationRequested && evaluationTargetUserIds.length !== 1);
+    if (requiresClarification) {
+      const clarificationText = "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, clarificationText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, clarificationText, receipt ? [receipt] : []);
-      logInfo("Skipped group evidence because the evaluation target was not uniquely verified.", {
+      const clarificationReason = savedAliasResolution.status === "ambiguous"
+        ? "ambiguous_saved_alias"
+        : evaluationTargetUserIds.length > 1
+          ? "multiple_verified_targets"
+          : "explicit_group_scope_without_verified_target";
+      logInfo("Skipped group evidence because an explicitly scoped evaluation target was not uniquely verified.", {
         groupId: groupConfig.groupId,
         verifiedTargetCount: evaluationTargetUserIds.length,
+        savedAliasStatus: savedAliasResolution.status,
+        clarificationReason,
       });
       return;
     }
-    const recentGroupEvidenceTriggered = personEvaluationRequested;
+    if (ordinaryEvaluationFallback) {
+      logInfo("Falling back to an ordinary AI reply for an unverified open-ended evaluation.", {
+        groupId: groupConfig.groupId,
+        savedAliasStatus: savedAliasResolution.status,
+      });
+    }
+    const recentGroupEvidenceTriggered = personEvaluationRequested && evaluationTargetUserIds.length === 1;
     const targetPrivacyOptedOut = recentGroupEvidenceTriggered &&
       (groupConfig.memoryDisabledUserIds ?? []).includes(evaluationTargetUserIds[0]!);
     if (targetPrivacyOptedOut) {
@@ -2579,6 +2707,51 @@ export class BotApplication {
         });
       }
     }
+    let ambientGroupContext: NonNullable<AiIdentityContext["ambientGroupContext"]> = [];
+    let ambientGroupContextStatus:
+      | "loaded"
+      | "disabled"
+      | "explicit_reply"
+      | "person_evaluation"
+      | "missing_source"
+      | "unavailable"
+      | "read_failed";
+    if (groupConfig.ambientGroupContextEnabled === false) {
+      ambientGroupContextStatus = "disabled";
+    } else if (messageContext.replyMessageId) {
+      ambientGroupContextStatus = "explicit_reply";
+    } else if (recentGroupEvidenceTriggered) {
+      ambientGroupContextStatus = "person_evaluation";
+    } else if (sourceRowId === undefined) {
+      ambientGroupContextStatus = "missing_source";
+    } else if (!this.recentGroupEvidenceService?.listAmbient) {
+      ambientGroupContextStatus = "unavailable";
+    } else {
+      try {
+        const causalMessageIds = new Set(
+          causalHistory.flatMap((turn) => [turn.sourceMessageId, turn.platformMessageId])
+            .filter((messageId): messageId is string => Boolean(messageId)),
+        );
+        ambientGroupContext = this.recentGroupEvidenceService.listAmbient({
+          groupId: groupConfig.groupId,
+          beforeSourceRowId: sourceRowId,
+          lookbackMs: AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
+          excludedUserIds: [
+            ...(groupConfig.blacklistedUserIds ?? []),
+            ...(groupConfig.memoryDisabledUserIds ?? []),
+          ],
+          limit: AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
+        }).filter((message) => !message.messageId || !causalMessageIds.has(message.messageId));
+        ambientGroupContextStatus = "loaded";
+      } catch (error) {
+        ambientGroupContextStatus = "read_failed";
+        logWarn("Ambient group context read failed closed.", {
+          groupId: groupConfig.groupId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    const ambientGroupContextChars = formatRecentGroupEvidenceForMetrics(ambientGroupContext).length;
     // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
     const atmosphere = this.atmosphereSummarizer
       ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
@@ -2741,6 +2914,7 @@ export class BotApplication {
         recentGroupEvidenceRequested: true,
         recentGroupEvidenceTargetUserId: evaluationTargetUserIds[0],
       } : {}),
+      ...(ambientGroupContext.length > 0 ? { ambientGroupContext } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
     const replyArgs = {
@@ -2755,7 +2929,7 @@ export class BotApplication {
     const modelStartedAt = Date.now();
 
     try {
-      const { reply, usedMode, fallbackUsed } = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal });
+      const { reply, usedMode, fallbackUsed, visionFallback } = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal });
       const modelMs = Date.now() - modelStartedAt;
       const resolvedMentionUserIds = await this.resolveMentionUserIds(
         groupConfig.groupId,
@@ -2773,7 +2947,10 @@ export class BotApplication {
       );
       const controlledMentionIdentities = selectManualIdentitiesForUserIds(
         promptManualIdentities,
-        relatedUserIds,
+        messageContext.interactionTargets
+          .filter((target) => target.source !== "alias")
+          .map((target) => target.userId)
+          .filter((target): target is string => Boolean(target)),
       );
       const controlledMentionUserId =
         options.allowControlledMention === true &&
@@ -2830,6 +3007,9 @@ export class BotApplication {
           contextScope: conversationRoute ? "causal_branch" : "isolated",
           topicId: conversationRoute?.topicId,
           branchId: conversationRoute?.branchId,
+          ambientGroupContextStatus,
+          ambientGroupContextCount: ambientGroupContext.length,
+          ambientGroupContextChars,
         });
         return;
       }
@@ -2846,6 +3026,12 @@ export class BotApplication {
         conversationRoute,
       );
       await this.persistAssistantContext(conversationRoute, replyText, receipts);
+      if (options.allowNormalChatMeme === true && normalizedUserInput.trim()) {
+        await this.maybeSendNormalChatMeme({
+          groupConfig,
+          userInput: normalizedUserInput,
+        });
+      }
 
       const promptSources = {
         causalHistory: history.map((turn) => turn.content).join("\n"),
@@ -2856,6 +3042,7 @@ export class BotApplication {
           .join("\n"),
         atmosphere: atmosphere?.summary ?? "",
         recentGroupEvidence: formatRecentGroupEvidenceForMetrics(recentGroupEvidence),
+        ambientGroupContext: formatRecentGroupEvidenceForMetrics(ambientGroupContext),
         currentInput: normalizedUserInput,
       };
 
@@ -2865,6 +3052,7 @@ export class BotApplication {
         model: reply.model,
         replyModelMode: usedMode,
         fallbackUsed,
+        visionFallback,
         messageCount: outgoingMessages.length,
         preparationMs,
         modelMs,
@@ -2873,6 +3061,9 @@ export class BotApplication {
         recentGroupEvidenceTriggered,
         recentGroupEvidenceCount: recentGroupEvidence.length,
         recentGroupEvidenceTargetPrivacyOptedOut: targetPrivacyOptedOut,
+        ambientGroupContextStatus,
+        ambientGroupContextCount: ambientGroupContext.length,
+        ambientGroupContextChars,
         promptChars: reply.promptChars ?? 0,
         promptSourceChars: mapTextMetrics(promptSources, (text) => text.length),
         promptSourceTokensEstimated: mapTextMetrics(promptSources, estimateTextTokens),
@@ -2989,17 +3180,33 @@ export class BotApplication {
       signal?: AbortSignal;
     },
   ): Promise<ReplyAiResult> {
-    const route = await this.getReplyAiRoute(groupConfig);
+    const selectedRoute = await this.getReplyAiRoute(groupConfig);
+    const hasImages = (args.images?.length ?? 0) > 0;
+    let route = selectedRoute;
+    let visionFallback = false;
 
-    if ((args.images?.length ?? 0) > 0 && !route.supportsVision) {
-      throw new VisionUnsupportedModelError(route.label);
+    if (hasImages && !selectedRoute.supportsVision) {
+      const options = await this.getReplyModelOptions({ allowEnvironmentFallback: false });
+      const gptVisionRoute = options.find((option) => option.mode === "gpt" && option.supportsVision);
+      if (!gptVisionRoute) {
+        throw new VisionFallbackUnavailableError(selectedRoute.label);
+      }
+      route = gptVisionRoute;
+      visionFallback = true;
+      logInfo("Routing image reply through configured GPT vision fallback.", {
+        groupId: groupConfig.groupId,
+        selectedMode: selectedRoute.mode,
+        visionFallbackMode: route.mode,
+        inputImageCount: args.images?.length ?? 0,
+      });
     }
     const call = async () => route.service.generateReply(args);
     const reply = this.llmGate ? await this.llmGate(call, args.signal) : await call();
     return {
       reply,
       usedMode: route.mode,
-      fallbackUsed: false,
+      fallbackUsed: visionFallback,
+      visionFallback,
     };
   }
 
@@ -3696,6 +3903,83 @@ export class BotApplication {
       await this.handleSendFailure(error);
       throw error;
     }
+  }
+
+  /**
+   * A blacklist response must stay an isolated image-only action: it cannot
+   * reset live-chat timers or emit a recovery notice alongside the meme.
+   */
+  private async sendBlacklistedAtMeme(groupId: string, imageFile: string): Promise<MessageReceipt | undefined> {
+    return (await this.transport.sendGroupImage(groupId, imageFile)) ?? undefined;
+  }
+
+  /**
+   * Blacklisted @ replies remain fully isolated from normal activity tracking
+   * and model work. The legacy asset fallback keeps pre-library embeddings
+   * compatible while V3 uses the protected random pool.
+   */
+  private async maybeSendBlacklistedAtMeme(groupId: string): Promise<void> {
+    try {
+      const selection = this.memeLibraryService
+        ? await this.memeLibraryService.selectBlacklistedAtImage(groupId)
+        : { imageFile: await getBlacklistedAtMemeImageFile() };
+      if (!selection?.imageFile) {
+        return;
+      }
+      await this.sendBlacklistedAtMeme(groupId, selection.imageFile);
+    } catch (error) {
+      logWarn("Skipped blacklisted @ meme because the selected asset could not be sent.", {
+        groupId,
+        error: summarizeAiError(error),
+      });
+    }
+  }
+
+  /**
+   * An extra normal-chat image is best effort only. It runs after the primary
+   * reply is both sent and persisted, so library/transport failures can
+   * never change the conversation response already delivered to the group.
+   */
+  private async maybeSendNormalChatMeme(args: {
+    groupConfig: GroupBotConfig;
+    userInput: string;
+  }): Promise<void> {
+    if (!this.memeLibraryService) {
+      return;
+    }
+
+    try {
+      const result = await this.memeLibraryService.claimNormalChatImage({
+        groupId: args.groupConfig.groupId,
+        userText: args.userInput,
+      });
+      const { selection } = result;
+      if (!selection?.imageFile) {
+        logInfo("Skipped normal chat meme.", {
+          groupId: args.groupConfig.groupId,
+          reason: result.reason,
+          matchedTagIds: result.matchedTagIds,
+        });
+        return;
+      }
+      await this.sendNormalChatMeme(args.groupConfig.groupId, selection.imageFile);
+      logInfo("Sent normal chat meme.", {
+        groupId: args.groupConfig.groupId,
+        reason: result.reason,
+        matchedTagIds: result.matchedTagIds,
+      });
+    } catch (error) {
+      logWarn("Skipped normal chat meme after primary reply.", {
+        groupId: args.groupConfig.groupId,
+        errorType: error instanceof Error ? error.name : typeof error,
+      });
+    }
+  }
+
+  private async sendNormalChatMeme(groupId: string, imageFile: string): Promise<MessageReceipt | undefined> {
+    const receipt = await this.transport.sendGroupImage(groupId, imageFile);
+    this.liveChatService.recordBotActivity(groupId);
+    return receipt ?? undefined;
   }
 
   private async clearUserConversationContext(groupId: string, userId: string): Promise<void> {
@@ -4928,10 +5212,93 @@ function collectMemoryIdentityTerms(groupConfig: GroupBotConfig, userIds: string
     .filter((name) => name.length >= 2);
 }
 
+type SavedAliasEvaluationResolution =
+  | { status: "none" }
+  | { status: "ambiguous" }
+  | { status: "resolved"; target: AiInteractionTarget };
+
+function collectEvaluationTargetUserIds(targets: AiInteractionTarget[], botQq: string): string[] {
+  return [...new Set(
+    targets
+      .map((target) => target.userId?.trim())
+      .filter((target): target is string => Boolean(target) && target !== botQq),
+  )];
+}
+
+function resolveSavedAliasEvaluationTarget(
+  groupConfig: GroupBotConfig,
+  text: string,
+): SavedAliasEvaluationResolution {
+  const normalizedText = normalizeSavedAliasMatchText(text);
+  if (!normalizedText) return { status: "none" };
+
+  const matches: Array<{
+    start: number;
+    end: number;
+    aliasLength: number;
+    target: AiInteractionTarget;
+  }> = [];
+  for (const identity of groupConfig.manualIdentities ?? []) {
+    const userId = identity.userIds[0]?.trim();
+    if (!userId || !/^\d+$/.test(userId)) continue;
+    for (const rawAlias of identity.names) {
+      const alias = normalizeSavedAliasMatchText(rawAlias);
+      const aliasLength = Array.from(alias).length;
+      if (aliasLength < 2 || /^\d+$/.test(alias)) continue;
+
+      let start = normalizedText.indexOf(alias);
+      while (start >= 0) {
+        matches.push({
+          start,
+          end: start + alias.length,
+          aliasLength,
+          target: {
+            userId,
+            names: normalizeNames(identity.names),
+            source: "alias",
+          },
+        });
+        start = normalizedText.indexOf(alias, start + alias.length);
+      }
+    }
+  }
+
+  if (matches.length === 0) return { status: "none" };
+
+  const longestMatches = matches.filter((match) => !matches.some((candidate) =>
+    candidate.aliasLength > match.aliasLength &&
+    candidate.start <= match.start &&
+    candidate.end >= match.end
+  ));
+  const byUserId = new Map<string, AiInteractionTarget>();
+  for (const match of longestMatches) {
+    if (match.target.userId) byUserId.set(match.target.userId, match.target);
+  }
+  if (byUserId.size !== 1) return { status: "ambiguous" };
+  return { status: "resolved", target: [...byUserId.values()][0]! };
+}
+
+function normalizeSavedAliasMatchText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("zh-CN").replace(/\s+/g, "");
+}
+
+function isExplicitGroupEvaluationRequest(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return /(?:群友|群成员|本群|群里|群聊(?:记录|内容|消息)?|聊天记录)/u.test(normalized);
+}
+
 function isPersonEvaluationRequest(text: string, hasInteractionTarget: boolean): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
-  if (/(?:评价|锐评|点评|评一评|吐槽一下)/u.test(normalized)) return true;
-  return hasInteractionTarget && /(?:怎么看|如何看待|分析一下|说说.{0,8}(?:印象|看法))/u.test(normalized);
+  if (/(?:评价|锐评|点评|评一评|吐槽(?:一下)?)/u.test(normalized)) return true;
+  if (/(?:是个?|是什么|是怎样|是何种)(?:[什怎]么样|怎样|啥样|何等)(?:的?(?:人|女性|男性|女生|男生|妹子|姑娘|女人|男人|汉子|小伙|家伙|角色|存在|朋友|同事))?/u.test(normalized)) return true;
+  if (/(?:是什么人|是怎样的人|是何许人|是何方神圣)/u.test(normalized)) return true;
+  if (/(?:在?你的?眼[中里]|在?你的?看来|在?你的?印象[中里])/u.test(normalized)) return true;
+  const hasTraitWord = /(?:性格|脾气|为人|人品|作风|特点|特质|风格|人设|底细|背景|形象|印象|看法|观感)/u.test(normalized);
+  const hasInquiryWord = /(?:[咋怎]样|[什怎]么样|啥样|如何|好不好|靠谱|行不行|何如|怎么样|评价|聊聊|说说|讲讲|谈谈|介绍)/u.test(normalized);
+  if (hasTraitWord && hasInquiryWord) return true;
+  if (/(?:你觉得.{1,10}怎么样|对.{1,10}有什么(?:看法|印象|评价|感觉))/u.test(normalized)) return true;
+  if (/(?:说说|聊聊|讲讲|谈谈).{1,10}(?:这个人|这人|这妹子|这姑娘|这老哥|这哥们|印象|看法|评价|感觉)/u.test(normalized)) return true;
+  return hasInteractionTarget && /(?:怎么看|如何看待|分析一下|说说.{0,8}(?:印象|看法|感觉))/u.test(normalized);
 }
 
 function formatRecentGroupEvidenceForMetrics(
@@ -5070,8 +5437,8 @@ function estimateTextTokens(text: string): number {
 function messageForAiFailure(error: unknown, failureKind: string): string {
   const message = error instanceof Error ? error.message : String(error);
   const errorName = error instanceof Error ? error.name : "";
-  if (errorName === "VisionUnsupportedModelError") {
-    return "当前选中的模型不支持图片理解。请先用 #模型 切换 gpt，再重新发送图片。";
+  if (errorName === "VisionFallbackUnavailableError") {
+    return "当前图片理解模型不可用，请联系管理员检查 GPT 图片理解配置后再试。";
   }
   if (errorName === "ImageInputUnavailableError" || errorName === "ImageInspectionError" || /provided URL|image_url|image input/i.test(message)) {
     return "这张图片没有成功读取成可分析内容，请重新发送原图或直接贴出代码文本。";

@@ -151,6 +151,21 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     return toMessageReceipt(data);
   }
 
+  async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
+    const data = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
+      group_id: Number(groupId),
+      message: [
+        {
+          type: "image",
+          data: {
+            file: imageFile,
+          },
+        },
+      ],
+    });
+    return toMessageReceipt(data);
+  }
+
   async sendGroupAiRecord(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
     const character = await this.getAiCharacter(groupId);
     const data = await this.callAction<NapCatSendMessageResponse>("send_group_ai_record", {
@@ -249,6 +264,17 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
       return image;
     }
 
+    const sourceUrl = isHttpUrl(image.url) ? image.url : isHttpUrl(image.file) ? image.file : undefined;
+    if (sourceUrl) {
+      try {
+        return { ...image, url: await downloadImageAsDataUrl(sourceUrl) };
+      } catch (error) {
+        logWarn("Failed to materialize image URL through the proxy; falling back to NapCat get_image.", {
+          error: (error as Error).message,
+        });
+      }
+    }
+
     if (image.file && !isHttpUrl(image.file)) {
       try {
         const payload = await this.callHttpAction<{ file?: string; path?: string; url?: string }>(
@@ -270,26 +296,6 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
         }
       } catch (error) {
         logWarn("Failed to resolve image through NapCat get_image.", {
-          error: (error as Error).message,
-        });
-      }
-    }
-
-    if (isHttpUrl(image.url)) {
-      try {
-        return { ...image, url: await downloadImageAsDataUrl(image.url) };
-      } catch (error) {
-        logWarn("Failed to materialize image URL for AI context.", {
-          error: (error as Error).message,
-        });
-      }
-    }
-
-    if (isHttpUrl(image.file)) {
-      try {
-        return { ...image, url: await downloadImageAsDataUrl(image.file) };
-      } catch (error) {
-        logWarn("Failed to materialize image file URL for AI context.", {
           error: (error as Error).message,
         });
       }

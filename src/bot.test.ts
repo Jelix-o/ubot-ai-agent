@@ -4,7 +4,13 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import test from "node:test";
 
-import { BotApplication, type HtmlPreviewFallbackRoute, type MessageTransport } from "./bot.js";
+import {
+  BotApplication,
+  type HtmlPreviewFallbackRoute,
+  type MemeLibraryRuntimeService,
+  type MessageTransport,
+} from "./bot.js";
+import { StaticHtmlOutputTruncatedError } from "./services/ai-service.js";
 import type { AdminOperationLogEntry } from "./services/admin-operation-log-service.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
@@ -35,11 +41,14 @@ import type {
 
 class FakeTransport implements MessageTransport {
   readonly sent: Array<{ groupId: string; text: string }> = [];
+  readonly images: Array<{ groupId: string; imageFile: string }> = [];
+  readonly outbound: Array<{ kind: "text" | "image"; groupId: string }> = [];
   readonly records: Array<{ groupId: string; recordFile: string }> = [];
   readonly aiRecords: Array<{ groupId: string; text: string }> = [];
   messagesById: Record<string, ReferencedMessage> = {};
   getMessageError?: Error;
   sendGroupMessageError?: Error;
+  sendGroupImageError?: Error;
   private nextSentMessageId = 10_000;
   allowOpsAlertWhenSendFails = false;
   memberDirectoryByGroup: Record<string, NapcatGroupMember[]> = {
@@ -57,6 +66,16 @@ class FakeTransport implements MessageTransport {
       throw this.sendGroupMessageError;
     }
     this.sent.push({ groupId, text });
+    this.outbound.push({ kind: "text", groupId });
+    return { messageId: String(this.nextSentMessageId++) };
+  }
+
+  async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId: string }> {
+    if (this.sendGroupImageError) {
+      throw this.sendGroupImageError;
+    }
+    this.images.push({ groupId, imageFile });
+    this.outbound.push({ kind: "image", groupId });
     return { messageId: String(this.nextSentMessageId++) };
   }
 
@@ -524,6 +543,43 @@ class FakeAiService {
   }
 }
 
+class FakeMemeLibraryService implements MemeLibraryRuntimeService {
+  blacklistedSelections: Array<{ groupId?: string }> = [];
+  claimCalls: Array<{ groupId: string; userText: string; now?: number }> = [];
+  onClaim?: () => void;
+
+  constructor(
+    private readonly options: {
+      blacklistedImageFile?: string;
+      claimedImageFile?: string;
+      claimError?: Error;
+      claimReason?: "sent_candidate" | "no_match" | "policy_disabled" | "probability_miss" | "cooldown" | "asset_unavailable";
+      matchedTagIds?: string[];
+    } = {},
+  ) {}
+
+  async selectBlacklistedAtImage(groupId?: string): Promise<{ imageFile: string } | undefined> {
+    this.blacklistedSelections.push({ groupId });
+    return this.options.blacklistedImageFile ? { imageFile: this.options.blacklistedImageFile } : undefined;
+  }
+
+  async claimNormalChatImage(input: {
+    groupId: string;
+    userText: string;
+    now?: number;
+  }): ReturnType<MemeLibraryRuntimeService["claimNormalChatImage"]> {
+    this.claimCalls.push({ ...input });
+    this.onClaim?.();
+    if (this.options.claimError) throw this.options.claimError;
+    const selection = this.options.claimedImageFile ? { imageFile: this.options.claimedImageFile } : undefined;
+    return {
+      reason: this.options.claimReason ?? (selection ? "sent_candidate" : "no_match"),
+      ...(selection ? { selection } : {}),
+      matchedTagIds: [...(this.options.matchedTagIds ?? [])],
+    };
+  }
+}
+
 class FakeTtsService {
   calls: Array<{ text: string; skill: SkillDefinition; options?: { mode?: "speech" | "singing" } }> = [];
 
@@ -943,6 +999,13 @@ function createApp(options?: {
       excludedUserIds?: string[];
       limit?: number;
     }): NonNullable<AiIdentityContext["recentGroupEvidence"]>;
+    listAmbient?(input: {
+      groupId: string;
+      beforeSourceRowId: number;
+      lookbackMs: number;
+      excludedUserIds?: string[];
+      limit?: number;
+    }): NonNullable<AiIdentityContext["ambientGroupContext"]>;
   };
   htmlPreviewService?: {
     enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string; request?: string }): Promise<{ page: HtmlPreviewMetadata; created: boolean }>;
@@ -958,6 +1021,7 @@ function createApp(options?: {
       qqUserId: string;
     } | undefined;
   };
+  memeLibraryService?: FakeMemeLibraryService;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1062,6 +1126,7 @@ function createApp(options?: {
     options?.htmlPreviewFallbackRoute,
     options?.qqAdminAuthorization,
     options?.recentGroupEvidenceService,
+    options?.memeLibraryService,
   );
 
   return {
@@ -1167,6 +1232,79 @@ test("HTML preview sticks to the silent ds fallback after a transient GPT failur
   assert.equal(primary.staticHtmlCalls.length, 1);
   assert.deepEqual(fallbackCalls, ["SVG 鹈鹕骑自行车", "SVG 鹈鹕骑自行车 repair"]);
   assert.equal(transport.sent.length, 0, "a successful silent fallback must not add a group notice");
+});
+
+test("HTML preview switches to the silent ds fallback after primary output truncation", async () => {
+  const primary = new FakeAiService(
+    async () => ({ text: "unused", model: "primary", skillId: "assistant" }),
+    undefined,
+    async () => { throw new StaticHtmlOutputTruncatedError("gemini", "length", 16_380, 48_000); },
+  );
+  const fallbackCalls: string[] = [];
+  const fallback = {
+    async generateStaticHtml(args: { request: string }) {
+      fallbackCalls.push(args.request);
+      return { text: '{"title":"凤凰","html":"<!doctype html><html><body>ok</body></html>"}', model: "deepseek" };
+    },
+  };
+  const publisher = {
+    async enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string }) {
+      return { created: true, page: { id: "T".repeat(43), groupId: input.groupId, creatorUserId: input.creatorUserId, sourceMessageId: input.sourceMessageId, title: "网页预览", previewUrl: "https://preview.9958.uk/p/test/", status: "pending" as const, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_000).toISOString() } };
+    },
+    async processNext(input: { request?: string; generate: (request: string) => Promise<unknown> }) {
+      await input.generate(input.request ?? "");
+      await input.generate(`${input.request ?? ""} repair`);
+      return { status: "published" as const };
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app, transport } = createApp({
+    aiService: primary,
+    htmlPreviewService: publisher,
+    htmlPreviewFallbackRoute: { mode: "ds", label: "ds", service: fallback },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#网页 SVG 凤凰骑独轮车" } }]));
+
+  assert.equal(primary.staticHtmlCalls.length, 1);
+  assert.deepEqual(fallbackCalls, ["SVG 凤凰骑独轮车", "SVG 凤凰骑独轮车 repair"]);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("HTML preview reports a dedicated error when primary and fallback outputs are truncated", async () => {
+  const primary = new FakeAiService(
+    async () => ({ text: "unused", model: "primary", skillId: "assistant" }),
+    undefined,
+    async () => { throw new StaticHtmlOutputTruncatedError("gemini", "length", 16_380, 48_000); },
+  );
+  let observedErrorCode = "";
+  const publisher = {
+    async enqueue(input: { groupId: string; creatorUserId: string; sourceMessageId: string }) {
+      return { created: true, page: { id: "U".repeat(43), groupId: input.groupId, creatorUserId: input.creatorUserId, sourceMessageId: input.sourceMessageId, title: "网页预览", previewUrl: "https://preview.9958.uk/p/test/", status: "pending" as const, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 1_000).toISOString() } };
+    },
+    async processNext(input: { request?: string; generate: (request: string) => Promise<unknown> }) {
+      try {
+        await input.generate(input.request ?? "");
+      } catch (error) {
+        observedErrorCode = error instanceof HtmlPreviewError ? error.code : "unknown";
+      }
+      return { status: "failed" as const, errorCode: observedErrorCode };
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app } = createApp({
+    aiService: primary,
+    htmlPreviewService: publisher,
+    htmlPreviewFallbackRoute: {
+      mode: "ds",
+      label: "ds",
+      service: { async generateStaticHtml() { throw new StaticHtmlOutputTruncatedError("deepseek", "max_tokens", 16_380, 47_000); } },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#网页 超复杂 SVG 动画" } }]));
+
+  assert.equal(observedErrorCode, "html_preview_output_truncated");
 });
 
 test("HTML preview does not switch providers for a non-retryable client error", async () => {
@@ -1340,7 +1478,7 @@ test("any legacy current skill falls back to huixian", async () => {
   ]));
   assert.equal(unknownAiService.calls[0]?.skill.id, "huixian");
 });
-test("Huixian never exposes the recent raw group transcript to ordinary AI calls", async () => {
+test("Huixian omits in-memory group traffic when no durable ambient context source is available", async () => {
   const huixianSkill: SkillDefinition = { ...assistantSkill, id: "huixian", maxContextTurns: 16 };
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
@@ -1384,6 +1522,7 @@ test("Huixian never exposes the recent raw group transcript to ordinary AI calls
   assert.equal(aiService.calls.length, 1);
   const identityContext = aiService.calls[0]?.identityContext as Record<string, unknown> | undefined;
   assert.equal(Object.hasOwn(identityContext ?? {}, "recentGroupMessages"), false);
+  assert.equal(Object.hasOwn(identityContext ?? {}, "ambientGroupContext"), false);
   assert.equal(aiService.calls[0]?.userInput, "群里在聊啥");
 });
 
@@ -1418,7 +1557,7 @@ test("worker persistence failure discards unpublished drafts and leaves the sour
   assert.equal(transport.sent.length, 1);
 });
 
-test("Huixian does not reintroduce raw group transcript under heavy group traffic", async () => {
+test("Huixian keeps heavy in-memory group traffic out when no durable ambient context source is available", async () => {
   const huixianSkill: SkillDefinition = { ...assistantSkill, id: "huixian", maxContextTurns: 16 };
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
@@ -1441,6 +1580,7 @@ test("Huixian does not reintroduce raw group transcript under heavy group traffi
 
   const identityContext = aiService.calls[0]?.identityContext as Record<string, unknown> | undefined;
   assert.equal(Object.hasOwn(identityContext ?? {}, "recentGroupMessages"), false);
+  assert.equal(Object.hasOwn(identityContext ?? {}, "ambientGroupContext"), false);
   assert.equal(aiService.calls[0]?.userInput, "总结当前话题");
 });
 
@@ -1886,12 +2026,13 @@ test("ops alert tick sends memory high alert and allows another alert after reco
   }
 });
 
-test("admin blacklist suppresses replies until unblocked while still recording reports", async () => {
+test("admin blacklist replies to each @ with only the meme while still recording reports", async () => {
   const { app, transport, aiService, groupConfigService, dailyReportService } = createApp();
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#拉黑 20001" } }], 99999));
   assert.deepEqual(groupConfigService.groups[0]?.blacklistedUserIds, ["20001"]);
   assert.match(transport.sent[0]?.text ?? "", /已拉黑 20001/);
+  assert.match(transport.sent[0]?.text ?? "", /@机器人将收到表情包/);
 
   await app.handleGroupMessage(
     createEvent([
@@ -1907,6 +2048,15 @@ test("admin blacklist suppresses replies until unblocked while still recording r
 
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent.length, 1);
+  assert.equal(transport.images.length, 1);
+  assert.equal(transport.images[0]?.groupId, "67890");
+  assert.match(transport.images[0]?.imageFile ?? "", /^base64:\/\//);
+  assert.deepEqual(
+    Buffer.from((transport.images[0]?.imageFile ?? "").replace(/^base64:\/\//, ""), "base64").subarray(0, 8),
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  );
+  assert.equal(transport.records.length, 0);
+  assert.equal(transport.aiRecords.length, 0);
   assert.equal(dailyReportService.recorded.length, 7);
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#拉黑 解除 20001" } }], 99999));
@@ -1921,6 +2071,263 @@ test("admin blacklist suppresses replies until unblocked while still recording r
 
   assert.equal(aiService.calls.length, 1);
   assert.equal(transport.sent.at(-1)?.text, "AI reply");
+});
+
+test("blacklisted mentions send one meme each and never enter the transcript or model flow", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+    blacklistedUserIds: ["20001"],
+    dailyReportEnabled: true,
+    dailyReportTime: "18:00",
+    dailyReportTopUserCount: 3,
+    opsAlertsEnabled: true,
+  }]);
+  const { app, transport, aiService, conversationStore, dailyReportService } = createApp({ groupConfigService });
+  const rawApp = app as unknown as {
+    liveChatService: LiveChatService;
+    opsAlertState: { consecutiveSendFailures: number; sendFailureAlertActive: boolean };
+  };
+  const lastBotActivityBefore = rawApp.liveChatService.getLastBotActivity("67890");
+  rawApp.opsAlertState.consecutiveSendFailures = 3;
+  rawApp.opsAlertState.sendFailureAlertActive = true;
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 第一次 " } },
+  ], 20001, 67890, 8101));
+  await app.handleGroupMessage(createEvent("[CQ:at,qq=12345] 第二次", 20001, 67890, 8102));
+  await app.handleGroupMessage(createEvent("@12345 第三次", 20001, 67890, 8103));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: " 不 @ " } }], 20001, 67890, 8104));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " #人格 列表" } },
+  ], 20001, 67890, 8105));
+
+  assert.equal(transport.images.length, 4);
+  assert.equal(transport.sent.length, 0);
+  assert.equal(transport.records.length, 0);
+  assert.equal(transport.aiRecords.length, 0);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(aiService.staticHtmlCalls.length, 0);
+  assert.equal(rawApp.liveChatService.getLastBotActivity("67890"), lastBotActivityBefore);
+  assert.deepEqual(conversationStore.turnsByKey, {});
+  assert.equal(
+    (app as unknown as { groupTranscriptService: { getRecentMessages(groupId: string): unknown[] } })
+      .groupTranscriptService
+      .getRecentMessages("67890")
+      .length,
+    0,
+  );
+  assert.equal(dailyReportService.recorded.length, 5);
+});
+
+test("blacklisted @ selects from the protected meme library without normal-chat model work", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+    blacklistedUserIds: ["20001"],
+    dailyReportEnabled: true,
+    dailyReportTime: "18:00",
+    dailyReportTopUserCount: 3,
+  }]);
+  const memeLibraryService = new FakeMemeLibraryService({
+    blacklistedImageFile: "base64://library-blacklist-meme",
+    claimedImageFile: "base64://must-not-send",
+  });
+  const { app, transport, aiService } = createApp({ groupConfigService, memeLibraryService });
+  const rawApp = app as unknown as { liveChatService: LiveChatService };
+  const activityBefore = rawApp.liveChatService.getLastBotActivity("67890");
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 第一次 " } },
+  ], 20001, 67890, 9101));
+  await app.handleGroupMessage(createEvent("[CQ:at,qq=12345] 第二次", 20001, 67890, 9102));
+
+  assert.deepEqual(transport.images.map((item) => item.imageFile), [
+    "base64://library-blacklist-meme",
+    "base64://library-blacklist-meme",
+  ]);
+  assert.deepEqual(memeLibraryService.blacklistedSelections, [{ groupId: "67890" }, { groupId: "67890" }]);
+  assert.equal(memeLibraryService.claimCalls.length, 0);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(rawApp.liveChatService.getLastBotActivity("67890"), activityBefore);
+});
+
+test("normal text replies append a locally matched meme after the text without a background model call", async () => {
+  const memeLibraryService = new FakeMemeLibraryService({
+    claimedImageFile: "base64://normal-chat-meme",
+    matchedTagIds: ["celebrate"],
+  });
+  const aiService = new FakeAiService(async () => ({ text: "AI reply", model: "test-model", skillId: "assistant" }));
+  const { app, transport } = createApp({ aiService, memeLibraryService });
+  let backgroundCalls = 0;
+  app.setBackgroundLlmGate(async (task) => {
+    backgroundCalls += 1;
+    return task();
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 今天终于发布了 " } },
+  ]));
+
+  assert.equal(transport.sent[0]?.text, "AI reply");
+  assert.deepEqual(transport.images, [{ groupId: "67890", imageFile: "base64://normal-chat-meme" }]);
+  assert.deepEqual(transport.outbound.map((item) => item.kind), ["text", "image"]);
+  assert.equal(backgroundCalls, 0);
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(memeLibraryService.claimCalls, [{ groupId: "67890", userText: "今天终于发布了" }]);
+});
+
+test("image-bearing conversations never append a normal chat meme", async () => {
+  const memeLibraryService = new FakeMemeLibraryService({
+    claimedImageFile: "base64://must-not-send",
+  });
+  const aiService = new FakeAiService(async () => ({ text: "AI reply", model: "test-model", skillId: "assistant" }));
+  const { app, transport } = createApp({
+    aiService,
+    memeLibraryService,
+    groupConfigService: new FakeGroupConfigService([{
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      participationMode: "mentions_only",
+      visionEnabled: true,
+    }]),
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 看看这张图 " } },
+    { type: "image", data: { url: "https://example.test/source.png", file: "source.png" } },
+  ]));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(transport.sent[0]?.text, "AI reply");
+  assert.equal(transport.images.length, 0);
+  assert.equal(memeLibraryService.claimCalls.length, 0);
+});
+
+test("keyword and verified reply conversations use the normal text meme path", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+    participationMode: "mentions_and_keywords",
+    triggerKeywords: [{ keyword: "配图关键词", enabled: true }],
+  }]);
+  const memeLibraryService = new FakeMemeLibraryService({
+    claimedImageFile: "base64://normal-chat-meme",
+    matchedTagIds: ["reaction"],
+  });
+  const aiService = new FakeAiService(async () => ({ text: "AI reply", model: "test-model", skillId: "assistant" }));
+  const { app, transport } = createApp({ groupConfigService, memeLibraryService, aiService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "配图关键词 来一张" } }]));
+  await app.handleGroupMessage(
+    createEvent([{ type: "text", data: { text: "继续说" } }]),
+    undefined,
+    undefined,
+    { allowReplyWithoutMention: true },
+  );
+
+  assert.deepEqual(transport.outbound.map((item) => item.kind), ["text", "image", "text", "image"]);
+  assert.deepEqual(memeLibraryService.claimCalls.map((call) => call.userText), ["配图关键词 来一张", "继续说"]);
+});
+
+test("normal meme failures and no matching tag never disturb the completed text reply", async () => {
+  const failedTransport = new FakeTransport();
+  failedTransport.sendGroupImageError = new Error("image unavailable");
+  failedTransport.allowOpsAlertWhenSendFails = true;
+  const failedLibrary = new FakeMemeLibraryService({
+    claimedImageFile: "base64://normal-chat-meme",
+  });
+  const failedAi = new FakeAiService(async () => ({ text: "AI reply", model: "test-model", skillId: "assistant" }));
+  const failed = createApp({
+    transport: failedTransport,
+    aiService: failedAi,
+    memeLibraryService: failedLibrary,
+  });
+  const failedRuntime = failed.app as unknown as {
+    opsAlertState: { consecutiveSendFailures: number; sendFailureAlertActive: boolean };
+  };
+  // Place the primary reply just before the normal send-failure alert
+  // threshold. The image must not enter the ops-alert accounting path.
+  failedLibrary.onClaim = () => {
+    failedRuntime.opsAlertState.consecutiveSendFailures = 2;
+    failedRuntime.opsAlertState.sendFailureAlertActive = false;
+  };
+
+  await failed.app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 好耶 " } },
+  ]));
+
+  assert.equal(failedTransport.sent[0]?.text, "AI reply");
+  assert.equal(failedTransport.sent.length, 1);
+  assert.equal(failedTransport.images.length, 0);
+  assert.equal(failedLibrary.claimCalls.length, 1);
+  assert.equal(failedRuntime.opsAlertState.consecutiveSendFailures, 2);
+  assert.equal(failedRuntime.opsAlertState.sendFailureAlertActive, false);
+
+  const noMatchLibrary = new FakeMemeLibraryService({
+    claimReason: "no_match",
+  });
+  const noMatchAi = new FakeAiService(async () => ({ text: "AI reply", model: "test-model", skillId: "assistant" }));
+  const noMatch = createApp({ aiService: noMatchAi, memeLibraryService: noMatchLibrary });
+
+  await noMatch.app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 好耶 " } },
+  ]));
+
+  assert.equal(noMatch.transport.sent[0]?.text, "AI reply");
+  assert.equal(noMatch.transport.images.length, 0);
+  assert.deepEqual(noMatchLibrary.claimCalls, [{ groupId: "67890", userText: "好耶" }]);
+});
+
+test("blacklisted blacklist commands keep command precedence and do not send the meme", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+    blacklistedUserIds: ["99999", "20001"],
+    dailyReportEnabled: true,
+    dailyReportTime: "18:00",
+    dailyReportTopUserCount: 3,
+  }]);
+  const { app, transport, groupConfigService: configs, dailyReportService } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " #拉黑 解除 99999" } },
+  ], 99999));
+
+  assert.deepEqual(configs.groups[0]?.blacklistedUserIds, ["20001"]);
+  assert.match(transport.sent[0]?.text ?? "", /已解除拉黑 99999/);
+  assert.equal(transport.images.length, 0);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " #拉黑 20002" } },
+  ], 20001));
+
+  assert.equal(transport.images.length, 0);
+  assert.equal(dailyReportService.recorded.length, 1);
 });
 
 test("blacklist command requires admin and blacklisted non-admin commands stay silent", async () => {
@@ -2210,6 +2617,7 @@ test("does not authorize identity, memory, or controlled @ from a typed third-pa
 
 test("injects durable group evidence only for a verified person-evaluation request", async () => {
   const evidenceCalls: Array<{ groupId: string; beforeSourceRowId: number; limit?: number }> = [];
+  let ambientCalls = 0;
   const recentGroupEvidenceService = {
     list(input: { groupId: string; beforeSourceRowId: number; limit?: number }) {
       evidenceCalls.push(input);
@@ -2220,6 +2628,10 @@ test("injects durable group evidence only for a verified person-evaluation reque
         text: "一切根源都是能源",
         timestamp: "2026-09-03T09:25:00.000Z",
       }];
+    },
+    listAmbient() {
+      ambientCalls += 1;
+      return [];
     },
   };
   const conversationContextRepository = {
@@ -2245,6 +2657,7 @@ test("injects durable group evidence only for a verified person-evaluation reque
   assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
   assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "2409332588");
   assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidence?.[0]?.text, "一切根源都是能源");
+  assert.equal(ambientCalls, 0);
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
@@ -2255,18 +2668,619 @@ test("injects durable group evidence only for a verified person-evaluation reque
   assert.equal(evidenceCalls.length, 1);
   assert.equal(aiService.calls[1]?.identityContext?.recentGroupEvidence, undefined);
   assert.equal(aiService.calls[1]?.identityContext?.recentGroupEvidenceRequested, undefined);
+  assert.equal(ambientCalls, 1);
 });
 
-test("person evaluation without one verified target asks for an explicit at or reply", async () => {
+test("injects ambient group context for unquoted conversation and skips explicit replies", async () => {
+  const ambientCalls: Array<{
+    groupId: string;
+    beforeSourceRowId: number;
+    lookbackMs: number;
+    excludedUserIds?: string[];
+    limit?: number;
+  }> = [];
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    blacklistedUserIds: ["30001"],
+    memoryDisabledUserIds: ["30002"],
+  }]);
+  const recentGroupEvidenceService = {
+    list: () => [],
+    listAmbient(input: typeof ambientCalls[number]) {
+      ambientCalls.push(input);
+      return [{
+        role: "bot" as const,
+        messageId: "bot-1",
+        text: "现代梗圈顶流必须是常公",
+        timestamp: "2026-09-08T01:45:13.000Z",
+      }];
+    },
+  };
+  const { app, aiService } = createApp({
+    groupConfigService,
+    recentGroupEvidenceService,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 常工与中正比如何 " } },
+  ], 20001, 67890, 7201));
+
+  assert.equal(ambientCalls.length, 1);
+  assert.equal(ambientCalls[0]?.lookbackMs, 3 * 60 * 1_000);
+  assert.equal(ambientCalls[0]?.limit, 12);
+  assert.deepEqual(ambientCalls[0]?.excludedUserIds, ["30001", "30002"]);
+  assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext?.[0]?.text, "现代梗圈顶流必须是常公");
+
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "bot-1" } },
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 常公是谁 " } },
+  ], 20001, 67890, 7202));
+
+  assert.equal(ambientCalls.length, 1);
+  assert.equal(aiService.calls[1]?.identityContext?.ambientGroupContext, undefined);
+});
+
+test("ambient group context can be disabled per group", async () => {
+  let ambientCalls = 0;
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    ambientGroupContextEnabled: false,
+  }]);
+  const { app, aiService } = createApp({
+    groupConfigService,
+    recentGroupEvidenceService: {
+      list: () => [],
+      listAmbient: () => {
+        ambientCalls += 1;
+        return [];
+      },
+    },
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 常工与中正比如何 " } },
+  ], 20001, 67890, 7210));
+
+  assert.equal(ambientCalls, 0);
+  assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext, undefined);
+});
+
+test("removes messages already present in causal history from ambient group context", async () => {
+  const route: ConversationRoute = {
+    topicId: "topic-1",
+    branchId: "branch-1",
+    sourceMessageId: "current",
+    routeReason: "same-user-follow-up",
+    sourceRowId: 99,
+    parentTurnId: 2,
+    turnId: 3,
+  };
+  const conversationContextRepository = {
+    getSourceRowId: () => 99,
+    getCausalTurnsBeforeTurn: () => [
+      {
+        id: 1,
+        topicId: "topic-1",
+        branchId: "branch-1",
+        role: "user" as const,
+        userId: "20001",
+        content: "我国史上著名的微操达人",
+        sourceMessageId: "member-1",
+        createdAt: 1,
+      },
+      {
+        id: 2,
+        topicId: "topic-1",
+        branchId: "branch-1",
+        parentTurnId: 1,
+        role: "assistant" as const,
+        content: "现代梗圈顶流必须是常公",
+        platformMessageId: "bot-1",
+        createdAt: 2,
+      },
+    ],
+    appendAssistantTurn: () => ({ id: 4 }),
+  };
+  const { app, aiService } = createApp({
+    conversationContextRepository: conversationContextRepository as never,
+    recentGroupEvidenceService: {
+      list: () => [],
+      listAmbient: () => [
+        { role: "member", messageId: "member-1", userId: "20001", text: "duplicate member", timestamp: new Date(1).toISOString() },
+        { role: "bot", messageId: "bot-1", text: "duplicate bot", timestamp: new Date(2).toISOString() },
+        { role: "member", messageId: "nearby", userId: "20002", text: "nearby context", timestamp: new Date(3).toISOString() },
+      ],
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 所以中正是谁 " } },
+  ], 20001, 67890, Number(route.sourceMessageId) || 7301), undefined, route);
+
+  assert.deepEqual(
+    aiService.calls[0]?.identityContext?.ambientGroupContext?.map((message) => message.messageId),
+    ["nearby"],
+  );
+});
+
+test("unverified open-ended evaluations fall back to ordinary AI without group evidence", async () => {
+  const evidenceCalls: Array<{ groupId: string; beforeSourceRowId: number }> = [];
+  const { app, aiService, transport } = createApp({
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list(input: { groupId: string; beforeSourceRowId: number }) {
+        evidenceCalls.push(input);
+        return [];
+      },
+    },
+  });
+  const inputs = [
+    "评价一下黄帝",
+    "锐评一下某历史人物",
+    "点评未知成员",
+    "吐槽一下甲",
+    "评价一下123456",
+  ];
+
+  for (const [index, text] of inputs.entries()) {
+    await app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: ` ${text} ` } },
+    ], 20001, 67890, 7100 + index));
+  }
+
+  assert.deepEqual(aiService.calls.map((call) => call.userInput), inputs);
+  for (const call of aiService.calls) {
+    assert.equal(call.identityContext?.interactionTargets, undefined);
+    assert.equal(call.identityContext?.recentGroupEvidenceRequested, undefined);
+    assert.equal(call.identityContext?.recentGroupEvidence, undefined);
+  }
+  assert.equal(evidenceCalls.length, 0);
+  assert.deepEqual(transport.sent.map((sent) => sent.text), inputs.map(() => "AI reply"));
+});
+
+test("explicit group-evaluation wording still requires one verified target", async () => {
+  let evidenceCalls = 0;
+  const { app, aiService, transport } = createApp({
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list() {
+        evidenceCalls += 1;
+        return [];
+      },
+    },
+  });
+  const inputs = [
+    "根据群聊记录评价一下黄帝",
+    "评价一下群友黄帝",
+    "锐评本群的黄帝",
+    "点评群里的黄帝",
+  ];
+
+  for (const [index, text] of inputs.entries()) {
+    await app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: ` ${text} ` } },
+    ], 20001, 67890, 7150 + index));
+  }
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(evidenceCalls, 0);
+  assert.deepEqual(
+    transport.sent.map((sent) => sent.text),
+    inputs.map(() => "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。"),
+  );
+});
+
+test("injects person-evaluation evidence for a quoted group member", async () => {
+  const transport = new FakeTransport();
+  transport.messagesById["9001"] = {
+    messageId: "9001",
+    userId: "2409332588",
+    userName: "飞翔的企鹅",
+    text: "原消息内容",
+    images: [],
+  };
+  const evidenceCalls: Array<{ groupId: string; beforeSourceRowId: number }> = [];
+  let ambientCalls = 0;
+  const { app, aiService } = createApp({
+    transport,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list(input: { groupId: string; beforeSourceRowId: number }) {
+        evidenceCalls.push(input);
+        return [{
+          role: "member" as const,
+          userId: "2409332588",
+          text: "这是一条历史发言",
+          timestamp: "2026-09-04T06:00:00.000Z",
+        }];
+      },
+      listAmbient() {
+        ambientCalls += 1;
+        return [];
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "9001" } },
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 评价一下他 " } },
+  ], 20001, 67890, 7170));
+
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0]?.groupId, "67890");
+  assert.equal(evidenceCalls[0]?.beforeSourceRowId, 99);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "2409332588",
+    names: ["飞翔的企鹅", "2409332588"],
+    source: "reply",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "2409332588");
+  assert.equal(ambientCalls, 0);
+});
+
+test("injects person-evaluation evidence for one unique saved alias without sending a platform at", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["493213481"], names: ["季博醋柚肠", "季博"] }],
+  }]);
+  const evidenceCalls: Array<{ groupId: string; beforeSourceRowId: number }> = [];
+  const recentGroupEvidenceService = {
+    list(input: { groupId: string; beforeSourceRowId: number }) {
+      evidenceCalls.push(input);
+      return [{
+        role: "member" as const,
+        userId: "493213481",
+        text: "这是一条历史发言",
+        timestamp: "2026-09-04T06:00:00.000Z",
+      }];
+    },
+  };
+  const aiService = new FakeAiService(async () => ({
+    text: "@季博醋柚肠 这位群友很有特点",
+    model: "test-model",
+    skillId: "assistant",
+  }));
+  const { app, transport } = createApp({
+    groupConfigService,
+    recentGroupEvidenceService,
+    aiService,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 根据现有聊天记录锐评一下季博醋柚肠 " } },
+  ], 20001, 67890, 7101));
+
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0]?.groupId, "67890");
+  assert.equal(evidenceCalls[0]?.beforeSourceRowId, 99);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "493213481",
+    names: ["季博醋柚肠", "季博"],
+    source: "alias",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "493213481");
+  assert.equal(aiService.controlledMentionCalls.length, 0);
+  assert.equal(transport.sent[0]?.text, "季博醋柚肠 这位群友很有特点");
+  assert.doesNotMatch(transport.sent[0]?.text ?? "", /\[CQ:at|@/);
+});
+
+test("does not resolve a saved alias outside person-evaluation requests", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["493213481"], names: ["季博醋柚肠"] }],
+  }]);
+  const { app, aiService } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 季博醋柚肠今天来了吗 " } },
+  ]));
+
+  assert.equal(aiService.calls[0]?.identityContext?.interactionTargets, undefined);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, undefined);
+});
+
+test("resolves a saved alias in natural person impression question '在你眼中xxx是个什么样的人'", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["289513186"], names: ["季博初"] }],
+  }]);
+  const groupMemoryStore = new FakeGroupMemoryStore();
+  groupMemoryStore.memories = [{
+    id: "memory-jibochu",
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "289513186",
+    title: "QQ群聊画像（截至 2026-09-04）",
+    content: "季博初的群聊画像正文内容。",
+    confidence: 0.9,
+    source: "admin",
+    enabled: true,
+    createdAt: "2026-09-04T00:00:00.000Z",
+    updatedAt: "2026-09-04T00:00:00.000Z",
+  }];
+  const { app, aiService } = createApp({ groupConfigService, groupMemoryStore });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 在你眼中季博初是个什么样的人 " } },
+  ], 1569671790, 67890, 7102));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "289513186",
+    names: ["季博初"],
+    source: "alias",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "289513186");
+  const memories = aiService.calls[0]?.identityContext?.groupMemories ?? [];
+  assert.equal(memories.length, 1);
+  assert.equal(memories[0]?.subjectUserId, "289513186");
+});
+
+test("resolves a saved alias in natural person question '你觉得xxx怎么样'", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["289513186"], names: ["季博初"] }],
+  }]);
+  const groupMemoryStore = new FakeGroupMemoryStore();
+  groupMemoryStore.memories = [{
+    id: "memory-jibochu",
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "289513186",
+    title: "QQ群聊画像（截至 2026-09-04）",
+    content: "季博初的群聊画像正文内容。",
+    confidence: 0.9,
+    source: "admin",
+    enabled: true,
+    createdAt: "2026-09-04T00:00:00.000Z",
+    updatedAt: "2026-09-04T00:00:00.000Z",
+  }];
+  const { app, aiService } = createApp({ groupConfigService, groupMemoryStore });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 你觉得季博初怎么样 " } },
+  ], 1569671790, 67890, 7103));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "289513186",
+    names: ["季博初"],
+    source: "alias",
+  }]);
+  const memories = aiService.calls[0]?.identityContext?.groupMemories ?? [];
+  assert.equal(memories.length, 1);
+  assert.equal(memories[0]?.subjectUserId, "289513186");
+});
+
+test("resolves a saved alias in '在你的眼里，xxx是个怎样的女性' and 'xxx性格咋样'", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["994697185"], names: ["前端姐"] }],
+  }]);
+  const groupMemoryStore = new FakeGroupMemoryStore();
+  groupMemoryStore.memories = [{
+    id: "memory-qianduanjie",
+    groupId: "67890",
+    type: "member_profile",
+    subjectUserId: "994697185",
+    title: "QQ群聊画像：前端姐（截至 2026-09-04）",
+    content: "前端姐的群聊画像正文内容。",
+    confidence: 0.9,
+    source: "admin",
+    enabled: true,
+    createdAt: "2026-09-04T00:00:00.000Z",
+    updatedAt: "2026-09-04T00:00:00.000Z",
+  }];
+  const { app, aiService } = createApp({ groupConfigService, groupMemoryStore });
+
+  // 1. "在你的眼里，前端姐是个怎样的女性"
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 在你的眼里，前端姐是个怎样的女性 " } },
+  ], 1569671790, 67890, 7104));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "994697185",
+    names: ["前端姐"],
+    source: "alias",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "994697185");
+  assert.equal(aiService.calls[0]?.identityContext?.groupMemories?.[0]?.subjectUserId, "994697185");
+
+  // 2. "前端姐性格咋样"
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 前端姐性格咋样 " } },
+  ], 1569671790, 67890, 7105));
+
+  assert.equal(aiService.calls.length, 2);
+  assert.deepEqual(aiService.calls[1]?.identityContext?.interactionTargets, [{
+    userId: "994697185",
+    names: ["前端姐"],
+    source: "alias",
+  }]);
+  assert.equal(aiService.calls[1]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[1]?.identityContext?.recentGroupEvidenceTargetUserId, "994697185");
+  assert.equal(aiService.calls[1]?.identityContext?.groupMemories?.[0]?.subjectUserId, "994697185");
+});
+
+test("does not intercept general questions about celebrities or topics like '你觉得蔡徐坤的舞蹈怎么样'", async () => {
   const { app, aiService, transport } = createApp();
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
-    { type: "text", data: { text: " 评价一下飞翔的企鹅 " } },
+    { type: "text", data: { text: " 你觉得蔡徐坤的舞蹈怎么样 " } },
+  ], 1569671790, 67890, 7106));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.identityContext?.interactionTargets, undefined);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, undefined);
+  assert.equal(transport.sent[0]?.text, "AI reply");
+});
+
+test("prefers a real mention over a different saved alias in an evaluation request", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [
+      { userIds: ["2409332588"], names: ["飞翔的企鹅"] },
+      { userIds: ["493213481"], names: ["季博醋柚肠"] },
+    ],
+  }]);
+  const { app, aiService } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "at", data: { qq: "2409332588" } },
+    { type: "text", data: { text: " 锐评一下季博醋柚肠 " } },
+  ]));
+
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "2409332588",
+    names: ["飞翔的企鹅"],
+    source: "mention",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "2409332588");
+});
+
+test("saved-alias evaluation fails closed for collisions and multiple resolved targets", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [
+      { userIds: ["10001"], names: ["同名", "甲某"] },
+      { userIds: ["10002"], names: ["同名", "乙某"] },
+      { userIds: ["10003"], names: ["甲", "123456"] },
+    ],
+  }]);
+  const { app, aiService, transport } = createApp({ groupConfigService });
+  const inputs = [
+    "评价一下同名",
+    "锐评甲某和乙某",
+  ];
+
+  for (const [index, text] of inputs.entries()) {
+    await app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text } },
+    ], 20001, 67890, 7200 + index));
+  }
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, inputs.length);
+  for (const sent of transport.sent) {
+    assert.equal(sent.text, "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。");
+  }
+});
+
+test("uses the longest nested saved alias and enforces privacy opt-out", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [
+      { userIds: ["10001"], names: ["季博醋"] },
+      { userIds: ["493213481"], names: ["季博醋柚肠"] },
+    ],
+    memoryDisabledUserIds: ["493213481"],
+  }]);
+  let evidenceCalls = 0;
+  const { app, aiService, transport } = createApp({
+    groupConfigService,
+    recentGroupEvidenceService: {
+      list() {
+        evidenceCalls += 1;
+        return [];
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 怎么看季博醋柚肠 " } },
   ]));
 
   assert.equal(aiService.calls.length, 0);
-  assert.equal(transport.sent[0]?.text, "请明确 @ 一位要评价的群友，或者直接回复他的消息再让我评价。");
+  assert.equal(evidenceCalls, 0);
+  assert.equal(transport.sent[0]?.text, "当前没有可用于评价这位群友的聊天记录。");
 });
 
 test("unrouted calls fail closed instead of reading legacy personal context", async () => {
@@ -2435,7 +3449,7 @@ test("asks for a verified target when a person-evaluation alias is ambiguous", a
   ]));
 
   assert.equal(aiService.calls.length, 0);
-  assert.equal(transport.sent[0]?.text, "请明确 @ 一位要评价的群友，或者直接回复他的消息再让我评价。");
+  assert.equal(transport.sent[0]?.text, "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。");
 });
 
 test("does not join an unrelated shared topic without an explicit reply anchor", async () => {
@@ -2548,10 +3562,19 @@ test("keeps conversation history isolated for the same user across groups", asyn
   assert.equal(conversationStore.turnsByKey["67891:20001"], undefined);
 });
 
-test("does not resolve or attach images when vision is not explicitly enabled", async () => {
+test("reports that image understanding is disabled without entering the model pipeline", async () => {
   const imagePipeline = new FakeImagePipeline();
   const { app, transport, aiService } = createApp({
     imagePipeline,
+    groupConfigService: new FakeGroupConfigService([{
+      groupId: "67890",
+      currentSkillId: "assistant",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      participationMode: "mentions_only",
+      visionEnabled: false,
+    }]),
     aiService: new FakeAiService(async () => ({
       text: "看到了，是一张测试图片",
       model: "test-model",
@@ -2566,12 +3589,10 @@ test("does not resolve or attach images when vision is not explicitly enabled", 
     ]),
   );
 
-  assert.equal(aiService.calls.length, 1);
-  assert.equal(aiService.calls[0]?.userInput, "[图片消息]");
-  assert.equal(aiService.calls[0]?.images?.length, 0);
+  assert.equal(aiService.calls.length, 0);
   assert.equal(imagePipeline.calls.length, 0);
   assert.equal(transport.imageResolutionCalls, 0);
-  assert.equal(transport.sent[0]?.text, "看到了，是一张测试图片");
+  assert.equal(transport.sent[0]?.text, "本群未开启图片理解，请联系群管理员在后台开启后再发送图片。");
 });
 
 test("resolves and attaches images only when vision is explicitly enabled", async () => {
@@ -2599,6 +3620,98 @@ test("resolves and attaches images only when vision is explicitly enabled", asyn
   assert.equal(imagePipeline.calls.length, 1);
   assert.equal(aiService.calls[0]?.images?.length, 1);
   assert.equal(aiService.calls[0]?.images?.[0]?.url, "https://example.com/cat.png");
+});
+
+test("uses the configured GPT vision route for images without changing the group's selected model", async () => {
+  const primaryAiService = new FakeAiService(async () => ({
+    text: "DeepSeek text reply",
+    model: "deepseek-test",
+    skillId: "assistant",
+  }));
+  const gptVisionAiService = new FakeAiService(async () => ({
+    text: "GPT vision reply",
+    model: "gpt-vision-test",
+    skillId: "assistant",
+  }));
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    replyModelMode: "ds",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+    participationMode: "mentions_only",
+    visionEnabled: true,
+  }]);
+  const { app, transport } = createApp({ groupConfigService, aiService: primaryAiService });
+  Object.assign(app as unknown as Record<string, unknown>, {
+    getReplyAiRoute: async () => ({
+      mode: "ds",
+      label: "DeepSeek",
+      service: primaryAiService,
+      supportsVision: false,
+    }),
+    getReplyModelOptions: async () => [{
+      mode: "gpt",
+      label: "GPT",
+      service: gptVisionAiService,
+      supportsVision: true,
+    }],
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "image", data: { url: "https://example.com/cat.png" } },
+  ]));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "纯文本继续用原模型" } },
+  ], 20001, 67890, 2));
+
+  assert.equal(primaryAiService.calls.length, 1);
+  assert.equal(primaryAiService.calls[0]?.images?.length, 0);
+  assert.equal(gptVisionAiService.calls.length, 1);
+  assert.equal(gptVisionAiService.calls[0]?.images?.length, 1);
+  assert.equal(groupConfigService.groups[0]?.replyModelMode, "ds");
+  assert.deepEqual(transport.sent.map((item) => item.text), ["GPT vision reply", "DeepSeek text reply"]);
+});
+
+test("reports a clear error when no configured GPT vision route is available", async () => {
+  const primaryAiService = new FakeAiService(async () => ({
+    text: "unexpected",
+    model: "deepseek-test",
+    skillId: "assistant",
+  }));
+  const { app, transport } = createApp({
+    aiService: primaryAiService,
+    groupConfigService: new FakeGroupConfigService([{
+      groupId: "67890",
+      currentSkillId: "assistant",
+      replyModelMode: "ds",
+      allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+      participationMode: "mentions_only",
+      visionEnabled: true,
+    }]),
+  });
+  Object.assign(app as unknown as Record<string, unknown>, {
+    getReplyAiRoute: async () => ({
+      mode: "ds",
+      label: "DeepSeek",
+      service: primaryAiService,
+      supportsVision: false,
+    }),
+    getReplyModelOptions: async () => [],
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "image", data: { url: "https://example.com/cat.png" } },
+  ]));
+
+  assert.equal(primaryAiService.calls.length, 0);
+  assert.equal(transport.sent[0]?.text, "当前图片理解模型不可用，请联系管理员检查 GPT 图片理解配置后再试。");
 });
 
 test("ignores non-mentioned messages for ai reply but still records daily stats", async () => {
@@ -4804,7 +5917,11 @@ test("passes referenced message images to explicit bot conversations", async () 
       },
     ],
   };
-  const { app, aiService, groupConfigService } = createApp({ transport });
+  const memeLibraryService = new FakeMemeLibraryService({
+    claimedImageFile: "base64://must-not-send",
+  });
+  const aiService = new FakeAiService(async () => ({ text: "AI reply", model: "test-model", skillId: "assistant" }));
+  const { app, groupConfigService } = createApp({ transport, aiService, memeLibraryService });
   groupConfigService.groups[0]!.visionEnabled = true;
 
   await app.handleGroupMessage(
@@ -4819,6 +5936,8 @@ test("passes referenced message images to explicit bot conversations", async () 
   assert.equal(aiService.calls[0]?.identityContext?.replyContext?.text, "看看这张图 [图片 1 张]");
   assert.equal(aiService.calls[0]?.images?.length, 1);
   assert.equal(aiService.calls[0]?.images?.[0]?.url, "https://resolved.example/ref-image-001.image.png");
+  assert.equal(transport.images.length, 0);
+  assert.equal(memeLibraryService.claimCalls.length, 0);
 });
 
 test("ordinary referenced messages do not trigger ai replies by themselves", async () => {

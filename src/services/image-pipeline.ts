@@ -12,9 +12,10 @@ import {
  * Two-stage image pipeline (plan section 4):
  *
  * Stage 1 Localization — only obtain local bytes:
- *   1. NapCat local cache via `localize` callback (soft 800ms / hard 1.5s)
- *   2. Internal HTTP proxy fetching the QQ image host (soft 4s / hard 6s)
- *   3. Failure → tier "image_unavailable" (L1)
+ *   1. Internal HTTP proxy fetching the QQ image host (soft 4s / hard 6s)
+ *   2. NapCat get_image/data-URL bridge (hard 6s)
+ *   3. NapCat local cache via `localize` callback (soft 800ms / hard 1.5s)
+ *   4. Failure → tier "image_unavailable" (L1)
  *
  * Stage 2 Recognition — only after local bytes exist:
  *   - Vision-capable model path is handled by the caller (data URL in prompt).
@@ -53,7 +54,7 @@ export interface ImagePipelineOptions {
   /**
    * Alternative localization that resolves directly to a data URL (e.g. a
    * transport that already materializes via get_image + data URL conversion).
-   * When present it takes precedence over `localize` + file read.
+   * It follows a reachable HTTP image URL and precedes local file-cache reads.
    */
   localizeDataUrl?: (image: MessageImageInput) => Promise<string | undefined>;
   /** Local OCR/caption for pure-text models; returns the [图片内容: ...] text. */
@@ -62,6 +63,8 @@ export interface ImagePipelineOptions {
   /** Soft/hard timeouts in ms. */
   localSoftTimeoutMs?: number;
   localHardTimeoutMs?: number;
+  /** Worker-to-ingress get_image/data-URL bridge timeout in ms. */
+  localizeDataUrlTimeoutMs?: number;
   proxySoftTimeoutMs?: number;
   proxyHardTimeoutMs?: number;
 }
@@ -69,6 +72,7 @@ export interface ImagePipelineOptions {
 const DEFAULT_OPTIONS = {
   localSoftTimeoutMs: 800,
   localHardTimeoutMs: 1_500,
+  localizeDataUrlTimeoutMs: 6_000,
   proxySoftTimeoutMs: 4_000,
   proxyHardTimeoutMs: 6_000,
 };
@@ -86,24 +90,16 @@ export class ImagePipeline {
 
   /** Resolves images through Stage 1; returns data URLs for the vision path. */
   async resolveForVision(images: MessageImageInput[]): Promise<ResolvedImage[]> {
-    const resolved: ResolvedImage[] = [];
-    for (const image of images) {
-      const dataUrl = await this.stage1(image);
-      if (dataUrl) {
-        resolved.push({ input: image, dataUrl });
-      }
-    }
-    return resolved;
+    return this.resolveImages(images, async (image) => ({
+      input: image,
+      dataUrl: await this.stage1(image),
+    }));
   }
 
   /** Resolves images through Stage 1 + OCR caption for text-only models. */
   async resolveForText(images: MessageImageInput[]): Promise<ResolvedImage[]> {
-    const resolved: ResolvedImage[] = [];
-    for (const image of images) {
+    return this.resolveImages(images, async (image) => {
       const dataUrl = await this.stage1(image);
-      if (!dataUrl) {
-        continue;
-      }
       let caption: string | undefined;
       if (this.options.ocr) {
         try {
@@ -114,24 +110,103 @@ export class ImagePipeline {
           });
         }
       }
-      resolved.push({ input: image, dataUrl, caption });
+      return { input: image, dataUrl, caption };
+    });
+  }
+
+  /**
+   * Keep usable images when a message contains a mix of reachable and stale
+   * NapCat image references. A fixed failure is surfaced only when no image
+   * could be materialized, so one broken attachment never discards the rest.
+   */
+  private async resolveImages(
+    images: MessageImageInput[],
+    resolve: (image: MessageImageInput) => Promise<ResolvedImage>,
+  ): Promise<ResolvedImage[]> {
+    const resolved: ResolvedImage[] = [];
+    const failureTiers = new Set<ImageTier>();
+
+    for (const image of images) {
+      try {
+        resolved.push(await resolve(image));
+      } catch (error) {
+        failureTiers.add(error instanceof ImagePipelineError ? error.tier : "image_unavailable");
+      }
     }
+
+    if (resolved.length > 0) {
+      if (failureTiers.size > 0) {
+        logWarn("Image materialization kept usable attachments after partial failures.", {
+          event: "image_materialization_partial_success",
+          imageCount: images.length,
+          resolvedImageCount: resolved.length,
+          failedImageCount: images.length - resolved.length,
+          failureTiers: [...failureTiers],
+        });
+      }
+      return resolved;
+    }
+
+    if (images.length > 0) {
+      const tier = failureTiers.has("image_unavailable")
+        ? "image_unavailable"
+        : [...failureTiers][0] ?? "image_unavailable";
+      logWarn("Image materialization produced no usable content.", {
+        event: "image_materialization_no_content",
+        imageCount: images.length,
+        resolvedImageCount: 0,
+        failureTiers: [...failureTiers],
+      });
+      throw new ImagePipelineError(tier, "no image inputs could be materialized");
+    }
+
     return resolved;
   }
 
-  private async stage1(image: MessageImageInput): Promise<string | undefined> {
+  private async stage1(image: MessageImageInput): Promise<string> {
     const metrics = this.options.metrics;
     // 0. Already a data URL — nothing to fetch.
     if (isImageDataUrl(image.url)) {
       return image.url;
     }
 
-    // 1. NapCat local cache (soft/hard timeouts).
+    // 1. Prefer the public QQ image URL when available. This avoids an
+    // unnecessary get_image round trip and works when ingress has no shared
+    // filesystem with NapCat.
+    const sourceUrl = isHttpUrl(image.url) ? image.url : isHttpUrl(image.file) ? image.file : undefined;
+    if (sourceUrl) {
+      const proxyStartedAt = Date.now();
+      try {
+        const dataUrl = await withTimeout(
+          downloadImageAsDataUrl(sourceUrl),
+          this.options.proxySoftTimeoutMs ?? DEFAULT_OPTIONS.proxySoftTimeoutMs,
+        );
+        metrics?.inc("image_stage1_proxy_hit");
+        return dataUrl;
+      } catch (error) {
+        const remaining = (this.options.proxyHardTimeoutMs ?? DEFAULT_OPTIONS.proxyHardTimeoutMs) - (Date.now() - proxyStartedAt);
+        if (remaining > 0) {
+          try {
+            const dataUrl = await withTimeout(downloadImageAsDataUrl(sourceUrl), remaining);
+            metrics?.inc("image_stage1_proxy_retry_hit");
+            return dataUrl;
+          } catch (retryError) {
+            logWarn("Stage1 proxy retry failed; falling back to NapCat image resolution.", {
+              error: retryError instanceof Error ? retryError.message : String(retryError),
+            });
+          }
+        }
+      }
+    }
+
+    // 2. Worker -> ingress -> NapCat get_image bridge. This is a separate
+    // cross-process operation, not a local-cache read, so it receives its own
+    // 6s timeout instead of the cache's 800ms fast-fail budget.
     if (this.options.localizeDataUrl) {
       try {
         const dataUrl = await withTimeout(
-          this.options.localizeDataUrl(image),
-          this.options.localSoftTimeoutMs ?? DEFAULT_OPTIONS.localSoftTimeoutMs,
+          this.options.localizeDataUrl(stripHttpImageSources(image)),
+          this.options.localizeDataUrlTimeoutMs ?? DEFAULT_OPTIONS.localizeDataUrlTimeoutMs,
         );
         if (dataUrl && isImageDataUrl(dataUrl)) {
           metrics?.inc("image_stage1_local_hit");
@@ -142,7 +217,10 @@ export class ImagePipeline {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    } else if (this.options.localize && image.file && !isHttpUrl(image.file)) {
+    }
+
+    // 3. In-process local cache retains its existing fast soft/hard limits.
+    if (this.options.localize && image.file && !isHttpUrl(image.file)) {
       try {
         const startedAt = Date.now();
         const localPath = await withTimeout(
@@ -170,38 +248,22 @@ export class ImagePipeline {
       }
     }
 
-    // 2. Internal HTTP proxy fetch of the QQ image host.
-    const sourceUrl = isHttpUrl(image.url) ? image.url : isHttpUrl(image.file) ? image.file : undefined;
-    if (sourceUrl) {
-      const proxyStartedAt = Date.now();
-      try {
-        const dataUrl = await withTimeout(
-          downloadImageAsDataUrl(sourceUrl),
-          this.options.proxySoftTimeoutMs ?? DEFAULT_OPTIONS.proxySoftTimeoutMs,
-        );
-        metrics?.inc("image_stage1_proxy_hit");
-        return dataUrl;
-      } catch (error) {
-        const remaining = (this.options.proxyHardTimeoutMs ?? DEFAULT_OPTIONS.proxyHardTimeoutMs) - (Date.now() - proxyStartedAt);
-        if (remaining > 0) {
-          try {
-            const dataUrl = await withTimeout(downloadImageAsDataUrl(sourceUrl), remaining);
-            metrics?.inc("image_stage1_proxy_retry_hit");
-            return dataUrl;
-          } catch (retryError) {
-            logWarn("Stage1 proxy retry failed.", {
-              error: retryError instanceof Error ? retryError.message : String(retryError),
-            });
-          }
-        }
-      }
-    }
-
-    // 3. Unavailable.
+    // 4. Unavailable.
     metrics?.inc("image_stage1_failure");
     logWarn("Image stage1 failed; entering failure tier.", { tier: "image_unavailable" });
     throw new ImagePipelineError("image_unavailable", "image could not be materialized");
   }
+}
+
+function stripHttpImageSources(image: MessageImageInput): MessageImageInput {
+  if (!isHttpUrl(image.url) && !isHttpUrl(image.file)) {
+    return image;
+  }
+  return {
+    ...image,
+    ...(isHttpUrl(image.url) ? { url: undefined } : {}),
+    ...(isHttpUrl(image.file) ? { file: undefined } : {}),
+  };
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

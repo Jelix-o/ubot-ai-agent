@@ -173,6 +173,21 @@ export class NapCatReverseServer extends EventEmitter<{
     return toMessageReceipt(response.data);
   }
 
+  async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
+    const response = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
+      group_id: Number(groupId),
+      message: [
+        {
+          type: "image",
+          data: {
+            file: imageFile,
+          },
+        },
+      ],
+    });
+    return toMessageReceipt(response.data);
+  }
+
   async sendGroupAiRecord(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
     const character = await this.getAiCharacter(groupId);
     const response = await this.callAction<NapCatSendMessageResponse>("send_group_ai_record", {
@@ -311,6 +326,17 @@ export class NapCatReverseServer extends EventEmitter<{
       return image;
     }
 
+    const sourceUrl = isHttpUrl(image.url) ? image.url : isHttpUrl(image.file) ? image.file : undefined;
+    if (sourceUrl) {
+      try {
+        return { ...image, url: await downloadImageAsDataUrl(sourceUrl) };
+      } catch (error) {
+        logWarn("Failed to materialize reverse-mode image URL through the proxy; falling back to NapCat get_image.", {
+          error: (error as Error).message,
+        });
+      }
+    }
+
     if (image.file && !isHttpUrl(image.file)) {
       try {
         const response = await this.callAction<NapCatGetImageResponse>("get_image", { file: image.file });
@@ -327,17 +353,6 @@ export class NapCatReverseServer extends EventEmitter<{
         }
       } catch (error) {
         logWarn("Failed to resolve reverse-mode NapCat image.", {
-          error: (error as Error).message,
-        });
-      }
-    }
-
-    const sourceUrl = isHttpUrl(image.url) ? image.url : isHttpUrl(image.file) ? image.file : undefined;
-    if (sourceUrl) {
-      try {
-        return { ...image, url: await downloadImageAsDataUrl(sourceUrl) };
-      } catch (error) {
-        logWarn("Failed to materialize reverse-mode image URL.", {
           error: (error as Error).message,
         });
       }

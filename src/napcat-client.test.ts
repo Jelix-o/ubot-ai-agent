@@ -29,6 +29,36 @@ test("falls back to HTTP send_group_msg when websocket is not open", async () =>
   }
 });
 
+test("sends group images as OneBot image segments", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(JSON.stringify({ data: { message_id: 7789 } }), { status: 200 });
+  };
+
+  try {
+    const client = new NapCatClient({
+      wsUrl: "ws://127.0.0.1:3001/onebot/v11/ws",
+    });
+    const imageFile = "base64://blacklisted-at-meme";
+    const receipt = await client.sendGroupImage("67890", imageFile);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, "http://127.0.0.1:3001/send_group_msg");
+    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+      group_id: 67890,
+      message: [{
+        type: "image",
+        data: { file: imageFile },
+      }],
+    });
+    assert.deepEqual(receipt, { messageId: "7789", platformMessageId: "7789" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("deduplicates concurrent group-member loads and caches the result", async () => {
   let memberRequests = 0;
   const originalFetch = globalThis.fetch;

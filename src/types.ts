@@ -232,7 +232,7 @@ export interface GroupMemberProfile {
 export interface AiInteractionTarget {
   userId?: string;
   names: string[];
-  source: "mention" | "reply";
+  source: "mention" | "reply" | "alias";
 }
 
 export interface AiReplyContext {
@@ -279,6 +279,11 @@ export interface RecentGroupEvidenceMessage {
   senderNickname?: string;
 }
 
+export interface AmbientGroupContextMessage extends RecentGroupEvidenceMessage {
+  /** Real QQ message id when available; used only to avoid duplicating causal history. */
+  messageId?: string;
+}
+
 export interface AiIdentityContext {
   groupId: string;
   currentUserId: string;
@@ -299,6 +304,8 @@ export interface AiIdentityContext {
   recentGroupEvidence?: RecentGroupEvidenceMessage[];
   recentGroupEvidenceRequested?: boolean;
   recentGroupEvidenceTargetUserId?: string;
+  /** Short-lived, untrusted nearby group conversation used only for local references. */
+  ambientGroupContext?: AmbientGroupContextMessage[];
   /** 脱敏后的群氛围摘要；不得包含聊天原文或成员身份。 */
   atmosphereSummary?: string;
 }
@@ -343,6 +350,7 @@ export interface GroupBotConfig {
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
+  ambientGroupContextEnabled?: boolean;
   /** Static HTML preview publishing is enabled for configured groups by default. */
   htmlPreviewEnabled?: boolean;
 }
