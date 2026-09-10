@@ -7,6 +7,7 @@ import test from "node:test";
 import { SharedDb } from "../shared/sqlite.js";
 import { HTML_PREVIEW_RETENTION_MS } from "./html-preview-repository.js";
 import {
+  HTML_PREVIEW_OUTPUT_TRUNCATED_MESSAGE,
   HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE,
   HtmlPreviewError,
   HtmlPreviewService,
@@ -135,6 +136,27 @@ test("provider unavailability creates the specific retry-later notice", async (t
   assert.equal(typeof result.announcementOutboxId, "number");
   const outbox = db.db.prepare("SELECT text FROM outbox WHERE id = ?").get(result.announcementOutboxId!) as { text: string };
   assert.equal(outbox.text, HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE);
+});
+
+test("output truncation creates a specific durable failure notice", async (t) => {
+  const { db, service } = await createFixture(t);
+  const queued = await service.enqueue({
+    groupId: "output-truncated",
+    creatorUserId: "member-1",
+    sourceMessageId: "output-truncated-1",
+    request: "生成复杂 SVG 动画",
+  });
+  const result = await service.processNext({
+    id: queued.page.id,
+    request: "生成复杂 SVG 动画",
+    generate: async () => { throw new HtmlPreviewError("html_preview_output_truncated"); },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorCode, "html_preview_output_truncated");
+  assert.equal(result.failureStage, "generation");
+  assert.equal(typeof result.announcementOutboxId, "number");
+  const outbox = db.db.prepare("SELECT text FROM outbox WHERE id = ?").get(result.announcementOutboxId!) as { text: string };
+  assert.equal(outbox.text, HTML_PREVIEW_OUTPUT_TRUNCATED_MESSAGE);
 });
 
 test("repair request names the envelope failure without constraining HTML features", async (t) => {

@@ -68,6 +68,8 @@ interface AdminHttpServerOptions {
    * Preview routes fail closed until the durable publisher is wired in.
    */
   htmlPreviewService?: HtmlPreviewAdminService;
+  /** Global V3-only image library; omitted for legacy and rolling upgrades. */
+  memeLibraryService?: MemeLibraryAdminService;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>;
@@ -159,6 +161,64 @@ interface HtmlPreviewAdminService {
   remove(id: string): Promise<boolean>;
 }
 
+type MemeScope = "normal_chat" | "blacklisted_at";
+
+interface MemeLibraryPolicy {
+  enabled: boolean;
+  probabilityPercent: number;
+  cooldownSeconds: number;
+}
+
+interface MemeLibraryTag {
+  id: string;
+  name: string;
+  description: string;
+  keywords: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface MemeLibraryAsset {
+  id: string;
+  name: string;
+  scope: MemeScope;
+  enabled: boolean;
+  tags: string[];
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+  updatedAt: string;
+  protected: boolean;
+}
+
+/**
+ * The admin process deliberately depends on this narrow contract rather than
+ * on a storage implementation, so a rolling upgrade fails closed until the
+ * V3-backed library service has been wired in.
+ */
+interface MemeLibraryAdminService {
+  isAvailable(): boolean;
+  getPolicy(): Promise<MemeLibraryPolicy>;
+  updatePolicy(patch: Partial<MemeLibraryPolicy>): Promise<MemeLibraryPolicy>;
+  listTags(): Promise<MemeLibraryTag[]>;
+  createTag(input: { name: string; description?: string; keywords: string[] }): Promise<MemeLibraryTag | undefined>;
+  updateTag(id: string, patch: { name?: string; description?: string; keywords?: string[] }): Promise<MemeLibraryTag | undefined>;
+  removeTag(id: string): Promise<boolean>;
+  listAssets(scope?: MemeScope): Promise<MemeLibraryAsset[]>;
+  getAsset(id: string): Promise<MemeLibraryAsset | undefined>;
+  uploadAsset(input: {
+    name: string;
+    scope: MemeScope;
+    tags?: string[];
+    data: Buffer;
+    enabled?: boolean;
+  }): Promise<MemeLibraryAsset | undefined>;
+  updateAsset(id: string, patch: { name?: string; enabled?: boolean; tags?: string[] }): Promise<MemeLibraryAsset | undefined>;
+  removeAsset(id: string): Promise<boolean>;
+  loadImageFile(id: string): Promise<string | undefined>;
+}
+
 class MemberDirectoryUnavailableError extends Error {
   constructor() {
     super("napcat_members_unavailable");
@@ -167,6 +227,7 @@ class MemberDirectoryUnavailableError extends Error {
 
 const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
 const ADMIN_GZIP_MIN_BYTES = 1024;
+const MAX_MEME_ASSET_UPLOAD_BYTES = 5 * 1024 * 1024;
 const ADMIN_STATIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "admin");
 const ADMIN_STATIC_INDEX = path.join(ADMIN_STATIC_DIR, "index.html");
 const ADMIN_HTML_CACHE_CONTROL = "private, no-store";
@@ -819,6 +880,11 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/meme-library" || pathname.startsWith("/api/meme-library/")) {
+      await this.handleMemeLibrary(req, res, pathname, url, session);
+      return;
+    }
+
     if (pathname === "/api/html-previews") {
       await this.handleHtmlPreviews(req, res, url, session);
       return;
@@ -1121,6 +1187,245 @@ export class AdminHttpServer {
       previews: page.items.map(formatHtmlPreviewForAdmin),
       pagination: page.pagination,
     });
+  }
+
+  private async handleMemeLibrary(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+    url: URL,
+    session: AdminSession,
+  ): Promise<void> {
+    if (!this.requireSuperAdmin(session, res)) return;
+    const service = this.options.memeLibraryService;
+    if (!service || !service.isAvailable()) {
+      this.sendJson(res, { error: "meme_library_unavailable" }, 503);
+      return;
+    }
+
+    const method = req.method ?? "GET";
+    if (method !== "GET" && !this.requireRecentSuperAdminMfa(session, res)) return;
+
+    try {
+      if (pathname === "/api/meme-library") {
+        if (method !== "GET") {
+          this.sendJson(res, { error: "method_not_allowed" }, 405);
+          return;
+        }
+        const [policy, tags, assets] = await Promise.all([
+          service.getPolicy(),
+          service.listTags(),
+          service.listAssets(),
+        ]);
+        this.sendJson(res, { policy, tags, assets });
+        return;
+      }
+
+      if (pathname === "/api/meme-library/policy") {
+        if (method === "GET") {
+          this.sendJson(res, await service.getPolicy());
+          return;
+        }
+        if (method !== "PUT") {
+          this.sendJson(res, { error: "method_not_allowed" }, 405);
+          return;
+        }
+        const policy = await service.updatePolicy(normalizeMemePolicyPatch(await readJsonBody(req)));
+        await this.recordOperation({
+          session,
+          groupId: "system",
+          action: "meme_library_policy_update",
+          target: "normal_chat",
+          detail: `enabled=${policy.enabled}; probabilityPercent=${policy.probabilityPercent}; cooldownSeconds=${policy.cooldownSeconds}`,
+        });
+        this.sendJson(res, policy);
+        return;
+      }
+
+      if (pathname === "/api/meme-library/tags") {
+        if (method === "GET") {
+          this.sendJson(res, { tags: await service.listTags() });
+          return;
+        }
+        if (method !== "POST") {
+          this.sendJson(res, { error: "method_not_allowed" }, 405);
+          return;
+        }
+        const tag = await service.createTag(normalizeMemeTagCreate(await readJsonBody(req)));
+        if (!tag) {
+          this.sendJson(res, { error: "meme_library_unavailable" }, 503);
+          return;
+        }
+        await this.recordOperation({
+          session,
+          groupId: "system",
+          action: "meme_library_tag_create",
+          target: tag.id,
+          detail: `name=${tag.name}; keywords=${tag.keywords.length}`,
+        });
+        this.sendJson(res, tag, 201);
+        return;
+      }
+
+      const tagRoute = matchRoute(pathname, /^\/api\/meme-library\/tags\/([^/]+)$/);
+      if (tagRoute) {
+        if (method === "PUT") {
+          const tag = await service.updateTag(tagRoute.id, normalizeMemeTagPatch(await readJsonBody(req)));
+          if (!tag) {
+            this.sendJson(res, { error: "not_found" }, 404);
+            return;
+          }
+          await this.recordOperation({
+          session,
+          groupId: "system",
+          action: "meme_library_tag_update",
+          target: tag.id,
+          detail: `name=${tag.name}; keywords=${tag.keywords.length}`,
+          });
+          this.sendJson(res, tag);
+          return;
+        }
+        if (method === "DELETE") {
+          const removed = await service.removeTag(tagRoute.id);
+          if (!removed) {
+            this.sendJson(res, { error: "not_found" }, 404);
+            return;
+          }
+          await this.recordOperation({
+            session,
+            groupId: "system",
+            action: "meme_library_tag_delete",
+            target: tagRoute.id,
+          });
+          this.sendJson(res, { ok: true });
+          return;
+        }
+        this.sendJson(res, { error: "method_not_allowed" }, 405);
+        return;
+      }
+
+      if (pathname === "/api/meme-library/assets") {
+        if (method === "GET") {
+          const scopeQuery = url.searchParams.get("scope");
+          const scope = normalizeMemeScope(scopeQuery);
+          if (scopeQuery && !scope) {
+            this.sendJson(res, { error: "meme_scope_invalid" }, 400);
+            return;
+          }
+          this.sendJson(res, { assets: await service.listAssets(scope) });
+          return;
+        }
+        if (method !== "POST") {
+          this.sendJson(res, { error: "method_not_allowed" }, 405);
+          return;
+        }
+        const scope = normalizeMemeScope(url.searchParams.get("scope"));
+        if (!scope) {
+          this.sendJson(res, { error: "meme_scope_invalid" }, 400);
+          return;
+        }
+        const enabled = normalizeMemeEnabledQuery(url.searchParams.get("enabled"));
+        if (enabled === undefined && url.searchParams.has("enabled")) {
+          this.sendJson(res, { error: "meme_asset_enabled_invalid" }, 400);
+          return;
+        }
+        const asset = await service.uploadAsset({
+          name: requiredMemeString(url.searchParams.get("name"), "meme_asset_name_required"),
+          scope,
+          ...(scope === "normal_chat" ? { tags: normalizeMemeTagIds(url.searchParams.getAll("tag")) } : {}),
+          data: await readBinaryBody(req, MAX_MEME_ASSET_UPLOAD_BYTES),
+          ...(enabled !== undefined ? { enabled } : {}),
+        });
+        if (!asset) {
+          this.sendJson(res, { error: "meme_library_unavailable" }, 503);
+          return;
+        }
+        await this.recordOperation({
+          session,
+          groupId: "system",
+          action: "meme_library_asset_upload",
+          target: asset.id,
+          detail: `scope=${asset.scope}; mimeType=${asset.mimeType}; sizeBytes=${asset.sizeBytes}; tags=${asset.tags.length}`,
+        });
+        this.sendJson(res, asset, 201);
+        return;
+      }
+
+      const assetPreviewRoute = matchRoute(pathname, /^\/api\/meme-library\/assets\/([^/]+)\/preview$/);
+      if (assetPreviewRoute) {
+        if (method !== "GET") {
+          this.sendJson(res, { error: "method_not_allowed" }, 405);
+          return;
+        }
+        const asset = await service.getAsset(assetPreviewRoute.id);
+        const imageFile = asset ? await service.loadImageFile(asset.id) : undefined;
+        const encodedImage = imageFile?.startsWith("base64://") ? imageFile.slice("base64://".length) : "";
+        const image = encodedImage ? Buffer.from(encodedImage, "base64") : undefined;
+        if (!asset || !image?.byteLength || !isMemeImageContentType(asset.mimeType)) {
+          this.sendJson(res, { error: "not_found" }, 404);
+          return;
+        }
+        this.sendBuffer(res, image, asset.mimeType, { cacheControl: ADMIN_API_CACHE_CONTROL });
+        return;
+      }
+
+      const assetRoute = matchRoute(pathname, /^\/api\/meme-library\/assets\/([^/]+)$/);
+      if (assetRoute) {
+        if (method === "GET") {
+          const asset = await service.getAsset(assetRoute.id);
+          this.sendJson(res, asset ?? { error: "not_found" }, asset ? 200 : 404);
+          return;
+        }
+        if (method === "PUT") {
+          const asset = await service.updateAsset(assetRoute.id, normalizeMemeAssetPatch(await readJsonBody(req)));
+          if (!asset) {
+            this.sendJson(res, { error: "not_found" }, 404);
+            return;
+          }
+          await this.recordOperation({
+            session,
+            groupId: "system",
+            action: "meme_library_asset_update",
+            target: asset.id,
+            detail: `enabled=${asset.enabled}; tags=${asset.tags.length}`,
+          });
+          this.sendJson(res, asset);
+          return;
+        }
+        if (method === "DELETE") {
+          const asset = await service.getAsset(assetRoute.id);
+          if (!asset) {
+            this.sendJson(res, { error: "not_found" }, 404);
+            return;
+          }
+          const removed = await service.removeAsset(asset.id);
+          if (!removed) {
+            this.sendJson(res, { error: "not_found" }, 404);
+            return;
+          }
+          await this.recordOperation({
+            session,
+            groupId: "system",
+            action: "meme_library_asset_delete",
+            target: asset.id,
+            detail: `scope=${asset.scope}; mimeType=${asset.mimeType}`,
+          });
+          this.sendJson(res, { ok: true });
+          return;
+        }
+        this.sendJson(res, { error: "method_not_allowed" }, 405);
+        return;
+      }
+
+      this.sendJson(res, { error: "not_found" }, 404);
+    } catch (error) {
+      const code = memeLibraryErrorCode(error);
+      if (code) {
+        this.sendJson(res, { error: code }, memeLibraryErrorStatus(code));
+        return;
+      }
+      throw error;
+    }
   }
 
   private async handleHtmlPreviewItem(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
@@ -2986,6 +3291,141 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
+async function readBinaryBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buffer.length;
+    if (size > maxBytes) {
+      throw new AdminRequestBodyError("meme_image_size_invalid", 413);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function normalizeMemeScope(value: unknown): MemeScope | undefined {
+  return value === "normal_chat" || value === "blacklisted_at" ? value : undefined;
+}
+
+function normalizeMemeEnabledQuery(value: string | null): boolean | undefined {
+  if (value === null) return undefined;
+  if (value === "1" || value === "true") return true;
+  if (value === "0" || value === "false") return false;
+  return undefined;
+}
+
+function normalizeMemePolicyPatch(body: Record<string, unknown>): Partial<MemeLibraryPolicy> {
+  const patch: Partial<MemeLibraryPolicy> = {};
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") throw new AdminRequestBodyError("meme_policy_invalid", 400);
+    patch.enabled = body.enabled;
+  }
+  if (body.probabilityPercent !== undefined) {
+    if (typeof body.probabilityPercent !== "number" || !Number.isFinite(body.probabilityPercent)) {
+      throw new AdminRequestBodyError("meme_policy_invalid", 400);
+    }
+    patch.probabilityPercent = body.probabilityPercent;
+  }
+  if (body.cooldownSeconds !== undefined) {
+    if (typeof body.cooldownSeconds !== "number" || !Number.isFinite(body.cooldownSeconds)) {
+      throw new AdminRequestBodyError("meme_policy_invalid", 400);
+    }
+    patch.cooldownSeconds = body.cooldownSeconds;
+  }
+  if (!Object.keys(patch).length) throw new AdminRequestBodyError("meme_policy_invalid", 400);
+  return patch;
+}
+
+function normalizeMemeTagCreate(body: Record<string, unknown>): { name: string; description?: string; keywords: string[] } {
+  const name = requiredMemeString(body.name, "meme_tag_name_required");
+  const description = optionalMemeString(body.description, "meme_tag_description_invalid");
+  const keywords = normalizeMemeTagKeywords(body.keywords);
+  return { name, keywords, ...(description !== undefined ? { description } : {}) };
+}
+
+function normalizeMemeTagPatch(body: Record<string, unknown>): { name?: string; description?: string; keywords?: string[] } {
+  const patch: { name?: string; description?: string; keywords?: string[] } = {};
+  if (body.name !== undefined) patch.name = requiredMemeString(body.name, "meme_tag_name_required");
+  if (body.description !== undefined) {
+    patch.description = optionalMemeString(body.description, "meme_tag_description_invalid") ?? "";
+  }
+  if (body.keywords !== undefined) patch.keywords = normalizeMemeTagKeywords(body.keywords);
+  if (!Object.keys(patch).length) throw new AdminRequestBodyError("meme_tag_patch_invalid", 400);
+  return patch;
+}
+
+function normalizeMemeTagKeywords(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new AdminRequestBodyError("meme_tag_keywords_required", 400);
+  const keywords: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") throw new AdminRequestBodyError("meme_tag_keywords_invalid", 400);
+    const keyword = item.normalize("NFKC").toLocaleLowerCase("zh-CN").replace(/\s+/gu, " ").trim().slice(0, 64);
+    if (!keyword || keywords.includes(keyword)) continue;
+    keywords.push(keyword);
+    if (keywords.length > 30) throw new AdminRequestBodyError("meme_tag_keywords_invalid", 400);
+  }
+  if (keywords.length === 0) throw new AdminRequestBodyError("meme_tag_keywords_required", 400);
+  return keywords;
+}
+
+function normalizeMemeAssetPatch(body: Record<string, unknown>): { name?: string; enabled?: boolean; tags?: string[] } {
+  const patch: { name?: string; enabled?: boolean; tags?: string[] } = {};
+  if (body.name !== undefined) patch.name = requiredMemeString(body.name, "meme_asset_name_required");
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") throw new AdminRequestBodyError("meme_asset_enabled_invalid", 400);
+    patch.enabled = body.enabled;
+  }
+  if (body.tags !== undefined) patch.tags = normalizeMemeTagIds(body.tags);
+  if (!Object.keys(patch).length) throw new AdminRequestBodyError("meme_asset_patch_invalid", 400);
+  return patch;
+}
+
+function normalizeMemeTagIds(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new AdminRequestBodyError("meme_asset_tags_invalid", 400);
+  const tags: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new AdminRequestBodyError("meme_asset_tags_invalid", 400);
+    }
+    tags.push(item.trim());
+  }
+  return Array.from(new Set(tags));
+}
+
+function requiredMemeString(value: unknown, errorCode: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new AdminRequestBodyError(errorCode, 400);
+  return value.trim();
+}
+
+function optionalMemeString(value: unknown, errorCode: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new AdminRequestBodyError(errorCode, 400);
+  return value.trim();
+}
+
+function isMemeImageContentType(value: string): boolean {
+  return value === "image/png" || value === "image/jpeg" || value === "image/gif" || value === "image/webp";
+}
+
+function memeLibraryErrorCode(error: unknown): string | undefined {
+  if (error instanceof AdminRequestBodyError) return undefined;
+  const code = error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : undefined;
+  if (!code) return undefined;
+  return code.startsWith("meme_") ? code : undefined;
+}
+
+function memeLibraryErrorStatus(code: string): number {
+  if (code === "meme_tag_name_conflict") return 409;
+  if (code === "meme_tag_in_use") return 409;
+  if (code === "meme_asset_protected") return 403;
+  if (code === "meme_library_unavailable") return 503;
+  return 400;
+}
+
 function containsSensitiveMemoryCredential(value: string): boolean {
   const text = value.toLowerCase();
   return [
@@ -3183,6 +3623,7 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "defaultVoiceReplyEnabled",
     "onlineLookupEnabled",
     "visionEnabled",
+    "ambientGroupContextEnabled",
     "htmlPreviewEnabled",
   ]);
   const update = Object.fromEntries(Object.entries(body).filter(([key]) => permitted.has(key)));

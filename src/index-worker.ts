@@ -45,6 +45,7 @@ import { SkillService } from "./services/skill-service.js";
 import { HtmlPreviewService } from "./services/html-preview-service.js";
 import { QqAdminAuthorizationService } from "./services/qq-admin-authorization-service.js";
 import { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
+import { MemeLibraryService } from "./services/meme-library-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
@@ -75,6 +76,7 @@ export class WorkerApp {
       dataDir: string;
       botApp: BotApplication;
       consumerKey: string;
+      isBlacklistedUser: (groupId: string, userId: string) => Promise<boolean>;
       stateEncryptionKey?: string;
     },
     private readonly transport: MessageTransport,
@@ -130,6 +132,12 @@ export class WorkerApp {
       keyOf: async (message) => {
         if (message.processable === 0) {
           return `${message.group_id}:passive`;
+        }
+        // Blacklisted messages must not create a participation audit or a
+        // conversation route. BotApplication still owns command precedence,
+        // daily-report recording, and the fixed image response.
+        if (await this.isBlacklistedMessage(message)) {
+          return `${message.group_id}:blacklisted`;
         }
         this.updateAtmosphere(message.group_id, message.msg_time);
         const previewRequest = await this.options.botApp.getHtmlPreviewRequest(
@@ -204,6 +212,37 @@ export class WorkerApp {
       return;
     }
 
+    // A retracted message is terminal before any per-message side effect,
+    // including the blacklist fast path.
+    if (this.sharedDb.isRetracted(message.group_id, message.msg_id)) {
+      logInfo("Skipped retracted message.", { groupId: message.group_id, msgId: message.msg_id });
+      await done();
+      return;
+    }
+
+    if (await this.isBlacklistedMessage(message)) {
+      const taskStartedAt = Date.now();
+      try {
+        await this.options.botApp.handleGroupMessage(this.buildEvent(message));
+        this.metrics.inc("tasks_completed");
+        this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
+        await done();
+      } catch (error) {
+        logError("Worker blacklisted message handling failed.", {
+          groupId: message.group_id,
+          msgId: message.msg_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.metrics.inc("tasks_failed");
+        throw error;
+      } finally {
+        const queueDepth = this.runner.queueDepth;
+        this.maxQueueDepthSeen = Math.max(this.maxQueueDepthSeen, queueDepth);
+        this.metrics.setGauge("per_key_queue_depth_max", this.maxQueueDepthSeen);
+      }
+      return;
+    }
+
     // keyOf already persisted this route. Reading by source row makes retries
     // and duplicate delivery reuse the exact same result without rerouting.
     const previewRequest = await this.options.botApp.getHtmlPreviewRequest(
@@ -238,13 +277,6 @@ export class WorkerApp {
       : route
         ? `${message.group_id}:${route.branchId}`
         : `${message.group_id}:passive`;
-
-    // Withdraw if the message was retracted (plan 8.1).
-    if (this.sharedDb.isRetracted(message.group_id, message.msg_id)) {
-      logInfo("Skipped retracted message.", { groupId: message.group_id, msgId: message.msg_id });
-      await done();
-      return;
-    }
 
     if (route) {
       const discardedDrafts = this.sharedDb.discardPreparingOutboxForSource(
@@ -390,6 +422,10 @@ export class WorkerApp {
     });
   }
 
+  private isBlacklistedMessage(message: { group_id: string; user_id: string }): Promise<boolean> {
+    return this.options.isBlacklistedUser(message.group_id, message.user_id);
+  }
+
   /**
    * The decision is persisted before a message enters a per-key queue. Reusing
    * it here keeps worker retries deterministic even when group settings change
@@ -465,9 +501,11 @@ export class WorkerApp {
     sender_card?: string | null;
     sender_nickname?: string | null;
     reply_to?: string | null;
+    verified_mention_user_ids_json?: string;
     has_at_bot?: number;
   }): NapcatGroupMessageEvent {
     const images = JSON.parse(message.images_json ?? "[]") as Array<{ url?: string; file?: string; summary?: string }>;
+    const verifiedMentionUserIds = parseVerifiedMentionUserIds(message.verified_mention_user_ids_json);
     const segments: Array<{ type: string; data: Record<string, string> }> = [];
     if (message.reply_to) {
       segments.push({ type: "reply", data: { id: message.reply_to } });
@@ -475,8 +513,12 @@ export class WorkerApp {
     if (message.has_at_bot) {
       segments.push({ type: "at", data: { qq: this.options.botApp.getBotQq() } });
     }
-    if (message.text) {
-      segments.push({ type: "text", data: { text: message.text } });
+    for (const userId of verifiedMentionUserIds) {
+      segments.push({ type: "at", data: { qq: userId } });
+    }
+    const text = removePersistedMentionEchoes(message.text, verifiedMentionUserIds);
+    if (text) {
+      segments.push({ type: "text", data: { text } });
     }
     for (const image of images) {
       const data: Record<string, string> = {};
@@ -533,7 +575,7 @@ async function buildBotApp(
   config: ReturnType<typeof loadConfig>,
   transport: MessageTransport,
   imagePipeline?: ImagePipeline,
-): Promise<BotApplication> {
+): Promise<{ botApp: BotApplication; groupConfigService: GroupConfigService }> {
   const dataDir = config.dataDir;
   const sharedDb = openSharedDb(dataDir);
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
@@ -604,8 +646,12 @@ async function buildBotApp(
     rootDir: config.htmlPreviewRoot,
     publicBaseUrl: config.htmlPreviewPublicBaseUrl,
   });
+  // Keep the existing fixed blacklist response active until V3 cutover. The
+  // library itself deliberately has no legacy persistence fallback.
+  const memeLibraryService = v3State ? new MemeLibraryService(dataDir, v3State) : undefined;
+  await memeLibraryService?.initialize();
 
-  return new BotApplication(
+  const botApp = new BotApplication(
     transport,
     groupConfigService,
     skillService,
@@ -658,7 +704,33 @@ async function buildBotApp(
     },
     v3State ? new QqAdminAuthorizationService(sharedDb) : undefined,
     new RecentGroupEvidenceService(sharedDb),
+    memeLibraryService,
   );
+  return { botApp, groupConfigService };
+}
+
+function parseVerifiedMentionUserIds(value: string | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(
+      parsed
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => /^\d{5,12}$/.test(item)),
+    )];
+  } catch {
+    return [];
+  }
+}
+
+function removePersistedMentionEchoes(text: string, userIds: string[]): string {
+  let result = text;
+  for (const userId of userIds) {
+    result = result.replace(new RegExp(`(^|\\s)@${userId}(?=\\s|$)`, "g"), "$1");
+  }
+  return result.replace(/\s+/g, " ").trim();
 }
 
 /** Stage-1 image localization pipeline; NapCat get_image is the localize callback (plan §4). */
@@ -690,11 +762,16 @@ export async function main(): Promise<void> {
     resolveMemberIdentities: (groupId, candidates) => readClient.resolveMemberIdentities(groupId, candidates),
     getMessage: (messageId) => readClient.getMessage(messageId),
   });
+  const builtBot = await buildBotApp(config, transport, buildImagePipeline(transport));
   const app = new WorkerApp(
     {
       dataDir: config.dataDir,
-      botApp: await buildBotApp(config, transport, buildImagePipeline(transport)),
+      botApp: builtBot.botApp,
       consumerKey: "worker:main",
+      isBlacklistedUser: async (groupId, userId) => {
+        const group = await builtBot.groupConfigService.getGroup(groupId);
+        return (group?.blacklistedUserIds ?? []).includes(userId);
+      },
       stateEncryptionKey: config.stateEncryptionKey,
     },
     transport,

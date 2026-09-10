@@ -140,6 +140,7 @@ test("message sender card and nickname survive SQLite polling", (t) => {
     imagesJson: "[]",
     senderCard: "  群名片  ",
     senderNickname: "  QQ昵称  ",
+    verifiedMentionUserIds: ["2409332588", "2409332588", "all"],
     hasAtBot: false,
     isBotMsg: false,
     createdAt: 1_700_000_000_000,
@@ -148,6 +149,7 @@ test("message sender card and nickname survive SQLite polling", (t) => {
   const [row] = db.pollMessages("worker:sender", 10);
   assert.equal(row?.sender_card, "群名片");
   assert.equal(row?.sender_nickname, "QQ昵称");
+  assert.deepEqual(JSON.parse(row?.verified_mention_user_ids_json ?? "[]"), ["2409332588"]);
   db.close();
 });
 
@@ -177,6 +179,7 @@ test("old messages schema is upgraded with nullable sender identity columns", (t
   const columns = db.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
   assert.equal(columns.some((column) => column.name === "sender_card"), true);
   assert.equal(columns.some((column) => column.name === "sender_nickname"), true);
+  assert.equal(columns.some((column) => column.name === "verified_mention_user_ids_json"), true);
   db.close();
 });
 
@@ -197,6 +200,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 9, name: "add-v3-daily-report-rendered-outputs" },
       { version: 10, name: "add-static-html-preview-publications" },
       { version: 11, name: "add-admin-qq-account-bindings" },
+      { version: 12, name: "persist-verified-message-mention-targets" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -214,7 +218,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -711,6 +715,73 @@ test("recent group evidence is bounded before the source message and merges only
     ["bot", "机器人回复"],
   ]);
   assert.equal(evidence[0]?.sender_nickname, "企鹅");
+  assert.deepEqual(evidence.map((row) => row.message_id), ["member", "bot-message"]);
+  db.close();
+});
+
+test("ambient group context uses the source receipt time and applies privacy and message filters", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const now = 1_800_000_000_000;
+  const insert = (msgId: string, createdAt: number, overrides: Record<string, unknown> = {}) => db.insertMessage({
+    groupId: "10001", userId: "20001", selfId: "30001", msgId,
+    msgTime: createdAt, text: msgId, imagesJson: "[]", hasAtBot: false,
+    isBotMsg: false, createdAt, ...overrides,
+  });
+  insert("expired", now - 3 * 60 * 1_000 - 1);
+  insert("boundary", now - 3 * 60 * 1_000);
+  insert("private", now - 5_000, { userId: "private-user" });
+  insert("blocked", now - 4_000, { userId: "blocked-user" });
+  insert("command", now - 3_000, { text: "#模型 secret" });
+  insert("dropped", now - 2_500, { processable: false });
+  insert("bot-inbound", now - 2_250, { isBotMsg: true });
+  const sent = db.enqueueOutbox("10001", null, "机器人说常公");
+  db.ackOutboxDelivery(sent, "bot-context", now - 2_000);
+  db.enqueueOutbox("10001", null, "pending reply");
+  insert("future-clock", now + 1);
+  const sourceRowId = insert("source", now, { hasAtBot: true });
+  insert("later-row", now - 1);
+
+  const context = db.listAmbientGroupContext({
+    groupId: "10001",
+    beforeSourceRowId: sourceRowId,
+    lookbackMs: 3 * 60 * 1_000,
+    excludedUserIds: ["private-user", "blocked-user"],
+    limit: 12,
+  });
+
+  assert.deepEqual(context.map((row) => [row.role, row.message_id, row.text]), [
+    ["member", "boundary", "boundary"],
+    ["bot", "bot-context", "机器人说常公"],
+  ]);
+  db.close();
+});
+
+test("ambient group context retains only the newest twelve eligible messages", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const now = 1_800_000_000_000;
+  for (let index = 1; index <= 13; index += 1) {
+    db.insertMessage({
+      groupId: "10001", userId: "20001", selfId: "30001", msgId: `m${index}`,
+      msgTime: now - 20_000 + index, text: `message ${index}`, imagesJson: "[]",
+      hasAtBot: false, isBotMsg: false, createdAt: now - 20_000 + index,
+    });
+  }
+  const sourceRowId = db.insertMessage({
+    groupId: "10001", userId: "20002", selfId: "30001", msgId: "source",
+    msgTime: now, text: "question", imagesJson: "[]", hasAtBot: true,
+    isBotMsg: false, createdAt: now,
+  });
+
+  const context = db.listAmbientGroupContext({
+    groupId: "10001",
+    beforeSourceRowId: sourceRowId,
+    lookbackMs: 3 * 60 * 1_000,
+    limit: 12,
+  });
+
+  assert.equal(context.length, 12);
+  assert.equal(context[0]?.message_id, "m2");
+  assert.equal(context[11]?.message_id, "m13");
   db.close();
 });
 

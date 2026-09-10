@@ -41,6 +41,7 @@ export interface GroupConfig {
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
+  ambientGroupContextEnabled?: boolean;
   htmlPreviewEnabled?: boolean;
 }
 
@@ -59,6 +60,43 @@ export interface HtmlPreviewMetadata {
   expiresAt: string;
   deletedAt?: string;
   byteSize?: number;
+}
+
+export type MemeScope = "normal_chat" | "blacklisted_at";
+
+export interface MemeLibraryPolicy {
+  enabled: boolean;
+  probabilityPercent: number;
+  cooldownSeconds: number;
+}
+
+export interface MemeTag {
+  id: string;
+  name: string;
+  description: string;
+  keywords: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemeAsset {
+  id: string;
+  name: string;
+  scope: MemeScope;
+  enabled: boolean;
+  tags: string[];
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+  updatedAt: string;
+  protected: boolean;
+}
+
+export interface MemeLibrarySnapshot {
+  policy: MemeLibraryPolicy;
+  tags: MemeTag[];
+  assets: MemeAsset[];
 }
 
 export interface SubjectLabel {
@@ -443,18 +481,19 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
   if (readonlySession && shouldSendCsrf(options.method) && url !== "/api/logout") {
     throw new Error("只读账号不能修改系统设置或内容");
   }
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options.headers as Record<string, string> | undefined || {}),
-  };
+  const headers = new Headers(options.headers);
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!headers.has("Content-Type") && !isFormData) {
+    headers.set("Content-Type", "application/json");
+  }
   if (csrfToken && shouldSendCsrf(options.method)) {
-    headers["X-CSRF-Token"] = csrfToken;
+    headers.set("X-CSRF-Token", csrfToken);
   }
   let res: Response;
   try {
     res = await fetch(url, {
-      headers,
       ...options,
+      headers,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

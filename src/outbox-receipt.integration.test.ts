@@ -25,6 +25,11 @@ class ReceiptTransport implements MessageTransport {
     return { platformMessageId: this.resolveId(groupId, text) };
   }
 
+  async sendGroupImage(groupId: string, imageFile: string): Promise<MessageReceipt> {
+    this.deliveries.push({ groupId, kind: "image", text: imageFile });
+    return { platformMessageId: this.resolveId(groupId, imageFile) };
+  }
+
   async sendGroupAiRecord(groupId: string, text: string): Promise<MessageReceipt> {
     this.deliveries.push({ groupId, kind: "airecord", text });
     return { platformMessageId: this.resolveId(groupId, text) };
@@ -99,6 +104,42 @@ test("WorkerTransport keeps concurrent async send chains on their own routes", a
       { text: "b-second", topic_id: routeB.topicId, branch_id: routeB.branchId },
     ],
   );
+});
+
+test("WorkerTransport queues image outbox rows and ingress delivers them as images", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const workerDb = new SharedDb(dbPath);
+  const ingressDb = new SharedDb(dbPath);
+  t.after(() => {
+    workerDb.close();
+    ingressDb.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const imageFile = "base64://blacklisted-at-meme";
+  const workerTransport = new WorkerTransport(workerDb);
+  const receipt = await workerTransport.sendGroupImage("group-image", imageFile);
+  assert.deepEqual(receipt, { deliveryId: "outbox:1" });
+
+  const queued = workerDb.db.prepare(
+    "SELECT group_id, kind, text, status FROM outbox WHERE id = 1",
+  ).get() as { group_id: string; kind: string; text: string; status: string };
+  assert.deepEqual({ ...queued }, {
+    group_id: "group-image",
+    kind: "image",
+    text: imageFile,
+    status: "pending",
+  });
+
+  const transport = new ReceiptTransport(() => "qq-image-1");
+  const row = ingressDb.claimOutbox(1, 2_000)[0]!;
+  const platformMessageId = await deliverOutboxRow(ingressDb, transport, row, 2_100);
+  assert.equal(platformMessageId, "qq-image-1");
+  assert.deepEqual(transport.deliveries, [{
+    groupId: "group-image",
+    kind: "image",
+    text: imageFile,
+  }]);
 });
 
 test("Worker outbox receipts are internal ids until every real multipart QQ id is bound to one assistant turn", async (t) => {

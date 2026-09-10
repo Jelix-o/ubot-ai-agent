@@ -168,6 +168,7 @@ async function runExistingCutoverUpgrade() {
     const now = Date.now();
     const upgrade = repository.runAtomically(() => ({
       retiredQqAdministration: repository.retireLegacyQqAdministration(),
+      groupVisionEnabled: repository.enableVisionForExistingGroupsOnce(now),
       huixianProfileRevision: repository.applyHuixianReleaseProfile({
         revision: HUIXIAN_RELEASE_PROFILE_REVISION,
         profile: huixianProfile,
@@ -335,6 +336,7 @@ async function buildPreflightReport(sources) {
 function importAllState({ repository, sharedDb, parsed, sources, huixianProfile, archive, now }) {
   const result = {
     groups: 0,
+    groupVisionEnabled: { applied: false, groupsUpdated: 0 },
     settings: false,
     explicitMemories: 0,
     excludedMemories: 0,
@@ -359,6 +361,7 @@ function importAllState({ repository, sharedDb, parsed, sources, huixianProfile,
   const groups = normalizeGroupsFile(parsed.get("groups"));
   repository.saveGroups(groups, now);
   result.groups = groups.groups.length;
+  result.groupVisionEnabled = repository.enableVisionForExistingGroupsOnce(now);
   const knownKnowledgePackGroupIds = new Set();
   const ensureKnowledgePack = (groupId) => {
     const normalized = String(groupId ?? "").trim();

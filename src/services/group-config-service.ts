@@ -44,6 +44,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "memoryDisabledUserIds"
   | "onlineLookupEnabled"
   | "visionEnabled"
+  | "ambientGroupContextEnabled"
   | "htmlPreviewEnabled"
 >>;
 
@@ -598,7 +599,10 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     defaultVoiceReplyEnabled: voiceReplyEnabled && group.defaultVoiceReplyEnabled === true,
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
     onlineLookupEnabled: group.onlineLookupEnabled === true,
-    visionEnabled: group.visionEnabled === true,
+    // Image understanding is enabled for newly discovered groups unless an
+    // administrator explicitly opts the group out.
+    visionEnabled: group.visionEnabled !== false,
+    ambientGroupContextEnabled: group.ambientGroupContextEnabled !== false,
     // Generated pages are a normal member-facing capability. Existing groups
     // upgrade enabled unless an administrator explicitly turns it off.
     htmlPreviewEnabled: group.htmlPreviewEnabled !== false,
@@ -702,6 +706,9 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("visionEnabled" in input) {
     next.visionEnabled = normalizeBoolean(input.visionEnabled, "invalid_group_config");
+  }
+  if ("ambientGroupContextEnabled" in input) {
+    next.ambientGroupContextEnabled = normalizeBoolean(input.ambientGroupContextEnabled, "invalid_group_config");
   }
   if ("htmlPreviewEnabled" in input) {
     next.htmlPreviewEnabled = normalizeBoolean(input.htmlPreviewEnabled, "invalid_group_config");

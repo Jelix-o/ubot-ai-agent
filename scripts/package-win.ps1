@@ -86,7 +86,8 @@ $itemsToCopy = @(
   "docs/ADMIN-RECOVERY-v3.md",
   "docs/MIGRATION-v3.md",
   "docs/ROLLBACK-v3.md",
-  "assets/huixian-profile.json"
+  "assets/huixian-profile.json",
+  "assets/blacklisted-at-meme.jpg"
 )
 
 foreach ($item in $itemsToCopy) {

@@ -13,6 +13,9 @@ import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ConversationContextRepository } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
+import { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
+import { V3StateRepository } from "./services/v3-state-repository.js";
+import { REQUIRED_V3_RUNTIME_CAPABILITIES } from "./services/v3-runtime-state.js";
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
 import type {
   AiReply,
@@ -26,6 +29,7 @@ import { WorkerTransport } from "./worker-transport.js";
 const BOT_QQ = "12345";
 const GROUP_ID = "67890";
 const USER_ID = "20001";
+const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 test("Ingress clamps future OneBot timestamps to receipt time", () => {
   const receivedAt = Date.parse("2026-08-27T03:00:00.000Z");
@@ -53,6 +57,10 @@ class FakeNapCatTransport extends EventEmitter implements MessageTransport {
 
   async sendGroupRecord(groupId: string, text: string): Promise<MessageReceipt> {
     return this.sendGroupMessage(groupId, text);
+  }
+
+  async sendGroupImage(groupId: string, imageFile: string): Promise<MessageReceipt> {
+    return this.sendGroupMessage(groupId, imageFile);
   }
 
   async sendGroupAiRecord(groupId: string, text: string): Promise<MessageReceipt> {
@@ -90,6 +98,11 @@ class GatedWorkerTransport extends WorkerTransport {
 class CapturingAiService {
   readonly calls: Array<{ history: ConversationTurn[]; userInput: string; identityContext?: unknown }> = [];
 
+  constructor(
+    private readonly replyForCall: (callNumber: number, userInput: string) => string =
+      (callNumber) => callNumber === 1 ? "first answer" : "follow-up answer",
+  ) {}
+
   async generateReply(args: {
     history: ConversationTurn[];
     userInput: string;
@@ -101,7 +114,7 @@ class CapturingAiService {
       identityContext: args.identityContext,
     });
     return {
-      text: this.calls.length === 1 ? "first answer" : "follow-up answer",
+      text: this.replyForCall(this.calls.length, args.userInput),
       model: "fake-reply-model",
       skillId: "assistant",
     };
@@ -153,6 +166,7 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
     dataDir,
     botApp: bot,
     consumerKey: "worker:causal-integration",
+    isBlacklistedUser: async () => false,
   }, workerTransport);
 
   t.after(async () => {
@@ -307,6 +321,119 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
       keywordTriggered: false,
     },
   });
+
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 104,
+    text: "根据现有聊天记录锐评一下",
+    mentionTargetUserId: "2409332588",
+    eventTimeSeconds: Math.floor(Date.now() / 1_000) + 3,
+  }));
+  await waitFor(() => aiService.calls.length === 3);
+  await waitFor(() => napcat.sent.length === 3);
+
+  const evaluationCall = aiService.calls[2]!;
+  const evaluationIdentity = evaluationCall.identityContext as {
+    interactionTargets?: Array<{ userId?: string; source: string }>;
+    recentGroupEvidenceRequested?: boolean;
+    recentGroupEvidenceTargetUserId?: string;
+  };
+  assert.deepEqual(evaluationIdentity.interactionTargets, [
+    { userId: "2409332588", names: ["2409332588"], source: "mention" },
+  ]);
+  assert.equal(evaluationIdentity.recentGroupEvidenceRequested, true);
+  assert.equal(evaluationIdentity.recentGroupEvidenceTargetUserId, "2409332588");
+  const persistedEvaluation = observerDb.db.prepare(
+    "SELECT verified_mention_user_ids_json FROM messages WHERE group_id = ? AND msg_id = ?",
+  ).get(GROUP_ID, "104") as { verified_mention_user_ids_json: string };
+  assert.deepEqual(JSON.parse(persistedEvaluation.verified_mention_user_ids_json), ["2409332588"]);
+});
+
+test("unquoted group question receives a short ambient window without joining the prior branch", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-ambient-context-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const napcat = new FakeNapCatTransport();
+  const workerTransportDb = openSharedDb(dataDir);
+  const botContextDb = openSharedDb(dataDir);
+  const observerDb = openSharedDb(dataDir);
+  const workerTransport = new WorkerTransport(workerTransportDb);
+  const repository = new ConversationContextRepository(botContextDb);
+  const aiService = new CapturingAiService((callNumber) => callNumber === 1
+    ? "现代梗圈顶流必须是常公，手谕直接批到前线"
+    : "常公就是蒋中正");
+  const bot = createBot(
+    workerTransport,
+    repository,
+    aiService,
+    new RecentGroupEvidenceService(botContextDb),
+  );
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, napcat);
+  const worker = new WorkerApp({
+    dataDir,
+    botApp: bot,
+    consumerKey: "worker:ambient-context-integration",
+    isBlacklistedUser: async () => false,
+  }, workerTransport);
+
+  t.after(async () => {
+    await worker.stop();
+    await bot.stop();
+    await ingress.stop();
+    observerDb.close();
+    botContextDb.close();
+    workerTransportDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await ingress.start();
+  worker.start();
+  const now = Math.floor(Date.now() / 1_000);
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 301,
+    userId: "493213481",
+    text: "我国史上著名的微操达人",
+    eventTimeSeconds: now,
+  }));
+  await waitFor(() => (
+    (observerDb.db.prepare("SELECT status FROM outbox ORDER BY id DESC LIMIT 1").get() as { status?: string } | undefined)?.status === "sent"
+  ));
+
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 302,
+    userId: "1569671790",
+    text: "微操是指轻轻的操妹子吗",
+    hasAtBot: false,
+    eventTimeSeconds: now + 1,
+  }));
+  await waitFor(() => Boolean(observerDb.db.prepare("SELECT 1 FROM messages WHERE msg_id = '302'").get()));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 303,
+    userId: "493213481",
+    text: "常工与中正比如何",
+    eventTimeSeconds: now + 2,
+  }));
+  await waitFor(() => aiService.calls.length === 2);
+
+  const firstRoute = routeForMessage(observerDb, "301");
+  const secondRoute = routeForMessage(observerDb, "303");
+  assert.ok(firstRoute);
+  assert.ok(secondRoute);
+  assert.equal(secondRoute.route_reason, "new-topic");
+  assert.equal(secondRoute.parent_turn_id, null);
+  assert.notEqual(secondRoute.topic_id, firstRoute.topic_id);
+
+  const ambient = (aiService.calls[1]?.identityContext as {
+    ambientGroupContext?: Array<{ role: string; userId?: string; text: string }>;
+  } | undefined)?.ambientGroupContext ?? [];
+  assert.ok(ambient.some((message) => message.role === "bot" && message.text.includes("常公")));
+  assert.ok(ambient.some((message) => message.userId === "1569671790" && message.text.includes("微操")));
 });
 
 test("Ingress records rate-limited messages but Worker skips them without an AI reply", async (t) => {
@@ -330,6 +457,7 @@ test("Ingress records rate-limited messages but Worker skips them without an AI 
     dataDir,
     botApp: bot,
     consumerKey: "worker:rate-limit-integration",
+    isBlacklistedUser: async () => false,
   }, workerTransport);
 
   t.after(async () => {
@@ -370,14 +498,236 @@ test("Ingress records rate-limited messages but Worker skips them without an AI 
   assert.equal(napcat.sent.length, 6);
 });
 
+test("blacklisted @ bypasses ingress limits without creating conversation state", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-ingress-blacklisted-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const napcat = new FakeNapCatTransport();
+  const workerTransportDb = openSharedDb(dataDir);
+  const botContextDb = openSharedDb(dataDir);
+  const observerDb = openSharedDb(dataDir);
+  const state = new V3StateRepository(observerDb, { stateEncryptionKey: TEST_STATE_KEY });
+  const blacklistedUserId = "30001";
+  const blacklistedGroup: GroupBotConfig = {
+    ...groupConfig,
+    blacklistedUserIds: [blacklistedUserId],
+    dailyReportEnabled: true,
+  };
+  state.markCutover();
+  state.saveCapabilityPolicy({
+    version: 1,
+    enabledCapabilities: [...REQUIRED_V3_RUNTIME_CAPABILITIES],
+    updatedAt: "2026-09-09T00:00:00.000Z",
+  });
+  state.saveGroups({ groups: [blacklistedGroup] });
+
+  const workerTransport = new WorkerTransport(workerTransportDb);
+  const repository = new ConversationContextRepository(botContextDb);
+  const aiService = new CapturingAiService();
+  const dailyReportRecords: Array<{ groupId: string; userId: string; text: string }> = [];
+  const bot = createBot(workerTransport, repository, aiService, undefined, {
+    groupConfigOverrides: {
+      blacklistedUserIds: [blacklistedUserId],
+      dailyReportEnabled: true,
+    },
+    dailyReportRecords,
+  });
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+    stateEncryptionKey: TEST_STATE_KEY,
+  }, napcat);
+  const worker = new WorkerApp({
+    dataDir,
+    botApp: bot,
+    consumerKey: "worker:blacklisted-rate-limit-integration",
+    isBlacklistedUser: async (groupId, userId) => (
+      (state.getGroup(groupId)?.blacklistedUserIds ?? []).includes(userId)
+    ),
+    stateEncryptionKey: TEST_STATE_KEY,
+  }, workerTransport);
+
+  t.after(async () => {
+    await worker.stop();
+    await bot.stop();
+    await ingress.stop();
+    observerDb.close();
+    botContextDb.close();
+    workerTransportDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await ingress.start();
+  worker.start();
+  const now = Math.floor(Date.now() / 1_000);
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 400,
+    userId: "30002",
+    text: "",
+    atOnly: true,
+    eventTimeSeconds: now,
+  }));
+  assert.equal(
+    (observerDb.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE msg_id = '400'").get() as { n: number }).n,
+    0,
+  );
+
+  for (let messageId = 401; messageId <= 406; messageId += 1) {
+    napcat.emit("groupMessage", inboundEvent({
+      messageId,
+      userId: blacklistedUserId,
+      text: `blacklisted burst ${messageId}`,
+      eventTimeSeconds: now,
+    }));
+    await waitFor(() => Boolean(observerDb.db.prepare("SELECT 1 FROM messages WHERE msg_id = ?").get(String(messageId))));
+  }
+  await waitFor(() => napcat.sent.length === 6);
+
+  // The seventh message is a valid platform @ segment with no text payload.
+  // It must bypass the bucket and add exactly one image response.
+  const sentBeforeAtOnly = napcat.sent.length;
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 407,
+    userId: blacklistedUserId,
+    text: "",
+    atOnly: true,
+    eventTimeSeconds: now,
+  }));
+  await waitFor(() => Boolean(observerDb.db.prepare("SELECT 1 FROM messages WHERE msg_id = '407'").get()));
+  await waitFor(() => napcat.sent.length === sentBeforeAtOnly + 1);
+
+  const seventh = observerDb.db.prepare(
+    "SELECT processable, drop_reason FROM messages WHERE msg_id = ?",
+  ).get("407") as { processable: number; drop_reason: string | null };
+  assert.deepEqual({ ...seventh }, { processable: 1, drop_reason: null });
+  assert.equal(napcat.sent.length, 7);
+  assert.ok(napcat.sent.every((message) => message.text.startsWith("base64://")));
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(dailyReportRecords.length, 6);
+
+  const responses = observerDb.db.prepare(
+    `SELECT kind, reply_to, topic_id, branch_id, source_turn_id, turn_id, status
+       FROM outbox ORDER BY id`,
+  ).all() as Array<{
+    kind: string;
+    reply_to: string | null;
+    topic_id: string | null;
+    branch_id: string | null;
+    source_turn_id: number | null;
+    turn_id: number | null;
+    status: string;
+  }>;
+  assert.equal(responses.length, 7);
+  for (const response of responses) {
+    assert.deepEqual({ ...response }, {
+      kind: "image",
+      reply_to: null,
+      topic_id: null,
+      branch_id: null,
+      source_turn_id: null,
+      turn_id: null,
+      status: "sent",
+    });
+  }
+
+  for (let messageId = 401; messageId <= 407; messageId += 1) {
+    const sourceState = observerDb.db.prepare(
+      `SELECT r.source_row_id AS route_id, d.source_row_id AS decision_id
+         FROM messages m
+         LEFT JOIN conversation_message_routes r ON r.source_row_id = m.id
+         LEFT JOIN participation_decisions d ON d.source_row_id = m.id
+        WHERE m.msg_id = ?`,
+    ).get(String(messageId)) as { route_id: number | null; decision_id: number | null };
+    assert.deepEqual({ ...sourceState }, { route_id: null, decision_id: null });
+  }
+  assert.equal(
+    (observerDb.db.prepare("SELECT COUNT(*) AS n FROM conversation_turns").get() as { n: number }).n,
+    0,
+  );
+
+  // Blacklist commands remain Bot-owned and must not fall through to the meme.
+  const sentBeforeCommand = napcat.sent.length;
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 408,
+    userId: blacklistedUserId,
+    text: "#拉黑",
+    eventTimeSeconds: now,
+  }));
+  await waitFor(() => dailyReportRecords.length === 7);
+  await waitFor(() => (
+    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:blacklisted-rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 8
+  ));
+  assert.equal(napcat.sent.length, sentBeforeCommand);
+  const commandSourceState = observerDb.db.prepare(
+    `SELECT r.source_row_id AS route_id, d.source_row_id AS decision_id
+       FROM messages m
+       LEFT JOIN conversation_message_routes r ON r.source_row_id = m.id
+       LEFT JOIN participation_decisions d ON d.source_row_id = m.id
+      WHERE m.msg_id = ?`,
+  ).get("408") as { route_id: number | null; decision_id: number | null };
+  assert.deepEqual({ ...commandSourceState }, { route_id: null, decision_id: null });
+
+  // The exemption is narrow: a non-blacklisted mention and a blacklisted
+  // non-mention remain subject to the existing per-group token bucket.
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 409,
+    userId: "30002",
+    text: "ordinary burst",
+    eventTimeSeconds: now,
+  }));
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 410,
+    userId: blacklistedUserId,
+    text: "blacklisted without mention",
+    hasAtBot: false,
+    eventTimeSeconds: now,
+  }));
+  await waitFor(() => Boolean(observerDb.db.prepare("SELECT 1 FROM messages WHERE msg_id = '410'").get()));
+  await waitFor(() => (
+    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:blacklisted-rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 10
+  ));
+
+  for (const messageId of ["409", "410"]) {
+    const dropped = observerDb.db.prepare(
+      "SELECT processable, drop_reason FROM messages WHERE msg_id = ?",
+    ).get(messageId) as { processable: number; drop_reason: string | null };
+    assert.deepEqual({ ...dropped }, { processable: 0, drop_reason: "rate_limited" });
+  }
+  assert.equal(napcat.sent.length, sentBeforeCommand);
+  assert.equal(aiService.calls.length, 0);
+});
+
+interface TestBotOptions {
+  groupConfigOverrides?: Partial<GroupBotConfig>;
+  dailyReportRecords?: Array<{ groupId: string; userId: string; text: string }>;
+}
+
 function createBot(
   transport: WorkerTransport,
   repository: ConversationContextRepository,
   aiService: CapturingAiService,
+  recentGroupEvidenceService?: RecentGroupEvidenceService,
+  options: TestBotOptions = {},
 ): BotApplication {
+  const configuredGroup: GroupBotConfig = {
+    ...groupConfig,
+    ...options.groupConfigOverrides,
+  };
   const groupConfigService = {
     async getGroup(groupId: string): Promise<GroupBotConfig | undefined> {
-      return groupId === GROUP_ID ? { ...groupConfig } : undefined;
+      return groupId === GROUP_ID
+        ? {
+          ...configuredGroup,
+          allowedSkillIds: [...configuredGroup.allowedSkillIds],
+          switcherUserIds: [...configuredGroup.switcherUserIds],
+          liveChatUserIds: [...configuredGroup.liveChatUserIds],
+          ...(configuredGroup.blacklistedUserIds
+            ? { blacklistedUserIds: [...configuredGroup.blacklistedUserIds] }
+            : {}),
+        }
+        : undefined;
     },
   };
   const skillService = {
@@ -391,7 +741,13 @@ function createBot(
     async clearGroup(): Promise<void> {},
   };
   const dailyReportService = {
-    async recordMessage(): Promise<void> {},
+    async recordMessage(input: { groupId: string; userId: string; text: string }): Promise<void> {
+      options.dailyReportRecords?.push({
+        groupId: input.groupId,
+        userId: input.userId,
+        text: input.text,
+      });
+    },
   };
   const scheduledReminderService = {
     parseCreateRequest(): null {
@@ -432,22 +788,30 @@ function createBot(
     false,
     repository,
     new ConversationContextRouter(repository),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    recentGroupEvidenceService,
   );
 }
 
 function inboundEvent(input: {
   messageId: number;
+  userId?: string;
   text: string;
   eventTimeSeconds: number;
   replyToMessageId?: string;
   hasAtBot?: boolean;
+  mentionTargetUserId?: string;
+  atOnly?: boolean;
 }): NapcatGroupMessageEvent {
   return {
     post_type: "message",
     message_type: "group",
     self_id: Number(BOT_QQ),
     group_id: Number(GROUP_ID),
-    user_id: Number(USER_ID),
+    user_id: Number(input.userId ?? USER_ID),
     message_id: input.messageId,
     time: input.eventTimeSeconds,
     raw_message: input.text,
@@ -456,10 +820,13 @@ function inboundEvent(input: {
         ? [{ type: "reply", data: { id: input.replyToMessageId } }]
         : []),
       ...(input.hasAtBot === false ? [] : [{ type: "at", data: { qq: BOT_QQ } }]),
-      { type: "text", data: { text: input.text } },
+      ...(input.atOnly ? [] : [{ type: "text", data: { text: input.text } }]),
+      ...(input.mentionTargetUserId
+        ? [{ type: "at", data: { qq: input.mentionTargetUserId } }]
+        : []),
     ],
     sender: {
-      user_id: Number(USER_ID),
+      user_id: Number(input.userId ?? USER_ID),
       nickname: "Tester",
       card: "测试群名片",
       role: "member",

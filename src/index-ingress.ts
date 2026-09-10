@@ -5,7 +5,7 @@ import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js"
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
-import { parseGroupMessage, extractTextFromMessage, extractImagesFromMessage } from "./utils/message-parser.js";
+import { parseGroupMessage } from "./utils/message-parser.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageReceipt, MessageTransport } from "./bot.js";
 
@@ -61,6 +61,8 @@ export async function deliverOutboxRow(
   let receipt: MessageReceipt | void;
   if (row.kind === "record") {
     receipt = await transport.sendGroupRecord(row.group_id, row.text);
+  } else if (row.kind === "image") {
+    receipt = await transport.sendGroupImage(row.group_id, row.text);
   } else if (row.kind === "airecord") {
     receipt = await transport.sendGroupAiRecord(row.group_id, row.text);
   } else {
@@ -96,6 +98,8 @@ interface IngressOptions {
   botQq: string;
   dataDir: string;
   metricsDir: string;
+  /** Enables V3-only read checks used by narrow ingress policy exceptions. */
+  stateEncryptionKey?: string;
 }
 
 export class IngressApp {
@@ -104,12 +108,16 @@ export class IngressApp {
   private readonly transport: MessageTransport;
   private readonly emitterTimer: NodeJS.Timeout;
   private readonly maintenanceTimer: NodeJS.Timeout;
+  private readonly v3State: ReturnType<typeof resolveV3RuntimeState>;
 
   constructor(
     private readonly options: IngressOptions,
     transport?: MessageTransport,
   ) {
     this.sharedDb = openSharedDb(this.options.dataDir);
+    this.v3State = this.options.stateEncryptionKey
+      ? resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey)
+      : undefined;
     this.metrics = new Metrics(this.options.metricsDir, {
       processName: "ingress",
       flushIntervalMs: 30_000,
@@ -198,12 +206,15 @@ export class IngressApp {
       return;
     }
 
-    // Empty messages.
-    const text = extractTextFromMessage(event.message);
-    const images = extractImagesFromMessage(event.message);
-    if (!text && images.length === 0) {
+    const parsed = parseGroupMessage(event.message, this.options.botQq);
+    const blacklistedAtBot = parsed.hasAtBot && this.isV3BlacklistedUser(groupId, userId);
+    // A lone platform @ segment normally remains an empty message. The sole
+    // exception is a current V3 blacklisted member, whose @ needs to reach the
+    // worker for the fixed image response.
+    if (!parsed.text && parsed.images.length === 0 && !blacklistedAtBot) {
       return;
     }
+    const { images } = parsed;
 
     // Backlog detection (plan section 8 Bonus): messages pushed after a
     // reconnect that are older than 60s must not trigger replies.
@@ -220,15 +231,26 @@ export class IngressApp {
       return;
     }
 
-    // Per-group token bucket: persist excess messages as non-processable audit
-    // events. The worker can then advance its normal consumer watermark without
-    // ever generating a reply, avoiding the old detached token-bucket watermark.
-    const count = this.sharedDb.countMessagesSince(groupId, receivedAt - TOKEN_BUCKET_WINDOW_MS);
-    const dropReason = count >= TOKEN_BUCKET_MAX_PER_WINDOW ? "rate_limited" : undefined;
-
     // Idempotent dedupe (plan section 2.1): (self_bot_id, group_id, msg_id).
     // self_id 缺失时用 botQq 作为 dedup key 的一部分（保证幂等键稳定）。
-    const parsed = parseGroupMessage(event.message, this.options.botQq);
+    // Per-group token bucket: persist excess messages as non-processable audit
+    // events. A V3-persisted blacklisted member who explicitly @s the bot is
+    // the sole exception: every such mention must reach the worker's fixed
+    // image response. All other traffic, including a blacklisted member who
+    // did not @ the bot, remains rate-limited normally.
+    const count = this.sharedDb.countMessagesSince(groupId, receivedAt - TOKEN_BUCKET_WINDOW_MS);
+    const rateLimitExceeded = count >= TOKEN_BUCKET_MAX_PER_WINDOW;
+    const dropReason = rateLimitExceeded && !blacklistedAtBot ? "rate_limited" : undefined;
+    if (rateLimitExceeded && blacklistedAtBot) {
+      this.metrics.inc("token_bucket_blacklisted_mention_bypassed");
+      logInfo("Bypassed token bucket for blacklisted bot mention.", {
+        groupId,
+        userId,
+        msgId,
+        count: count + 1,
+        windowMs: TOKEN_BUCKET_WINDOW_MS,
+      });
+    }
     const createdAt = receivedAt;
     const rowId = this.sharedDb.insertMessage({
       groupId,
@@ -241,6 +263,7 @@ export class IngressApp {
       senderCard: event.sender?.card,
       senderNickname: event.sender?.nickname,
       replyTo: parsed.replyMessageId,
+      verifiedMentionUserIds: parsed.verifiedMentionUserIds,
       hasAtBot: parsed.hasAtBot,
       isBotMsg: false,
       processable: !dropReason,
@@ -299,6 +322,10 @@ export class IngressApp {
     this.sharedDb.markRetracted(groupId, messageId, Date.now());
     this.metrics.inc("recall_handled");
     logInfo("Message recall registered.", { groupId, messageId });
+  }
+
+  private isV3BlacklistedUser(groupId: string, userId: string): boolean {
+    return (this.v3State?.getGroup(groupId)?.blacklistedUserIds ?? []).includes(userId);
   }
 
   // ---- emitter (sends worker replies through the reverse WS action channel) ----
@@ -375,6 +402,7 @@ export async function main(): Promise<void> {
     botQq: config.botQq,
     dataDir: config.dataDir,
     metricsDir: `${config.dataDir}${config.dataDir.endsWith("/") || config.dataDir.endsWith("\\") ? "" : "/"}shared/metrics`,
+    stateEncryptionKey: config.stateEncryptionKey,
   });
   await app.start();
 

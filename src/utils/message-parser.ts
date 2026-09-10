@@ -24,13 +24,13 @@ function normalizeText(text: string): string {
 
 export function extractTextFromMessage(message: MessageSegment[] | string): string {
   if (typeof message === "string") {
-    return normalizeText(message);
+    return normalizeText(stripCqNonTextSegments(message));
   }
 
   const parts: string[] = [];
   for (const segment of message) {
     if (typeof segment === "string") {
-      parts.push(segment);
+      parts.push(stripCqNonTextSegments(segment));
       continue;
     }
 
@@ -44,12 +44,13 @@ export function extractTextFromMessage(message: MessageSegment[] | string): stri
 
 export function extractImagesFromMessage(message: MessageSegment[] | string): MessageImageInput[] {
   if (typeof message === "string") {
-    return [];
+    return extractCqImages(message);
   }
 
   const images: MessageImageInput[] = [];
   for (const segment of message) {
     if (typeof segment === "string") {
+      images.push(...extractCqImages(segment));
       continue;
     }
 
@@ -67,12 +68,12 @@ function extractImageUrl(segment: Exclude<MessageSegment, string>): string | und
     return undefined;
   }
 
-  const url = segment.data?.url?.trim();
+  const url = readSegmentData(segment, "url");
   if (url) {
     return url;
   }
 
-  const file = segment.data?.file?.trim();
+  const file = readSegmentData(segment, "file");
   if (file && /^https?:\/\//i.test(file)) {
     return file;
   }
@@ -86,8 +87,8 @@ function extractImageInput(segment: Exclude<MessageSegment, string>): MessageIma
   }
 
   const url = extractImageUrl(segment);
-  const file = segment.data?.file?.trim();
-  const summary = segment.data?.summary?.trim();
+  const file = readSegmentData(segment, "file");
+  const summary = readSegmentData(segment, "summary");
 
   if (!url && !file) {
     return undefined;
@@ -105,31 +106,7 @@ export function parseGroupMessage(
   botQq: string,
 ): ParsedGroupMessage {
   if (typeof message === "string") {
-    const text = normalizeText(message);
-    const escapedQq = escapeRegex(botQq);
-    const cqReplyPattern = /\[CQ:reply,id=([^\],]+)(?:,[^\]]*)?\]/i;
-    const replyMessageId = text.match(cqReplyPattern)?.[1]?.trim();
-    const textWithoutReply = text.replace(cqReplyPattern, " ");
-    const cqAtTargets = extractCqAtTargets(textWithoutReply);
-    const plainBotAtPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`);
-    const botAtReplacementPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`, "g");
-    const hasAtBot = cqAtTargets.includes(botQq) || plainBotAtPattern.test(text);
-
-    return {
-      hasAtBot,
-      text: normalizeText(
-        textWithoutReply
-          .replace(CQ_AT_PATTERN, (_match, rawTarget: string) => formatCqAtText(rawTarget, botQq))
-          .replace(botAtReplacementPattern, " "),
-      ),
-      images: [],
-      verifiedMentionUserIds: normalizeMentionUserIds(cqAtTargets.filter((target) => target !== botQq)),
-      plainTextMentionCandidates: extractPlainTextMentionCandidates(
-        textWithoutReply.replace(CQ_AT_PATTERN, " "),
-        botQq,
-      ),
-      replyMessageId,
-    };
+    return parseCqStringMessage(message, botQq);
   }
 
   let hasAtBot = false;
@@ -141,8 +118,13 @@ export function parseGroupMessage(
 
   for (const segment of message) {
     if (typeof segment === "string") {
-      parts.push(segment);
-      plainTextParts.push(segment);
+      const parsed = parseCqStringMessage(segment, botQq);
+      hasAtBot ||= parsed.hasAtBot;
+      parts.push(parsed.text);
+      plainTextParts.push(stripAllCqSegments(segment));
+      images.push(...parsed.images);
+      verifiedMentionUserIds.push(...parsed.verifiedMentionUserIds);
+      replyMessageId ??= parsed.replyMessageId;
       continue;
     }
 
@@ -188,6 +170,106 @@ export function parseGroupMessage(
 }
 
 const CQ_AT_PATTERN = /\[CQ:at,qq=([^,\]]+)(?:,[^\]]*)?\]/gi;
+const CQ_SEGMENT_PATTERN = /\[CQ:([a-z_]+)((?:,[^\]]*)?)\]/gi;
+
+interface CqSegment {
+  type: string;
+  data: Record<string, string>;
+}
+
+function parseCqStringMessage(message: string, botQq: string): ParsedGroupMessage {
+  const textWithoutNonText = stripCqNonTextSegments(message);
+  const escapedQq = escapeRegex(botQq);
+  const cqAtTargets = extractCqAtTargets(textWithoutNonText);
+  const plainBotAtPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`);
+  const botAtReplacementPattern = new RegExp(`(^|\\s)@${escapedQq}\\b`, "g");
+  const replyMessageId = extractCqSegments(message)
+    .find((segment) => segment.type === "reply")?.data.id?.trim();
+
+  return {
+    hasAtBot: cqAtTargets.includes(botQq) || plainBotAtPattern.test(textWithoutNonText),
+    text: normalizeText(
+      textWithoutNonText
+        .replace(CQ_AT_PATTERN, (_match, rawTarget: string) => formatCqAtText(rawTarget, botQq))
+        .replace(botAtReplacementPattern, " "),
+    ),
+    images: extractCqImages(message),
+    verifiedMentionUserIds: normalizeMentionUserIds(cqAtTargets.filter((target) => target !== botQq)),
+    plainTextMentionCandidates: extractPlainTextMentionCandidates(
+      textWithoutNonText.replace(CQ_AT_PATTERN, " "),
+      botQq,
+    ),
+    replyMessageId,
+  };
+}
+
+function extractCqImages(text: string): MessageImageInput[] {
+  const images: MessageImageInput[] = [];
+  for (const segment of extractCqSegments(text)) {
+    if (segment.type !== "image") {
+      continue;
+    }
+    const image = extractImageInput({ type: "image", data: segment.data });
+    if (image) {
+      images.push(image);
+    }
+  }
+  return images;
+}
+
+function extractCqSegments(text: string): CqSegment[] {
+  const segments: CqSegment[] = [];
+  for (const match of text.matchAll(CQ_SEGMENT_PATTERN)) {
+    const rawType = match[1]?.trim().toLowerCase();
+    if (!rawType) {
+      continue;
+    }
+    const data: Record<string, string> = {};
+    const rawParameters = match[2]?.slice(1) ?? "";
+    for (const parameter of rawParameters.split(",")) {
+      const separator = parameter.indexOf("=");
+      if (separator <= 0) {
+        continue;
+      }
+      const key = parameter.slice(0, separator).trim().toLowerCase();
+      if (!key) {
+        continue;
+      }
+      data[key] = decodeCqValue(parameter.slice(separator + 1));
+    }
+    segments.push({ type: rawType, data });
+  }
+  return segments;
+}
+
+function stripCqNonTextSegments(text: string): string {
+  return text.replace(CQ_SEGMENT_PATTERN, (match, rawType: string) => {
+    const type = rawType.trim().toLowerCase();
+    return type === "image" || type === "reply" ? " " : match;
+  });
+}
+
+function stripAllCqSegments(text: string): string {
+  return text.replace(CQ_SEGMENT_PATTERN, " ");
+}
+
+function decodeCqValue(value: string): string {
+  return value
+    .replace(/&#91;/g, "[")
+    .replace(/&#93;/g, "]")
+    .replace(/&#44;/g, ",")
+    .replace(/&amp;/g, "&")
+    .trim();
+}
+
+function readSegmentData(segment: Exclude<MessageSegment, string>, key: string): string | undefined {
+  const value = segment.data?.[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized || undefined;
+}
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

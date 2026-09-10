@@ -75,7 +75,8 @@ for release_path in \
   docs/ADMIN-RECOVERY-v3.md \
   docs/MIGRATION-v3.md \
   docs/ROLLBACK-v3.md \
-  assets/huixian-profile.json; do
+  assets/huixian-profile.json \
+  assets/blacklisted-at-meme.jpg; do
   copy_release_path "$release_path"
 done
 

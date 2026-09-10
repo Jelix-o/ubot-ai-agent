@@ -13,6 +13,7 @@ import { CharacterProfileService } from "./services/character-profile-service.js
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { MemeLibraryService } from "./services/meme-library-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import type { CharacterProfile, NapcatGroupMember } from "./types.js";
@@ -148,10 +149,12 @@ async function startFixture(
   const memories = new GroupMemoryStore(path.join(dir, "memory.json"), repository);
   const knowledge = new KnowledgeBaseStore(path.join(dir, "knowledge.json"), repository);
   const operations = new AdminOperationLogService(path.join(dir, "operations.jsonl"), repository);
+  const memeLibraryService = new MemeLibraryService(dir, repository);
   const settings = new SystemSettingsStore(path.join(dir, "settings.json"), [], undefined, repository);
   const characterProfileService = new CharacterProfileService(repository, { bootstrapProfile: huixian });
   const htmlPreviewService = options.htmlPreviewService ?? createHtmlPreviewTestService();
   await characterProfileService.ensureHuixianProfile("test-bootstrap");
+  await memeLibraryService.initialize();
   await memories.create({
     groupId: "67890",
     type: "member_profile",
@@ -175,6 +178,7 @@ async function startFixture(
     characterProfileService,
     systemSettingsStore: settings,
     htmlPreviewService,
+    memeLibraryService,
     adminOperationLogService: operations,
     mfaRequired: true,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
@@ -193,7 +197,7 @@ async function startFixture(
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, db, memories, operations, htmlPreviewService };
+  return { baseUrl, db, memories, operations, htmlPreviewService, memeLibraryService };
 }
 
 async function request(baseUrl: string, pathname: string, options: RequestInit = {}): Promise<Response> {
@@ -412,6 +416,10 @@ test("group administrators are limited to authorized groups and operational feat
   assert.equal(accountList.status, 403);
   const diagnostics = await request(baseUrl, "/api/health", { headers: { Cookie: cookie } });
   assert.equal(diagnostics.status, 403);
+  const memeLibrary = await request(baseUrl, "/api/meme-library", { headers: { Cookie: cookie } });
+  assert.equal(memeLibrary.status, 403);
+  const memePreview = await request(baseUrl, "/api/meme-library/assets/blacklisted-at-meme-seed/preview", { headers: { Cookie: cookie } });
+  assert.equal(memePreview.status, 403);
 
   const createMemory = await request(baseUrl, "/api/memories", {
     method: "POST",
@@ -426,6 +434,17 @@ test("group administrators are limited to authorized groups and operational feat
     body: JSON.stringify({ switcherUserIds: ["77777"] }),
   });
   assert.equal(forbiddenConfig.status, 403);
+
+  const ambientContextUpdate = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PUT",
+    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    body: JSON.stringify({ ambientGroupContextEnabled: false }),
+  });
+  assert.equal(ambientContextUpdate.status, 200);
+  assert.equal(
+    (await ambientContextUpdate.json() as { ambientGroupContextEnabled?: boolean }).ambientGroupContextEnabled,
+    false,
+  );
 
   const optOut = await request(baseUrl, "/api/groups/67890/members/20001/privacy-opt-out", {
     method: "POST",
@@ -524,6 +543,171 @@ test("HTML preview admin endpoints expose metadata only, enforce group scope, CS
     headers: { Cookie: superAdmin.cookie },
   });
   assert.equal((await afterDelete.json() as { pagination: { total: number } }).pagination.total, 0);
+});
+
+test("meme library APIs restrict reads and previews to super admins, require recent MFA for changes, and audit uploads", async (t) => {
+  const { baseUrl, db, operations } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const sessionHeaders = { Cookie: superAdmin.cookie };
+  const writeHeaders = { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" };
+
+  const library = await request(baseUrl, "/api/meme-library", { headers: sessionHeaders });
+  assert.equal(library.status, 200);
+  const initial = await library.json() as {
+    policy: { enabled: boolean; probabilityPercent: number; cooldownSeconds: number };
+    assets: Array<{ id: string; scope: string; protected: boolean }>;
+  };
+  assert.deepEqual(initial.policy, { enabled: true, probabilityPercent: 30, cooldownSeconds: 600 });
+  const seed = initial.assets.find((asset) => asset.scope === "blacklisted_at");
+  assert.ok(seed);
+  assert.equal(seed.protected, true);
+
+  const preview = await request(baseUrl, `/api/meme-library/assets/${encodeURIComponent(seed.id)}/preview`, { headers: sessionHeaders });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "image/png");
+  assert.ok((await preview.arrayBuffer()).byteLength > 100);
+
+  const protectedDelete = await request(baseUrl, `/api/meme-library/assets/${encodeURIComponent(seed.id)}`, {
+    method: "DELETE",
+    headers: writeHeaders,
+  });
+  assert.equal(protectedDelete.status, 403);
+  assert.equal((await protectedDelete.json() as { error: string }).error, "meme_asset_protected");
+
+  const protectedUpdate = await request(baseUrl, `/api/meme-library/assets/${encodeURIComponent(seed.id)}`, {
+    method: "PUT",
+    headers: writeHeaders,
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(protectedUpdate.status, 403);
+  assert.equal((await protectedUpdate.json() as { error: string }).error, "meme_asset_protected");
+
+  const tagResponse = await request(baseUrl, "/api/meme-library/tags", {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({ name: "吐槽", description: "适合调侃和无语时", keywords: ["  吐槽  ", "无语", "吐槽"] }),
+  });
+  assert.equal(tagResponse.status, 201);
+  const tag = await tagResponse.json() as { id: string; name: string; keywords: string[] };
+  assert.equal(tag.name, "吐槽");
+  assert.deepEqual(tag.keywords, ["吐槽", "无语"]);
+
+  const missingKeywords = await request(baseUrl, "/api/meme-library/tags", {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({ name: "缺关键词" }),
+  });
+  assert.equal(missingKeywords.status, 400);
+  assert.equal((await missingKeywords.json() as { error: string }).error, "meme_tag_keywords_required");
+
+  const emptyKeywords = await request(baseUrl, `/api/meme-library/tags/${encodeURIComponent(tag.id)}`, {
+    method: "PUT",
+    headers: writeHeaders,
+    body: JSON.stringify({ keywords: ["  "] }),
+  });
+  assert.equal(emptyKeywords.status, 400);
+  assert.equal((await emptyKeywords.json() as { error: string }).error, "meme_tag_keywords_required");
+
+  const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==", "base64");
+  const uploadPath = `/api/meme-library/assets?name=${encodeURIComponent("测试表情")}&scope=normal_chat&enabled=1&tag=${encodeURIComponent(tag.id)}`;
+  const uploadHeaders = { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "image/png" };
+
+  const missingUploadCsrf = await request(baseUrl, uploadPath, {
+    method: "POST",
+    headers: { Cookie: superAdmin.cookie, "Content-Type": "image/png" },
+    body: image,
+  });
+  assert.equal(missingUploadCsrf.status, 403);
+  assert.equal((await missingUploadCsrf.json() as { error: string }).error, "csrf_required");
+
+  const hostileUploadOrigin = await request(baseUrl, uploadPath, {
+    method: "POST",
+    headers: { ...uploadHeaders, Origin: "https://untrusted.example" },
+    body: image,
+  });
+  assert.equal(hostileUploadOrigin.status, 403);
+  assert.equal((await hostileUploadOrigin.json() as { error: string }).error, "csrf_required");
+
+  const uploadedResponse = await request(
+    baseUrl,
+    uploadPath,
+    {
+      method: "POST",
+      headers: uploadHeaders,
+      body: image,
+    },
+  );
+  assert.equal(uploadedResponse.status, 201);
+  const uploaded = await uploadedResponse.json() as { id: string; scope: string; tags: string[]; mimeType: string };
+  assert.equal(uploaded.scope, "normal_chat");
+  assert.deepEqual(uploaded.tags, [tag.id]);
+  assert.equal(uploaded.mimeType, "image/png");
+
+  const missingAssetTags = await request(
+    baseUrl,
+    `/api/meme-library/assets?name=${encodeURIComponent("无标签")}&scope=normal_chat`,
+    { method: "POST", headers: uploadHeaders, body: image },
+  );
+  assert.equal(missingAssetTags.status, 400);
+  assert.equal((await missingAssetTags.json() as { error: string }).error, "meme_asset_tags_required");
+
+  const inUseTag = await request(baseUrl, `/api/meme-library/tags/${encodeURIComponent(tag.id)}`, {
+    method: "DELETE",
+    headers: writeHeaders,
+  });
+  assert.equal(inUseTag.status, 409);
+  assert.equal((await inUseTag.json() as { error: string }).error, "meme_tag_in_use");
+
+  const uploadedPreview = await request(baseUrl, `/api/meme-library/assets/${encodeURIComponent(uploaded.id)}/preview`, { headers: sessionHeaders });
+  assert.equal(uploadedPreview.status, 200);
+  assert.equal(uploadedPreview.headers.get("content-type"), "image/png");
+
+  const invalidUpload = await request(
+    baseUrl,
+    `/api/meme-library/assets?name=${encodeURIComponent("伪装图片")}&scope=blacklisted_at`,
+    {
+      method: "POST",
+      headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "image/png" },
+      body: Buffer.from("<svg xmlns=\"http://www.w3.org/2000/svg\"/>", "utf8"),
+    },
+  );
+  assert.equal(invalidUpload.status, 400);
+  assert.equal((await invalidUpload.json() as { error: string }).error, "meme_image_type_invalid");
+
+  const tooLargeUpload = await request(
+    baseUrl,
+    `/api/meme-library/assets?name=${encodeURIComponent("过大图片")}&scope=blacklisted_at`,
+    {
+      method: "POST",
+      headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "image/png" },
+      body: Buffer.alloc(5 * 1024 * 1024 + 1),
+    },
+  );
+  assert.equal(tooLargeUpload.status, 413);
+  assert.equal((await tooLargeUpload.json() as { error: string }).error, "meme_image_size_invalid");
+
+  assert.equal((await operations.list({ groupId: "system" })).some((entry) => (
+    entry.action === "meme_library_asset_upload" && entry.target === uploaded.id
+  )), true);
+
+  db.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
+  const stalePolicy = await request(baseUrl, "/api/meme-library/policy", {
+    method: "PUT",
+    headers: writeHeaders,
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(stalePolicy.status, 403);
+  assert.equal((await stalePolicy.json() as { error: string }).error, "recent_mfa_required");
+
+  const staleUpload = await request(baseUrl, uploadPath, {
+    method: "POST",
+    headers: uploadHeaders,
+    body: image,
+  });
+  assert.equal(staleUpload.status, 403);
+  assert.equal((await staleUpload.json() as { error: string }).error, "recent_mfa_required");
+
+  assert.equal((await request(baseUrl, "/api/meme-library", { headers: sessionHeaders })).status, 200);
 });
 
 test("group administrators cannot list or delete HTML previews outside their grants", async (t) => {

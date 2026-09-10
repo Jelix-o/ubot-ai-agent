@@ -78,7 +78,8 @@ function defaultGroupConfig(): GroupConfig {
     voiceReplyEnabled: false,
     defaultVoiceReplyEnabled: false,
     onlineLookupEnabled: false,
-    visionEnabled: false,
+    visionEnabled: true,
+    ambientGroupContextEnabled: true,
     htmlPreviewEnabled: true,
   };
 }
@@ -594,6 +595,17 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
               </div>
               <div class="switch-toggle">
                 <input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" />
+                <span class="switch-slider" />
+              </div>
+            </label>
+
+            <label class="switch-card" :class="{ checked: form.ambientGroupContextEnabled }">
+              <div>
+                <strong>短时群聊语境</strong>
+                <small class="muted">理解近三分钟内的多人接话、代词和接梗</small>
+              </div>
+              <div class="switch-toggle">
+                <input v-model="form.ambientGroupContextEnabled" :disabled="readonly" type="checkbox" />
                 <span class="switch-slider" />
               </div>
             </label>

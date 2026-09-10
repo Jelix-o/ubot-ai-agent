@@ -116,6 +116,8 @@ test("admin manages HTML preview metadata without embedding generated page conte
   assert.match(shell, /"html-previews"/);
   assert.match(api, /interface HtmlPreviewMetadata/);
   assert.match(groups, /htmlPreviewEnabled/);
+  assert.match(groups, /ambientGroupContextEnabled/);
+  assert.match(groups, /短时群聊语境/);
   assert.match(previewView, /\/api\/html-previews/);
   assert.match(previewView, /rel="noopener noreferrer"/);
   assert.match(previewView, /url\.hostname !== "preview\.9958\.uk"/);
@@ -123,4 +125,33 @@ test("admin manages HTML preview metadata without embedding generated page conte
   assert.match(server, /html_preview_delete/);
   assert.match(server, /page\.items\.map\(formatHtmlPreviewForAdmin\)/);
   assert.match(server, /generated HTML/);
+});
+
+test("admin exposes a super-admin-only meme library with authenticated image previews", async () => {
+  const [router, shell, view, api, server, adminEntry] = await Promise.all([
+    readAdmin("router.ts"),
+    readAdmin("App.vue"),
+    readAdmin(path.join("views", "MemeLibraryView.vue")),
+    readAdmin(path.join("services", "api.ts")),
+    readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
+    readFile(path.join(repoRoot, "src", "index-admin.ts"), "utf8"),
+  ]);
+
+  assert.match(router, /path:\s*"\/memes"/);
+  assert.match(router, /name:\s*"memes"/);
+  assert.match(router, /superOnly:\s*true/);
+  assert.match(shell, /"memes"/);
+  assert.match(view, /\/api\/meme-library/);
+  assert.match(view, /\/preview/);
+  assert.match(view, /image\/png,image\/jpeg,image\/gif,image\/webp/);
+  assert.match(view, /normalizeKeywords/);
+  assert.match(view, /触发关键词/);
+  assert.match(view, /普通对话素材至少选择一个标签/);
+  assert.match(api, /interface MemeLibraryPolicy/);
+  assert.match(api, /keywords:\s*string\[\]/);
+  assert.match(api, /interface MemeAsset/);
+  assert.match(server, /handleMemeLibrary/);
+  assert.match(server, /requireRecentSuperAdminMfa/);
+  assert.match(server, /meme_library_asset_upload/);
+  assert.match(adminEntry, /new MemeLibraryService\(config\.dataDir, v3State\)/);
 });
