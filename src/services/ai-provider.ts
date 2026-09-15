@@ -10,6 +10,7 @@ export interface AiProviderCapabilities {
   streaming: boolean;
   reasoningEffort: boolean;
   requestTimeout: boolean;
+  imageGeneration: boolean;
 }
 
 /** Capability metadata carried by a provider-specific client adapter. */
@@ -22,6 +23,7 @@ export const OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES: Readonly<AiProviderCapabil
   streaming: true,
   reasoningEffort: true,
   requestTimeout: true,
+  imageGeneration: true,
 });
 
 export const ANTHROPIC_PROVIDER_CAPABILITIES: Readonly<AiProviderCapabilities> = Object.freeze({
@@ -31,6 +33,7 @@ export const ANTHROPIC_PROVIDER_CAPABILITIES: Readonly<AiProviderCapabilities> =
   // OpenAI's reasoning_effort field is not part of the Anthropic Messages API.
   reasoningEffort: false,
   requestTimeout: true,
+  imageGeneration: false,
 });
 
 export function resolveProviderCapabilities(
@@ -48,6 +51,7 @@ export function resolveProviderCapabilities(
       streaming: false,
       reasoningEffort: false,
       requestTimeout: true,
+      imageGeneration: false,
     }, policyOverride);
   }
 
@@ -56,6 +60,7 @@ export function resolveProviderCapabilities(
     streaming: configured.streaming ?? defaults.streaming,
     reasoningEffort: configured.reasoningEffort ?? defaults.reasoningEffort,
     requestTimeout: true,
+    imageGeneration: configured.imageGeneration ?? defaults.imageGeneration,
   }, policyOverride);
 }
 
@@ -72,6 +77,7 @@ function applyPolicyCapabilityBounds(
     streaming: capabilities.streaming && policyOverride.streaming !== false,
     reasoningEffort: capabilities.reasoningEffort && policyOverride.reasoningEffort !== false,
     requestTimeout: capabilities.requestTimeout && policyOverride.requestTimeout !== false,
+    imageGeneration: capabilities.imageGeneration && policyOverride.imageGeneration !== false,
   };
 }
 
@@ -84,5 +90,6 @@ export function mergeProviderCapabilities(
     streaming: override?.streaming ?? defaults.streaming,
     reasoningEffort: override?.reasoningEffort ?? defaults.reasoningEffort,
     requestTimeout: override?.requestTimeout ?? defaults.requestTimeout,
+    imageGeneration: override?.imageGeneration ?? defaults.imageGeneration,
   };
 }

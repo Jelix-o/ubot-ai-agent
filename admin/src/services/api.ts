@@ -43,6 +43,7 @@ export interface GroupConfig {
   visionEnabled?: boolean;
   ambientGroupContextEnabled?: boolean;
   htmlPreviewEnabled?: boolean;
+  imageGenerationEnabled?: boolean;
 }
 
 export type HtmlPreviewStatus = "pending" | "published" | "failed" | "expired" | "deleted";
@@ -177,7 +178,7 @@ export interface HealthStatus {
   latencyMs?: number;
   cached?: boolean;
   skipped?: boolean;
-  probeType?: "chat" | "tts";
+  probeType?: "chat" | "tts" | "image";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -299,7 +300,7 @@ export interface AdminAuthAuditEntry {
   createdAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "image" | "custom";
 export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {

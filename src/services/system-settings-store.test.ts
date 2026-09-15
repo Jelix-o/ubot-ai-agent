@@ -18,7 +18,7 @@ import { V3StateRepository } from "./v3-state-repository.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-function model(id: string, purpose: "reply" | "summary" | "knowledge" | "tts" | "custom", apiKey = `${id}-key`) {
+function model(id: string, purpose: "reply" | "summary" | "knowledge" | "tts" | "image" | "custom", apiKey = `${id}-key`) {
   return {
     id,
     name: `${id} model`,
@@ -65,6 +65,35 @@ test("SystemSettingsStore preserves an existing API key for blank-key edits", as
     await store.update({ models: [{ ...visible, apiKey: "" }] });
 
     assert.equal((await store.getInternal()).models[0]?.apiKey, "reply-secret");
+  });
+});
+
+test("SystemSettingsStore preserves ordered image upstreams and the selected primary", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    await store.update({
+      models: [
+        { ...model("backup-image", "image", "backup-secret"), apiProtocol: "openai" },
+        { ...model("primary-image", "image", "primary-secret"), apiProtocol: "openai" },
+      ],
+      selectedModelIds: { image: "primary-image" },
+    });
+
+    const visible = await store.get();
+    assert.deepEqual(visible.models.map((item) => item.id), ["backup-image", "primary-image"]);
+    assert.equal(visible.selectedModelIds.image, "primary-image");
+    assert.equal(visible.models.every((item) => item.apiKey === undefined && item.hasApiKey), true);
+    assert.deepEqual((await store.getInternal()).models.map((item) => item.apiKey), ["backup-secret", "primary-secret"]);
+  });
+});
+
+test("SystemSettingsStore rejects Anthropic image upstreams", async () => {
+  await withDir(async (dir) => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    await assert.rejects(
+      store.update({ models: [{ ...model("bad-image", "image"), apiProtocol: "anthropic" }] }),
+      /invalid_image_model_protocol/,
+    );
   });
 });
 
@@ -181,6 +210,25 @@ test("SystemSettingsStore supplies the member HTML preview command for legacy se
     const retained = updated.commands.find((item) => item.id === "html_preview");
     assert.equal(retained?.primary, "#页面");
     assert.equal(retained?.permission, "member");
+  });
+});
+
+test("SystemSettingsStore supplies the member image generation command for legacy settings", async () => {
+  await withDir(async (dir) => {
+    const file = path.join(dir, "settings.json");
+    await writeFile(file, JSON.stringify({ commands: [], updatedAt: "2026-08-28T00:00:00.000Z" }), "utf8");
+    const command = (await new SystemSettingsStore(file).get()).commands.find((item) => item.id === "image_generation");
+    assert.deepEqual(command && {
+      primary: command.primary,
+      aliases: command.aliases,
+      permission: command.permission,
+      enabled: command.enabled,
+    }, {
+      primary: "#画图",
+      aliases: ["#生图"],
+      permission: "member",
+      enabled: true,
+    });
   });
 });
 

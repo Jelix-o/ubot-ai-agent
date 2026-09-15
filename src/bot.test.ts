@@ -18,6 +18,7 @@ import { ScheduledReminderService } from "./services/scheduled-reminder-service.
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { HtmlPreviewError, type HtmlPreviewMetadata, type HtmlPreviewProcessResult } from "./services/html-preview-service.js";
+import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -42,6 +43,7 @@ import type {
 class FakeTransport implements MessageTransport {
   readonly sent: Array<{ groupId: string; text: string }> = [];
   readonly images: Array<{ groupId: string; imageFile: string }> = [];
+  readonly generatedImages: Array<{ groupId: string; imagePath: string }> = [];
   readonly outbound: Array<{ kind: "text" | "image"; groupId: string }> = [];
   readonly records: Array<{ groupId: string; recordFile: string }> = [];
   readonly aiRecords: Array<{ groupId: string; text: string }> = [];
@@ -76,6 +78,11 @@ class FakeTransport implements MessageTransport {
     }
     this.images.push({ groupId, imageFile });
     this.outbound.push({ kind: "image", groupId });
+    return { messageId: String(this.nextSentMessageId++) };
+  }
+
+  async sendGeneratedGroupImage(groupId: string, imagePath: string): Promise<{ messageId: string }> {
+    this.generatedImages.push({ groupId, imagePath });
     return { messageId: String(this.nextSentMessageId++) };
   }
 
@@ -1022,6 +1029,7 @@ function createApp(options?: {
     } | undefined;
   };
   memeLibraryService?: FakeMemeLibraryService;
+  imageGenerationService?: ImageGenerationRuntime;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1127,6 +1135,7 @@ function createApp(options?: {
     options?.qqAdminAuthorization,
     options?.recentGroupEvidenceService,
     options?.memeLibraryService,
+    options?.imageGenerationService,
   );
 
   return {
@@ -1195,6 +1204,64 @@ test("#网页 routes an explicit page request to the durable publisher instead o
   assert.deepEqual(calls.map((call) => call.request), ["做一个待办清单", "做一个待办清单"]);
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent.length, 0);
+});
+
+test("#画图 queues the generated file without invoking conversational AI", async () => {
+  const prompts: string[] = [];
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      prompts.push(input.prompt);
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: true,
+  }]);
+  const { app, transport, aiService } = createApp({ groupConfigService, imageGenerationService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图  海边灯塔" } }]));
+
+  assert.deepEqual(prompts, ["海边灯塔"]);
+  assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("#画图 explains missing prompts and respects the per-group default-off switch", async () => {
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate() { throw new Error("must not run"); },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const enabledGroups = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: true,
+  }]);
+  const enabled = createApp({ groupConfigService: enabledGroups, imageGenerationService });
+  await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图" } }]));
+  assert.match(enabled.transport.sent[0]?.text ?? "", /#画图 <提示词>/);
+
+  const disabled = createApp({ imageGenerationService });
+  await disabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 海边灯塔" } }]));
+  assert.equal(disabled.transport.sent[0]?.text, "本群图片生成功能已关闭");
 });
 
 test("HTML preview sticks to the silent ds fallback after a transient GPT failure", async () => {

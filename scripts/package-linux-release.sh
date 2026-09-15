@@ -58,6 +58,7 @@ for release_path in \
   .env.server-2022.example \
   dist \
   scripts/configure-v3-network.mjs \
+  scripts/configure-image-model.mjs \
   scripts/deploy-linux-release.sh \
   scripts/normalize-dotenv-bom.mjs \
   scripts/migrate-v3-state.mjs \

@@ -48,9 +48,10 @@ try {
     enabledCapabilities: [
       "conversation", "explicit_memory", "knowledge", "scheduled_reminders",
       "daily_reports", "holiday_countdown", "realtime_lookup", "voice", "singing",
+      "html_preview", "image_generation",
     ],
     providerCapabilities: {
-      openai: ["chat", "vision", "streaming"],
+      openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout", "imageGeneration"],
       anthropic: ["chat", "vision", "streaming"],
     },
     updatedAt: new Date().toISOString(),

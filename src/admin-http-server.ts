@@ -103,7 +103,7 @@ type HealthStatusResponse = {
   checkedAt?: string;
   latencyMs?: number;
   cached?: boolean;
-  probeType?: "chat" | "tts";
+  probeType?: "chat" | "tts" | "image";
   upstreamStatusCode?: number;
   failureKind?: AiHealthStatus["failureKind"];
 };
@@ -2120,6 +2120,7 @@ export class AdminHttpServer {
           "invalid_model_id",
           "duplicate_model_id",
           "invalid_model_purpose",
+          "invalid_image_model_protocol",
           "invalid_memory_confidence_thresholds",
         ].includes(errorCode)) {
           this.sendJson(res, { error: errorCode }, 400);
@@ -2665,6 +2666,9 @@ export class AdminHttpServer {
 
     const source = options.source ?? "manual";
     return await Promise.all(runtimeModels(settings).map(async (model) => {
+      if (model.purpose === "image") {
+        return this.buildModelHealthSkippedStatus(model, settings, "图片模型需单独检测；检测会产生一次低质量图片生成费用。");
+      }
       const status = await this.buildModelHealthStatus(model, settings);
       this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
       await this.recordModelHealth(status, source);
@@ -3566,6 +3570,7 @@ function normalizeModelPurpose(value: string): SystemModelPurpose {
     value === "summary" ||
     value === "knowledge" ||
     value === "tts" ||
+    value === "image" ||
     value === "custom"
     ? value
     : "custom";
@@ -3576,7 +3581,7 @@ function runtimeModels(settings: SystemSettings): RuntimeSystemModelConfig[] {
 }
 
 function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
-  return value === "reply" || value === "summary" || value === "knowledge" || value === "tts" || value === "custom";
+  return value === "reply" || value === "summary" || value === "knowledge" || value === "tts" || value === "image" || value === "custom";
 }
 
 function normalizeLogLimit(value: string | undefined): number {
@@ -3625,6 +3630,7 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "visionEnabled",
     "ambientGroupContextEnabled",
     "htmlPreviewEnabled",
+    "imageGenerationEnabled",
   ]);
   const update = Object.fromEntries(Object.entries(body).filter(([key]) => permitted.has(key)));
   if ("memoryDisabledUserIds" in body) {

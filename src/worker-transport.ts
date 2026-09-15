@@ -92,6 +92,12 @@ export class WorkerTransport implements MessageTransport {
     return { deliveryId: `outbox:${id}` };
   }
 
+  async sendGeneratedGroupImage(groupId: string, imagePath: string): Promise<MessageReceipt | undefined> {
+    const id = this.db.enqueueOutbox(groupId, null, imagePath, "generated_image", this.outboxContext());
+    logInfo("Worker enqueued generated image to outbox.", { outboxId: id, groupId });
+    return { deliveryId: `outbox:${id}` };
+  }
+
   async sendGroupAiRecord(groupId: string, text: string): Promise<MessageReceipt | undefined> {
     const id = this.db.enqueueOutbox(groupId, null, text, "airecord", this.outboxContext());
     logInfo("Worker enqueued AI record to outbox.", { outboxId: id, groupId });

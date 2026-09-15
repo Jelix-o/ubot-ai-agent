@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -140,6 +140,71 @@ test("WorkerTransport queues image outbox rows and ingress delivers them as imag
     kind: "image",
     text: imageFile,
   }]);
+});
+
+test("generated image outbox rows are materialized as base64 and removed after acknowledgement", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const imageRoot = path.join(dir, "generated-images");
+  mkdirSync(imageRoot, { recursive: true });
+  const imagePath = path.join(imageRoot, "generated.png");
+  const image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  writeFileSync(imagePath, image);
+
+  const workerTransport = new WorkerTransport(db);
+  await workerTransport.sendGeneratedGroupImage("group-image", imagePath);
+  const row = db.claimOutbox(1, 2_000)[0]!;
+  assert.equal(row.kind, "generated_image");
+  const transport = new ReceiptTransport(() => "qq-generated-1");
+  await deliverOutboxRow(db, transport, row, 2_100, undefined, imageRoot);
+
+  assert.deepEqual(transport.deliveries, [{
+    groupId: "group-image",
+    kind: "image",
+    text: `base64://${image.toString("base64")}`,
+  }]);
+  assert.equal(existsSync(imagePath), false);
+});
+
+test("generated image delivery rejects paths outside the managed directory", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const outsidePath = path.join(dir, "outside.png");
+  writeFileSync(outsidePath, Buffer.from("not used"));
+  const id = db.enqueueOutbox("group-image", null, outsidePath, "generated_image");
+  const row = db.claimOutbox(1, 2_000)[0]!;
+  await assert.rejects(
+    deliverOutboxRow(db, new ReceiptTransport(() => "qq-never"), row, 2_100, undefined, path.join(dir, "generated-images")),
+    /outside the managed directory/,
+  );
+  assert.equal(id, row.id);
+});
+
+test("generated image delivery rejects forged files inside the managed directory", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const imageRoot = path.join(dir, "generated-images");
+  mkdirSync(imageRoot, { recursive: true });
+  const forgedPath = path.join(imageRoot, "forged.png");
+  writeFileSync(forgedPath, Buffer.from("this is not a png"));
+  db.enqueueOutbox("group-image", null, forgedPath, "generated_image");
+  const row = db.claimOutbox(1, 2_000)[0]!;
+  await assert.rejects(
+    deliverOutboxRow(db, new ReceiptTransport(() => "qq-never"), row, 2_100, undefined, imageRoot),
+    /invalid size or type/,
+  );
 });
 
 test("Worker outbox receipts are internal ids until every real multipart QQ id is bound to one assistant turn", async (t) => {
