@@ -6,7 +6,9 @@ import test, { type TestContext } from "node:test";
 
 import { SystemSettingsStore } from "./system-settings-store.js";
 import {
+  countImagePromptCharacters,
   ConfiguredImageGenerationService,
+  IMAGE_GENERATION_MAX_PROMPT_CHARS,
   ImageGenerationError,
   isGeneratedImagePath,
 } from "./image-generation-service.js";
@@ -14,7 +16,9 @@ import {
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==", "base64");
 
 test("configured image generation calls the selected model and stages a validated image", async (t) => {
+  let started = 0;
   const fixture = await makeFixture(t, async (url, init) => {
+    assert.equal(started, 1);
     assert.equal(url, "https://primary.example/v1/images/generations");
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer primary-key");
     const body = JSON.parse(String(init?.body));
@@ -29,12 +33,45 @@ test("configured image generation calls the selected model and stages a validate
     return jsonResponse(200, { data: [{ b64_json: PNG.toString("base64") }] });
   });
 
-  const result = await fixture.service.generate({ groupId: "100", userId: "200", prompt: " draw a lighthouse " });
+  const result = await fixture.service.generate({
+    groupId: "100",
+    userId: "200",
+    prompt: " draw a lighthouse ",
+    onStarted: () => { started += 1; },
+  });
   assert.equal(result.modelId, "primary");
   assert.equal(result.fallbackUsed, false);
   assert.equal(result.mimeType, "image/png");
   assert.deepEqual(await readFile(result.filePath), PNG);
   assert.equal(isGeneratedImagePath(fixture.imageRoot, result.filePath), true);
+});
+
+test("prompt limits count Unicode code points and do not announce rejected work", async (t) => {
+  let calls = 0;
+  let started = 0;
+  const fixture = await makeFixture(t, async () => {
+    calls += 1;
+    return jsonResponse(200, { data: [{ b64_json: PNG.toString("base64") }] });
+  });
+  const accepted = "😀".repeat(IMAGE_GENERATION_MAX_PROMPT_CHARS);
+  assert.equal(countImagePromptCharacters(accepted), IMAGE_GENERATION_MAX_PROMPT_CHARS);
+  await fixture.service.generate({
+    groupId: "unicode-ok",
+    userId: "200",
+    prompt: accepted,
+    onStarted: () => { started += 1; },
+  });
+  await assert.rejects(
+    fixture.service.generate({
+      groupId: "unicode-long",
+      userId: "200",
+      prompt: `${accepted}😀`,
+      onStarted: () => { started += 1; },
+    }),
+    (error: unknown) => error instanceof ImageGenerationError && error.code === "prompt_too_long",
+  );
+  assert.equal(calls, 1);
+  assert.equal(started, 1);
 });
 
 test("configured image generation falls back only after a retryable failure", async (t) => {
@@ -87,7 +124,7 @@ test("an upstream timeout switches to the next configured image model", async (t
     async getInternal() {
       return { models, selectedModelIds: { image: "primary" } };
     },
-  } as SystemSettingsStore;
+  } as unknown as SystemSettingsStore;
   const service = new ConfiguredImageGenerationService(settings, path.join(root, "images"), undefined, undefined, async (_url, init) => {
     calls += 1;
     if (calls > 1) return jsonResponse(200, { data: [{ b64_json: PNG.toString("base64") }] });
@@ -104,18 +141,57 @@ test("an upstream timeout switches to the next configured image model", async (t
 test("successful image generation applies a per-group per-user cooldown", async (t) => {
   let now = 10_000;
   let calls = 0;
+  let started = 0;
   const fixture = await makeFixture(t, async () => {
     calls += 1;
     return jsonResponse(200, { data: [{ b64_json: PNG.toString("base64") }] });
   }, () => now);
-  await fixture.service.generate({ groupId: "100", userId: "200", prompt: "first" });
+  await fixture.service.generate({
+    groupId: "100",
+    userId: "200",
+    prompt: "first",
+    onStarted: () => { started += 1; },
+  });
   await assert.rejects(
-    fixture.service.generate({ groupId: "100", userId: "200", prompt: "second" }),
+    fixture.service.generate({
+      groupId: "100",
+      userId: "200",
+      prompt: "second",
+      onStarted: () => { started += 1; },
+    }),
     (error: unknown) => error instanceof ImageGenerationError && error.code === "cooldown" && error.retryAfterSeconds === 60,
   );
   now += 60_000;
-  await fixture.service.generate({ groupId: "100", userId: "200", prompt: "third" });
+  await fixture.service.generate({
+    groupId: "100",
+    userId: "200",
+    prompt: "third",
+    onStarted: () => { started += 1; },
+  });
   assert.equal(calls, 2);
+  assert.equal(started, 2);
+});
+
+test("missing image configuration fails before the generation announcement", async (t) => {
+  let started = 0;
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-not-configured-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = {
+    async getInternal() {
+      return { models: [], selectedModelIds: {} };
+    },
+  } as unknown as SystemSettingsStore;
+  const service = new ConfiguredImageGenerationService(settings, path.join(root, "images"));
+  await assert.rejects(
+    service.generate({
+      groupId: "100",
+      userId: "200",
+      prompt: "draw",
+      onStarted: () => { started += 1; },
+    }),
+    (error: unknown) => error instanceof ImageGenerationError && error.code === "not_configured",
+  );
+  assert.equal(started, 0);
 });
 
 test("generated image path validation rejects the root itself and sibling paths", () => {
@@ -126,7 +202,7 @@ test("generated image path validation rejects the root itself and sibling paths"
   assert.equal(isGeneratedImagePath(root, path.join(root, "not-image.txt")), false);
 });
 
-test("request cancellation does not fall back to another upstream", async (t) => {
+test("request cancellation before dispatch does not call or fall back to an upstream", async (t) => {
   let calls = 0;
   const fixture = await makeFixture(t, async (_url, init) => {
     calls += 1;
@@ -142,7 +218,7 @@ test("request cancellation does not fall back to another upstream", async (t) =>
   const pending = fixture.service.generate({ groupId: "cancel", userId: "200", prompt: "cancel", signal: controller.signal });
   controller.abort();
   await assert.rejects(pending, /aborted/i);
-  assert.equal(calls, 1);
+  assert.equal(calls, 0);
 });
 
 test("invalid JSON and URL-only responses do not fall back", async (t) => {

@@ -35,6 +35,7 @@ export interface ImageGenerationRuntime {
     userId: string;
     prompt: string;
     signal?: AbortSignal;
+    onStarted?: () => void | Promise<void>;
   }): Promise<GeneratedImageResult>;
   discard(filePath: string): Promise<void>;
   cleanup(now?: number): Promise<number>;
@@ -88,10 +89,11 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     userId: string;
     prompt: string;
     signal?: AbortSignal;
+    onStarted?: () => void | Promise<void>;
   }): Promise<GeneratedImageResult> {
     const prompt = input.prompt.trim();
     if (!prompt) throw new ImageGenerationError("prompt_empty");
-    if (prompt.length > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
+    if (countImagePromptCharacters(prompt) > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
       throw new ImageGenerationError("prompt_too_long");
     }
 
@@ -124,6 +126,11 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     if (candidates.length === 0) {
       throw new ImageGenerationError("not_configured");
     }
+    if (input.signal?.aborted) {
+      throw input.signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    }
+
+    await input.onStarted?.();
 
     let lastRetryableError: unknown;
     for (let index = 0; index < candidates.length; index += 1) {
@@ -215,6 +222,11 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
       this.legacyCooldowns.set(key, lastSuccessAt);
     }
   }
+}
+
+/** Counts user-visible Unicode code points instead of UTF-16 code units. */
+export function countImagePromptCharacters(prompt: string): number {
+  return Array.from(prompt).length;
 }
 
 export async function requestGeneratedImage(

@@ -49,6 +49,8 @@ import type { RealtimeLookupService } from "./services/realtime-lookup-service.j
 import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { getBlacklistedAtMemeImageFile } from "./services/blacklisted-at-meme.js";
 import {
+  countImagePromptCharacters,
+  IMAGE_GENERATION_MAX_PROMPT_CHARS,
   ImageGenerationError,
   type ImageGenerationRuntime,
 } from "./services/image-generation-service.js";
@@ -708,7 +710,7 @@ export class BotApplication {
 
     const helpCommand = matchRuntimeCommand(commandText, runtimeCommands, "help");
     if (helpCommand) {
-      await this.handleHelpCommand(groupConfig.groupId, helpCommand.rewrittenText, runtimeCommands);
+      await this.handleHelpCommand(groupConfig, event, helpCommand.rewrittenText, runtimeCommands);
       return;
     }
 
@@ -1363,18 +1365,26 @@ export class BotApplication {
     signal?: AbortSignal,
   ): Promise<void> {
     const groupId = groupConfig.groupId;
-    if (!this.isCapabilityEnabled("image_generation")) {
-      await this.rejectCapability(groupId, "image_generation");
+    const userId = String(event.user_id);
+    if (!(await this.isSuperAdmin(groupConfig, userId))) {
       return;
     }
-    if (groupConfig.imageGenerationEnabled !== true) {
-      await this.sendText(groupId, "本群图片生成功能已关闭");
+    if (!this.isCapabilityEnabled("image_generation")) {
+      await this.rejectCapability(groupId, "image_generation");
       return;
     }
     const prompt = rawPrompt.trim();
     if (!prompt) {
       const commands = await this.getRuntimeCommands();
       await this.sendText(groupId, `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
+      return;
+    }
+    const promptCharacters = countImagePromptCharacters(prompt);
+    if (promptCharacters > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
+      await this.sendText(
+        groupId,
+        `提示词当前 ${promptCharacters} 字，最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字，请删减 ${promptCharacters - IMAGE_GENERATION_MAX_PROMPT_CHARS} 字`,
+      );
       return;
     }
     if (!this.imageGenerationService || !this.transport.sendGeneratedGroupImage) {
@@ -1386,16 +1396,19 @@ export class BotApplication {
     try {
       const generated = await this.imageGenerationService.generate({
         groupId,
-        userId: String(event.user_id),
+        userId,
         prompt,
         signal,
+        onStarted: async () => {
+          await this.sendText(groupId, "正在生成图片，请稍候…");
+        },
       });
       stagedFile = generated.filePath;
       await this.transport.sendGeneratedGroupImage(groupId, generated.filePath);
       stagedFile = undefined;
       logInfo("Generated image queued for group delivery.", {
         groupId,
-        userId: String(event.user_id),
+        userId,
         modelId: generated.modelId,
         fallbackUsed: generated.fallbackUsed,
         byteLength: generated.byteLength,
@@ -1409,13 +1422,17 @@ export class BotApplication {
           return;
         }
         if (error.code === "prompt_too_long") {
-          await this.sendText(groupId, "提示词不能超过 2000 字");
+          const characters = countImagePromptCharacters(prompt);
+          await this.sendText(
+            groupId,
+            `提示词当前 ${characters} 字，最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字，请删减 ${Math.max(1, characters - IMAGE_GENERATION_MAX_PROMPT_CHARS)} 字`,
+          );
           return;
         }
       }
       logWarn("Image generation request failed.", {
         groupId,
-        userId: String(event.user_id),
+        userId,
         errorCode: error instanceof ImageGenerationError ? error.code : "unknown",
         errorName: error instanceof Error ? error.name : typeof error,
       });
@@ -2435,11 +2452,16 @@ export class BotApplication {
   }
 
   private async handleHelpCommand(
-    groupId: string,
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
     commandText: string,
     runtimeCommands: SystemCommandConfig[],
   ): Promise<void> {
-    await this.sendText(groupId, buildFeatureListMessage(commandText, runtimeCommands));
+    const includeImageGeneration = await this.isSuperAdmin(groupConfig, String(event.user_id));
+    await this.sendText(
+      groupConfig.groupId,
+      buildFeatureListMessage(commandText, runtimeCommands, includeImageGeneration),
+    );
   }
 
   /** Pre-cutover compatibility only. V3 routes all admin authority to SQLite accounts. */
@@ -3793,6 +3815,13 @@ export class BotApplication {
     return this.groupConfigService.isSuperAdmin(userId);
   }
 
+  private async isSuperAdmin(groupConfig: GroupBotConfig, userId: string): Promise<boolean> {
+    if (this.usesV3AdminAuthority()) {
+      return this.qqAdminAuthorization?.resolve(userId, groupConfig.groupId)?.role === "super_admin";
+    }
+    return this.groupConfigService.isSuperAdmin(userId);
+  }
+
   private usesV3AdminAuthority(): boolean {
     const service = this.groupConfigService as unknown as { isV3Runtime?: () => boolean };
     return service.isV3Runtime?.() === true;
@@ -5085,13 +5114,17 @@ function formatDuration(seconds: number): string {
   return parts.join("");
 }
 
-function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig[] = []): string {
+function buildFeatureListMessage(
+  commandText = "",
+  commands: SystemCommandConfig[] = [],
+  includeImageGeneration = false,
+): string {
   const topic = parseHelpTopic(commandText);
   const helper = createCommandHelpFormatter(commands);
-  const sections = buildHelpSections(helper);
+  const sections = buildHelpSections(helper, includeImageGeneration);
 
   if (!topic) {
-    return buildHelpOverviewMessage(sections, helper);
+    return buildHelpOverviewMessage(sections, helper, includeImageGeneration);
   }
 
   const matchedSection = sections.find((section) => section.aliases.includes(topic));
@@ -5099,10 +5132,10 @@ function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig
     return [
       `没找到“${topic}”这个帮助分类`,
       "",
-      "可用分类：对话、语音、画图、会仙、实时对话、定时任务、日报、节假日、权限",
+      `可用分类：${sections.map((section) => section.title).join("、")}`,
       `示例：${helper("help")} 技能`,
       "",
-      buildHelpOverviewMessage(sections, helper),
+      buildHelpOverviewMessage(sections, helper, includeImageGeneration),
     ].join("\n");
   }
 
@@ -5139,7 +5172,7 @@ type HelpSection = {
   lines: string[];
 };
 
-function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
+function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean): HelpSection[] {
   return [
     {
       title: "对话",
@@ -5164,16 +5197,16 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
         "作用：一次性语音会先生成回复再转成语音；默认语音回复会让普通 AI 回复优先发送语音条；唱歌使用 MiMo 唱歌模式",
       ],
     },
-    {
+    ...(includeImageGeneration ? [{
       title: "画图",
       aliases: ["画图", "生图", "image"],
       lines: [
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
-        "作用：根据文字提示生成一张图片；是否开放由每个群的后台开关决定",
-        "限制：每个成员在同一群成功生成后冷却 60 秒",
+        "作用：根据文字提示生成一张图片，仅绑定超级管理员可用",
+        `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；成功生成后冷却 60 秒`,
       ],
-    },
+    }] : []),
     {
       title: "实时对话",
       aliases: ["实时对话", "实时", "live", "livechat"],
@@ -5230,21 +5263,28 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
   ];
 }
 
-function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpFormatter): string {
+function buildHelpOverviewMessage(
+  sections: HelpSection[],
+  command: CommandHelpFormatter,
+  includeImageGeneration: boolean,
+): string {
+  const features = [
+    "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
+    `语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>（仅超级管理员）`] : []),
+    `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
+    `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
+    `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
+    `节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
+    `状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
+    `闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
+    `黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
+    `帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+  ];
   return [
     "系统功能总览：",
-    "1. 对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
-    `2. 语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
-    `3. 画图：${command("image_generation")} <提示词>`,
-    `4. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
-    `5. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
-    `6. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
-    `7. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
-    `8. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
-    `9. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
-    `10. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
-    `11. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
-    `分类帮助：${command("help")} 对话 / 语音 / 画图 / 实时对话 / 定时任务 / 日报 / 节假日 / 权限`,
+    ...features.map((feature, index) => `${index + 1}. ${feature}`),
+    `分类帮助：${command("help")} ${sections.map((section) => section.title).join(" / ")}`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
     "权限说明：群内 QQ 号不再授予管理员权限；请在后台使用账号、TOTP 和群授权管理运营设置",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,

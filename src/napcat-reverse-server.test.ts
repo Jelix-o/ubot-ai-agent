@@ -3,7 +3,11 @@ import test from "node:test";
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 
-import { NapCatReverseServer } from "./napcat-reverse-server.js";
+import {
+  NapCatActionNotSentError,
+  NapCatActionOutcomeUnknownError,
+  NapCatReverseServer,
+} from "./napcat-reverse-server.js";
 
 async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -201,7 +205,42 @@ test("reverse server rejects pending actions when socket closes", async () => {
   const pending = server.sendGroupAiRecord("866209871", "你好");
   ws.close();
 
-  await assert.rejects(pending, /closed|stopped/i);
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof NapCatActionOutcomeUnknownError && /closed|stopped/i.test(error.message),
+  );
 
+  server.close();
+});
+
+test("reverse server classifies a missing socket as definitely not sent", async () => {
+  const server = new NapCatReverseServer({ host: "127.0.0.1", port: 0, path: "/onebot/ws" });
+  await assert.rejects(
+    server.sendGroupImage("866209871", "base64://image"),
+    NapCatActionNotSentError,
+  );
+  server.close();
+});
+
+test("reverse server classifies an action timeout as an unknown delivery outcome", async () => {
+  const server = new NapCatReverseServer({
+    host: "127.0.0.1",
+    port: 0,
+    path: "/onebot/ws",
+    actionTimeoutMs: 20,
+  });
+  server.start();
+  await wait(60);
+  const address = (server as any).httpServer.address() as AddressInfo;
+  const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws`);
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+  const actionReceived = new Promise<void>((resolve) => ws.once("message", () => resolve()));
+  const pending = server.sendGroupImage("866209871", "base64://image");
+  await actionReceived;
+  await assert.rejects(pending, NapCatActionOutcomeUnknownError);
+  ws.close();
   server.close();
 });

@@ -81,7 +81,6 @@ function defaultGroupConfig(): GroupConfig {
     visionEnabled: true,
     ambientGroupContextEnabled: true,
     htmlPreviewEnabled: true,
-    imageGenerationEnabled: false,
   };
 }
 
@@ -618,17 +617,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
               </div>
               <div class="switch-toggle">
                 <input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.imageGenerationEnabled }">
-              <div>
-                <strong>图片生成</strong>
-                <small class="muted">允许成员使用 #画图 生成图片，默认关闭</small>
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.imageGenerationEnabled" :disabled="readonly" type="checkbox" />
                 <span class="switch-slider" />
               </div>
             </label>

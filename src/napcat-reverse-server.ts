@@ -29,6 +29,7 @@ interface NapCatReverseServerOptions {
   port: number;
   path: string;
   accessToken?: string;
+  actionTimeoutMs?: number;
 }
 
 interface OutgoingAction<TParams> {
@@ -66,6 +67,20 @@ interface NapCatGetImageResponse {
 
 interface NapCatSendMessageResponse {
   message_id?: number | string;
+}
+
+export class NapCatActionNotSentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NapCatActionNotSentError";
+  }
+}
+
+export class NapCatActionOutcomeUnknownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NapCatActionOutcomeUnknownError";
+  }
 }
 
 const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -129,7 +144,7 @@ export class NapCatReverseServer extends EventEmitter<{
         if (this.activeSocket === ws) {
           this.activeSocket = undefined;
         }
-        this.rejectPendingActions(new Error("NapCat reverse WebSocket closed."));
+        this.rejectPendingActions(new NapCatActionOutcomeUnknownError("NapCat reverse WebSocket closed during an action."));
         logWarn("NapCat reverse WebSocket closed.");
       });
     });
@@ -144,7 +159,7 @@ export class NapCatReverseServer extends EventEmitter<{
   }
 
   close(): void {
-    this.rejectPendingActions(new Error("NapCat reverse WebSocket server stopped."));
+    this.rejectPendingActions(new NapCatActionOutcomeUnknownError("NapCat reverse WebSocket server stopped during an action."));
     this.activeSocket?.close();
     this.wsServer.close();
     this.httpServer.close();
@@ -403,8 +418,8 @@ export class NapCatReverseServer extends EventEmitter<{
     return new Promise<NapCatActionResponse<TData>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingActions.delete(echo);
-        reject(new Error(`NapCat action ${action} timed out.`));
-      }, 10000);
+        reject(new NapCatActionOutcomeUnknownError(`NapCat action ${action} timed out; delivery outcome is unknown.`));
+      }, this.options.actionTimeoutMs ?? 10_000);
 
       this.pendingActions.set(echo, {
         resolve: (response) => resolve(response as NapCatActionResponse<TData>),
@@ -412,19 +427,35 @@ export class NapCatReverseServer extends EventEmitter<{
         timer,
       });
 
-      socket.send(
-        JSON.stringify({
-          action,
-          params: payload,
-          echo,
-        } satisfies OutgoingAction<typeof payload>),
-      );
+      try {
+        socket.send(
+          JSON.stringify({
+            action,
+            params: payload,
+            echo,
+          } satisfies OutgoingAction<typeof payload>),
+          (error) => {
+            if (!error) return;
+            const pending = this.pendingActions.get(echo);
+            if (!pending) return;
+            clearTimeout(pending.timer);
+            this.pendingActions.delete(echo);
+            pending.reject(new NapCatActionOutcomeUnknownError(`NapCat action ${action} could not be confirmed: ${error.message}`));
+          },
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingActions.delete(echo);
+        reject(new NapCatActionOutcomeUnknownError(
+          `NapCat action ${action} dispatch outcome is unknown: ${error instanceof Error ? error.message : String(error)}`,
+        ));
+      }
     });
   }
 
   private ensureSocketOpen(): WebSocket {
     if (!this.activeSocket || this.activeSocket.readyState !== WebSocket.OPEN) {
-      throw new Error("NapCat reverse WebSocket is not connected.");
+      throw new NapCatActionNotSentError("NapCat reverse WebSocket is not connected.");
     }
 
     return this.activeSocket;

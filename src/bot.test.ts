@@ -1211,6 +1211,7 @@ test("#画图 queues the generated file without invoking conversational AI", asy
   const imageGenerationService: ImageGenerationRuntime = {
     async generate(input) {
       prompts.push(input.prompt);
+      await input.onStarted?.();
       return {
         filePath: "D:\\managed\\generated.png",
         modelId: "image-primary",
@@ -1230,7 +1231,7 @@ test("#画图 queues the generated file without invoking conversational AI", asy
     switcherUserIds: [],
     liveChatUserIds: [],
     imageGenerationEnabled: true,
-  }]);
+  }], ["20001"]);
   const { app, transport, aiService } = createApp({ groupConfigService, imageGenerationService });
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图  海边灯塔" } }]));
@@ -1238,12 +1239,24 @@ test("#画图 queues the generated file without invoking conversational AI", asy
   assert.deepEqual(prompts, ["海边灯塔"]);
   assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
   assert.equal(aiService.calls.length, 0);
-  assert.equal(transport.sent.length, 0);
+  assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
 });
 
-test("#画图 explains missing prompts and respects the per-group default-off switch", async () => {
+test("#画图 explains missing prompts and ignores the retired per-group switch", async () => {
+  let calls = 0;
   const imageGenerationService: ImageGenerationRuntime = {
-    async generate() { throw new Error("must not run"); },
+    async generate(input) {
+      calls += 1;
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
     async discard() {},
     async cleanup() { return 0; },
   };
@@ -1253,15 +1266,106 @@ test("#画图 explains missing prompts and respects the per-group default-off sw
     allowedSkillIds: ["assistant"],
     switcherUserIds: [],
     liveChatUserIds: [],
-    imageGenerationEnabled: true,
-  }]);
+    imageGenerationEnabled: false,
+  }], ["20001"]);
   const enabled = createApp({ groupConfigService: enabledGroups, imageGenerationService });
   await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图" } }]));
   assert.match(enabled.transport.sent[0]?.text ?? "", /#画图 <提示词>/);
+  await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 海边灯塔" } }]));
+  assert.equal(calls, 1);
+  assert.equal(enabled.transport.sent[1]?.text, "正在生成图片，请稍候…");
+  assert.equal(enabled.transport.generatedImages.length, 1);
+});
 
-  const disabled = createApp({ imageGenerationService });
-  await disabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 海边灯塔" } }]));
-  assert.equal(disabled.transport.sent[0]?.text, "本群图片生成功能已关闭");
+test("V3 image generation is silent for everyone except a bound super administrator", async () => {
+  let calls = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      calls += 1;
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "huixian",
+    allowedSkillIds: ["huixian"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: false,
+  }], [], true);
+  const { app, transport } = createApp({
+    groupConfigService,
+    imageGenerationService,
+    qqAdminAuthorization: {
+      resolve(qqUserId) {
+        if (qqUserId === "20001") return { accountId: "super", username: "root", role: "super_admin", qqUserId };
+        if (qqUserId === "20002") return { accountId: "group", username: "operator", role: "group_admin", qqUserId };
+        return undefined;
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 普通成员" } }], 20003));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图 群管理员" } }], 20002));
+  assert.equal(calls, 0);
+  assert.equal(transport.sent.length, 0);
+  assert.equal(transport.generatedImages.length, 0);
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 超级管理员" } }], 20001));
+  assert.equal(calls, 1);
+  assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
+  assert.equal(transport.generatedImages.length, 1);
+});
+
+test("#画图 reports the exact Unicode prompt overage before starting generation", async () => {
+  let calls = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate() { calls += 1; throw new Error("must not run"); },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+  }], ["20001"]);
+  const { app, transport } = createApp({ groupConfigService, imageGenerationService });
+  await app.handleGroupMessage(createEvent([{
+    type: "text",
+    data: { text: `#画图 ${"😀".repeat(2_001)}` },
+  }]));
+  assert.equal(calls, 0);
+  assert.equal(transport.sent[0]?.text, "提示词当前 2001 字，最多 2000 字，请删减 1 字");
+});
+
+test("image generation help is hidden from members and shown to super administrators", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+  }], ["20001"]);
+  const { app, transport } = createApp({ groupConfigService });
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能" } }], 20002));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能 画图" } }], 20002));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能 画图" } }], 20001));
+  assert.doesNotMatch(transport.sent[0]?.text ?? "", /画图|#画图|#生图/);
+  assert.match(transport.sent[1]?.text ?? "", /没找到“画图”/);
+  assert.match(transport.sent[2]?.text ?? "", /仅绑定超级管理员可用/);
+  assert.match(transport.sent[2]?.text ?? "", /最多 2000 字/);
 });
 
 test("HTML preview sticks to the silent ds fallback after a transient GPT failure", async () => {

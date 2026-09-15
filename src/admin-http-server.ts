@@ -3630,7 +3630,6 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "visionEnabled",
     "ambientGroupContextEnabled",
     "htmlPreviewEnabled",
-    "imageGenerationEnabled",
   ]);
   const update = Object.fromEntries(Object.entries(body).filter(([key]) => permitted.has(key)));
   if ("memoryDisabledUserIds" in body) {

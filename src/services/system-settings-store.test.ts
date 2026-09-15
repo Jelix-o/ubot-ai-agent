@@ -213,10 +213,22 @@ test("SystemSettingsStore supplies the member HTML preview command for legacy se
   });
 });
 
-test("SystemSettingsStore supplies the member image generation command for legacy settings", async () => {
+test("SystemSettingsStore upgrades legacy image generation commands to super-admin only", async () => {
   await withDir(async (dir) => {
     const file = path.join(dir, "settings.json");
-    await writeFile(file, JSON.stringify({ commands: [], updatedAt: "2026-08-28T00:00:00.000Z" }), "utf8");
+    await writeFile(file, JSON.stringify({
+      commands: [{
+        id: "image_generation",
+        title: "图片生成",
+        primary: "#画图",
+        aliases: ["#生图"],
+        permission: "member",
+        enabled: true,
+        help: "旧版成员可用配置",
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      }],
+      updatedAt: "2026-08-28T00:00:00.000Z",
+    }), "utf8");
     const command = (await new SystemSettingsStore(file).get()).commands.find((item) => item.id === "image_generation");
     assert.deepEqual(command && {
       primary: command.primary,
@@ -226,7 +238,7 @@ test("SystemSettingsStore supplies the member image generation command for legac
     }, {
       primary: "#画图",
       aliases: ["#生图"],
-      permission: "member",
+      permission: "super_admin",
       enabled: true,
     });
   });

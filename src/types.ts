@@ -353,7 +353,7 @@ export interface GroupBotConfig {
   ambientGroupContextEnabled?: boolean;
   /** Static HTML preview publishing is enabled for configured groups by default. */
   htmlPreviewEnabled?: boolean;
-  /** Text-to-image generation is opt-in for every group. */
+  /** @deprecated Image generation is globally available and super-admin only. */
   imageGenerationEnabled?: boolean;
 }
 

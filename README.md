@@ -1,8 +1,8 @@
-# UBot V3.0.15
+# UBot V3.0.20
 
-UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.15 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时和静态网页预览；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
+UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.20 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时、静态网页预览和受限图片生成；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.15.md](RELEASE-v3.0.15.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.20.md](RELEASE-v3.0.20.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
 
 ## V3 架构
 
@@ -27,6 +27,7 @@ V3 使用 SQLite 保存群配置、系统设置、会仙 Character Profile、Kno
 - 原始群消息和附件元数据保留最多七天。日报保留结果，不依赖长期保存的原始内容。
 - OpenAI-compatible provider 保留，Anthropic 使用官方 SDK 和明确的 capability 合约处理流式、视觉、超时与降级。
 - `#网页 <需求>`、`#html <需求>` 或明确 `@会仙 生成网页/HTML/静态页面` 会创建一个独立、30 天有效的静态预览链接。页面允许自包含 HTML/CSS、浏览器端 JavaScript 和受限的内联 SVG/CSS 动画；主回复模型暂时不可用时可静默切换到严格绑定的 `ds` 回复模型。预览发布在 `https://preview.9958.uk`，绝不与后台 Cookie 或 API 共用 `bot.9958.uk` 域。
+- `#画图 <提示词>` 和 `#生图 <提示词>` 仅允许绑定后台超级管理员账号的 QQ 使用；其他成员调用时静默，所有群统一可用且不提供群级开关。
 - 未授权访问 `/api/health` 返回 `401` 是预期行为，不是健康检查失败。
 
 完整的群内命令说明见 [COMMANDS.md](COMMANDS.md)。

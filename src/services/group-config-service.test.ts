@@ -118,7 +118,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, false);
       assert.equal((await service.getGroup("67890"))?.visionEnabled, true);
       assert.equal((await service.getGroup("67890"))?.ambientGroupContextEnabled, true);
-      assert.equal((await service.getGroup("67890"))?.imageGenerationEnabled, false);
+      assert.equal((await service.getGroup("67890"))?.imageGenerationEnabled, true);
       assert.equal((await service.getGroup("67890"))?.participationMode, "mentions_only");
 
       const enabled = await service.updateGroupConfig("67891", {
@@ -131,7 +131,6 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
         onlineLookupEnabled: true,
         visionEnabled: false,
         ambientGroupContextEnabled: false,
-        imageGenerationEnabled: true,
       });
       assert.equal(enabled.dailyReportEnabled, true);
       assert.equal(enabled.holidayCountdownEnabled, true);
@@ -143,6 +142,10 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal(enabled.visionEnabled, false);
       assert.equal(enabled.ambientGroupContextEnabled, false);
       assert.equal(enabled.imageGenerationEnabled, true);
+      const legacyPatch = await service.updateGroupConfig("67891", {
+        imageGenerationEnabled: false,
+      } as unknown as Parameters<typeof service.updateGroupConfig>[1]);
+      assert.equal(legacyPatch.imageGenerationEnabled, true);
     },
   );
 });
@@ -158,7 +161,7 @@ test("NapCat bootstrap uses the packaged huixian skill and inactive broadcasts",
       assert.equal(groups[0]?.enabled, false);
       assert.equal(groups[0]?.opsAlertsEnabled, false);
       assert.equal(groups[0]?.visionEnabled, true);
-      assert.equal(groups[0]?.imageGenerationEnabled, false);
+      assert.equal(groups[0]?.imageGenerationEnabled, true);
     },
   );
 });
@@ -228,7 +231,6 @@ test("group config updates full editable config with validation", async () => {
         onlineLookupEnabled: false,
         visionEnabled: true,
         ambientGroupContextEnabled: false,
-        imageGenerationEnabled: true,
       });
 
       assert.equal(updated.currentSkillId, "huixian");

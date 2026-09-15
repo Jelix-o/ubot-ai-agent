@@ -43,7 +43,6 @@ export interface GroupConfig {
   visionEnabled?: boolean;
   ambientGroupContextEnabled?: boolean;
   htmlPreviewEnabled?: boolean;
-  imageGenerationEnabled?: boolean;
 }
 
 export type HtmlPreviewStatus = "pending" | "published" | "failed" | "expired" | "deleted";
