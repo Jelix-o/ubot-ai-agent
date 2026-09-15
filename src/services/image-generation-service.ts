@@ -9,7 +9,7 @@ import type { RuntimeCapabilityPolicy } from "./capability-policy-service.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
 
-export const IMAGE_GENERATION_MAX_PROMPT_CHARS = 2_000;
+export const IMAGE_GENERATION_MAX_PROMPT_CHARS = 5_000;
 export const IMAGE_GENERATION_MAX_BYTES = 20 * 1024 * 1024;
 export const IMAGE_GENERATION_COOLDOWN_SECONDS = 60;
 export const IMAGE_GENERATION_DEFAULT_TIMEOUT_MS = 180_000;

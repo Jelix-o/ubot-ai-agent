@@ -1344,10 +1344,10 @@ test("#画图 reports the exact Unicode prompt overage before starting generatio
   const { app, transport } = createApp({ groupConfigService, imageGenerationService });
   await app.handleGroupMessage(createEvent([{
     type: "text",
-    data: { text: `#画图 ${"😀".repeat(2_001)}` },
+    data: { text: `#画图 ${"😀".repeat(5_001)}` },
   }]));
   assert.equal(calls, 0);
-  assert.equal(transport.sent[0]?.text, "提示词当前 2001 字，最多 2000 字，请删减 1 字");
+  assert.equal(transport.sent[0]?.text, "提示词当前 5001 字，最多 5000 字，请删减 1 字");
 });
 
 test("image generation help is hidden from members and shown to super administrators", async () => {
@@ -1365,7 +1365,7 @@ test("image generation help is hidden from members and shown to super administra
   assert.doesNotMatch(transport.sent[0]?.text ?? "", /画图|#画图|#生图/);
   assert.match(transport.sent[1]?.text ?? "", /没找到“画图”/);
   assert.match(transport.sent[2]?.text ?? "", /仅绑定超级管理员可用/);
-  assert.match(transport.sent[2]?.text ?? "", /最多 2000 字/);
+  assert.match(transport.sent[2]?.text ?? "", /最多 5000 字/);
 });
 
 test("HTML preview sticks to the silent ds fallback after a transient GPT failure", async () => {
