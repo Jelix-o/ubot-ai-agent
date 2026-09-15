@@ -22,9 +22,10 @@ const DEFAULT_V3_ENABLED_CAPABILITIES = [
   "conversation", "explicit_memory", "knowledge", "scheduled_reminders",
   "daily_reports", "holiday_countdown", "realtime_lookup", "voice", "singing",
   "html_preview",
+  "image_generation",
 ];
 const DEFAULT_V3_PROVIDER_CAPABILITIES = {
-  openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout"],
+  openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout", "imageGeneration"],
   // Claude uses the official Messages SDK boundary. It supports vision and a
   // request timeout, but V3 does not send OpenAI-only streaming/reasoning
   // request features to it.
@@ -175,6 +176,7 @@ async function runExistingCutoverUpgrade() {
         changedBy: HUIXIAN_RELEASE_PROFILE_CHANGED_BY,
       }),
       htmlPreviewCapability: enableHtmlPreviewCapability(repository, now),
+      imageGenerationCapability: enableImageGenerationCapability(repository, now),
     }));
     writeReport({
       mode: "existing-cutover-upgrade",
@@ -214,6 +216,33 @@ function enableHtmlPreviewCapability(repository, now) {
   repository.saveCapabilityPolicy({
     ...policy,
     enabledCapabilities: [...policy.enabledCapabilities, "html_preview"],
+    updatedAt: new Date(now).toISOString(),
+  }, now);
+  return { changed: true };
+}
+
+function enableImageGenerationCapability(repository, now) {
+  const policy = repository.getCapabilityPolicy();
+  if (!policy) {
+    repository.saveCapabilityPolicy(defaultV3CapabilityPolicy(now), now);
+    return { changed: true, initialized: true };
+  }
+  const enabledCapabilities = policy.enabledCapabilities.includes("image_generation")
+    ? policy.enabledCapabilities
+    : [...policy.enabledCapabilities, "image_generation"];
+  const providerCapabilities = policy.providerCapabilities === undefined
+    ? undefined
+    : {
+        ...policy.providerCapabilities,
+        openai: Array.from(new Set([...(policy.providerCapabilities.openai ?? []), "imageGeneration"])),
+      };
+  const changed = enabledCapabilities !== policy.enabledCapabilities ||
+    JSON.stringify(providerCapabilities) !== JSON.stringify(policy.providerCapabilities);
+  if (!changed) return { changed: false };
+  repository.saveCapabilityPolicy({
+    ...policy,
+    enabledCapabilities,
+    ...(providerCapabilities === undefined ? {} : { providerCapabilities }),
     updatedAt: new Date(now).toISOString(),
   }, now);
   return { changed: true };

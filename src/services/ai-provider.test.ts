@@ -19,6 +19,7 @@ test("Anthropic capability policy never enables OpenAI streaming or reasoning pa
     streaming: false,
     reasoningEffort: false,
     requestTimeout: true,
+    imageGeneration: false,
   });
 });
 
@@ -38,5 +39,6 @@ test("OpenAI-compatible provider capability policy can disable optional request 
     streaming: false,
     reasoningEffort: false,
     requestTimeout: true,
+    imageGeneration: true,
   });
 });

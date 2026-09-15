@@ -255,7 +255,7 @@ watch(commandQuery, async (value, _oldValue, onCleanup) => {
       <div class="sidebar-footer">
         <div class="side-status">
           <strong><span class="pulse-dot pulsing" /> 系统运行中</strong>
-          <small>UBot v3.0.18 · 在线</small>
+          <small>UBot v3.0.19 · 在线</small>
         </div>
       </div>
     </aside>

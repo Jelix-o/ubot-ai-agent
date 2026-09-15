@@ -50,7 +50,7 @@ export interface AiHealthStatus {
   latencyMs: number;
   cached: boolean;
   skipped?: boolean;
-  probeType?: "chat" | "tts";
+  probeType?: "chat" | "tts" | "image";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -353,6 +353,8 @@ export interface GroupBotConfig {
   ambientGroupContextEnabled?: boolean;
   /** Static HTML preview publishing is enabled for configured groups by default. */
   htmlPreviewEnabled?: boolean;
+  /** Text-to-image generation is opt-in for every group. */
+  imageGenerationEnabled?: boolean;
 }
 
 export interface GroupsConfigFile {
@@ -440,7 +442,7 @@ export interface AdminSession {
   expiresAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "image" | "custom";
 /**
  * Values accepted only while importing pre-V3 settings. They are never
  * selected by V3 runtime services.
@@ -457,6 +459,8 @@ export interface ModelProviderCapabilities {
   reasoningEffort: boolean;
   /** The provider has an independently configurable request timeout. */
   requestTimeout: true;
+  /** The provider exposes an OpenAI-compatible Images generation endpoint. */
+  imageGeneration: boolean;
 }
 
 export interface SystemModelConfig {

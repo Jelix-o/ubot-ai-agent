@@ -4,9 +4,10 @@ import { AiService } from "./ai-service.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { AiHealthStatus, SystemModelConfig } from "../types.js";
 import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
+import { requestGeneratedImage } from "./image-generation-service.js";
 
 export interface ModelProbeStatus extends AiHealthStatus {
-  probeType: "chat" | "tts";
+  probeType: "chat" | "tts" | "image";
   upstreamStatusCode?: number;
 }
 
@@ -20,8 +21,10 @@ interface TtsProbeResponse {
   }>;
 }
 
-export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol">): Promise<ModelProbeStatus> {
-  return model.purpose === "tts" ? probeTtsModel(model) : probeChatModel(model);
+export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "requestTimeoutMs">): Promise<ModelProbeStatus> {
+  if (model.purpose === "tts") return probeTtsModel(model);
+  if (model.purpose === "image") return probeImageModel(model);
+  return probeChatModel(model);
 }
 
 export function getServerStatusSnapshot(): Record<string, unknown> {
@@ -123,6 +126,37 @@ async function probeTtsModel(model: Pick<SystemModelConfig, "baseUrl" | "model" 
       latencyMs: Date.now() - startedAt,
       cached: false,
       probeType: "tts",
+      failureKind: classifyUpstreamFailure({ error }),
+    };
+  }
+}
+
+async function probeImageModel(
+  model: Pick<SystemModelConfig, "baseUrl" | "model" | "apiKey" | "requestTimeoutMs">,
+): Promise<ModelProbeStatus> {
+  const startedAt = Date.now();
+  try {
+    const image = await requestGeneratedImage(model, "A simple solid blue circle on a white background", { quality: "low" });
+    return {
+      ok: image.data.byteLength > 0,
+      detail: "图片模型连接正常，已完成一次低质量测试生成。",
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      cached: false,
+      probeType: "image",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `图片模型请求失败：${error instanceof Error ? error.message : String(error)}`,
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      cached: false,
+      probeType: "image",
       failureKind: classifyUpstreamFailure({ error }),
     };
   }

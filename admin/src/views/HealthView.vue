@@ -48,7 +48,7 @@ const activeModelMeta = computed(() => {
     { label: "检测来源", value: sourceLabel(model.source) },
     { label: "检测时间", value: formatDateTime(model.checkedAt) },
     { label: "缓存状态", value: model.cached ? "缓存结果" : "实时检测" },
-    { label: "探测类型", value: model.probeType === "tts" ? "语音合成" : "文本对话" },
+    { label: "探测类型", value: model.probeType === "tts" ? "语音合成" : model.probeType === "image" ? "图片生成" : "文本对话" },
     { label: "上游状态", value: model.upstreamStatusCode ? `HTTP ${model.upstreamStatusCode}` : "-" },
     { label: "失败类型", value: model.failureKind ? failureKindLabel(model.failureKind) : "-" },
     { label: "模型名称", value: model.model || "-" },

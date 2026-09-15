@@ -48,6 +48,10 @@ import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.j
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { getBlacklistedAtMemeImageFile } from "./services/blacklisted-at-meme.js";
+import {
+  ImageGenerationError,
+  type ImageGenerationRuntime,
+} from "./services/image-generation-service.js";
 import { TtsServiceError } from "./services/tts-service.js";
 import type {
   ProviderCapabilityFeature,
@@ -117,6 +121,7 @@ const OPS_ALERT_PREFIX = "#告警";
 const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
 const HTML_PREVIEW_PREFIX = "#网页";
+const IMAGE_GENERATION_PREFIX = "#画图";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
@@ -172,6 +177,7 @@ const RUNTIME_COMMAND_SPECS = {
   holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
   knowledge: { builtinPrefix: KNOWLEDGE_PREFIX, builtinAliases: [] },
   html_preview: { builtinPrefix: HTML_PREVIEW_PREFIX, builtinAliases: ["#html"] },
+  image_generation: { builtinPrefix: IMAGE_GENERATION_PREFIX, builtinAliases: ["#生图"] },
   live_chat: { builtinPrefix: LIVE_CHAT_PREFIX, builtinAliases: [] },
   memory: { builtinPrefix: MEMORY_PREFIX, builtinAliases: [] },
   model: { builtinPrefix: MODEL_PREFIX, builtinAliases: [] },
@@ -258,6 +264,8 @@ export interface TransportHealthStatus {
 export interface MessageTransport {
   sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
+  /** Queues a worker-local generated image for ingress delivery and cleanup. */
+  sendGeneratedGroupImage?(groupId: string, imagePath: string): Promise<void | MessageReceipt>;
   sendGroupRecord(groupId: string, recordFile: string): Promise<void | MessageReceipt>;
   sendGroupAiRecord(groupId: string, text: string): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
@@ -427,6 +435,8 @@ export class BotApplication {
       Partial<Pick<RecentGroupEvidenceService, "listAmbient">>,
     /** Optional during the V3 library rollout so legacy embeddings remain valid. */
     private readonly memeLibraryService?: MemeLibraryRuntimeService,
+    /** Text-to-image generation is V3-only and absent in compatibility embeddings. */
+    private readonly imageGenerationService?: ImageGenerationRuntime,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -441,6 +451,7 @@ export class BotApplication {
         { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
         { id: "html-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runHtmlPreviewCleanupTick() },
+        { id: "image-generation-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runImageGenerationCleanupTick() },
       ],
       pollIntervalMs: BOT_MAINTENANCE_INTERVALS.poll,
     });
@@ -768,6 +779,12 @@ export class BotApplication {
         return;
       }
       await this.handleHtmlPreviewRequest(groupConfig, event, { request, source: "command" }, signal);
+      return;
+    }
+
+    const imageGenerationCommand = matchRuntimeCommand(commandText, runtimeCommands, "image_generation");
+    if (imageGenerationCommand) {
+      await this.handleImageGenerationCommand(groupConfig, event, imageGenerationCommand.suffix, signal);
       return;
     }
 
@@ -1324,6 +1341,85 @@ export class BotApplication {
       logWarn("Failed to clean generated HTML previews.", {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  private async runImageGenerationCleanupTick(): Promise<void> {
+    if (!this.imageGenerationService) return;
+    try {
+      const removed = await this.imageGenerationService.cleanup();
+      if (removed > 0) logInfo("Cleaned orphaned generated images.", { removed });
+    } catch (error) {
+      logWarn("Failed to clean generated image files.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleImageGenerationCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    rawPrompt: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    if (!this.isCapabilityEnabled("image_generation")) {
+      await this.rejectCapability(groupId, "image_generation");
+      return;
+    }
+    if (groupConfig.imageGenerationEnabled !== true) {
+      await this.sendText(groupId, "本群图片生成功能已关闭");
+      return;
+    }
+    const prompt = rawPrompt.trim();
+    if (!prompt) {
+      const commands = await this.getRuntimeCommands();
+      await this.sendText(groupId, `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
+      return;
+    }
+    if (!this.imageGenerationService || !this.transport.sendGeneratedGroupImage) {
+      await this.sendText(groupId, "图片生成暂不可用，请稍后再试");
+      return;
+    }
+
+    let stagedFile: string | undefined;
+    try {
+      const generated = await this.imageGenerationService.generate({
+        groupId,
+        userId: String(event.user_id),
+        prompt,
+        signal,
+      });
+      stagedFile = generated.filePath;
+      await this.transport.sendGeneratedGroupImage(groupId, generated.filePath);
+      stagedFile = undefined;
+      logInfo("Generated image queued for group delivery.", {
+        groupId,
+        userId: String(event.user_id),
+        modelId: generated.modelId,
+        fallbackUsed: generated.fallbackUsed,
+        byteLength: generated.byteLength,
+      });
+    } catch (error) {
+      if (stagedFile) await this.imageGenerationService.discard(stagedFile);
+      if (signal?.aborted) return;
+      if (error instanceof ImageGenerationError) {
+        if (error.code === "cooldown") {
+          await this.sendText(groupId, `图片生成冷却中，请 ${error.retryAfterSeconds ?? 1} 秒后再试`);
+          return;
+        }
+        if (error.code === "prompt_too_long") {
+          await this.sendText(groupId, "提示词不能超过 2000 字");
+          return;
+        }
+      }
+      logWarn("Image generation request failed.", {
+        groupId,
+        userId: String(event.user_id),
+        errorCode: error instanceof ImageGenerationError ? error.code : "unknown",
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+      await this.sendText(groupId, "图片生成失败，请稍后再试");
     }
   }
 
@@ -5003,7 +5099,7 @@ function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig
     return [
       `没找到“${topic}”这个帮助分类`,
       "",
-      "可用分类：对话、语音、会仙、实时对话、定时任务、日报、节假日、权限",
+      "可用分类：对话、语音、画图、会仙、实时对话、定时任务、日报、节假日、权限",
       `示例：${helper("help")} 技能`,
       "",
       buildHelpOverviewMessage(sections, helper),
@@ -5069,6 +5165,16 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
       ],
     },
     {
+      title: "画图",
+      aliases: ["画图", "生图", "image"],
+      lines: [
+        `1. ${command("image_generation")} <提示词>`,
+        `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
+        "作用：根据文字提示生成一张图片；是否开放由每个群的后台开关决定",
+        "限制：每个成员在同一群成功生成后冷却 60 秒",
+      ],
+    },
+    {
       title: "实时对话",
       aliases: ["实时对话", "实时", "live", "livechat"],
       lines: [
@@ -5129,15 +5235,16 @@ function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpF
     "系统功能总览：",
     "1. 对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
     `2. 语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
-    `3. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
-    `4. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
-    `5. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
-    `6. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
-    `7. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
-    `8. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
-    `9. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
-    `10. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
-    `分类帮助：${command("help")} 对话 / 语音 / 实时对话 / 定时任务 / 日报 / 节假日 / 权限`,
+    `3. 画图：${command("image_generation")} <提示词>`,
+    `4. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
+    `5. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
+    `6. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
+    `7. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
+    `8. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
+    `9. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
+    `10. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
+    `11. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+    `分类帮助：${command("help")} 对话 / 语音 / 画图 / 实时对话 / 定时任务 / 日报 / 节假日 / 权限`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
     "权限说明：群内 QQ 号不再授予管理员权限；请在后台使用账号、TOTP 和群授权管理运营设置",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,

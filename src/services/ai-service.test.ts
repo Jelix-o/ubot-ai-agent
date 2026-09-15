@@ -738,6 +738,7 @@ test("provider capabilities skip streaming and OpenAI reasoning fields for Anthr
     streaming: false,
     reasoningEffort: false,
     requestTimeout: true,
+    imageGeneration: true,
   });
 });
 
