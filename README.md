@@ -1,8 +1,8 @@
-# UBot V3.0.20
+# UBot V3.0.21
 
-UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.20 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时、静态网页预览和受限图片生成；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
+UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.21 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时、静态网页预览和受限图片生成；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.20.md](RELEASE-v3.0.20.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.21.md](RELEASE-v3.0.21.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
 
 ## V3 架构
 
