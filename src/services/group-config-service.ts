@@ -46,7 +46,6 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "visionEnabled"
   | "ambientGroupContextEnabled"
   | "htmlPreviewEnabled"
-  | "imageGenerationEnabled"
 >>;
 
 export class GroupConfigService {
@@ -607,9 +606,9 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     // Generated pages are a normal member-facing capability. Existing groups
     // upgrade enabled unless an administrator explicitly turns it off.
     htmlPreviewEnabled: group.htmlPreviewEnabled !== false,
-    // Image generation may incur direct usage costs, so every group must be
-    // explicitly opted in by an administrator.
-    imageGenerationEnabled: group.imageGenerationEnabled === true,
+    // Kept in the read model for old persisted records. Image generation is
+    // globally available and authorization is enforced by the command.
+    imageGenerationEnabled: true,
   };
 }
 
@@ -717,10 +716,6 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   if ("htmlPreviewEnabled" in input) {
     next.htmlPreviewEnabled = normalizeBoolean(input.htmlPreviewEnabled, "invalid_group_config");
   }
-  if ("imageGenerationEnabled" in input) {
-    next.imageGenerationEnabled = normalizeBoolean(input.imageGenerationEnabled, "invalid_group_config");
-  }
-
   return normalizeGroupConfig(next);
 }
 

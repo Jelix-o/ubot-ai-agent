@@ -2,7 +2,11 @@ import { loadConfig } from "./config.js";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { logError, logInfo, logWarn } from "./logger.js";
-import { NapCatReverseServer } from "./napcat-reverse-server.js";
+import {
+  NapCatActionNotSentError,
+  NapCatActionOutcomeUnknownError,
+  NapCatReverseServer,
+} from "./napcat-reverse-server.js";
 import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { Metrics } from "./shared/metrics.js";
@@ -113,6 +117,18 @@ export class OutboxAcknowledgementError extends Error {
     super("QQ send succeeded but the outbox acknowledgement could not be persisted");
     this.name = "OutboxAcknowledgementError";
   }
+}
+
+export type OutboxFailureDisposition = "retryable" | "terminal";
+
+export function markOutboxDeliveryFailed(
+  sharedDb: SharedDb,
+  row: Pick<OutboxRow, "id" | "kind">,
+  error: unknown,
+): OutboxFailureDisposition {
+  const retryable = row.kind !== "generated_image" || error instanceof NapCatActionNotSentError;
+  sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
+  return retryable ? "retryable" : "terminal";
 }
 
 interface IngressOptions {
@@ -376,7 +392,13 @@ export class IngressApp {
         });
       } catch (error) {
         if (!(error instanceof OutboxAcknowledgementError)) {
-          this.sharedDb.markOutboxFailed(row.id);
+          const disposition = markOutboxDeliveryFailed(this.sharedDb, row, error);
+          if (row.kind === "generated_image" && disposition === "terminal") {
+            this.metrics.inc("generated_image_delivery_terminal");
+            if (error instanceof NapCatActionOutcomeUnknownError) {
+              this.metrics.inc("generated_image_delivery_ambiguous");
+            }
+          }
         }
         this.metrics.inc("outbox_failed");
         logWarn("Outbox send failed.", {

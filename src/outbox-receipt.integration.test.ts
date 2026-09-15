@@ -5,7 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import type { MessageReceipt, MessageTransport } from "./bot.js";
-import { deliverOutboxRow, OutboxAcknowledgementError } from "./index-ingress.js";
+import { deliverOutboxRow, markOutboxDeliveryFailed, OutboxAcknowledgementError } from "./index-ingress.js";
+import { NapCatActionNotSentError, NapCatActionOutcomeUnknownError } from "./napcat-reverse-server.js";
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { WorkerTransport } from "./worker-transport.js";
@@ -168,6 +169,69 @@ test("generated image outbox rows are materialized as base64 and removed after a
     text: `base64://${image.toString("base64")}`,
   }]);
   assert.equal(existsSync(imagePath), false);
+});
+
+test("ambiguous generated image delivery is terminal and cannot be sent three times", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const id = db.enqueueOutbox("group-image", null, "managed.png", "generated_image");
+  const row = db.claimOutbox(1, 2_000)[0]!;
+  const disposition = markOutboxDeliveryFailed(
+    db,
+    row,
+    new NapCatActionOutcomeUnknownError("send_group_msg timed out"),
+  );
+  assert.equal(disposition, "terminal");
+  const stored = db.db.prepare("SELECT status, attempts, retry_after FROM outbox WHERE id = ?").get(id) as {
+    status: string;
+    attempts: number;
+    retry_after: number | null;
+  };
+  assert.deepEqual({ ...stored }, { status: "failed", attempts: 1, retry_after: null });
+  assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 0);
+});
+
+test("generated images retry only when NapCat was disconnected before dispatch", (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const id = db.enqueueOutbox("group-image", null, "managed.png", "generated_image");
+  const row = db.claimOutbox(1, 2_000)[0]!;
+  const disposition = markOutboxDeliveryFailed(
+    db,
+    row,
+    new NapCatActionNotSentError("not connected"),
+  );
+  assert.equal(disposition, "retryable");
+  const stored = db.db.prepare("SELECT status, attempts, retry_after FROM outbox WHERE id = ?").get(id) as {
+    status: string;
+    attempts: number;
+    retry_after: number | null;
+  };
+  assert.equal(stored.status, "failed");
+  assert.equal(stored.attempts, 1);
+  assert.equal(typeof stored.retry_after, "number");
+  assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 1);
+});
+
+test("ordinary outbox messages retain their existing retry behavior", (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const id = db.enqueueOutbox("group-text", null, "hello", "text");
+  const row = db.claimOutbox(1, 2_000)[0]!;
+  assert.equal(markOutboxDeliveryFailed(db, row, new NapCatActionOutcomeUnknownError("timeout")), "retryable");
+  assert.equal(db.claimOutbox(1, Date.now() + 60_000)[0]?.id, id);
 });
 
 test("generated image delivery rejects paths outside the managed directory", async (t) => {
