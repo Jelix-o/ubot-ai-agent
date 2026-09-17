@@ -127,8 +127,8 @@ const IMAGE_GENERATION_PREFIX = "#画图";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
-const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 3 * 60 * 1_000;
-const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 12;
+const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 10 * 60 * 1_000;
+const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 30;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 const SEND_FAILURE_ALERT_THRESHOLD = 3;
@@ -2702,8 +2702,9 @@ export class BotApplication {
       messageContext.interactionTargets,
       this.botQq,
     );
+    const localTranscriptTargetRequest = isLocalTranscriptTargetRequest(normalizedUserInput);
     const savedAliasResolution = explicitEvaluationTargetUserIds.length === 0 &&
-      isPersonEvaluationRequest(normalizedUserInput, true)
+      (isPersonEvaluationRequest(normalizedUserInput, true) || localTranscriptTargetRequest)
       ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
       : { status: "none" as const };
     if (savedAliasResolution.status === "resolved") {
@@ -2765,6 +2766,8 @@ export class BotApplication {
       normalizedUserInput,
       messageContext.interactionTargets.length > 0,
     ) || savedAliasResolution.status === "ambiguous";
+    const targetedGroupEvidenceRequested =
+      (personEvaluationRequested || localTranscriptTargetRequest) && evaluationTargetUserIds.length === 1;
     const explicitGroupEvaluationRequested = isExplicitGroupEvaluationRequest(normalizedUserInput);
     const ordinaryEvaluationFallback =
       personEvaluationRequested &&
@@ -2792,17 +2795,26 @@ export class BotApplication {
       });
       return;
     }
+    if (localTranscriptTargetRequest && groupConfig.ambientGroupContextEnabled === false) {
+      const unavailableText = "本群未开启近期群聊上下文，无法根据以上聊天记录回答。";
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
+      logInfo("Skipped local transcript evidence because ambient group context is disabled.", {
+        groupId: groupConfig.groupId,
+      });
+      return;
+    }
     if (ordinaryEvaluationFallback) {
       logInfo("Falling back to an ordinary AI reply for an unverified open-ended evaluation.", {
         groupId: groupConfig.groupId,
         savedAliasStatus: savedAliasResolution.status,
       });
     }
-    const recentGroupEvidenceTriggered = personEvaluationRequested && evaluationTargetUserIds.length === 1;
-    const targetPrivacyOptedOut = recentGroupEvidenceTriggered &&
+    const recentGroupEvidenceTriggered = targetedGroupEvidenceRequested;
+    const targetPrivacyOptedOut = targetedGroupEvidenceRequested &&
       (groupConfig.memoryDisabledUserIds ?? []).includes(evaluationTargetUserIds[0]!);
     if (targetPrivacyOptedOut) {
-      const unavailableText = "当前没有可用于评价这位群友的聊天记录。";
+      const unavailableText = "当前没有可用于回答这位群友相关问题的聊天记录。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
       logInfo("Skipped group evidence for a privacy-opted-out target.", { groupId: groupConfig.groupId });
@@ -2811,13 +2823,25 @@ export class BotApplication {
     let recentGroupEvidence: NonNullable<AiIdentityContext["recentGroupEvidence"]> = [];
     if (recentGroupEvidenceTriggered && sourceRowId !== undefined) {
       try {
-        recentGroupEvidence = this.recentGroupEvidenceService?.list({
-          groupId: groupConfig.groupId,
-          beforeSourceRowId: sourceRowId,
-          sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1_000,
-          excludedUserIds: groupConfig.memoryDisabledUserIds,
-          limit: 30,
-        }) ?? [];
+        const excludedUserIds = [
+          ...(groupConfig.blacklistedUserIds ?? []),
+          ...(groupConfig.memoryDisabledUserIds ?? []),
+        ];
+        recentGroupEvidence = localTranscriptTargetRequest
+          ? this.recentGroupEvidenceService?.listAmbient?.({
+            groupId: groupConfig.groupId,
+            beforeSourceRowId: sourceRowId,
+            lookbackMs: AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
+            excludedUserIds,
+            limit: AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
+          }) ?? []
+          : this.recentGroupEvidenceService?.list({
+            groupId: groupConfig.groupId,
+            beforeSourceRowId: sourceRowId,
+            sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1_000,
+            excludedUserIds,
+            limit: 30,
+          }) ?? [];
       } catch (error) {
         logWarn("Recent group evidence read failed closed.", {
           groupId: groupConfig.groupId,
@@ -2830,7 +2854,7 @@ export class BotApplication {
       | "loaded"
       | "disabled"
       | "explicit_reply"
-      | "person_evaluation"
+      | "targeted_group_evidence"
       | "missing_source"
       | "unavailable"
       | "read_failed";
@@ -2839,7 +2863,7 @@ export class BotApplication {
     } else if (messageContext.replyMessageId) {
       ambientGroupContextStatus = "explicit_reply";
     } else if (recentGroupEvidenceTriggered) {
-      ambientGroupContextStatus = "person_evaluation";
+      ambientGroupContextStatus = "targeted_group_evidence";
     } else if (sourceRowId === undefined) {
       ambientGroupContextStatus = "missing_source";
     } else if (!this.recentGroupEvidenceService?.listAmbient) {
@@ -5383,11 +5407,12 @@ function resolveSavedAliasEvaluationTarget(
     start: number;
     end: number;
     aliasLength: number;
-    target: AiInteractionTarget;
+    userIds: string[];
+    names: string[];
   }> = [];
   for (const identity of groupConfig.manualIdentities ?? []) {
-    const userId = identity.userIds[0]?.trim();
-    if (!userId || !/^\d+$/.test(userId)) continue;
+    const userIds = [...new Set(identity.userIds.map((userId) => userId.trim()).filter((userId) => /^\d+$/.test(userId)))];
+    if (userIds.length === 0) continue;
     for (const rawAlias of identity.names) {
       const alias = normalizeSavedAliasMatchText(rawAlias);
       const aliasLength = Array.from(alias).length;
@@ -5399,11 +5424,8 @@ function resolveSavedAliasEvaluationTarget(
           start,
           end: start + alias.length,
           aliasLength,
-          target: {
-            userId,
-            names: normalizeNames(identity.names),
-            source: "alias",
-          },
+          userIds,
+          names: normalizeNames(identity.names),
         });
         start = normalizedText.indexOf(alias, start + alias.length);
       }
@@ -5417,9 +5439,18 @@ function resolveSavedAliasEvaluationTarget(
     candidate.start <= match.start &&
     candidate.end >= match.end
   ));
+  // A shorter alias embedded in a longer, uniquely mapped name must not
+  // make the longer match ambiguous. Resolve ambiguity only after longest
+  // match selection, and never guess between multiple QQ accounts.
+  if (longestMatches.some((match) => match.userIds.length !== 1)) return { status: "ambiguous" };
   const byUserId = new Map<string, AiInteractionTarget>();
   for (const match of longestMatches) {
-    if (match.target.userId) byUserId.set(match.target.userId, match.target);
+    const userId = match.userIds[0]!;
+    byUserId.set(userId, {
+      userId,
+      names: match.names,
+      source: "alias",
+    });
   }
   if (byUserId.size !== 1) return { status: "ambiguous" };
   return { status: "resolved", target: [...byUserId.values()][0]! };
@@ -5432,6 +5463,11 @@ function normalizeSavedAliasMatchText(value: string): string {
 function isExplicitGroupEvaluationRequest(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
   return /(?:群友|群成员|本群|群里|群聊(?:记录|内容|消息)?|聊天记录)/u.test(normalized);
+}
+
+function isLocalTranscriptTargetRequest(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return /(?:从|根据|结合|看)(?:(?:以上|上面|前面|刚才|这段|本段)(?:的)?(?:聊天|群聊|对话|发言|消息|内容|记录)?|(?:群聊|聊天记录|上文|上下文))(?:中|里)?(?:看|判断|分析|来说)?/u.test(normalized);
 }
 
 function isPersonEvaluationRequest(text: string, hasInteractionTarget: boolean): boolean {

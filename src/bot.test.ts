@@ -2887,8 +2887,8 @@ test("injects ambient group context for unquoted conversation and skips explicit
   ], 20001, 67890, 7201));
 
   assert.equal(ambientCalls.length, 1);
-  assert.equal(ambientCalls[0]?.lookbackMs, 3 * 60 * 1_000);
-  assert.equal(ambientCalls[0]?.limit, 12);
+  assert.equal(ambientCalls[0]?.lookbackMs, 10 * 60 * 1_000);
+  assert.equal(ambientCalls[0]?.limit, 30);
   assert.deepEqual(ambientCalls[0]?.excludedUserIds, ["30001", "30002"]);
   assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext?.[0]?.text, "现代梗圈顶流必须是常公");
 
@@ -3183,7 +3183,7 @@ test("injects person-evaluation evidence for one unique saved alias without send
   assert.doesNotMatch(transport.sent[0]?.text ?? "", /\[CQ:at|@/);
 });
 
-test("does not resolve a saved alias outside person-evaluation requests", async () => {
+test("does not resolve a saved alias outside person-evaluation or local-transcript requests", async () => {
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
     currentSkillId: "assistant",
@@ -3201,6 +3201,103 @@ test("does not resolve a saved alias outside person-evaluation requests", async 
 
   assert.equal(aiService.calls[0]?.identityContext?.interactionTargets, undefined);
   assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, undefined);
+});
+
+test("resolves a unique saved alias for a factual request explicitly grounded in nearby chat", async () => {
+  const ambientCalls: Array<{
+    groupId: string;
+    beforeSourceRowId: number;
+    lookbackMs: number;
+    excludedUserIds?: string[];
+    limit?: number;
+  }> = [];
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["1574084048"], names: ["Linux", "渣渣辉"] }],
+  }]);
+  const { app, aiService } = createApp({
+    groupConfigService,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list() {
+        throw new Error("A locally grounded transcript must use the bounded ambient reader.");
+      },
+      listAmbient(input) {
+        ambientCalls.push(input);
+        return [{
+          role: "member" as const,
+          userId: "1574084048",
+          senderNickname: "Linux",
+          text: "钱肯定不罚，就是不想去掉我的首违。",
+          timestamp: "2026-09-17T03:40:22.000Z",
+        }];
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 从以上聊天看，渣渣辉将最高接受什么处罚 " } },
+  ], 1569671790, 67890, 7206));
+
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "1574084048",
+    names: ["Linux", "渣渣辉"],
+    source: "alias",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "1574084048");
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidence?.[0]?.text, "钱肯定不罚，就是不想去掉我的首违。");
+  assert.equal(ambientCalls.length, 1);
+  assert.equal(ambientCalls[0]?.groupId, "67890");
+  assert.equal(ambientCalls[0]?.beforeSourceRowId, 99);
+  assert.equal(ambientCalls[0]?.lookbackMs, 10 * 60 * 1_000);
+  assert.equal(ambientCalls[0]?.limit, 30);
+});
+
+test("does not read a local transcript when nearby group context is disabled", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    ambientGroupContextEnabled: false,
+    manualIdentities: [{ userIds: ["1574084048"], names: ["Linux", "渣渣辉"] }],
+  }]);
+  let ambientCalls = 0;
+  const { app, aiService, transport } = createApp({
+    groupConfigService,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list: () => [],
+      listAmbient() {
+        ambientCalls += 1;
+        return [];
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 从以上聊天看，渣渣辉将最高接受什么处罚 " } },
+  ], 1569671790, 67890, 7207));
+
+  assert.equal(ambientCalls, 0);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent[0]?.text, "本群未开启近期群聊上下文，无法根据以上聊天记录回答。");
 });
 
 test("resolves a saved alias in natural person impression question '在你眼中xxx是个什么样的人'", async () => {
@@ -3420,6 +3517,40 @@ test("saved-alias evaluation fails closed for collisions and multiple resolved t
   }
 });
 
+test("fails closed for a multi-QQ alias but still prefers a longer unique nested alias", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [
+      { userIds: ["10001", "10002"], names: ["季博醋"] },
+      { userIds: ["493213481"], names: ["季博醋柚肠"] },
+      { userIds: ["20001", "20002"], names: ["共享别名"] },
+    ],
+  }]);
+  const { app, aiService, transport } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 怎么看季博醋柚肠 " } },
+  ]));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 从以上聊天看，共享别名说了什么 " } },
+  ], 20001, 67890, 2));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "493213481",
+    names: ["季博醋柚肠"],
+    source: "alias",
+  }]);
+  assert.equal(transport.sent.length, 2);
+  assert.equal(transport.sent[1]?.text, "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。");
+});
+
 test("uses the longest nested saved alias and enforces privacy opt-out", async () => {
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
@@ -3451,7 +3582,7 @@ test("uses the longest nested saved alias and enforces privacy opt-out", async (
 
   assert.equal(aiService.calls.length, 0);
   assert.equal(evidenceCalls, 0);
-  assert.equal(transport.sent[0]?.text, "当前没有可用于评价这位群友的聊天记录。");
+  assert.equal(transport.sent[0]?.text, "当前没有可用于回答这位群友相关问题的聊天记录。");
 });
 
 test("unrouted calls fail closed instead of reading legacy personal context", async () => {
