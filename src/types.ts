@@ -300,7 +300,7 @@ export interface AiIdentityContext {
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
   realtimeLookup?: RealtimeLookupResult;
-  /** Explicitly requested, bounded group transcript evidence for person evaluation. */
+  /** Explicitly requested, bounded group transcript evidence about one verified member. */
   recentGroupEvidence?: RecentGroupEvidenceMessage[];
   recentGroupEvidenceRequested?: boolean;
   recentGroupEvidenceTargetUserId?: string;
