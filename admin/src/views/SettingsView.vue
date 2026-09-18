@@ -602,45 +602,50 @@ onMounted(() => {
 .purpose-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .purpose-tabs button {
   display: grid;
-  gap: 6px;
-  min-height: 82px;
+  gap: 4px;
+  min-height: 72px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
   color: var(--text);
-  padding: 12px;
+  padding: 10px 12px;
   text-align: left;
+  font-weight: 600;
+  font-size: 13px;
 }
 
 .purpose-tabs button.active {
-  border-color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 45%, var(--line));
   background: var(--accent-soft);
   color: var(--accent-strong);
 }
 
 .purpose-tabs button.failed {
-  border-color: color-mix(in oklch, var(--danger) 58%, var(--line));
-  background: color-mix(in oklch, var(--danger-soft) 74%, var(--surface));
+  border-color: color-mix(in oklch, var(--danger) 40%, var(--line));
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
 .purpose-tabs button.active.failed {
-  box-shadow: 0 0 0 2px color-mix(in oklch, var(--danger) 18%, transparent);
+  box-shadow: none;
+  border-color: var(--danger);
 }
 
 .purpose-tabs small {
   color: var(--muted);
-  line-height: 1.45;
+  line-height: 1.4;
+  font-weight: 500;
+  font-size: 11.5px;
 }
 
 .purpose-tabs button.failed small {
-  color: color-mix(in oklch, var(--danger) 72%, var(--muted));
+  color: color-mix(in oklch, var(--danger) 70%, var(--muted));
 }
 
 .model-actions {
@@ -650,12 +655,13 @@ onMounted(() => {
 
 .dirty-hint {
   margin: 0 0 12px;
-  border: 1px solid rgba(217, 119, 6, 0.28);
-  border-radius: var(--radius-sm);
-  background: rgba(245, 158, 11, 0.12);
-  color: #92400e;
-  padding: 10px 12px;
-  font-weight: 800;
+  border: 1px solid color-mix(in oklch, var(--warning) 35%, var(--line));
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  color: var(--warning);
+  padding: 9px 12px;
+  font-weight: 600;
+  font-size: 12.5px;
 }
 
 .model-table {
@@ -737,8 +743,8 @@ onMounted(() => {
 
 .link-btn {
   background: transparent;
-  color: var(--blue);
-  font-weight: 900;
+  color: var(--accent-strong);
+  font-weight: 650;
   padding: 0;
 }
 
