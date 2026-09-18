@@ -740,6 +740,14 @@ function addSenderRoleColumn(db: DatabaseSync): void {
 
 function retireVoiceState(db: DatabaseSync): void {
   const now = Date.now();
+  // Voice outbox payloads cannot be safely reinterpreted after the sender
+  // implementation is retired. Keep sent rows for audit, but terminalize all
+  // other states so a later ingress cannot emit a record payload as text.
+  db.prepare(
+    `UPDATE outbox
+        SET status = 'failed', retry_after = NULL, updated_at = ?
+      WHERE kind IN ('record', 'airecord') AND status <> 'sent'`,
+  ).run(now);
   const settingsRow = db.prepare(
     "SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'",
   ).get() as { settings_json: string } | undefined;

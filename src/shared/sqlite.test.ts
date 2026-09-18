@@ -648,6 +648,44 @@ test("old outbox schema without retry_after is migrated without losing rows", (t
   db.close();
 });
 
+test("voice retirement migration terminalizes unsent legacy voice outbox rows", (t) => {
+  const dbPath = tempDb(t);
+  const first = new SharedDb(dbPath);
+  const pending = first.enqueueOutbox("10001", null, "voice-pending", "record");
+  const retrying = first.enqueueOutbox("10001", null, "voice-retrying", "airecord");
+  const preparing = first.enqueueOutbox("10001", null, "voice-preparing", "record");
+  const sending = first.enqueueOutbox("10001", null, "voice-sending", "airecord");
+  const sent = first.enqueueOutbox("10001", null, "voice-sent", "record");
+  const text = first.enqueueOutbox("10001", null, "ordinary-text", "text");
+  first.db.prepare("UPDATE outbox SET status = 'failed', retry_after = ?, updated_at = ? WHERE id = ?").run(Date.now() + 60_000, Date.now(), retrying);
+  first.db.prepare("UPDATE outbox SET status = 'preparing', updated_at = ? WHERE id = ?").run(Date.now(), preparing);
+  first.db.prepare("UPDATE outbox SET status = 'sending', updated_at = ? WHERE id = ?").run(Date.now(), sending);
+  first.db.prepare("UPDATE outbox SET status = 'sent', retry_after = NULL, sent_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), sent);
+  first.db.prepare("DELETE FROM schema_migrations WHERE version = 15").run();
+  first.close();
+
+  const upgraded = new SharedDb(dbPath);
+  const rows = upgraded.db.prepare("SELECT id, status, retry_after FROM outbox ORDER BY id").all() as Array<{
+    id: number;
+    status: string;
+    retry_after: number | null;
+  }>;
+  assert.deepEqual(rows.map((row) => ({ ...row })), [
+    { id: pending, status: "failed", retry_after: null },
+    { id: retrying, status: "failed", retry_after: null },
+    { id: preparing, status: "failed", retry_after: null },
+    { id: sending, status: "failed", retry_after: null },
+    { id: sent, status: "sent", retry_after: null },
+    { id: text, status: "pending", retry_after: null },
+  ]);
+  assert.deepEqual(upgraded.claimOutbox(10).map((row) => row.id), [text]);
+  upgraded.close();
+
+  const reopened = new SharedDb(dbPath);
+  assert.equal(reopened.listSchemaMigrations().filter((migration) => migration.version === 15).length, 1);
+  reopened.close();
+});
+
 test("token bucket counting uses received-time window", (t) => {
   const db = new SharedDb(tempDb(t));
   const now = 1_700_000_000_000;

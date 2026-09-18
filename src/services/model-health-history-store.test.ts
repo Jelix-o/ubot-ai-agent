@@ -14,6 +14,7 @@ test("ModelHealthHistoryStore serializes concurrent records", async () => {
     await Promise.all([
       store.record(makeEntry("reply-main", "reply")),
       store.record(makeEntry("knowledge-main", "knowledge")),
+      store.record(makeEntry("image-main", "image")),
       store.record(makeEntry("custom-main", "custom")),
     ]);
 
@@ -21,6 +22,7 @@ test("ModelHealthHistoryStore serializes concurrent records", async () => {
     assert.deepEqual(new Set(entries.map((entry) => entry.id)), new Set([
       "reply-main",
       "knowledge-main",
+      "image-main",
       "custom-main",
     ]));
   } finally {
