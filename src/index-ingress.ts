@@ -59,12 +59,8 @@ export async function deliverOutboxRow(
   onAckFailure?: (error: unknown) => void,
 ): Promise<string> {
   let receipt: MessageReceipt | void;
-  if (row.kind === "record") {
-    receipt = await transport.sendGroupRecord(row.group_id, row.text);
-  } else if (row.kind === "image") {
+  if (row.kind === "image") {
     receipt = await transport.sendGroupImage(row.group_id, row.text);
-  } else if (row.kind === "airecord") {
-    receipt = await transport.sendGroupAiRecord(row.group_id, row.text);
   } else {
     receipt = await transport.sendGroupMessage(row.group_id, row.text);
   }
@@ -262,6 +258,7 @@ export class IngressApp {
       imagesJson: JSON.stringify(images),
       senderCard: event.sender?.card,
       senderNickname: event.sender?.nickname,
+      senderRole: event.sender?.role,
       replyTo: parsed.replyMessageId,
       verifiedMentionUserIds: parsed.verifiedMentionUserIds,
       hasAtBot: parsed.hasAtBot,

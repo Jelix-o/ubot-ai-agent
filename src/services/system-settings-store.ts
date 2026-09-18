@@ -12,14 +12,6 @@ import { logWarn } from "../logger.js";
 import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
-import {
-  ENV_TTS_MODEL_ID,
-  LEGACY_MIMO_TTS_BASE_URL,
-  LEGACY_MIMO_TTS_MODEL,
-  MIMO_TTS_BASE_URL,
-  MIMO_TTS_MODEL,
-  MIMO_TTS_MODEL_ID,
-} from "./mimo-tts-config.js";
 
 type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
   models?: Array<Partial<SystemModelConfig> & { apiKey?: unknown }>;
@@ -56,6 +48,9 @@ export class SystemSettingsStore {
   async update(input: SystemSettingsUpdateInput): Promise<SystemSettings> {
     const current = await this.readData();
     if (input.models !== undefined) {
+      if (input.models.some((model) => (model as { purpose?: unknown }).purpose === "tts")) {
+        throw new Error("voice_feature_retired");
+      }
       validateModelUpdateInput(input.models);
     }
     const removedDefaultModelIds = input.models === undefined
@@ -407,8 +402,8 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
   const shortName = String(value.shortName ?? "").trim().slice(0, 32);
   const rawBaseUrl = String(value.baseUrl ?? "").trim();
   const rawModel = String(value.model ?? "").trim();
-  const baseUrl = normalizeBuiltInTtsBaseUrl(id, rawBaseUrl).slice(0, 240);
-  const model = normalizeBuiltInTtsModel(id, rawModel).slice(0, 120);
+  const baseUrl = rawBaseUrl.slice(0, 240);
+  const model = rawModel.slice(0, 120);
   if (!name || !shortName || !baseUrl || !model) {
     return undefined;
   }
@@ -456,22 +451,6 @@ function normalizeOptionalInt(value: unknown, min: number, max: number): number 
   return Math.max(min, Math.min(max, numberValue));
 }
 
-function normalizeBuiltInTtsBaseUrl(id: string, baseUrl: string): string {
-  return id === MIMO_TTS_MODEL_ID && sameUrl(baseUrl, LEGACY_MIMO_TTS_BASE_URL)
-    ? MIMO_TTS_BASE_URL
-    : baseUrl;
-}
-
-function normalizeBuiltInTtsModel(id: string, model: string): string {
-  return (id === ENV_TTS_MODEL_ID || id === MIMO_TTS_MODEL_ID) && model === LEGACY_MIMO_TTS_MODEL
-    ? MIMO_TTS_MODEL
-    : model;
-}
-
-function sameUrl(left: string, right: string): boolean {
-  return left.replace(/\/+$/, "").toLowerCase() === right.replace(/\/+$/, "").toLowerCase();
-}
-
 function normalizeModelPurpose(value: unknown): SystemModelPurpose | undefined {
   return isRuntimeModelPurpose(value) ? value : undefined;
 }
@@ -480,7 +459,6 @@ function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
   return value === "reply" ||
     value === "summary" ||
     value === "knowledge" ||
-    value === "tts" ||
     value === "custom";
 }
 
@@ -590,9 +568,6 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     help: string;
   }> = [
     { id: "conversation", title: "对话", primary: "#对话", aliases: ["#clear"], permission: "member", help: "清空或管理当前群对话上下文" },
-    { id: "voice", title: "语音", primary: "#语音", permission: "member", help: "生成语音回复" },
-    { id: "voice_reply", title: "默认语音回复", primary: "#语音回复", permission: "group_admin", help: "查看或开关普通 AI 回复默认发送语音条" },
-    { id: "sing", title: "唱歌", primary: "#唱歌", permission: "member", help: "让机器人用唱歌模式生成语音回复" },
     { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
     { id: "model", title: "模型", primary: "#模型", permission: "group_admin", help: "查看或切换当前群回复模型" },

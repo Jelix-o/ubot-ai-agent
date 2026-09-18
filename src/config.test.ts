@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadConfig } from "./config.js";
-import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL } from "./services/mimo-tts-config.js";
 
 test("profile AI environment variables are not part of the V3 runtime configuration", () => {
   const originalEnv = { ...process.env };
@@ -29,7 +28,7 @@ test("profile AI environment variables are not part of the V3 runtime configurat
   }
 });
 
-test("tts config defaults to current MiMo V2.5 TTS endpoint and supports overrides", () => {
+test("tts environment variables are not part of the runtime configuration", () => {
   const originalEnv = { ...process.env };
   try {
     process.env = {
@@ -39,24 +38,15 @@ test("tts config defaults to current MiMo V2.5 TTS endpoint and supports overrid
       OPENAI_API_KEY: "reply-key",
       OPENAI_MODEL: "reply-model",
       BOT_QQ: "12345",
+      TTS_BASE_URL: "https://custom-tts.example/v1",
+      TTS_API_KEY: "tts-key",
+      TTS_MODEL: "custom-tts-model",
     };
-    delete process.env.TTS_BASE_URL;
-    delete process.env.TTS_API_KEY;
-    delete process.env.TTS_MODEL;
 
-    const fallback = loadConfig();
-    assert.equal(fallback.ttsBaseUrl, MIMO_TTS_BASE_URL);
-    assert.equal(fallback.ttsApiKey, "reply-key");
-    assert.equal(fallback.ttsModel, MIMO_TTS_MODEL);
-
-    process.env.TTS_BASE_URL = "https://custom-tts.example/v1";
-    process.env.TTS_API_KEY = "tts-key";
-    process.env.TTS_MODEL = "custom-tts-model";
-
-    const configured = loadConfig();
-    assert.equal(configured.ttsBaseUrl, "https://custom-tts.example/v1");
-    assert.equal(configured.ttsApiKey, "tts-key");
-    assert.equal(configured.ttsModel, "custom-tts-model");
+    const configured = loadConfig() as unknown as Record<string, unknown>;
+    assert.equal("ttsBaseUrl" in configured, false);
+    assert.equal("ttsApiKey" in configured, false);
+    assert.equal("ttsModel" in configured, false);
   } finally {
     process.env = originalEnv;
   }

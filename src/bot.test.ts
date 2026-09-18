@@ -828,22 +828,6 @@ class FakeRealtimeLookupService {
   }
 }
 
-function enabledTtsModel(): SystemSettings["models"][number] {
-  return {
-    id: "tts-test",
-    name: "Test TTS",
-    shortName: "tts",
-    baseUrl: "https://tts.example/v1",
-    model: "tts-test-model",
-    purpose: "tts",
-    apiKey: "tts-test-key",
-    hasApiKey: true,
-    enabled: true,
-    createdAt: "2026-06-04T00:00:00.000Z",
-    updatedAt: "2026-06-04T00:00:00.000Z",
-  };
-}
-
 function cloneGroup(group: GroupBotConfig): GroupBotConfig {
   return {
     ...group,
@@ -1744,12 +1728,11 @@ test("admin status command summarizes current group controls", async () => {
     assert.match(status, /说话：已闭嘴/);
     assert.match(status, /当前技能：assistant（assistant）/);
     assert.match(status, /实时对话：2 人，倒计时 45 秒/);
-    assert.match(status, /语音回复：语音功能已开启，默认语音已关闭/);
+    assert.match(status, /权限：后台账号绑定优先/);
     assert.match(status, /定时任务：已开启，1 个/);
     assert.match(status, /群聊日报：已关闭/);
     assert.match(status, /节假日倒计时：已开启，09:30/);
     assert.match(status, /黑名单：1 人/);
-    assert.match(status, /权限：后台账号、TOTP 与群授权管理/);
   });
 });
 
@@ -1784,11 +1767,6 @@ test("admin health command summarizes transport and local configuration", async 
     skills: [assistantSkill],
     systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [
       enabledReplyModel("reply-main"),
-      {
-        ...enabledReplyModel("tts-main"),
-        purpose: "tts",
-        model: "tts-main-model",
-      },
     ]),
   });
 
@@ -1797,7 +1775,7 @@ test("admin health command summarizes transport and local configuration", async 
   const health = transport.sent.at(-1)?.text ?? "";
   assert.match(health, /健康检查：群 67890/);
   assert.match(health, /NapCat：异常，反向 WebSocket 未连接/);
-  assert.match(health, /系统模型配置：启用 2 个/);
+  assert.match(health, /系统模型配置：启用 1 个/);
   assert.match(health, /当前技能：异常，找不到 missing/);
   assert.match(health, /允许技能：异常，缺失 missing/);
   assert.match(health, /定时任务：总开关已开启，0 个/);
@@ -4626,180 +4604,26 @@ test("super admin sees the same fixed Huixian persona boundary", async () => {
   assert.match(transport.sent[0]?.text ?? "", /会仙人格/);
 });
 
-test("sends voice reply for voice command", async () => {
-  const { app, transport, aiService, ttsService } = createApp({
-    systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-    aiService: new FakeAiService(async () => ({
-      text: "这事可以做",
-      model: "test-model",
-      skillId: "assistant",
-    })),
-    ttsService: new FakeTtsService(async () => ({
-      filePath: "D:/tmp/voice.wav",
-      recordFile: "base64://dm9pY2U=",
-      async cleanup() {},
-    })),
-  });
+test("retired voice and sing commands no longer invoke TTS", async () => {
+  const { app, transport, aiService, ttsService } = createApp();
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音 现在怎么做" } }]));
-
-  assert.equal(aiService.calls[0]?.userInput, "现在怎么做");
-  assert.equal(ttsService.calls[0]?.text, "这事可以做");
-  assert.equal(ttsService.calls[0]?.options?.mode, "speech");
-  assert.equal(transport.records[0]?.recordFile, "base64://dm9pY2U=");
-  assert.equal(transport.sent.length, 0);
-});
-
-test("admin manages default voice reply through group command", async () => {
-  const { app, transport, groupConfigService, adminOperationLogService } = createApp();
-
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音回复 状态" } }], 99999));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#唱歌 写一段" } }]));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音回复 开启" } }], 99999));
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音回复 状态" } }], 99999));
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音回复 关闭" } }], 99999));
 
-  assert.match(transport.sent[0]?.text ?? "", /默认语音回复：已关闭/);
-  assert.equal(groupConfigService.groups[0]?.defaultVoiceReplyEnabled, false);
-  assert.match(transport.sent[1]?.text ?? "", /已开启语音功能和默认语音回复/);
-  assert.match(transport.sent[2]?.text ?? "", /默认语音回复：已开启/);
-  assert.match(transport.sent[3]?.text ?? "", /已关闭默认语音回复/);
-  assert.equal(groupConfigService.groups[0]?.defaultVoiceReplyEnabled, false);
-  assert.equal(adminOperationLogService.entries.some((entry) => entry.action === "默认语音回复开启"), true);
-  assert.equal(adminOperationLogService.entries.some((entry) => entry.action === "默认语音回复关闭"), true);
+  assert.equal(ttsService.calls.length, 0);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.records.length, 0);
+  assert.equal(transport.aiRecords.length, 0);
 });
 
-test("default voice reply command requires admin permission", async () => {
-  const { app, transport, groupConfigService } = createApp();
-
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音回复 开启" } }], 20001));
-
-  assert.match(transport.sent[0]?.text ?? "", /没有管理语音回复的权限/);
-  assert.equal(groupConfigService.groups[0]?.defaultVoiceReplyEnabled, undefined);
-});
-
-test("default voice reply sends ordinary AI replies as voice but keeps system commands as text", async () => {
-  const groupConfigService = new FakeGroupConfigService([
-    {
-      groupId: "67890",
-      currentSkillId: "assistant",
-      allowedSkillIds: ["assistant"],
-      switcherUserIds: ["99999"],
-      liveChatUserIds: [],
-      dailyReportEnabled: true,
-      dailyReportTime: "18:00",
-      dailyReportTopUserCount: 3,
-      voiceReplyEnabled: true,
-      defaultVoiceReplyEnabled: true,
-    },
-  ]);
+test("at-mention voice wording is ordinary text chat without TTS", async () => {
   const { app, transport, aiService, ttsService } = createApp({
-    systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-    groupConfigService,
     aiService: new FakeAiService(async () => ({
-      text: "默认语音回复",
+      text: "普通文字回复",
       model: "test-model",
       skillId: "assistant",
     })),
-    ttsService: new FakeTtsService(async () => ({
-      filePath: "D:/tmp/default-voice.wav",
-      recordFile: "base64://ZGVmYXVsdA==",
-      async cleanup() {},
-    })),
-  });
-
-  await app.handleGroupMessage(createEvent([
-    { type: "at", data: { qq: "12345" } },
-    { type: "text", data: { text: " 正常问一句" } },
-  ]));
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#状态" } }], 99999));
-
-  assert.equal(aiService.calls[0]?.userInput, "正常问一句");
-  assert.equal(ttsService.calls[0]?.text, "默认语音回复");
-  assert.equal(ttsService.calls[0]?.options?.mode, "speech");
-  assert.equal(transport.records[0]?.recordFile, "base64://ZGVmYXVsdA==");
-  assert.equal(transport.sent.length, 1);
-  assert.match(transport.sent[0]?.text ?? "", /机器人状态：群 67890/);
-});
-
-test("sing command sends AI reply through singing TTS mode", async () => {
-  const { app, transport, aiService, ttsService } = createApp({
-    systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-    aiService: new FakeAiService(async () => ({
-      text: "今天的风唱给你听",
-      model: "test-model",
-      skillId: "assistant",
-    })),
-    ttsService: new FakeTtsService(async () => ({
-      filePath: "D:/tmp/song.wav",
-      recordFile: "base64://c29uZw==",
-      async cleanup() {},
-    })),
-  });
-
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#唱歌 写一段关于今天的歌" } }]));
-
-  assert.equal(aiService.calls[0]?.userInput, "写一段关于今天的歌");
-  assert.equal(ttsService.calls[0]?.text, "今天的风唱给你听");
-  assert.equal(ttsService.calls[0]?.options?.mode, "singing");
-  assert.equal(transport.records[0]?.recordFile, "base64://c29uZw==");
-  assert.equal(transport.sent.length, 0);
-});
-
-test("sing command respects group voice switch and reports unsupported TTS fallback", async () => {
-  const disabledGroupConfigService = new FakeGroupConfigService([
-    {
-      groupId: "67890",
-      currentSkillId: "assistant",
-      allowedSkillIds: ["assistant"],
-      switcherUserIds: ["99999"],
-      liveChatUserIds: [],
-      dailyReportEnabled: true,
-      dailyReportTime: "18:00",
-      dailyReportTopUserCount: 3,
-      voiceReplyEnabled: false,
-    },
-  ]);
-  const disabled = createApp({ groupConfigService: disabledGroupConfigService });
-
-  await disabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#唱歌 写一段" } }]));
-
-  assert.equal(disabled.aiService.calls.length, 0);
-  assert.equal(disabled.ttsService.calls.length, 0);
-  assert.equal(disabled.transport.sent[0]?.text, "本群语音功能已关闭");
-
-  const fallback = createApp({
-    systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-    aiService: new FakeAiService(async () => ({
-      text: "这是一段歌",
-      model: "test-model",
-      skillId: "assistant",
-    })),
-    ttsService: new FakeTtsService(async () => {
-      throw new Error("unsupported singing");
-    }),
-  });
-
-  await fallback.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#唱歌 写一段" } }]));
-
-  assert.equal(fallback.ttsService.calls[0]?.options?.mode, "singing");
-  assert.match(fallback.transport.sent[0]?.text ?? "", /当前 TTS 模型不支持唱歌/);
-  assert.match(fallback.transport.sent[1]?.text ?? "", /这是一段歌/);
-});
-
-test("disabled voice command also blocks at-mention voice wording", async () => {
-  const { app, transport, aiService, ttsService } = createApp({
-    systemSettingsStore: new FakeSystemSettingsStore([
-      {
-        id: "voice",
-        title: "语音",
-        primary: "#语音",
-        aliases: [],
-        permission: "member",
-        enabled: false,
-        help: "生成语音回复",
-        updatedAt: new Date().toISOString(),
-      },
-    ]),
   });
 
   await app.handleGroupMessage(
@@ -4809,72 +4633,10 @@ test("disabled voice command also blocks at-mention voice wording", async () => 
     ]),
   );
 
-  assert.equal(aiService.calls.length, 0);
-  assert.equal(ttsService.calls.length, 0);
-  assert.equal(transport.sent.length, 0);
-  assert.equal(transport.records.length, 0);
-});
-
-test("falls back to text when both tts and ai voice fail", async () => {
-  const transport = new FakeTransport();
-  transport.sendGroupAiRecord = async () => {
-    throw new Error("ai voice failed");
-  };
-
-  const { app } = createApp({
-    transport,
-    systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-    aiService: new FakeAiService(async () => ({
-      text: "先说结论，可以做",
-      model: "test-model",
-      skillId: "assistant",
-    })),
-    ttsService: new FakeTtsService(async () => {
-      throw new Error("tts failed");
-    }),
-    allowNapCatAiVoiceFallback: true,
-  });
-
-  await app.handleGroupMessage(
-    createEvent([
-      { type: "at", data: { qq: "12345" } },
-      { type: "text", data: { text: " 语音说 这事怎么做 " } },
-    ]),
-  );
-
-  assert.equal(transport.records.length, 0);
-  assert.equal(transport.aiRecords.length, 0);
-  assert.equal(transport.sent[0]?.text, "语音发送失败，我先用文字回复你");
-  assert.match(transport.sent[1]?.text ?? "", /先说结论/);
-});
-
-test("group voice reply switch blocks voice command without affecting text replies", async () => {
-  const groupConfigService = new FakeGroupConfigService([
-    {
-      groupId: "67890",
-      currentSkillId: "assistant",
-      allowedSkillIds: ["assistant"],
-      switcherUserIds: ["99999"],
-      liveChatUserIds: [],
-      dailyReportEnabled: true,
-      dailyReportTime: "18:00",
-      dailyReportTopUserCount: 3,
-      voiceReplyEnabled: false,
-    },
-  ]);
-  const { app, transport, aiService, ttsService } = createApp({ groupConfigService });
-
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音 现在怎么做" } }]));
-  await app.handleGroupMessage(createEvent([
-    { type: "at", data: { qq: "12345" } },
-    { type: "text", data: { text: " 正常问一句" } },
-  ]));
-
   assert.equal(ttsService.calls.length, 0);
   assert.equal(aiService.calls.length, 1);
-  assert.equal(aiService.calls[0]?.userInput, "正常问一句");
   assert.equal(transport.records.length, 0);
-  assert.equal(transport.sent[0]?.text, "AI reply");
+  assert.equal(transport.sent[0]?.text, "普通文字回复");
 });
 
 test("manages live chat users through commands", async () => {
@@ -5062,42 +4824,6 @@ test("roast mode applies to keyword-triggered active conversations", async () =>
   assert.equal(transport.sent[0]?.text, "[CQ:at,qq=20001] 关键词回击");
 });
 
-test("roast mode applies to explicit voice conversations without forcing voice defaults", async () => {
-  const { app, aiService, transport, ttsService } = createApp({
-    systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-    groupConfigService: new FakeGroupConfigService([
-      {
-        groupId: "67890",
-        currentSkillId: "assistant",
-        allowedSkillIds: ["assistant"],
-        switcherUserIds: ["99999"],
-        liveChatUserIds: [],
-        roastModeUserIds: ["20001"],
-        liveChatDelayMinutes: 1,
-        dailyReportEnabled: true,
-        dailyReportTime: "18:00",
-        dailyReportTopUserCount: 3,
-        voiceReplyEnabled: true,
-        defaultVoiceReplyEnabled: false,
-      },
-    ]),
-    aiService: new FakeAiService(async () => ({
-      text: "语音回击",
-      model: "test-model",
-      skillId: "assistant",
-    })),
-  });
-
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#语音 现在怎么做" } }], 20001));
-
-  assert.equal(aiService.calls.length, 1);
-  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /嘴臭模式/);
-  assert.equal(ttsService.calls[0]?.text, "语音回击");
-  assert.equal(ttsService.calls[0]?.options?.mode, "speech");
-  assert.equal(transport.records[0]?.recordFile, "base64://dHRz");
-  assert.equal(transport.sent.length, 0);
-});
-
 test("roast mode does not turn admin commands into ai conversations", async () => {
   const { app, aiService, transport } = createApp({
     groupConfigService: new FakeGroupConfigService([
@@ -5120,57 +4846,6 @@ test("roast mode does not turn admin commands into ai conversations", async () =
 
   assert.equal(aiService.calls.length, 0);
   assert.match(transport.sent[0]?.text ?? "", /没有查看机器人状态的权限/);
-});
-
-test("roast mode follows default voice reply config", async () => {
-  const { app, aiService, transport, ttsService } = await withMockedNow(
-    Date.parse("2026-04-13T02:00:00.000Z"),
-    async () =>
-      createApp({
-        systemSettingsStore: new FakeSystemSettingsStore([], [], [enabledTtsModel()]),
-        groupConfigService: new FakeGroupConfigService([
-          {
-            groupId: "67890",
-            currentSkillId: "assistant",
-            allowedSkillIds: ["assistant"],
-            switcherUserIds: ["99999"],
-            liveChatUserIds: [],
-            roastModeUserIds: ["20001"],
-            participationMode: "selected_members",
-            liveChatDelayMinutes: 1,
-            dailyReportEnabled: true,
-            dailyReportTime: "18:00",
-            dailyReportTopUserCount: 3,
-            voiceReplyEnabled: true,
-            defaultVoiceReplyEnabled: true,
-          },
-        ]),
-        aiService: new FakeAiService(async () => ({
-          text: "语音回击",
-          model: "test-model",
-          skillId: "assistant",
-        })),
-        ttsService: new FakeTtsService(async () => ({
-          filePath: "D:/tmp/roast.wav",
-          recordFile: "base64://cm9hc3Q=",
-          async cleanup() {},
-        })),
-      }),
-  );
-
-  await withMockedNow(Date.parse("2026-04-13T02:00:00.000Z"), async () => {
-    await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "又来攻击机器人" } }], 20001));
-  });
-  await withMockedNow(Date.parse("2026-04-13T02:01:05.000Z"), async () => {
-    await (app as unknown as { runLiveChatTick(): Promise<void> }).runLiveChatTick();
-  });
-
-  assert.equal(aiService.calls.length, 1);
-  assert.match(aiService.calls[0]?.scenarioInstruction ?? "", /嘴臭模式/);
-  assert.equal(ttsService.calls[0]?.text, "语音回击");
-  assert.equal(ttsService.calls[0]?.options?.mode, "speech");
-  assert.equal(transport.records[0]?.recordFile, "base64://cm9hc3Q=");
-  assert.equal(transport.sent.length, 0);
 });
 
 test("roast mode takes precedence over normal live chat for overlapping users", async () => {
@@ -6368,7 +6043,7 @@ test("V3 ignores legacy QQ administrators and retires the administrator command"
   assert.equal(groupConfigService.groups[0]?.botMuted, undefined);
   assert.equal(groupConfigService.groups[0]?.switcherUserIds.includes("77777"), false);
   assert.match(transport.sent[0]?.text ?? "", /没有让机器人闭嘴或说话的权限/);
-  assert.match(transport.sent[1]?.text ?? "", /QQ 管理员已退休/);
+  assert.match(transport.sent[1]?.text ?? "", /#管理员 已退休/);
 });
 
 test("V3 authorizes a QQ sender through its bound backend account while keeping #管理员 retired", async () => {
@@ -6401,7 +6076,7 @@ test("V3 authorizes a QQ sender through its bound backend account while keeping 
   assert.equal(groupConfigService.groups[0]?.botMuted, true);
   assert.equal(adminOperationLogService.entries[0]?.operatorAccountId, "admin-id");
   assert.equal(adminOperationLogService.entries[0]?.operatorUsername, "admin");
-  assert.match(transport.sent[0]?.text ?? "", /QQ 管理员已退休/);
+  assert.match(transport.sent[0]?.text ?? "", /#管理员 已退休/);
   assert.match(transport.sent[2]?.text ?? "", /没有查看服务器状态的权限/);
 });
 
@@ -6750,3 +6425,4 @@ test("records an @请记住 request but never stores ambient requests", async ()
   assert.equal(groupMemoryStore.memories[0]?.source, "explicit_request");
   assert.match(transport.sent.at(-1)?.text ?? "", /记下了/);
 });
+

@@ -36,8 +36,6 @@ export interface GroupConfig {
   blacklistedUserIds?: string[];
   opsAlertsEnabled?: boolean;
   triggerKeywords?: Array<{ keyword: string; enabled: boolean }>;
-  voiceReplyEnabled?: boolean;
-  defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
@@ -177,7 +175,7 @@ export interface HealthStatus {
   latencyMs?: number;
   cached?: boolean;
   skipped?: boolean;
-  probeType?: "chat" | "tts";
+  probeType?: "chat";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -274,7 +272,6 @@ export interface AdminAccount {
   role: "super_admin" | "group_admin";
   groupIds: string[];
   qqUserId?: string;
-  totpEnabled: boolean;
   disabledAt?: string;
   createdAt: string;
   lastLoginAt?: string;
@@ -299,7 +296,7 @@ export interface AdminAuthAuditEntry {
   createdAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "custom";
 export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {
@@ -372,7 +369,6 @@ export interface SkillDefinition {
   maxTotalReplyChars?: number;
   maxReplyMessages?: number;
   preferredMaxReplyMessages?: number;
-  ttsConfig?: SkillTtsConfig;
   exampleExchanges?: Array<{ user: string; assistant: string }>;
   stripAsterisks?: boolean;
   singleSentencePerMessage?: boolean;
@@ -380,13 +376,6 @@ export interface SkillDefinition {
   respectLineBreaks?: boolean;
   allowBurstOnHighEmotion?: boolean;
   highEmotionKeywords?: string[];
-}
-
-export interface SkillTtsConfig {
-  stylePrompt?: string;
-  voice?: string;
-  dialect?: string;
-  personaTone?: string;
 }
 
 export type AdminTaskType =
@@ -462,14 +451,27 @@ export interface ScheduledReminderTask {
 }
 
 let csrfToken = "";
-let readonlySession = false;
 
 export function setCsrfToken(token: string | undefined): void {
   csrfToken = token || "";
 }
 
 function setReadonlySession(_session: AdminSession | undefined): void {
-  readonlySession = false;
+  // Sessions are always full-authorized in the current auth model.
+}
+
+export function friendlyApiError(code: string): string {
+  return ({
+    recent_reauth_required: "此操作需要近期密码复验，请先到「账号与安全」完成验证。",
+    invalid_password: "密码至少 12 位，请更换后重试。",
+    invalid_credentials: "账号或密码错误。",
+    invalid_current_password: "当前密码不正确。",
+    too_many_login_attempts: "尝试次数过多，请稍后再试。",
+    csrf_required: "登录状态已失效，请重新登录。",
+    forbidden: "当前账号无权执行该操作。",
+    voice_feature_retired: "语音功能已下线，该配置不再可用。",
+    legacy_qq_admin_retired: "群内 #管理员 管理已下线，请在后台账号中维护权限。",
+  } as Record<string, string>)[code] || code;
 }
 
 function shouldSendCsrf(method: string | undefined): boolean {
@@ -478,8 +480,8 @@ function shouldSendCsrf(method: string | undefined): boolean {
 }
 
 export async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
-  if (readonlySession && shouldSendCsrf(options.method) && url !== "/api/logout") {
-    throw new Error("只读账号不能修改系统设置或内容");
+  if (url !== "/api/logout" && shouldSendCsrf(options.method) && !csrfToken && url.startsWith("/api/")) {
+    // CSRF token is issued after login; requests without it fail server-side with a clear code.
   }
   const headers = new Headers(options.headers);
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
@@ -502,6 +504,16 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
       : `网络连接失败或服务器暂时无响应：${detail}`);
   }
   if (res.status === 401) {
+    const contentType401 = res.headers.get("content-type") || "";
+    let code401 = "unauthorized";
+    if (contentType401.includes("application/json")) {
+      const data401 = await res.json().catch(() => ({})) as { error?: string };
+      code401 = typeof data401.error === "string" && data401.error ? data401.error : "unauthorized";
+    }
+    // Business auth failures (wrong current password) are not session expiry.
+    if (code401 === "invalid_current_password" || code401 === "invalid_credentials") {
+      throw new Error(friendlyApiError(code401));
+    }
     if (window.location.pathname !== "/login") {
       window.location.href = "/login";
     }
@@ -522,7 +534,8 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
         message = message.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
       }
     }
-    throw new Error(message || "请求失败");
+    const known = friendlyApiError(message);
+    throw new Error(known !== message ? known : (message || "请求失败"));
   }
   const data = await res.json() as T;
   if (url === "/api/session" || url.startsWith("/api/auth/")) {

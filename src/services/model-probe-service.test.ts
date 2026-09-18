@@ -1,97 +1,87 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { MIMO_TTS_BASE_URL } from "./mimo-tts-config.js";
+import { AiService } from "./ai-service.js";
 import { probeSystemModel } from "./model-probe-service.js";
 
-test("probeSystemModel uses MiMo api-key header for TTS probes", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
-    assert.equal(String(input), `${MIMO_TTS_BASE_URL}/chat/completions`);
-    const headers = new Headers(init?.headers);
-    assert.equal(headers.get("api-key"), "tts-key");
-    assert.equal(headers.has("authorization"), false);
-    const payload = JSON.parse(String(init?.body));
-    assert.equal(payload.model, "mimo-v2.5-tts");
-    assert.equal(payload.messages[0].role, "assistant");
-    return new Response(JSON.stringify({
-      choices: [{ message: { audio: { data: Buffer.from("ok").toString("base64") } } }],
-    }), { status: 200 });
-  };
+type Health = Awaited<ReturnType<AiService["checkHealth"]>>;
 
+async function withStubbedHealth(run: () => Promise<void>, health: Health | (() => Promise<Health>)): Promise<void> {
+  const original = AiService.prototype.checkHealth;
+  AiService.prototype.checkHealth = async () => (typeof health === "function" ? health() : health);
   try {
+    await run();
+  } finally {
+    AiService.prototype.checkHealth = original;
+  }
+}
+
+test("probeSystemModel always reports chat probe type", async () => {
+  await withStubbedHealth(async () => {
     const status = await probeSystemModel({
-      purpose: "tts",
-      baseUrl: MIMO_TTS_BASE_URL,
-      apiKey: "tts-key",
-      model: "mimo-v2.5-tts",
+      purpose: "custom",
+      baseUrl: "https://chat.example/v1",
+      apiKey: "chat-key",
+      model: "chat-model",
     });
     assert.equal(status.ok, true);
-    assert.equal(status.probeType, "tts");
-    assert.equal(status.upstreamStatusCode, 200);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    assert.equal(status.probeType, "chat");
+  }, {
+    ok: true,
+    detail: "模型可用",
+    model: "chat-model",
+    baseUrl: "https://chat.example/v1",
+    checkedAt: new Date().toISOString(),
+    latencyMs: 3,
+    cached: false,
+  });
 });
 
-test("probeSystemModel keeps upstream TTS status code in failures", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response("bad gateway", { status: 502 });
-
-  try {
+test("probeSystemModel keeps upstream failures classified as chat probes", async () => {
+  await withStubbedHealth(async () => {
     const status = await probeSystemModel({
-      purpose: "tts",
-      baseUrl: MIMO_TTS_BASE_URL,
-      apiKey: "tts-key",
-      model: "mimo-v2.5-tts",
+      purpose: "custom",
+      baseUrl: "https://chat.example/v1",
+      apiKey: "chat-key",
+      model: "chat-model",
     });
     assert.equal(status.ok, false);
-    assert.equal(status.probeType, "tts");
+    assert.equal(status.probeType, "chat");
     assert.equal(status.upstreamStatusCode, 502);
     assert.equal(status.failureKind, "unavailable");
-    assert.match(status.detail, /HTTP 502/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    assert.match(status.detail, /502|不可用|gateway/i);
+  }, {
+    ok: false,
+    detail: "模型不可用：HTTP 502",
+    model: "chat-model",
+    baseUrl: "https://chat.example/v1",
+    checkedAt: new Date().toISOString(),
+    latencyMs: 2,
+    cached: false,
+    failureKind: "unavailable",
+    upstreamStatusCode: 502,
+  } as Health);
 });
 
-test("probeSystemModel classifies TTS format failures", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ message: {} }] }), { status: 200 });
-
-  try {
+test("probeSystemModel classifies format failures", async () => {
+  await withStubbedHealth(async () => {
     const status = await probeSystemModel({
-      purpose: "tts",
-      baseUrl: MIMO_TTS_BASE_URL,
-      apiKey: "tts-key",
-      model: "mimo-v2.5-tts",
+      purpose: "knowledge",
+      baseUrl: "https://chat.example/v1",
+      apiKey: "chat-key",
+      model: "chat-model",
     });
     assert.equal(status.ok, false);
+    assert.equal(status.probeType, "chat");
     assert.equal(status.failureKind, "format_error");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("probeSystemModel accepts a full MiMo chat completions URL", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: string | URL | Request) => {
-    assert.equal(String(input), "https://api.xiaomimimo.com/v1/chat/completions");
-    return new Response(JSON.stringify({
-      choices: [{ message: { audio: { data: Buffer.from("ok").toString("base64") } } }],
-    }), { status: 200 });
-  };
-
-  try {
-    const status = await probeSystemModel({
-      purpose: "tts",
-      baseUrl: "https://api.xiaomimimo.com/v1/chat/completions",
-      apiKey: "tts-key",
-      model: "mimo-v2.5-tts",
-    });
-    assert.equal(status.ok, true);
-    assert.equal(status.probeType, "tts");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  }, {
+    ok: false,
+    detail: "模型检测不通过：格式错误",
+    model: "chat-model",
+    baseUrl: "https://chat.example/v1",
+    checkedAt: new Date().toISOString(),
+    latencyMs: 1,
+    cached: false,
+    failureKind: "format_error",
+  } as Health);
 });

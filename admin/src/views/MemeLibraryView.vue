@@ -39,6 +39,7 @@ const filteredAssets = computed(() => scopeFilter.value === "all"
 const normalAssetCount = computed(() => assets.value.filter((asset) => asset.scope === "normal_chat").length);
 const blacklistAssetCount = computed(() => assets.value.filter((asset) => asset.scope === "blacklisted_at").length);
 const selectedScopeIsBlacklist = computed(() => assetForm.scope === "blacklisted_at");
+const readonly = computed(() => app.role !== "super_admin");
 
 function resetAssetForm(asset?: MemeAsset): void {
   if (asset) {
@@ -81,7 +82,7 @@ async function load(): Promise<void> {
 function actionError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const messages: Record<string, string> = {
-    recent_mfa_required: "此操作需要近期 MFA 验证，请先到“账号与安全”完成验证。",
+    recent_reauth_required: "此操作需要近期密码复验，请先到「账号与安全」完成验证。",
     meme_tag_keywords_required: "请至少填写一个触发关键词。",
     meme_tag_keywords_invalid: "触发关键词格式无效，请检查后重试。",
     meme_asset_tags_required: "普通对话素材至少选择一个标签。",
@@ -373,7 +374,12 @@ onMounted(() => {
         <button class="ghost-btn" type="button" :disabled="loading" @click="load">{{ loading ? "刷新中..." : "刷新" }}</button>
       </div>
 
-      <div class="policy-grid">
+      <div v-if="readonly" class="readonly-policy">
+        <span class="tag">只读</span>
+        <strong>{{ policy.enabled ? "普通对话表情包已启用" : "普通对话表情包已停用" }}</strong>
+        <span>发送概率 {{ policy.probabilityPercent }}%，同群冷却 {{ policy.cooldownSeconds }} 秒</span>
+      </div>
+      <div v-else class="policy-grid">
         <label class="policy-switch">
           <span>
             <strong>启用普通对话表情包</strong>
@@ -393,7 +399,7 @@ onMounted(() => {
 
     <div class="meme-layout">
       <div class="meme-main">
-        <section class="panel">
+        <section v-if="!readonly" class="panel">
           <div class="section-head">
             <div>
               <h2>上传表情包</h2>
@@ -459,7 +465,7 @@ onMounted(() => {
           <div class="section-head">
             <div><h2>标签目录</h2><p>用户消息按这里配置的关键词本地匹配，不会额外调用模型。</p></div>
           </div>
-          <form class="tag-create" @submit.prevent="createTag">
+          <form v-if="!readonly" class="tag-create" @submit.prevent="createTag">
             <input v-model="tagForm.name" class="input" maxlength="60" placeholder="标签名称" />
             <input v-model="tagForm.description" class="input" maxlength="200" placeholder="场景说明（可选），例如：吐槽、惊讶" />
             <textarea v-model="tagForm.keywords" class="textarea small tag-keywords-input" placeholder="触发关键词（必填；用逗号或换行分隔，最多 30 个）" />
@@ -468,7 +474,7 @@ onMounted(() => {
           <div v-if="!tags.length" class="empty compact">暂无标签。</div>
           <div v-else class="tag-list">
             <article v-for="tag in tags" :key="tag.id" class="tag-row">
-              <template v-if="tagEditingId === tag.id">
+              <template v-if="!readonly && tagEditingId === tag.id">
                 <input v-model="tagEditForm.name" class="input" maxlength="60" aria-label="标签名称" />
                 <input v-model="tagEditForm.description" class="input" maxlength="200" placeholder="场景说明（可选）" aria-label="场景说明" />
                 <textarea v-model="tagEditForm.keywords" class="textarea small" placeholder="触发关键词（必填；用逗号或换行分隔，最多 30 个）" aria-label="触发关键词" />
@@ -480,17 +486,18 @@ onMounted(() => {
                   <p>{{ tag.description || "未填写场景说明" }}</p>
                   <div class="keyword-list" aria-label="触发关键词"><span v-for="keyword in tag.keywords" :key="keyword" class="tag neutral">{{ keyword }}</span></div>
                 </div>
-                <div class="row-actions"><button class="ghost-btn" type="button" @click="beginTagEdit(tag)">编辑</button><button class="ghost-btn danger" type="button" :disabled="deletingTagId === tag.id" @click="deleteTag(tag)">{{ deletingTagId === tag.id ? "删除中..." : "删除" }}</button></div>
+                <div v-if="!readonly" class="row-actions"><button class="ghost-btn" type="button" @click="beginTagEdit(tag)">编辑</button><button class="ghost-btn danger" type="button" :disabled="deletingTagId === tag.id" @click="deleteTag(tag)">{{ deletingTagId === tag.id ? "删除中..." : "删除" }}</button></div>
               </template>
             </article>
           </div>
         </section>
 
         <section class="panel asset-editor">
-          <div class="section-head"><div><h2>素材详情</h2><p>素材变更会立即影响后续随机选择。</p></div><button v-if="selectedAsset" class="ghost-btn" type="button" @click="clearAssetSelection">×</button></div>
+          <div class="section-head"><div><h2>素材详情</h2><p>{{ readonly ? "查看素材信息和原图预览。" : "素材变更会立即影响后续随机选择。" }}</p></div><button v-if="selectedAsset" class="ghost-btn" type="button" @click="clearAssetSelection">×</button></div>
           <template v-if="selectedAsset">
             <img class="editor-preview" :src="previewUrl(selectedAsset)" :alt="selectedAsset.name" />
-            <div class="editor-form">
+            <dl v-if="readonly" class="asset-meta readonly-asset"><div><dt>名称</dt><dd>{{ selectedAsset.name }}</dd></div><div><dt>状态</dt><dd>{{ selectedAsset.enabled ? "已启用" : "已停用" }}</dd></div><div><dt>场景</dt><dd>{{ scopeLabel(selectedAsset.scope) }}</dd></div><div><dt>标签</dt><dd>{{ selectedAsset.tags.map(tagLabel).join("、") || "-" }}</dd></div><div><dt>类型</dt><dd>{{ selectedAsset.mimeType }}</dd></div><div><dt>大小</dt><dd>{{ formatBytes(selectedAsset.sizeBytes) }}</dd></div><div><dt>创建</dt><dd>{{ formatDateTime(selectedAsset.createdAt) }}</dd></div><div><dt>校验</dt><dd class="hash">{{ selectedAsset.sha256 }}</dd></div></dl>
+            <div v-else class="editor-form">
               <label>素材名称<input v-model="assetForm.name" class="input" maxlength="100" :disabled="selectedAsset.protected" /></label>
               <label class="switch"><input v-model="assetForm.enabled" type="checkbox" :disabled="selectedAsset.protected" /> {{ assetForm.enabled ? "已启用" : "已停用" }}</label>
               <div v-if="selectedAsset.scope === 'normal_chat'" class="tag-picker">
@@ -499,7 +506,7 @@ onMounted(() => {
                 <small v-if="tags.length">普通对话素材必须关联至少一个标签。</small>
                 <small v-else>没有可用标签，先创建标签后再保存。</small>
               </div>
-              <p v-else class="muted">黑名单 @ 专用素材只用于黑名单成员有效 @ 机器人时的随机图片回复。</p>
+
               <p v-if="selectedAsset.protected" class="protected-note">这是随发布物初始化的内置素材，不能修改或删除。</p>
               <dl class="asset-meta"><div><dt>类型</dt><dd>{{ selectedAsset.mimeType }}</dd></div><div><dt>大小</dt><dd>{{ formatBytes(selectedAsset.sizeBytes) }}</dd></div><div><dt>创建</dt><dd>{{ formatDateTime(selectedAsset.createdAt) }}</dd></div><div><dt>校验</dt><dd class="hash">{{ selectedAsset.sha256 }}</dd></div></dl>
               <div class="editor-actions"><button class="ghost-btn danger" type="button" :disabled="selectedAsset.protected || deletingAssetId === selectedAsset.id" @click="deleteAsset(selectedAsset)">{{ selectedAsset.protected ? "内置素材不可删除" : deletingAssetId === selectedAsset.id ? "删除中..." : "删除" }}</button><button class="btn" type="button" :disabled="savingAsset || selectedAsset.protected" @click="saveAsset">{{ selectedAsset.protected ? "内置素材不可修改" : savingAsset ? "保存中..." : "保存素材" }}</button></div>
@@ -516,6 +523,9 @@ onMounted(() => {
 .meme-page { gap: 18px; }
 .policy-grid { display: grid; grid-template-columns: minmax(260px, 1.6fr) minmax(150px, .7fr) minmax(170px, .7fr) auto; gap: 14px; align-items: end; }
 .policy-grid > label { display: grid; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 800; }
+.readonly-policy { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--muted); }
+.readonly-policy strong { color: var(--text); }
+.readonly-asset { margin-top: 12px; }
 .policy-switch { display: flex !important; align-items: center; justify-content: space-between; gap: 16px; min-height: 42px; }
 .policy-switch span { display: grid; gap: 3px; }
 .policy-switch strong { color: var(--text); }

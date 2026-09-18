@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,13 +7,10 @@ import test from "node:test";
 import { SharedDb } from "../shared/sqlite.js";
 import { AdminAuthError, AdminAuthService } from "./admin-auth-service.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
 async function withAuth<T>(run: (auth: AdminAuthService, db: SharedDb) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "ubot-admin-auth-"));
   const db = new SharedDb(path.join(dir, "bot-shared.db"));
   const auth = new AdminAuthService(db, {
-    stateEncryptionKey: TEST_STATE_KEY,
     bootstrap: { username: "root-admin", password: "root-password" },
     sessionTtlMs: 60 * 60 * 1_000,
   });
@@ -26,21 +22,15 @@ async function withAuth<T>(run: (auth: AdminAuthService, db: SharedDb) => Promis
   }
 }
 
-async function enrollBootstrap(auth: AdminAuthService) {
-  const started = await auth.beginPasswordLogin({
+async function loginRoot(auth: AdminAuthService, loginKey: string) {
+  const result = await auth.beginPasswordLogin({
     username: "root-admin",
     password: "root-password",
-    loginKey: "bootstrap-login",
+    loginKey,
   });
-  assert.equal(started.kind, "totp_enrollment_required");
-  if (started.kind !== "totp_enrollment_required") throw new Error("expected_enrollment");
-  const enrolled = await auth.completeTotpEnrollment({
-    enrollmentToken: started.enrollmentToken,
-    code: makeTotp(started.totpSecret),
-  });
-  assert.equal(enrolled.kind, "success");
-  if (enrolled.kind !== "success") throw new Error("expected_enrollment_success");
-  return { session: enrolled.session, recoveryCodes: enrolled.recoveryCodes ?? [], totpSecret: started.totpSecret };
+  assert.equal(result.kind, "authenticated");
+  if (result.kind !== "authenticated") throw new Error("expected_authenticated_login");
+  return result.session;
 }
 
 test("AdminAuthService bootstraps legacy credentials once and never uses later environment credentials", async () => {
@@ -51,7 +41,6 @@ test("AdminAuthService bootstraps legacy credentials once and never uses later e
     ]);
 
     const changedBootstrap = new AdminAuthService(db, {
-      stateEncryptionKey: TEST_STATE_KEY,
       bootstrap: { username: "replacement-admin", password: "replacement-password" },
     });
     await changedBootstrap.ensureInitialized();
@@ -61,6 +50,227 @@ test("AdminAuthService bootstraps legacy credentials once and never uses later e
       password: "replacement-password",
       loginKey: "replacement-login",
     })).kind, "invalid_credentials");
+  });
+});
+
+test("AdminAuthService password login succeeds, rejects bad credentials, and rate-limits the client key", async () => {
+  await withAuth(async (auth) => {
+    const success = await loginRoot(auth, "password-success");
+    assert.equal(success.username, "root-admin");
+    assert.equal(success.role, "super_admin");
+    assert.ok(success.userId);
+    assert.ok(success.opaqueToken);
+    assert.ok(success.csrfToken);
+    assert.ok(success.expiresAt);
+    assert.ok(success.reauthVerifiedAt > 0);
+    assert.deepEqual(success.allowedGroupIds, []);
+
+    assert.equal((await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "not-the-password",
+      loginKey: "password-failure",
+    })).kind, "invalid_credentials");
+    assert.equal((await auth.beginPasswordLogin({
+      username: "missing-admin",
+      password: "root-password",
+      loginKey: "password-missing-user",
+    })).kind, "invalid_credentials");
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      assert.equal((await auth.beginPasswordLogin({
+        username: "root-admin",
+        password: "wrong-password!",
+        loginKey: "rate-limited-client",
+      })).kind, "invalid_credentials");
+    }
+    const locked = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "rate-limited-client",
+    });
+    assert.equal(locked.kind, "locked");
+    if (locked.kind !== "locked") throw new Error("expected_locked");
+    assert.ok(locked.retryAfterSeconds > 0);
+
+    const otherClient = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "rate-limit-other-client",
+    });
+    assert.equal(otherClient.kind, "authenticated");
+  });
+});
+
+test("AdminAuthService resolves sessions, validates CSRF, rotates tokens, and revokes on logout", async () => {
+  await withAuth(async (auth) => {
+    const session = await loginRoot(auth, "session-lifecycle");
+
+    const resolved = auth.getSession(session.opaqueToken);
+    assert.ok(resolved);
+    assert.equal(resolved?.sessionId, session.sessionId);
+    assert.equal(resolved?.username, "root-admin");
+    assert.equal(resolved?.role, "super_admin");
+    // CSRF stays server-side; getSession never re-exposes the opaque token material.
+    assert.equal(resolved?.csrfToken, "");
+    assert.equal(auth.getSession(undefined), undefined);
+    assert.equal(auth.getSession("not-a-real-token"), undefined);
+
+    assert.equal(auth.validateCsrf(session, session.csrfToken), true);
+    assert.equal(auth.validateCsrf(session, "wrong-csrf"), false);
+    assert.equal(auth.validateCsrf(session, undefined), false);
+
+    const rotated = auth.rotateCsrfToken(session);
+    assert.ok(rotated);
+    assert.notEqual(rotated, session.csrfToken);
+    assert.equal(auth.validateCsrf(session, session.csrfToken), false);
+    assert.equal(auth.validateCsrf(session, rotated), true);
+
+    auth.revokeSession(session.sessionId, "logout");
+    assert.equal(auth.getSession(session.opaqueToken), undefined);
+  });
+});
+
+test("AdminAuthService password change requires recent reauth, enforces min length 12, and revokes other sessions", async () => {
+  await withAuth(async (auth, db) => {
+    const first = await loginRoot(auth, "password-change-first");
+    const second = await loginRoot(auth, "password-change-second");
+
+    db.db.prepare("UPDATE admin_sessions SET reauth_verified_at = ? WHERE id = ?")
+      .run(Date.now() - 15 * 60 * 1_000, first.sessionId);
+    const stale = auth.getSession(first.opaqueToken);
+    assert.ok(stale);
+
+    assert.equal(await auth.changePassword({
+      session: stale!,
+      currentPassword: "root-password",
+      nextPassword: "next-root-password-12",
+    }), "recent_reauth_required");
+
+    assert.equal(await auth.completeSessionReauth(stale!, "wrong-password"), false);
+    assert.equal(await auth.completeSessionReauth(stale!, "root-password"), true);
+
+    await assert.rejects(
+      () => auth.changePassword({
+        session: stale!,
+        currentPassword: "root-password",
+        nextPassword: "too-short",
+      }),
+      (error: unknown) => error instanceof AdminAuthError && error.code === "invalid_password",
+    );
+
+    assert.equal(await auth.changePassword({
+      session: stale!,
+      currentPassword: "not-the-current-password",
+      nextPassword: "next-root-password-12",
+    }), "invalid_current_password");
+
+    assert.equal(await auth.changePassword({
+      session: stale!,
+      currentPassword: "root-password",
+      nextPassword: "next-root-password-12",
+    }), "ok");
+
+    assert.equal(auth.getSession(second.opaqueToken), undefined);
+    assert.ok(auth.getSession(first.opaqueToken));
+
+    assert.equal((await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "password-change-old",
+    })).kind, "invalid_credentials");
+    const nextLogin = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "next-root-password-12",
+      loginKey: "password-change-new",
+    });
+    assert.equal(nextLogin.kind, "authenticated");
+  });
+});
+
+test("AdminAuthService invitations enforce grants, password policy, revocation, and unique usernames", async () => {
+  await withAuth(async (auth) => {
+    const root = await loginRoot(auth, "invite-root");
+    const rootAccountId = root.userId;
+    assert.ok(rootAccountId);
+
+    assert.throws(
+      () => auth.createInvite({
+        role: "group_admin",
+        groupIds: [],
+        expiresAt: Date.now() + 60_000,
+        actorAccountId: rootAccountId!,
+      }),
+      (error: unknown) => error instanceof AdminAuthError && error.code === "group_admin_requires_group_grant",
+    );
+
+    const created = auth.createInvite({
+      role: "group_admin",
+      groupIds: ["10002", "10001", "10001"],
+      expiresAt: Date.now() + 60_000,
+      actorAccountId: rootAccountId!,
+    });
+    assert.ok(created.token);
+    assert.deepEqual(created.invite.groupIds, ["10001", "10002"]);
+
+    await assert.rejects(
+      () => auth.acceptInvite({
+        inviteToken: created.token,
+        username: "group-operator",
+        password: "short",
+      }),
+      (error: unknown) => error instanceof AdminAuthError && error.code === "invalid_password",
+    );
+
+    const accepted = await auth.acceptInvite({
+      inviteToken: created.token,
+      username: "group-operator",
+      password: "group-password-12",
+    });
+    assert.equal(accepted.kind, "authenticated");
+    if (accepted.kind !== "authenticated") throw new Error("expected_invite_authenticated");
+    assert.equal(accepted.session.username, "group-operator");
+    assert.equal(accepted.session.role, "group_admin");
+    assert.deepEqual(accepted.session.allowedGroupIds, ["10001", "10002"]);
+
+    const groupAccount = auth.listAccounts().find((account) => account.username === "group-operator");
+    assert.ok(groupAccount);
+    assert.deepEqual(groupAccount.groupIds, ["10001", "10002"]);
+    assert.equal(auth.hasGroupGrant(groupAccount.id, "10001"), true);
+    assert.equal(auth.hasGroupGrant(groupAccount.id, "99999"), false);
+
+    assert.throws(
+      () => auth.setGroupGrants(groupAccount.id, [], rootAccountId!),
+      (error: unknown) => error instanceof AdminAuthError && error.code === "group_admin_requires_group_grant",
+    );
+    auth.setGroupGrants(groupAccount.id, ["10003"], rootAccountId!);
+    assert.deepEqual(auth.listGrantedGroupIds(groupAccount.id), ["10003"]);
+
+    const reused = auth.createInvite({
+      role: "group_admin",
+      groupIds: ["20001"],
+      expiresAt: Date.now() + 60_000,
+      actorAccountId: rootAccountId!,
+    });
+    const taken = await auth.acceptInvite({
+      inviteToken: reused.token,
+      username: "group-operator",
+      password: "another-password-12",
+    });
+    assert.equal(taken.kind, "username_taken");
+
+    const revokedInvite = auth.createInvite({
+      role: "group_admin",
+      groupIds: ["30001"],
+      expiresAt: Date.now() + 60_000,
+      actorAccountId: rootAccountId!,
+    });
+    auth.revokeInvite(revokedInvite.invite.id, rootAccountId!);
+    const afterRevoke = await auth.acceptInvite({
+      inviteToken: revokedInvite.token,
+      username: "revoked-operator",
+      password: "revoked-password-12",
+    });
+    assert.equal(afterRevoke.kind, "invalid_invite");
   });
 });
 
@@ -97,306 +307,87 @@ test("AdminAuthService manages unique QQ bindings and records their audit trail"
   });
 });
 
-test("AdminAuthService enrollment encrypts TOTP state, rejects replay, and issues revocable opaque sessions", async () => {
-  await withAuth(async (auth, db) => {
-    const enrolled = await enrollBootstrap(auth);
-    assert.equal(enrolled.recoveryCodes.length, 10);
-    const ciphertext = db.db.prepare("SELECT totp_secret_ciphertext FROM admin_accounts WHERE username = ?")
-      .get("root-admin") as { totp_secret_ciphertext: string };
-    assert.ok(ciphertext.totp_secret_ciphertext);
-    assert.equal(ciphertext.totp_secret_ciphertext.includes(enrolled.totpSecret), false);
-
-    const login = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "root-password",
-      loginKey: "totp-login",
-    });
-    assert.equal(login.kind, "totp_required");
-    if (login.kind !== "totp_required") throw new Error("expected_totp_login");
-    const nextCode = makeTotp(enrolled.totpSecret, Date.now() + 30_000);
-    const completed = await auth.completeTotpLogin({ loginToken: login.loginToken, code: nextCode });
-    assert.equal(completed.kind, "success");
-    if (completed.kind !== "success") throw new Error("expected_totp_success");
-
-    const replayLogin = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "root-password",
-      loginKey: "totp-replay",
-    });
-    assert.equal(replayLogin.kind, "totp_required");
-    if (replayLogin.kind !== "totp_required") throw new Error("expected_replay_login");
-    assert.equal((await auth.completeTotpLogin({ loginToken: replayLogin.loginToken, code: nextCode })).kind, "invalid_totp");
-
-    assert.ok(auth.getSession(completed.session.opaqueToken));
-    auth.revokeSession(completed.session.sessionId, "test");
-    assert.equal(auth.getSession(completed.session.opaqueToken), undefined);
-  });
-});
-
-test("AdminAuthService recovery codes rotate MFA state and start a fresh enrollment without a session", async () => {
-  await withAuth(async (auth, db) => {
-    const enrolled = await enrollBootstrap(auth);
-    const recoveryCode = enrolled.recoveryCodes[0];
-    assert.ok(recoveryCode);
-    const accountId = enrolled.session.userId;
-    assert.ok(accountId);
-    if (!accountId) throw new Error("expected_account_id");
-
-    const pendingLogin = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "root-password",
-      loginKey: "pending-before-recovery",
-    });
-    assert.equal(pendingLogin.kind, "totp_required");
-    if (pendingLogin.kind !== "totp_required") throw new Error("expected_totp_login");
-
-    const recovered = await auth.completeRecoveryLogin({
-      username: "root-admin",
-      password: "root-password",
-      recoveryCode,
-      loginKey: "recovery-reset",
-    });
-    assert.equal(recovered.kind, "totp_enrollment_required");
-    if (recovered.kind !== "totp_enrollment_required") throw new Error("expected_recovery_enrollment");
-    assert.equal(auth.getSession(enrolled.session.opaqueToken), undefined);
-
-    const account = db.db.prepare(
-      "SELECT totp_secret_ciphertext, totp_enabled_at, mfa_last_counter FROM admin_accounts WHERE username = ?",
-    ).get("root-admin") as {
-      totp_secret_ciphertext: string | null;
-      totp_enabled_at: number | null;
-      mfa_last_counter: number;
-    };
-    assert.equal(account.totp_secret_ciphertext, null);
-    assert.equal(account.totp_enabled_at, null);
-    assert.equal(account.mfa_last_counter, -1);
-    assert.equal(
-      (db.db.prepare("SELECT COUNT(*) AS count FROM admin_recovery_codes WHERE account_id = ?")
-        .get(accountId) as { count: number }).count,
-      0,
-    );
-    assert.equal(
-      (db.db.prepare("SELECT COUNT(*) AS count FROM admin_sessions WHERE account_id = ? AND revoked_at IS NULL")
-        .get(accountId) as { count: number }).count,
-      0,
-    );
-    assert.equal(
-      (await auth.completeTotpLogin({ loginToken: pendingLogin.loginToken, code: makeTotp(enrolled.totpSecret) })).kind,
-      "invalid_challenge",
-    );
-
-    const reEnrolled = await auth.completeTotpEnrollment({
-      enrollmentToken: recovered.enrollmentToken,
-      code: makeTotp(recovered.totpSecret),
-    });
-    assert.equal(reEnrolled.kind, "success");
-    if (reEnrolled.kind !== "success") throw new Error("expected_reenrollment_success");
-    assert.equal(reEnrolled.recoveryCodes?.length, 10);
-    assert.ok(auth.getSession(reEnrolled.session.opaqueToken));
-  });
-});
-
-test("AdminAuthService consumes recovery codes exactly once under concurrent attempts", async () => {
+test("AdminAuthService disableAccount blocks login and protects the last super administrator", async () => {
   await withAuth(async (auth) => {
-    const enrolled = await enrollBootstrap(auth);
-    const recoveryCode = enrolled.recoveryCodes[0];
-    assert.ok(recoveryCode);
-
-    const results = await Promise.all([
-      auth.completeRecoveryLogin({
-        username: "root-admin",
-        password: "root-password",
-        recoveryCode,
-        loginKey: "recovery-a",
-      }),
-      auth.completeRecoveryLogin({
-        username: "root-admin",
-        password: "root-password",
-        recoveryCode,
-        loginKey: "recovery-b",
-      }),
-    ]);
-    assert.equal(results.filter((result) => result.kind === "totp_enrollment_required").length, 1);
-    assert.equal(results.filter((result) => result.kind === "invalid_recovery_code").length, 1);
-  });
-});
-
-test("AdminAuthService persists account-scoped TOTP throttles across login tokens, reset enrollment, and session reauthentication", async () => {
-  await withAuth(async (auth) => {
-    const enrolled = await enrollBootstrap(auth);
-
-    const login = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "root-password",
-      loginKey: "first-password-login",
-    });
-    assert.equal(login.kind, "totp_required");
-    if (login.kind !== "totp_required") throw new Error("expected_totp_login");
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      assert.equal((await auth.completeTotpLogin({ loginToken: login.loginToken, code: "invalid" })).kind, "invalid_totp");
-    }
-
-    const freshLogin = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "root-password",
-      loginKey: "second-password-login",
-    });
-    assert.equal(freshLogin.kind, "totp_required");
-    if (freshLogin.kind !== "totp_required") throw new Error("expected_fresh_totp_login");
-    assert.equal(
-      (await auth.completeTotpLogin({ loginToken: freshLogin.loginToken, code: makeTotp(enrolled.totpSecret, Date.now() + 30_000) })).kind,
-      "invalid_totp",
-    );
-
-    // A successful enrollment deliberately clears the account throttle so the
-    // following reset/reauth checks exercise their own failures.
-    const reset = auth.beginTotpReset(enrolled.session);
-    assert.ok(reset);
-    if (!reset) throw new Error("expected_totp_reset");
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      assert.equal((await auth.completeTotpEnrollment({ enrollmentToken: reset.enrollmentToken, code: "invalid" })).kind, "invalid_totp");
-    }
-    const secondReset = auth.beginTotpReset(enrolled.session);
-    assert.ok(secondReset);
-    if (!secondReset) throw new Error("expected_second_totp_reset");
-    assert.equal(
-      (await auth.completeTotpEnrollment({ enrollmentToken: secondReset.enrollmentToken, code: makeTotp(secondReset.totpSecret) })).kind,
-      "invalid_totp",
-    );
-
-    // A recovery is an account-recovery event and starts a new MFA epoch,
-    // which is the only path that may clear the prior MFA throttle.
-    const recovery = await auth.completeRecoveryLogin({
-      username: "root-admin",
-      password: "root-password",
-      recoveryCode: enrolled.recoveryCodes[0]!,
-      loginKey: "recovery-after-reset-lock",
-    });
-    assert.equal(recovery.kind, "totp_enrollment_required");
-    if (recovery.kind !== "totp_enrollment_required") throw new Error("expected_recovery_enrollment");
-    const reEnrolled = await auth.completeTotpEnrollment({
-      enrollmentToken: recovery.enrollmentToken,
-      code: makeTotp(recovery.totpSecret),
-    });
-    assert.equal(reEnrolled.kind, "success");
-    if (reEnrolled.kind !== "success") throw new Error("expected_reenrollment_success");
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      assert.equal(auth.completeSessionReauth(reEnrolled.session, "invalid"), false);
-    }
-    const afterReauthLock = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "root-password",
-      loginKey: "password-after-reauth-lock",
-    });
-    assert.equal(afterReauthLock.kind, "totp_required");
-    if (afterReauthLock.kind !== "totp_required") throw new Error("expected_password_totp_after_reauth_lock");
-    assert.equal(
-      (await auth.completeTotpLogin({
-        loginToken: afterReauthLock.loginToken,
-        code: makeTotp(recovery.totpSecret, Date.now() + 30_000),
-      })).kind,
-      "invalid_totp",
-    );
-  });
-});
-
-test("AdminAuthService persists password rate limits", async () => {
-  await withAuth(async (auth) => {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      assert.equal((await auth.beginPasswordLogin({
-        username: "root-admin",
-        password: "wrong-password",
-        loginKey: "same-client",
-      })).kind, "invalid_credentials");
-    }
-    const locked = await auth.beginPasswordLogin({
-      username: "root-admin",
-      password: "wrong-password",
-      loginKey: "same-client",
-    });
-    assert.equal(locked.kind, "locked");
-  });
-});
-
-test("AdminAuthService invitations enforce grants and protect the final super administrator", async () => {
-  await withAuth(async (auth) => {
-    const root = await enrollBootstrap(auth);
-    const rootAccount = auth.listAccounts()[0];
+    const root = await loginRoot(auth, "disable-root");
+    const rootAccountId = root.userId;
+    assert.ok(rootAccountId);
+    const rootAccount = auth.listAccounts().find((account) => account.username === "root-admin");
     assert.ok(rootAccount);
 
-    assert.throws(
-      () => auth.createInvite({
-        role: "group_admin",
-        groupIds: [],
-        expiresAt: Date.now() + 60_000,
-        actorAccountId: root.session.userId!,
-      }),
-      (error: unknown) => error instanceof AdminAuthError && error.code === "group_admin_requires_group_grant",
-    );
-    const created = auth.createInvite({
+    const groupInvite = auth.createInvite({
       role: "group_admin",
-      groupIds: ["10002", "10001", "10001"],
+      groupIds: ["67890"],
       expiresAt: Date.now() + 60_000,
-      actorAccountId: root.session.userId!,
+      actorAccountId: rootAccountId!,
     });
-    assert.deepEqual(created.invite.groupIds, ["10001", "10002"]);
-    const accepted = await auth.acceptInvite({
-      inviteToken: created.token,
-      username: "group-operator",
-      password: "group-password",
+    const groupAccepted = await auth.acceptInvite({
+      inviteToken: groupInvite.token,
+      username: "disable-operator",
+      password: "disable-password-12",
     });
-    assert.equal(accepted.kind, "totp_enrollment_required");
-    if (accepted.kind !== "totp_enrollment_required") throw new Error("expected_invite_enrollment");
-    const groupEnrollment = await auth.completeTotpEnrollment({
-      enrollmentToken: accepted.enrollmentToken,
-      code: makeTotp(accepted.totpSecret),
-    });
-    assert.equal(groupEnrollment.kind, "success");
-    const groupAccount = auth.listAccounts().find((account) => account.username === "group-operator");
-    assert.ok(groupAccount);
-    assert.deepEqual(groupAccount.groupIds, ["10001", "10002"]);
-    assert.equal(auth.hasGroupGrant(groupAccount.id, "10001"), true);
-    assert.equal(auth.hasGroupGrant(groupAccount.id, "99999"), false);
+    assert.equal(groupAccepted.kind, "authenticated");
+    if (groupAccepted.kind !== "authenticated") throw new Error("expected_group_invite");
+    const groupAccountId = groupAccepted.session.userId;
+    assert.ok(groupAccountId);
 
     assert.throws(
-      () => auth.setGroupGrants(groupAccount.id, [], root.session.userId!),
-      (error: unknown) => error instanceof AdminAuthError && error.code === "group_admin_requires_group_grant",
+      () => auth.disableAccount(rootAccountId!, rootAccountId!),
+      (error: unknown) => error instanceof AdminAuthError && error.code === "cannot_disable_self",
     );
-    auth.setGroupGrants(groupAccount.id, ["10003"], root.session.userId!);
-    assert.deepEqual(auth.listGrantedGroupIds(groupAccount.id), ["10003"]);
-
     assert.throws(
-      () => auth.disableAccount(rootAccount.id, groupAccount.id),
+      () => auth.disableAccount(rootAccountId!, groupAccountId!),
       (error: unknown) => error instanceof AdminAuthError && error.code === "last_super_admin",
     );
+
+    const superInvite = auth.createInvite({
+      role: "super_admin",
+      groupIds: [],
+      expiresAt: Date.now() + 60_000,
+      actorAccountId: rootAccountId!,
+    });
+    const superAccepted = await auth.acceptInvite({
+      inviteToken: superInvite.token,
+      username: "second-root",
+      password: "second-root-password-12",
+    });
+    assert.equal(superAccepted.kind, "authenticated");
+    if (superAccepted.kind !== "authenticated") throw new Error("expected_super_invite");
+
+    auth.disableAccount(rootAccountId!, superAccepted.session.userId!);
+    assert.equal((await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "disabled-root-login",
+    })).kind, "invalid_credentials");
+    assert.equal(auth.getSession(root.opaqueToken), undefined);
+
+    const secondLogin = await auth.beginPasswordLogin({
+      username: "second-root",
+      password: "second-root-password-12",
+      loginKey: "second-root-login",
+    });
+    assert.equal(secondLogin.kind, "authenticated");
   });
 });
 
-function makeTotp(secret: string, now = Date.now()): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const text = secret.toUpperCase().replace(/[=\s-]/g, "");
-  let bits = 0;
-  let value = 0;
-  const bytes: number[] = [];
-  for (const character of text) {
-    const index = alphabet.indexOf(character);
-    if (index < 0) throw new Error("invalid_test_totp_secret");
-    value = (value << 5) | index;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push((value >>> (bits - 8)) & 0xff);
-      bits -= 8;
-    }
-  }
-  const counter = Math.floor(now / 30_000);
-  const counterBuffer = Buffer.alloc(8);
-  counterBuffer.writeBigUInt64BE(BigInt(counter));
-  const digest = createHmac("sha1", Buffer.from(bytes)).update(counterBuffer).digest();
-  const offset = digest[digest.length - 1]! & 0x0f;
-  const code = ((digest[offset]! & 0x7f) << 24) |
-    (digest[offset + 1]! << 16) |
-    (digest[offset + 2]! << 8) |
-    digest[offset + 3]!;
-  return String(code % 1_000_000).padStart(6, "0");
-}
+test("AdminAuthService resetPasswordFromServer revokes every session and installs the new password", async () => {
+  await withAuth(async (auth) => {
+    const session = await loginRoot(auth, "reset-password-session");
+    await auth.resetPasswordFromServer("root-admin", "brand-new-password-12");
+
+    assert.equal(auth.getSession(session.opaqueToken), undefined);
+    assert.equal((await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "root-password",
+      loginKey: "reset-old-password",
+    })).kind, "invalid_credentials");
+
+    const next = await auth.beginPasswordLogin({
+      username: "root-admin",
+      password: "brand-new-password-12",
+      loginKey: "reset-new-password",
+    });
+    assert.equal(next.kind, "authenticated");
+  });
+});

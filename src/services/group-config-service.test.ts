@@ -112,8 +112,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal((await service.getGroup("67890"))?.dailyReportEnabled, false);
       assert.equal((await service.getGroup("67890"))?.holidayCountdownEnabled, false);
       assert.equal((await service.getGroup("67890"))?.scheduledRemindersEnabled, false);
-      assert.equal((await service.getGroup("67890"))?.voiceReplyEnabled, false);
-      assert.equal((await service.getGroup("67890"))?.defaultVoiceReplyEnabled, false);
+      assert.equal(Object.hasOwn((await service.getGroup("67890")) ?? {}, "voiceReplyEnabled"), false);
+      assert.equal(Object.hasOwn((await service.getGroup("67890")) ?? {}, "defaultVoiceReplyEnabled"), false);
       assert.equal((await service.getGroup("67890"))?.opsAlertsEnabled, false);
       assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, false);
       assert.equal((await service.getGroup("67890"))?.visionEnabled, true);
@@ -124,8 +124,6 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
         dailyReportEnabled: true,
         holidayCountdownEnabled: true,
         scheduledRemindersEnabled: true,
-        voiceReplyEnabled: true,
-        defaultVoiceReplyEnabled: true,
         opsAlertsEnabled: true,
         onlineLookupEnabled: true,
         visionEnabled: false,
@@ -134,8 +132,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal(enabled.dailyReportEnabled, true);
       assert.equal(enabled.holidayCountdownEnabled, true);
       assert.equal(enabled.scheduledRemindersEnabled, true);
-      assert.equal(enabled.voiceReplyEnabled, true);
-      assert.equal(enabled.defaultVoiceReplyEnabled, true);
+      assert.equal(Object.hasOwn(enabled, "voiceReplyEnabled"), false);
+      assert.equal(Object.hasOwn(enabled, "defaultVoiceReplyEnabled"), false);
       assert.equal(enabled.opsAlertsEnabled, true);
       assert.equal(enabled.onlineLookupEnabled, true);
       assert.equal(enabled.visionEnabled, false);
@@ -217,8 +215,6 @@ test("group config updates full editable config with validation", async () => {
         holidayCountdownWeekdays: [6],
         botMuted: true,
         scheduledRemindersEnabled: false,
-        voiceReplyEnabled: true,
-        defaultVoiceReplyEnabled: true,
         blacklistedUserIds: ["30001"],
         opsAlertsEnabled: false,
         onlineLookupEnabled: false,
@@ -245,8 +241,8 @@ test("group config updates full editable config with validation", async () => {
       assert.deepEqual(updated.holidayCountdownWeekdays, [6]);
       assert.equal(updated.botMuted, true);
       assert.equal(updated.scheduledRemindersEnabled, false);
-      assert.equal(updated.voiceReplyEnabled, true);
-      assert.equal(updated.defaultVoiceReplyEnabled, true);
+      assert.equal(Object.hasOwn(updated, "voiceReplyEnabled"), false);
+      assert.equal(Object.hasOwn(updated, "defaultVoiceReplyEnabled"), false);
       assert.deepEqual(updated.blacklistedUserIds, ["30001"]);
       assert.equal(updated.opsAlertsEnabled, false);
       assert.equal(updated.onlineLookupEnabled, false);
@@ -303,7 +299,7 @@ test("group config updates full editable config with validation", async () => {
   );
 });
 
-test("group config keeps default voice reply as a child switch of voice reply", async () => {
+test("group config strips retired voice switches on read and rejects them on update", async () => {
   await withService(
     {
       groups: [
@@ -313,27 +309,26 @@ test("group config keeps default voice reply as a child switch of voice reply", 
           allowedSkillIds: ["assistant"],
           switcherUserIds: [],
           liveChatUserIds: [],
-          voiceReplyEnabled: false,
-          defaultVoiceReplyEnabled: true,
-        },
+          ...({
+            voiceReplyEnabled: false,
+            defaultVoiceReplyEnabled: true,
+          } as Record<string, unknown>),
+        } as GroupsConfigFile["groups"][number],
       ],
     },
     async (service) => {
       const normalized = await service.getGroup("67890");
-      assert.equal(normalized?.voiceReplyEnabled, false);
-      assert.equal(normalized?.defaultVoiceReplyEnabled, false);
+      assert.equal(Object.hasOwn(normalized ?? {}, "voiceReplyEnabled"), false);
+      assert.equal(Object.hasOwn(normalized ?? {}, "defaultVoiceReplyEnabled"), false);
 
-      const defaultOn = await service.updateGroupConfig("67890", { defaultVoiceReplyEnabled: true });
-      assert.equal(defaultOn.voiceReplyEnabled, false);
-      assert.equal(defaultOn.defaultVoiceReplyEnabled, false);
-
-      const voiceOn = await service.updateGroupConfig("67890", { voiceReplyEnabled: true, defaultVoiceReplyEnabled: true });
-      assert.equal(voiceOn.voiceReplyEnabled, true);
-      assert.equal(voiceOn.defaultVoiceReplyEnabled, true);
-
-      const voiceOff = await service.updateGroupConfig("67890", { voiceReplyEnabled: false });
-      assert.equal(voiceOff.voiceReplyEnabled, false);
-      assert.equal(voiceOff.defaultVoiceReplyEnabled, false);
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { voiceReplyEnabled: true } as never),
+        { code: "voice_feature_retired" },
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { defaultVoiceReplyEnabled: true } as never),
+        { code: "voice_feature_retired" },
+      );
     },
   );
 });

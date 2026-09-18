@@ -61,7 +61,6 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
   private socket?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
   private readonly httpBaseUrl: string;
-  private readonly aiCharacterCache = new Map<string, string>();
   private readonly groupMemberCache = new Map<
     string,
     { expiresAt: number; members: NapcatGroupMember[] }
@@ -136,21 +135,6 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     return toMessageReceipt(data);
   }
 
-  async sendGroupRecord(groupId: string, recordFile: string): Promise<{ messageId?: string } | undefined> {
-    const data = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
-      group_id: Number(groupId),
-      message: [
-        {
-          type: "record",
-          data: {
-            file: normalizeNapCatRecordFile(recordFile),
-          },
-        },
-      ],
-    });
-    return toMessageReceipt(data);
-  }
-
   async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
     const data = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
       group_id: Number(groupId),
@@ -166,23 +150,13 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     return toMessageReceipt(data);
   }
 
-  async sendGroupAiRecord(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
-    const character = await this.getAiCharacter(groupId);
-    const data = await this.callAction<NapCatSendMessageResponse>("send_group_ai_record", {
-      group_id: Number(groupId),
-      character,
-      text,
-    });
-    return toMessageReceipt(data);
-  }
-
   async resolveMentionTargets(groupId: string, candidates: string[]): Promise<string[]> {
     const members = await this.getGroupMembers(groupId);
     return resolveMentionTargetsFromMembers(members, candidates);
   }
 
-  async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
-    return this.getGroupMembers(groupId);
+  async listGroupMembers(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]> {
+    return this.getGroupMembers(groupId, options?.refresh === true);
   }
 
   async listGroups(): Promise<NapcatGroupInfo[]> {
@@ -310,25 +284,14 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     return undefined;
   }
 
-  private async getAiCharacter(groupId: string): Promise<string> {
-    const cached = this.aiCharacterCache.get(groupId);
-    if (cached) {
-      return cached;
+  private async getGroupMembers(groupId: string, refresh = false): Promise<NapcatGroupMember[]> {
+    if (refresh) {
+      const members = await this.callHttpAction<NapcatGroupMember[]>("get_group_member_list", {
+        group_id: Number(groupId),
+        no_cache: true,
+      });
+      return Array.isArray(members) ? members : [];
     }
-
-    const data = await this.callHttpAction<unknown>("get_ai_characters", {
-      group_id: Number(groupId),
-    });
-    const character = pickFirstAiCharacter(data);
-    if (!character) {
-      throw new Error("NapCat get_ai_characters did not return any available character.");
-    }
-
-    this.aiCharacterCache.set(groupId, character);
-    return character;
-  }
-
-  private async getGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
     const cached = this.groupMemberCache.get(groupId);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.members;
@@ -450,44 +413,6 @@ function deriveHttpBaseUrl(wsUrl: string): string {
   url.search = "";
   url.hash = "";
   return url.toString().replace(/\/$/, "");
-}
-
-function pickFirstAiCharacter(data: unknown): string | undefined {
-  if (!Array.isArray(data)) {
-    return undefined;
-  }
-
-  for (const item of data) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-
-    const characters = (item as { characters?: unknown }).characters;
-    if (!Array.isArray(characters)) {
-      continue;
-    }
-
-    for (const character of characters) {
-      if (!character || typeof character !== "object") {
-        continue;
-      }
-
-      const characterId = (character as { character_id?: unknown }).character_id;
-      if (typeof characterId === "string" && characterId) {
-        return characterId;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function normalizeNapCatRecordFile(recordFile: string): string {
-  if (/^(base64:\/\/|https?:\/\/|file:\/\/)/i.test(recordFile)) {
-    return recordFile;
-  }
-
-  return recordFile.replace(/\\/g, "/");
 }
 
 function toReferencedMessage(

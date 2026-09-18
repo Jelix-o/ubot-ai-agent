@@ -76,7 +76,6 @@ interface AdminHttpServerOptions {
   listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
   listGroups?: () => Promise<NapcatGroupInfo[]>;
   sharedDb?: SharedDb;
-  mfaRequired?: boolean;
 }
 
 type RouteParams = Record<string, string>;
@@ -103,7 +102,7 @@ type HealthStatusResponse = {
   checkedAt?: string;
   latencyMs?: number;
   cached?: boolean;
-  probeType?: "chat" | "tts";
+  probeType?: "chat";
   upstreamStatusCode?: number;
   failureKind?: AiHealthStatus["failureKind"];
 };
@@ -262,14 +261,12 @@ export class AdminHttpServer {
     status: ModelHealthStatus;
   }>();
   private readonly auth: AdminAuthService;
-  readonly mfaRequired: boolean;
 
   private readonly server = createServer((req, res) => {
     void this.handleRequest(req, res);
   });
 
   constructor(private readonly options: AdminHttpServerOptions) {
-    this.mfaRequired = options.mfaRequired ?? (process.env.ADMIN_MFA_REQUIRED === "true");
     if (options.authService) {
       this.auth = options.authService;
       return;
@@ -278,8 +275,6 @@ export class AdminHttpServer {
       throw new Error("AdminHttpServer requires SharedDb and UBOT_STATE_ENCRYPTION_KEY-backed stateEncryptionKey.");
     }
     const authOptions: AdminAuthServiceOptions = {
-      stateEncryptionKey: options.stateEncryptionKey,
-      mfaRequired: this.mfaRequired,
       ...(options.username && options.password ? { bootstrap: { username: options.username, password: options.password } } : {}),
     };
     this.auth = new AdminAuthService(options.sharedDb, authOptions);
@@ -315,6 +310,17 @@ export class AdminHttpServer {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const pathname = trimTrailingSlash(url.pathname);
+
+      if (new Set([
+        "/api/auth/totp",
+        "/api/auth/totp/enroll",
+        "/api/auth/totp/reset",
+        "/api/auth/recovery",
+        "/api/auth/recovery-codes",
+      ]).has(pathname)) {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
 
       if (req.method === "GET" && pathname === ADMIN_SPECULATION_RULES_PATH) {
         this.sendText(res, ADMIN_SPECULATION_RULES, "application/speculationrules+json; charset=utf-8", {
@@ -371,8 +377,8 @@ export class AdminHttpServer {
         url: req.url,
         error: (error as Error).message,
       });
-      if (error instanceof AdminRequestBodyError) {
-        this.sendJson(res, { error: error.code }, error.statusCode);
+      if (error instanceof AdminRequestBodyError || error instanceof AdminAuthError) {
+        this.sendJson(res, { error: (error as { code?: string }).code || "bad_request" }, (error as { statusCode?: number }).statusCode || 400);
         return;
       }
       this.sendJson(res, { error: "internal_error" }, 500);
@@ -407,47 +413,31 @@ export class AdminHttpServer {
 
     if (req.method === "POST" && pathname === "/api/auth/reauth") {
       const body = await readJsonBody(req);
-      if (!this.auth.completeSessionReauth(session as AdminAuthSession, requiredString(body.code), this.authRequestMeta(req))) {
-        this.sendJson(res, { error: "invalid_totp" }, 401);
+      if (!await this.auth.completeSessionReauth(session as AdminAuthSession, requiredString(body.password), this.authRequestMeta(req))) {
+        this.sendJson(res, { error: "invalid_current_password" }, 401);
         return;
       }
       this.sendJson(res, { ok: true });
-      return;
-    }
-
-    if (req.method === "POST" && pathname === "/api/auth/recovery-codes") {
-      const codes = await this.auth.regenerateRecoveryCodes(session as AdminAuthSession, this.authRequestMeta(req));
-      if (!codes) {
-        this.sendJson(res, { error: "recent_mfa_required" }, 403);
-        return;
-      }
-      this.sendJson(res, { recoveryCodes: codes });
       return;
     }
 
     if (req.method === "POST" && pathname === "/api/auth/password/change") {
       const body = await readJsonBody(req);
-      const result = await this.auth.changePassword({
-        session: session as AdminAuthSession,
-        currentPassword: requiredString(body.currentPassword),
-        nextPassword: requiredString(body.nextPassword),
-        meta: this.authRequestMeta(req),
-      });
-      if (result !== "ok") {
-        this.sendJson(res, { error: result }, result === "recent_mfa_required" ? 403 : 401);
-        return;
+      try {
+        const result = await this.auth.changePassword({
+          session: session as AdminAuthSession,
+          currentPassword: requiredString(body.currentPassword),
+          nextPassword: requiredString(body.nextPassword),
+          meta: this.authRequestMeta(req),
+        });
+        if (result !== "ok") {
+          this.sendJson(res, { error: result }, result === "recent_reauth_required" ? 403 : 401);
+          return;
+        }
+        this.sendJson(res, { ok: true });
+      } catch (error) {
+        this.sendAuthError(res, error);
       }
-      this.sendJson(res, { ok: true });
-      return;
-    }
-
-    if (req.method === "POST" && pathname === "/api/auth/totp/reset") {
-      const result = this.auth.beginTotpReset(session as AdminAuthSession, this.authRequestMeta(req));
-      if (!result) {
-        this.sendJson(res, { error: "recent_mfa_required" }, 403);
-        return;
-      }
-      this.sendJson(res, { status: "totp_enrollment_required", ...result });
       return;
     }
 
@@ -474,7 +464,7 @@ export class AdminHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/api/admin-accounts/invites") {
-      if (!this.requireRecentSuperAdminMfa(session, res)) return;
+      if (!this.requireRecentSuperAdminReauth(session, res)) return;
       const body = await readJsonBody(req);
       const role = body.role === "group_admin" ? "group_admin" : body.role === "super_admin" ? "super_admin" : undefined;
       if (!role) {
@@ -499,7 +489,7 @@ export class AdminHttpServer {
 
     const revokeInviteRoute = matchRoute(pathname, /^\/api\/admin-accounts\/invites\/([^/]+)\/revoke$/);
     if (revokeInviteRoute && req.method === "POST") {
-      if (!this.requireRecentSuperAdminMfa(session, res)) return;
+      if (!this.requireRecentSuperAdminReauth(session, res)) return;
       try {
         this.auth.revokeInvite(revokeInviteRoute.id, session.userId!);
         this.sendJson(res, { ok: true });
@@ -511,7 +501,7 @@ export class AdminHttpServer {
 
     const accountActionMatch = /^\/api\/admin-accounts\/([^/]+)\/(disable|enable|revoke-sessions|grants)$/.exec(pathname);
     if (accountActionMatch && req.method === "POST") {
-      if (!this.requireRecentSuperAdminMfa(session, res)) return;
+      if (!this.requireRecentSuperAdminReauth(session, res)) return;
       try {
         const accountId = decodeURIComponent(accountActionMatch[1]!);
         const action = accountActionMatch[2]!;
@@ -662,7 +652,7 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/system-settings") {
-      if (req.method === "PUT" && !this.requireRecentSuperAdminMfa(session, res)) return;
+      if (req.method === "PUT" && !this.requireRecentSuperAdminReauth(session, res)) return;
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleSystemSettings(req, res);
       return;
@@ -766,7 +756,7 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/persona/huixian") {
-      if (req.method === "PUT" && !this.requireRecentSuperAdminMfa(session, res)) return;
+      if (req.method === "PUT" && !this.requireRecentSuperAdminReauth(session, res)) return;
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleHuixianPersona(req, res);
       return;
@@ -778,8 +768,8 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/commands") {
-      if (req.method === "PUT" && !this.requireRecentSuperAdminMfa(session, res)) return;
-      if (!this.requireSuperAdmin(session, res)) return;
+      if (req.method === "PUT" && !this.requireRecentSuperAdminReauth(session, res)) return;
+      if (req.method !== "GET" && !this.requireSuperAdmin(session, res)) return;
       await this.handleCommands(req, res);
       return;
     }
@@ -864,7 +854,7 @@ export class AdminHttpServer {
 
     const qqBindingMatch = /^\/api\/admin-accounts\/([^/]+)\/qq-binding$/.exec(pathname);
     if (qqBindingMatch && (req.method === "POST" || req.method === "DELETE")) {
-      if (!this.requireRecentSuperAdminMfa(session, res)) return;
+      if (!this.requireRecentSuperAdminReauth(session, res)) return;
       try {
         const accountId = decodeURIComponent(qqBindingMatch[1]!);
         if (req.method === "POST") {
@@ -1014,9 +1004,6 @@ export class AdminHttpServer {
   private async handlePublicAuth(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<boolean> {
     const publicAuthPaths = new Set([
       "/api/auth/password",
-      "/api/auth/totp",
-      "/api/auth/totp/enroll",
-      "/api/auth/recovery",
       "/api/auth/invites/accept",
     ]);
     if (!publicAuthPaths.has(pathname)) {
@@ -1049,103 +1036,31 @@ export class AdminHttpServer {
             csrfToken: result.session.csrfToken,
           },
         }, 200);
-      } else if (result.kind === "totp_required") {
-        this.sendJson(res, { status: "totp_required", loginToken: result.loginToken, username: result.username });
-      } else {
-        this.sendJson(res, {
-          status: "totp_enrollment_required",
-          enrollmentToken: result.enrollmentToken,
-          username: result.username,
-          totpSecret: result.totpSecret,
-          totpUri: result.totpUri,
-        });
-      }
-      return true;
-    }
-
-    if (pathname === "/api/auth/totp") {
-      const result = await this.auth.completeTotpLogin({
-        loginToken: requiredString(body.loginToken),
-        code: requiredString(body.code),
-        meta,
-      });
-      this.sendAuthCompletion(res, result);
-      return true;
-    }
-
-    if (pathname === "/api/auth/totp/enroll") {
-      const result = await this.auth.completeTotpEnrollment({
-        enrollmentToken: requiredString(body.enrollmentToken),
-        code: requiredString(body.code),
-        meta,
-      });
-      this.sendAuthCompletion(res, result);
-      return true;
-    }
-
-    if (pathname === "/api/auth/recovery") {
-      const username = typeof body.username === "string" ? body.username : "";
-      const result = await this.auth.completeRecoveryLogin({
-        username,
-        password: typeof body.password === "string" ? body.password : "",
-        recoveryCode: typeof body.recoveryCode === "string" ? body.recoveryCode : "",
-        loginKey: this.loginAttemptKey(req, username),
-        meta,
-      });
-      if (result.kind === "totp_enrollment_required") {
-        this.sendJson(res, {
-          status: "totp_enrollment_required",
-          enrollmentToken: result.enrollmentToken,
-          username: result.username,
-          totpSecret: result.totpSecret,
-          totpUri: result.totpUri,
-        });
-      } else if (result.kind === "locked") {
-        this.sendJson(res, { error: "too_many_login_attempts", retryAfterSeconds: result.retryAfterSeconds }, 429);
-      } else {
-        this.sendJson(res, { error: result.kind }, result.kind === "disabled" ? 403 : 401);
       }
       return true;
     }
 
     if (pathname === "/api/auth/invites/accept") {
-      const result = await this.auth.acceptInvite({
-        inviteToken: requiredString(body.inviteToken),
-        username: requiredString(body.username),
-        password: requiredString(body.password),
-        meta,
-      });
-      if (result.kind === "totp_enrollment_required") {
-        this.sendJson(res, {
-          status: "totp_enrollment_required",
-          enrollmentToken: result.enrollmentToken,
-          username: result.username,
-          totpSecret: result.totpSecret,
-          totpUri: result.totpUri,
+      try {
+        const result = await this.auth.acceptInvite({
+          inviteToken: requiredString(body.inviteToken),
+          username: requiredString(body.username),
+          password: requiredString(body.password),
+          meta,
         });
-      } else {
-        this.sendJson(res, { error: result.kind }, result.kind === "username_taken" ? 409 : 400);
+        if (result.kind === "authenticated") {
+          this.setSessionCookie(res, result.session.opaqueToken, new Date(result.session.expiresAt));
+          this.sendJson(res, { ok: true, status: "authenticated", session: this.publicSession(result.session) }, 201);
+        } else {
+          const code = result.kind === "username_taken" ? "username_taken" : "invalid_invite";
+          this.sendJson(res, { error: code }, code === "username_taken" ? 409 : 400);
+        }
+      } catch (error) {
+        this.sendAuthError(res, error);
       }
       return true;
     }
     return false;
-  }
-
-  private sendAuthCompletion(
-    res: ServerResponse,
-    result: Awaited<ReturnType<AdminAuthService["completeTotpLogin"]>>,
-  ): void {
-    if (result.kind === "success") {
-      this.setSessionCookie(res, result.session.opaqueToken, new Date(result.session.expiresAt));
-      this.sendJson(res, {
-        ok: true,
-        session: this.publicSession(result.session),
-        ...(result.recoveryCodes ? { recoveryCodes: result.recoveryCodes } : {}),
-      });
-      return;
-    }
-    const status = result.kind === "disabled" ? 403 : result.kind === "invalid_challenge" ? 400 : 401;
-    this.sendJson(res, { error: result.kind }, status);
   }
 
   private async handleHtmlPreviews(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -1196,7 +1111,6 @@ export class AdminHttpServer {
     url: URL,
     session: AdminSession,
   ): Promise<void> {
-    if (!this.requireSuperAdmin(session, res)) return;
     const service = this.options.memeLibraryService;
     if (!service || !service.isAvailable()) {
       this.sendJson(res, { error: "meme_library_unavailable" }, 503);
@@ -1204,7 +1118,8 @@ export class AdminHttpServer {
     }
 
     const method = req.method ?? "GET";
-    if (method !== "GET" && !this.requireRecentSuperAdminMfa(session, res)) return;
+    if (!this.requireSuperAdmin(session, res)) return;
+    if (method !== "GET" && !this.requireRecentSuperAdminReauth(session, res)) return;
 
     try {
       if (pathname === "/api/meme-library") {
@@ -1997,7 +1912,7 @@ export class AdminHttpServer {
     }
 
     if (req.method === "DELETE") {
-      if (!this.requireRecentSuperAdminMfa(session, res)) return;
+      if (!this.requireRecentSuperAdminReauth(session, res)) return;
       current.delete(route.userId);
       const updated = await this.options.groupConfigService.updateGroupConfig(route.groupId, {
         memoryDisabledUserIds: [...current],
@@ -2030,15 +1945,19 @@ export class AdminHttpServer {
 
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
+      if ("voiceReplyEnabled" in body || "defaultVoiceReplyEnabled" in body) {
+        this.sendJson(res, { error: "voice_feature_retired" }, 410);
+        return;
+      }
       if (hasRetiredSharedAdminSecretField(body)) {
         this.sendJson(res, { error: "shared_admin_secret_retired" }, 410);
         return;
       }
       // Privacy opt-outs are a sensitive collection decision. Keep the
       // generic configuration endpoint from bypassing the dedicated route's
-      // recent-MFA requirement for a super administrator.
+      // recent-password requirement for a super administrator.
       if (session.role === "super_admin" && "memoryDisabledUserIds" in body &&
-        !this.requireRecentSuperAdminMfa(session, res)) {
+        !this.requireRecentSuperAdminReauth(session, res)) {
         return;
       }
       if (session.role === "super_admin" && this.options.groupConfigService.isV3Runtime() && "switcherUserIds" in body) {
@@ -2120,6 +2039,7 @@ export class AdminHttpServer {
           "invalid_model_id",
           "duplicate_model_id",
           "invalid_model_purpose",
+          "voice_feature_retired",
           "invalid_memory_confidence_thresholds",
         ].includes(errorCode)) {
           this.sendJson(res, { error: errorCode }, 400);
@@ -2442,7 +2362,12 @@ export class AdminHttpServer {
     }
     if (req.method === "PUT") {
       try {
-        const persona = await this.options.characterProfileService.updateHuixianProfile(await readJsonBody(req) as Partial<CharacterProfile>);
+        const body = await readJsonBody(req);
+        if ("ttsConfig" in body || "ttsStyleHint" in body) {
+          this.sendJson(res, { error: "voice_feature_retired" }, 410);
+          return;
+        }
+        const persona = await this.options.characterProfileService.updateHuixianProfile(body as Partial<CharacterProfile>);
         this.sendJson(res, persona ?? { error: "not_found" }, persona ? 200 : 404);
       } catch (error) {
         this.sendJson(res, { error: error instanceof Error ? error.message : "invalid_persona" }, 400);
@@ -2989,13 +2914,13 @@ export class AdminHttpServer {
     return false;
   }
 
-  private requireRecentSuperAdminMfa(session: AdminSession, res: ServerResponse): boolean {
+  private requireRecentSuperAdminReauth(session: AdminSession, res: ServerResponse): boolean {
     if (session.role !== "super_admin") {
       this.sendJson(res, { error: "forbidden" }, 403);
       return false;
     }
-    if (this.mfaRequired && !this.auth.hasRecentMfa(session as AdminAuthSession)) {
-      this.sendJson(res, { error: "recent_mfa_required" }, 403);
+    if (!this.auth.hasRecentReauth(session as AdminAuthSession)) {
+      this.sendJson(res, { error: "recent_reauth_required" }, 403);
       return false;
     }
     return true;
@@ -3565,7 +3490,6 @@ function normalizeModelPurpose(value: string): SystemModelPurpose {
   return value === "reply" ||
     value === "summary" ||
     value === "knowledge" ||
-    value === "tts" ||
     value === "custom"
     ? value
     : "custom";
@@ -3576,7 +3500,7 @@ function runtimeModels(settings: SystemSettings): RuntimeSystemModelConfig[] {
 }
 
 function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
-  return value === "reply" || value === "summary" || value === "knowledge" || value === "tts" || value === "custom";
+  return value === "reply" || value === "summary" || value === "knowledge" || value === "custom";
 }
 
 function normalizeLogLimit(value: string | undefined): number {
@@ -3619,8 +3543,6 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "blacklistedUserIds",
     "opsAlertsEnabled",
     "triggerKeywords",
-    "voiceReplyEnabled",
-    "defaultVoiceReplyEnabled",
     "onlineLookupEnabled",
     "visionEnabled",
     "ambientGroupContextEnabled",

@@ -11,8 +11,6 @@ export const V3_RUNTIME_CAPABILITIES = [
   "daily_reports",
   "holiday_countdown",
   "realtime_lookup",
-  "voice",
-  "singing",
   "html_preview",
 ] as const;
 

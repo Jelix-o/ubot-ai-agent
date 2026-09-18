@@ -1,8 +1,8 @@
-# UBot V3.0.15
+# UBot V3.0.19
 
-UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3.0.15 的唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、语音、唱歌、提醒、日报、节日倒计时和静态网页预览；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
+UBot 是基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。V3 唯一人格是会仙：自然、成熟的聊天方式，可协助联网查询、提醒、日报、节日倒计时和静态网页预览；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.15.md](RELEASE-v3.0.15.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版说明见 [RELEASE-v3.0.19.md](RELEASE-v3.0.19.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)。
 
 ## V3 架构
 
@@ -11,25 +11,23 @@ NapCat / OneBot
   -> Ingress                 接收、去重、Outbox 实际发送与 QQ 回执
   -> SQLite WAL              唯一业务权威源
   -> Worker                  对话、显式记忆、知识、提醒、日报和能力编排
-  -> Admin                   账号、TOTP、群授权、审计和后台 API
+  -> Admin                   账号、密码登录、群授权、审计和后台 API
 ```
 
-Ingress、Worker、Admin 是独立进程。生产环境由 `ubot.target` 管理三个 systemd unit；它们使用 `/opt/ai-project-releases/current` 这个原子切换的软链接，而不是一个父进程拉起三个子进程。
-
-V3 使用 SQLite 保存群配置、系统设置、会仙 Character Profile、Knowledge Pack、Capability Policy、显式记忆、排程、管理员账号和审计。旧 JSON 数据只在一次性切换时导入；切换标记写入后，运行时不会回退读取或双写 JSON。
+Ingress、Worker、Admin 是独立进程。生产环境由 systemd 管理三个 unit，使用 `/opt/ai-project-releases/current` 原子切换软链接。
 
 ## 主要行为
 
-- 会仙是唯一启用的人格，角色市场、旧人格选择和运行时 `skills/` 目录已退休。
-- V3 不再信任旧 `superAdminUserIds`、`switcherUserIds`、共享群密码或 `#管理员`；QQ 必须在后台经近期 TOTP 验证后绑定到管理员账号，群内权限实时继承该账号的角色、启停状态和按群授权。
-- 只有 `#记忆`、`@机器人 请记住` / `请记忆` 和管理员明确操作才会保存记忆。普通聊天不会自动抽取、推断或进入候选审核。
-- 导入时只接受 `admin`、`explicit_command`、`explicit_request` 来源的记忆。候选记忆、自动画像、旧人格和旧对话素材进入加密的七天回滚归档，不进入运行数据库。
-- 原始群消息和附件元数据保留最多七天。日报保留结果，不依赖长期保存的原始内容。
-- OpenAI-compatible provider 保留，Anthropic 使用官方 SDK 和明确的 capability 合约处理流式、视觉、超时与降级。
-- `#网页 <需求>`、`#html <需求>` 或明确 `@会仙 生成网页/HTML/静态页面` 会创建一个独立、30 天有效的静态预览链接。页面允许自包含 HTML/CSS、浏览器端 JavaScript 和受限的内联 SVG/CSS 动画；主回复模型暂时不可用时可静默切换到严格绑定的 `ds` 回复模型。预览发布在 `https://preview.9958.uk`，绝不与后台 Cookie 或 API 共用 `bot.9958.uk` 域。
-- 未授权访问 `/api/health` 返回 `401` 是预期行为，不是健康检查失败。
+- 会仙是唯一启用的人格；旧人格市场与运行时 `skills/` 目录已退休。
+- **后台登录**：管理员账号 + 密码（至少 12 位）+ 邀请码；无 TOTP/恢复码。敏感操作要求 10 分钟内密码复验。服务器可用 `npm run admin:reset-password -- --username <account>` 交互重置密码。
+- **群内权限**：后台已绑定账号按角色/群授权继承；同时 QQ 群主与群管理员自动获得**本群群内管理指令**权限，不能登录后台。
+- 旧 `superAdminUserIds`、`switcherUserIds`、共享群密码与群内 `#管理员` 管理已退休，不再作为后台或 V3 授权来源。
+- 只有 `#记忆`、`@机器人 请记住` / `请记忆` 和管理员明确操作才会保存记忆。
+- 语音、唱歌与 TTS 配置已退休；相关 API 返回 `voice_feature_retired`。
+- `#网页` / `#html` 生成独立静态预览，发布在 `https://preview.9958.uk`，与后台域隔离。
+- 未授权访问 `/api/health` 返回 `401` 是预期行为。
 
-完整的群内命令说明见 [COMMANDS.md](COMMANDS.md)。
+完整群内命令见 [COMMANDS.md](COMMANDS.md)。
 
 ## 本地开发
 
@@ -38,97 +36,32 @@ V3 使用 SQLite 保存群配置、系统设置、会仙 Character Profile、Kno
 ```bash
 npm ci
 npm test
-```
-
-管理后台开发：
-
-```bash
 npm run dev:admin
 ```
-
-服务端监听开发：
-
-```bash
-npm run dev
-```
-
-从模板创建本地环境文件：
-
-```bash
-cp .env.example .env
-```
-
-不要提交 `.env`、SQLite 数据库、群配置、日志、私钥、令牌或真实群消息。
 
 ## 必要配置
 
 | 配置 | 作用 |
 | --- | --- |
 | `BOT_QQ` | 机器人 QQ 号 |
-| `NAPCAT_MODE` / `NAPCAT_REVERSE_WS_*` | NapCat reverse WebSocket 连接 |
-| `NAPCAT_ACCESS_TOKEN` | 非本地 ingress 监听时必须设置的 NapCat 令牌 |
+| `NAPCAT_MODE` / `NAPCAT_REVERSE_WS_*` | NapCat reverse WebSocket |
+| `NAPCAT_ACCESS_TOKEN` | 非本地 ingress 监听时必须设置 |
 | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` | 默认回复模型 |
-| `ADMIN_HTTP_*` | 后台监听和公开 HTTPS 地址 |
-| `HTML_PREVIEW_PUBLIC_BASE_URL` / `HTML_PREVIEW_ROOT` | 独立预览域与持久化的模型生成页面目录；生产固定为 `https://preview.9958.uk` 和 `data/generated-pages`（或其受限子目录） |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 仅账户表为空时导入第一个超级管理员 |
-| `UBOT_STATE_ENCRYPTION_KEY` | V3 状态、TOTP 和回滚归档的 32-byte 主密钥（64 位 hex 或 base64url），使用 HKDF 用途隔离 |
+| `ADMIN_HTTP_*` | 后台监听与公开 HTTPS 地址 |
+| `HTML_PREVIEW_PUBLIC_BASE_URL` / `HTML_PREVIEW_ROOT` | 预览域与页面目录 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | **仅账户表为空时**导入第一个超管；密码至少 12 位 |
+| `UBOT_STATE_ENCRYPTION_KEY` | V3 状态主密钥（32-byte，hex/base64url） |
 
-生产部署必须从批准的密钥管理器提供 `UBOT_STATE_ENCRYPTION_KEY`，且不输出或提交其值。`ADMIN_SESSION_SECRET` 和 `ADMIN_TOTP_ENCRYPTION_KEY` 已退休。首次登录后的管理员必须绑定 TOTP；恢复码和账号恢复流程见 [docs/ADMIN-RECOVERY-v3.md](docs/ADMIN-RECOVERY-v3.md)。
+`ADMIN_SESSION_SECRET` 与 `ADMIN_TOTP_ENCRYPTION_KEY` 已退休。运维恢复见 [docs/ADMIN-RECOVERY-v3.md](docs/ADMIN-RECOVERY-v3.md)。
 
-Linux 生产 `.env` 还必须明确设置 `ADMIN_HTTP_ENABLED=true`、`ADMIN_HTTP_HOST=127.0.0.1`、`ADMIN_HTTP_PORT=6200` 与 `INGRESS_READ_API_PORT=6198`。发布脚本会在数据切换前校验这些内部监听边界。
+## 打包与部署
 
-## 数据切换
-
-从 RC.2 或更早版本升级时，在**所有 UBot 服务已停止且可重试 Outbox 已清空**后，先预览迁移：
+发布前执行：
 
 ```bash
-npm run migrate:v3
-```
-
-确认预览内容后才执行：
-
-```bash
-npm run migrate:v3 -- --execute
-```
-
-正式 Linux 部署脚本会在停服务、完整性检查和受限备份后自动执行同一迁移。成功切换后不要运行旧版本或 `ai-project.service` 来读取同一 `data/` 目录，也不要自动重发历史 Outbox。
-
-## 打包与 GitHub Release
-
-```bash
+node scripts/run-node22.cjs scripts/test.cjs
+node scripts/run-node22.cjs scripts/visual-admin-smoke.mjs
 npm run package:all
 ```
 
-命令生成以下四个发布资产，并重新验证 SHA-256：
-
-```text
-release/ubot-3.0.15-win.zip
-release/ubot-3.0.15-win.zip.sha256
-release/ubot-3.0.15-linux.tar.gz
-release/ubot-3.0.15-linux.tar.gz.sha256
-```
-
-发布包不包含 `.env`、数据库、日志、`data/`、`config/`、旧 `skills/`、私钥或任何持久群资料。Windows 使用 `run.cmd` 启动三种角色；已有旧数据时，先按上节显式运行切换迁移，不要让启动脚本猜测迁移时机。
-
-正式路径由 GitHub Actions 在匹配的最终 `v3.0.15` 标签上完成。仅在工作流不可用时，才可用本地后备发布；它要求当前检出正是已创建的最终标签提交，并需要具有 Release 写权限的 `GITHUB_TOKEN` 或 `GH_TOKEN`：
-
-```powershell
-$env:HTTPS_PROXY = "http://127.0.0.1:7897"
-npm run release:github
-```
-
-GitHub Actions 在 `v3.0.15` 标签上执行 Windows/Linux 测试、双平台打包、摘要校验和正式 Release 创建。候选标签只通过验证和打包，不会创建正式 Release；工作流不接触服务器私钥或生产密钥。
-
-## Linux 生产部署
-
-生产使用 `ubuntu@43.212.131.90` 上的 `bot.9958.uk` 与独立静态预览域 `preview.9958.uk`，但部署命令不应将私钥、密码或令牌写入仓库。部署前阅读 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)。概要如下：
-
-```bash
-sha256sum -c ubot-3.0.15-linux.tar.gz.sha256 # matching GitHub Release asset
-UBOT_NAPCAT_CONFIG=/opt/napcat/config/onebot11_428881701.json \
-  UBOT_PREVIEW_CERT_PATH=/etc/ssl/cloudflare/preview.9958.uk.pem \
-  UBOT_PREVIEW_KEY_PATH=/etc/ssl/cloudflare/preview.9958.uk.key \
-  bash scripts/deploy-linux-release.sh 3.0.15 ubot-3.0.15-linux.tar.gz
-```
-
-部署会使用 `172.21.0.1:6199` 作为 Docker 中 NapCat 访问宿主 Ingress 的反向 WebSocket 地址。`6198` 和 `6200` 继续仅监听回环地址；不修改 UFW 或 AWS 安全组。预览站点的 Nginx 模板位于 [deploy/nginx/preview.9958.uk.conf](deploy/nginx/preview.9958.uk.conf) 和 [deploy/nginx/ubot-preview-static.conf](deploy/nginx/ubot-preview-static.conf)：它们仅静态服务随机页面路径，不代理后台/API，也不会覆盖 `bot.9958.uk` 或其他现有 vhost。
+Linux 生产部署命令见既有运维文档；部署脚本版本号需与 `package.json` / Release 资产一致。

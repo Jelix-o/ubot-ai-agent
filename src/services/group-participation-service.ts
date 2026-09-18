@@ -43,7 +43,6 @@ export class GroupParticipationService {
     const normalized = text.trim();
     const isCommand = normalized.startsWith("#");
     const isExplicitMemoryRequest = Boolean(parseExplicitMemoryRequest(normalized));
-    const isConversationCommand = isAiConversationCommand(normalized);
     const keywordTriggered = groupConfig && groupConfig.enabled !== false && groupConfig.botMuted !== true && allowsKeywordParticipation(groupConfig)
       ? await this.shouldTriggerKeyword(groupConfig, text, hasAtBot, text)
       : false;
@@ -60,7 +59,7 @@ export class GroupParticipationService {
       groupMuted: groupConfig?.botMuted === true,
       isCommand,
       isExplicitMemoryRequest,
-      isConversationCommand,
+      isConversationCommand: false,
       keywordTriggered,
     });
   }
@@ -108,9 +107,4 @@ export class GroupParticipationService {
 export function allowsKeywordParticipation(groupConfig: GroupBotConfig): boolean {
   return groupConfig.participationMode === "mentions_and_keywords" ||
     groupConfig.participationMode === "selected_members";
-}
-
-/** Commands that intentionally enter the conversational model path. */
-export function isAiConversationCommand(text: string): boolean {
-  return /^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(text.trim());
 }

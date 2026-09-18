@@ -1,100 +1,29 @@
 <script setup lang="ts">
 import { computed, reactive, shallowRef } from "vue";
 
-type LoginStep = "password" | "totp" | "enroll" | "recovery";
-
-const form = reactive({ username: "", password: "", code: "", recoveryCode: "" });
+const form = reactive({ username: "", password: "" });
 const message = shallowRef("");
 const loading = shallowRef(false);
-const step = shallowRef<LoginStep>("password");
-const challengeToken = shallowRef("");
-const enrollmentSecret = shallowRef("");
-const enrollmentUri = shallowRef("");
-const recoveryCodes = shallowRef<string[]>([]);
 const inviteToken = new URLSearchParams(window.location.search).get("invite") || "";
-const actionLabel = computed(() => {
-  if (step.value === "password") return inviteToken ? "创建受邀账号并登录" : "登录控制台";
-  if (step.value === "recovery") return "使用恢复码重置验证器";
-  return "验证并登录";
-});
-
-async function request(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-  if (!res.ok) throw new Error(loginError(String(data.error || "login_failed")));
-  return data;
-}
+const actionLabel = computed(() => inviteToken ? "创建受邀账号并登录" : "登录控制台");
 
 async function login(): Promise<void> {
   loading.value = true;
   message.value = "";
   try {
-    if (step.value === "recovery") {
-      const data = await request("/api/auth/recovery", {
-        username: form.username.trim(),
-        password: form.password,
-        recoveryCode: form.recoveryCode,
-      });
-      if (String(data.status || "") === "totp_enrollment_required") {
-        challengeToken.value = String(data.enrollmentToken || "");
-        enrollmentSecret.value = String(data.totpSecret || "");
-        enrollmentUri.value = String(data.totpUri || "");
-        step.value = "enroll";
-        form.code = "";
-        form.recoveryCode = "";
-        return;
-      }
-    } else if (step.value === "totp") {
-      const data = await request("/api/auth/totp", { loginToken: challengeToken.value, code: form.code });
-      if (data.ok === true) {
-        window.location.href = "/";
-        return;
-      }
-    } else if (step.value === "enroll") {
-      const data = await request("/api/auth/totp/enroll", { enrollmentToken: challengeToken.value, code: form.code });
-      if (data.ok === true) {
-        recoveryCodes.value = Array.isArray(data.recoveryCodes) ? data.recoveryCodes.map(String) : [];
-        if (!recoveryCodes.value.length) {
-          window.location.href = "/";
-        }
-        return;
-      }
-    } else {
-      const data = inviteToken
-        ? await request("/api/auth/invites/accept", {
-            inviteToken,
-            username: form.username.trim(),
-            password: form.password,
-          })
-        : await request("/api/auth/password", {
-            username: form.username.trim(),
-            password: form.password,
-          });
-      if (data.ok === true || String(data.status || "") === "authenticated") {
-        window.location.href = "/";
-        return;
-      }
-      const status = String(data.status || "");
-      if (status === "totp_required") {
-        challengeToken.value = String(data.loginToken || "");
-        step.value = "totp";
-        form.code = "";
-        return;
-      }
-      if (status === "totp_enrollment_required") {
-        challengeToken.value = String(data.enrollmentToken || "");
-        enrollmentSecret.value = String(data.totpSecret || "");
-        enrollmentUri.value = String(data.totpUri || "");
-        step.value = "enroll";
-        form.code = "";
-        return;
-      }
-    }
-    message.value = "登录流程未完成，请重试。";
+    const path = inviteToken ? "/api/auth/invites/accept" : "/api/auth/password";
+    const body = inviteToken
+      ? { inviteToken, username: form.username.trim(), password: form.password }
+      : { username: form.username.trim(), password: form.password };
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new Error(loginError(String(data.error || "login_failed")));
+    if (data.ok !== true && data.status !== "authenticated") throw new Error("登录流程未完成，请重试。");
+    window.location.href = "/";
   } catch (error) {
     message.value = error instanceof Error ? error.message : "登录失败";
   } finally {
@@ -102,32 +31,13 @@ async function login(): Promise<void> {
   }
 }
 
-function finishRecoveryCodes(): void {
-  recoveryCodes.value = [];
-  window.location.href = "/";
-}
-
-function useRecovery(): void {
-  step.value = "recovery";
-  message.value = "";
-}
-
-function backToPassword(): void {
-  step.value = "password";
-  challengeToken.value = "";
-  form.code = "";
-  message.value = "";
-}
-
 function loginError(code: string): string {
   return ({
     invalid_credentials: "账号或密码错误。",
-    invalid_totp: "验证码错误或已使用。",
-    invalid_recovery_code: "恢复码无效或已使用。",
-    invalid_challenge: "登录验证已过期，请重新输入账号和密码。",
     too_many_login_attempts: "尝试次数过多，请稍后再试。",
     username_taken: "该账号名已经被使用。",
     invalid_invite: "邀请无效、已过期或已被使用。",
+    invalid_password: "密码至少 12 位。",
   } as Record<string, string>)[code] || "登录失败，请稍后重试。";
 }
 </script>
@@ -135,248 +45,35 @@ function loginError(code: string): string {
 <template>
   <main class="login-page">
     <section class="login-copy">
-      <div class="brand">
-        <span>UB</span>
-        <div>
-          <strong>UBot</strong>
-          <small>群聊成员控制台</small>
-        </div>
-      </div>
-      <div>
-        <h1>自然参与，可靠管理</h1>
-        <p>让机器人以有边界、有记忆的方式融入群聊。</p>
-      </div>
-      <div class="login-visual" aria-hidden="true">
-        <i />
-        <i />
-        <i />
-      </div>
+      <div class="brand"><span>UB</span><div><strong>UBot</strong><small>群聊成员控制台</small></div></div>
+      <div><h1>自然参与，可靠管理</h1><p>让机器人以有边界、有记忆的方式融入群聊。</p></div>
+      <div class="login-visual" aria-hidden="true"><i /><i /><i /></div>
     </section>
     <section class="login-panel">
       <span class="tag">UBot</span>
-      <h2>后台登录</h2>
-      <p v-if="step === 'password'">请输入账号和密码继续安全验证。</p>
-      <p v-else-if="step === 'totp'">输入验证器应用中的 6 位验证码。</p>
-      <p v-else-if="step === 'enroll'">先将密钥添加到验证器应用，再输入当前验证码。</p>
-      <p v-else>输入账号密码和一条未使用的恢复码，随后重新绑定验证器。</p>
-      <section v-if="recoveryCodes.length" class="recovery-codes">
-        <h3>保存恢复码</h3>
-        <p>这些恢复码只显示一次。每条只能使用一次。</p>
-        <code v-for="code in recoveryCodes" :key="code">{{ code }}</code>
-        <button class="btn" type="button" @click="finishRecoveryCodes">我已保存恢复码</button>
-      </section>
+      <h2>{{ inviteToken ? "接受后台邀请" : "后台登录" }}</h2>
+      <p>{{ inviteToken ? "设置账号和密码后即可登录。" : "请输入管理员账号和密码。" }}</p>
       <form @submit.prevent="login">
-        <label v-if="step === 'password' || step === 'recovery'">
-          账号
-          <input v-model="form.username" class="input" autocomplete="username" placeholder="请输入账号" required />
-        </label>
-        <label v-if="step === 'password' || step === 'recovery'">
-          密码
-          <input v-model="form.password" class="input" type="password" autocomplete="current-password" placeholder="请输入密码" required />
-        </label>
-        <label v-if="step === 'totp' || step === 'enroll'">
-          验证码
-          <input v-model="form.code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码" required />
-        </label>
-        <label v-if="step === 'recovery'">
-          恢复码
-          <input v-model="form.recoveryCode" class="input" autocomplete="one-time-code" placeholder="例如 ABCD-EF01-2345-6789" required />
-        </label>
-        <section v-if="step === 'enroll'" class="totp-secret">
-          <strong>验证器密钥</strong>
-          <code>{{ enrollmentSecret }}</code>
-          <small>{{ enrollmentUri }}</small>
-        </section>
-        <div v-if="!recoveryCodes.length" class="login-row">
-          <button v-if="step !== 'password'" class="link-btn" type="button" @click="backToPassword">返回</button>
-          <button v-else-if="!inviteToken" class="link-btn" type="button" @click="useRecovery">使用恢复码</button>
-          <span>双因素认证</span>
-        </div>
-        <button v-if="!recoveryCodes.length" class="btn" type="submit" :disabled="loading">{{ loading ? "验证中..." : actionLabel }}</button>
-        <p class="message">{{ message }}</p>
+        <label>账号<input v-model="form.username" class="input" autocomplete="username" placeholder="请输入账号" required /></label>
+        <label>密码<input v-model="form.password" class="input" type="password" :minlength="inviteToken ? 12 : undefined" :autocomplete="inviteToken ? 'new-password' : 'current-password'" :placeholder="inviteToken ? '至少 12 位' : '请输入密码'" required /></label>
+        <p v-if="inviteToken" class="policy">邀请创建的账号密码至少 12 位。</p>
+        <button class="btn" type="submit" :disabled="loading">{{ loading ? "登录中..." : actionLabel }}</button>
+        <p class="message" role="alert">{{ message }}</p>
       </form>
     </section>
   </main>
 </template>
 
 <style scoped>
-.login-page {
-  display: grid;
-  grid-template-columns: minmax(360px, 1.1fr) minmax(360px, 0.9fr);
-  gap: 48px;
-  align-items: center;
-  min-height: 100vh;
-  width: min(1120px, calc(100% - 48px));
-  margin: 0 auto;
-}
-
-.login-copy,
-.login-panel {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-xl);
-  background: var(--surface);
-  box-shadow: var(--shadow-lg);
-  padding: 42px;
-  backdrop-filter: blur(12px);
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.brand span {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-md);
-  background: var(--accent);
-  color: #ffffff;
-  font-weight: 800;
-  font-size: 16px;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-}
-
-.brand strong {
-  display: block;
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--text);
-}
-
-.brand small,
-.login-copy p,
-.login-panel p,
-.login-row {
-  color: var(--muted);
-}
-
-.login-copy h1 {
-  margin: 48px 0 12px;
-  font-size: 38px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  color: var(--text);
-  line-height: 1.15;
-}
-
-.login-copy p {
-  font-size: 16px;
-  line-height: 1.6;
-}
-
-.login-visual {
-  display: grid;
-  gap: 14px;
-  margin-top: 48px;
-}
-
-.login-visual i {
-  display: block;
-  height: 52px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(90deg, var(--accent-soft), var(--surface-soft));
-  border: 1px solid var(--line);
-}
-
-.login-visual i:nth-child(2) {
-  opacity: 0.7;
-  width: 85%;
-}
-
-.login-visual i:nth-child(3) {
-  opacity: 0.4;
-  width: 65%;
-}
-
-.login-panel h2 {
-  margin: 14px 0 6px;
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
-form {
-  display: grid;
-  gap: 16px;
-  margin-top: 24px;
-}
-
-label {
-  display: grid;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 13.5px;
-  color: var(--text);
-}
-
-.login-panel .btn {
-  min-height: 42px;
-  font-size: 14.5px;
-  font-weight: 700;
-  margin-top: 6px;
-}
-
-.login-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-}
-
-.message {
-  min-height: 20px;
-  color: var(--danger);
-  font-size: 13px;
-}
-
-.link-btn {
-  min-height: 28px;
-  background: transparent;
-  color: var(--accent);
-  padding: 0;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  border: none;
-}
-
-.link-btn:hover {
-  text-decoration: underline;
-}
-
-.totp-secret,
-.recovery-codes {
-  display: grid;
-  gap: 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-soft);
-  padding: 13px;
-}
-
-.totp-secret code,
-.totp-secret small,
-.recovery-codes code {
-  overflow-wrap: anywhere;
-}
-
-.recovery-codes code {
-  display: block;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--surface);
-  padding: 7px 9px;
-}
-
-@media (max-width: 860px) {
-  .login-page {
-    grid-template-columns: 1fr;
-    padding: 24px 0;
-  }
-}
+.login-page { display: grid; grid-template-columns: minmax(360px, 1.1fr) minmax(360px, .9fr); gap: 48px; align-items: center; min-height: 100vh; width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
+.login-copy, .login-panel { border: 1px solid var(--line); border-radius: var(--radius-xl); background: var(--surface); box-shadow: var(--shadow-lg); padding: 42px; }
+.login-copy { display: grid; min-height: 480px; align-content: space-between; }
+.brand { display: flex; align-items: center; gap: 14px; }
+.brand > span { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 8px; background: var(--accent); color: white; font-weight: 900; }
+.brand div { display: grid; gap: 2px; }.brand strong { font-size: 20px; }.brand small, .login-panel > p, .login-copy p { color: var(--muted); }
+h1 { max-width: 620px; margin: 0 0 14px; font-size: 46px; line-height: 1.08; letter-spacing: 0; } h2 { margin: 18px 0 8px; font-size: 28px; }
+form { display: grid; gap: 16px; margin-top: 28px; } label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; font-weight: 700; }
+.btn { min-height: 44px; }.message { min-height: 22px; margin: 0; color: var(--danger); font-size: 13px; }.policy { margin: 0; color: var(--muted); font-size: 13px; }
+.login-visual { display: flex; gap: 10px; align-items: end; height: 90px; }.login-visual i { display: block; width: 32px; background: var(--accent); }.login-visual i:nth-child(1) { height: 42px; }.login-visual i:nth-child(2) { height: 72px; }.login-visual i:nth-child(3) { height: 56px; }
+@media (max-width: 780px) { .login-page { grid-template-columns: 1fr; width: min(100% - 28px, 520px); padding: 20px 0; }.login-copy { display: none; }.login-panel { padding: 28px; } }
 </style>
