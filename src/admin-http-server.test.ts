@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import os from "node:os";
@@ -180,7 +179,6 @@ async function startFixture(
     htmlPreviewService,
     memeLibraryService,
     adminOperationLogService: operations,
-    mfaRequired: true,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
     ...(options.listGroupMembers ? { listGroupMembers: options.listGroupMembers } : {}),
   });
@@ -213,24 +211,44 @@ async function login(baseUrl: string, username = "admin", password = "secret-pas
     body: JSON.stringify({ username, password }),
   });
   assert.equal(passwordResponse.status, 200);
-  const challenge = await passwordResponse.json() as {
+  const payload = await passwordResponse.json() as {
+    ok: boolean;
     status: string;
-    enrollmentToken: string;
-    totpSecret: string;
+    session: Auth["session"] & { csrfToken: string };
   };
-  assert.equal(challenge.status, "totp_enrollment_required");
-  const enrollmentResponse = await request(baseUrl, "/api/auth/totp/enroll", {
+  assert.equal(payload.ok, true);
+  assert.equal(payload.status, "authenticated");
+  assert.equal(payload.session.username, username);
+  assert.ok(payload.session.csrfToken);
+  const cookie = passwordResponse.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.ok(cookie);
+  // GET /api/session rotates CSRF on purpose; keep the rotated token for writes.
+  const sessionResponse = await request(baseUrl, "/api/session", { headers: { Cookie: cookie } });
+  assert.equal(sessionResponse.status, 200);
+  const session = await sessionResponse.json() as Auth["session"] & { csrfToken: string };
+  return { cookie, csrf: session.csrfToken, session };
+}
+
+async function acceptInviteAsAdmin(
+  baseUrl: string,
+  inviteToken: string,
+  username: string,
+  password = "operator-password-12",
+): Promise<Auth> {
+  const accepted = await request(baseUrl, "/api/auth/invites/accept", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      enrollmentToken: challenge.enrollmentToken,
-      code: makeTotp(challenge.totpSecret),
-    }),
+    body: JSON.stringify({ inviteToken, username, password }),
   });
-  assert.equal(enrollmentResponse.status, 200);
-  const enrolled = await enrollmentResponse.json() as { ok: boolean; session: Auth["session"] & { csrfToken: string } };
-  assert.equal(enrolled.ok, true);
-  const cookie = enrollmentResponse.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.equal(accepted.status, 201);
+  const payload = await accepted.json() as {
+    ok: boolean;
+    status: string;
+    session: Auth["session"] & { csrfToken: string };
+  };
+  assert.equal(payload.ok, true);
+  assert.equal(payload.status, "authenticated");
+  const cookie = accepted.headers.get("set-cookie")?.split(";", 1)[0];
   assert.ok(cookie);
   const sessionResponse = await request(baseUrl, "/api/session", { headers: { Cookie: cookie } });
   assert.equal(sessionResponse.status, 200);
@@ -238,7 +256,15 @@ async function login(baseUrl: string, username = "admin", password = "secret-pas
   return { cookie, csrf: session.csrfToken, session };
 }
 
-test("V3 admin uses SQLite TOTP authentication and retires legacy routes", async (t) => {
+async function reauth(baseUrl: string, auth: Auth, password = "secret-password"): Promise<Response> {
+  return request(baseUrl, "/api/auth/reauth", {
+    method: "POST",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+}
+
+test("V3 admin uses SQLite password authentication and retires legacy routes", async (t) => {
   const { baseUrl, memories, operations } = await startFixture(t);
   const legacyLogin = await request(baseUrl, "/api/login", {
     method: "POST",
@@ -328,46 +354,95 @@ test("V3 admin uses SQLite TOTP authentication and retires legacy routes", async
   assert.equal(retiredSettings.status, 410);
 });
 
-test("recovery authentication requires fresh TOTP enrollment and never sets a session cookie", async (t) => {
+test("V3 admin password login is immediate and TOTP/recovery routes are retired", async (t) => {
   const { baseUrl } = await startFixture(t);
-  const password = await request(baseUrl, "/api/auth/password", {
+
+  for (const pathname of [
+    "/api/auth/totp",
+    "/api/auth/totp/enroll",
+    "/api/auth/totp/reset",
+    "/api/auth/recovery",
+    "/api/auth/recovery-codes",
+  ]) {
+    const response = await request(baseUrl, pathname, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "000000", recoveryCode: "unused" }),
+    });
+    assert.equal(response.status, 404, pathname);
+  }
+
+  const invalid = await request(baseUrl, "/api/auth/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "admin", password: "wrong-password!" }),
+  });
+  assert.equal(invalid.status, 401);
+  assert.equal((await invalid.json() as { error: string }).error, "invalid_credentials");
+
+  const auth = await login(baseUrl);
+  assert.equal(auth.session.role, "super_admin");
+  assert.equal(auth.session.username, "admin");
+
+  const logout = await request(baseUrl, "/api/auth/logout", {
+    method: "POST",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf },
+  });
+  assert.equal(logout.status, 200);
+  assert.equal((await request(baseUrl, "/api/session", { headers: { Cookie: auth.cookie } })).status, 401);
+});
+
+test("password change requires recent reauth, enforces min length 12, and revokes sibling sessions", async (t) => {
+  const { baseUrl, db } = await startFixture(t);
+  const first = await login(baseUrl);
+  const second = await login(baseUrl);
+
+  db.db.prepare("UPDATE admin_sessions SET reauth_verified_at = ? WHERE id IN (SELECT id FROM admin_sessions WHERE revoked_at IS NULL)")
+    .run(Date.now() - 15 * 60 * 1_000);
+
+  const staleHeaders = { Cookie: first.cookie, "X-CSRF-Token": first.csrf, "Content-Type": "application/json" };
+  const denied = await request(baseUrl, "/api/auth/password/change", {
+    method: "POST",
+    headers: staleHeaders,
+    body: JSON.stringify({ currentPassword: "secret-password", nextPassword: "next-secret-password-12" }),
+  });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json() as { error: string }).error, "recent_reauth_required");
+
+  const badReauth = await reauth(baseUrl, first, "wrong-password!");
+  assert.equal(badReauth.status, 401);
+
+  const goodReauth = await reauth(baseUrl, first, "secret-password");
+  assert.equal(goodReauth.status, 200);
+
+  const shortPassword = await request(baseUrl, "/api/auth/password/change", {
+    method: "POST",
+    headers: staleHeaders,
+    body: JSON.stringify({ currentPassword: "secret-password", nextPassword: "too-short" }),
+  });
+  assert.equal(shortPassword.status, 400);
+  assert.equal((await shortPassword.json() as { error?: string }).error, "invalid_password");
+
+  const changed = await request(baseUrl, "/api/auth/password/change", {
+    method: "POST",
+    headers: staleHeaders,
+    body: JSON.stringify({ currentPassword: "secret-password", nextPassword: "next-secret-password-12" }),
+  });
+  assert.equal(changed.status, 200);
+  assert.deepEqual(await changed.json(), { ok: true });
+
+  assert.equal((await request(baseUrl, "/api/session", { headers: { Cookie: second.cookie } })).status, 401);
+  assert.equal((await request(baseUrl, "/api/session", { headers: { Cookie: first.cookie } })).status, 200);
+
+  const oldPassword = await request(baseUrl, "/api/auth/password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: "admin", password: "secret-password" }),
   });
-  const challenge = await password.json() as { enrollmentToken: string; totpSecret: string };
-  const enrolled = await request(baseUrl, "/api/auth/totp/enroll", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enrollmentToken: challenge.enrollmentToken, code: makeTotp(challenge.totpSecret) }),
-  });
-  const initial = await enrolled.json() as { recoveryCodes: string[] };
-  const oldCookie = enrolled.headers.get("set-cookie")?.split(";", 1)[0];
-  assert.ok(oldCookie);
-  assert.equal(initial.recoveryCodes.length, 10);
+  assert.equal(oldPassword.status, 401);
 
-  const recovery = await request(baseUrl, "/api/auth/recovery", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: "admin",
-      password: "secret-password",
-      recoveryCode: initial.recoveryCodes[0],
-    }),
-  });
-  assert.equal(recovery.status, 200);
-  assert.equal(recovery.headers.get("set-cookie"), null);
-  const reset = await recovery.json() as { status: string; enrollmentToken: string; totpSecret: string };
-  assert.equal(reset.status, "totp_enrollment_required");
-  assert.equal((await request(baseUrl, "/api/session", { headers: { Cookie: oldCookie } })).status, 401);
-
-  const reEnrolled = await request(baseUrl, "/api/auth/totp/enroll", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enrollmentToken: reset.enrollmentToken, code: makeTotp(reset.totpSecret) }),
-  });
-  assert.equal(reEnrolled.status, 200);
-  assert.ok(reEnrolled.headers.get("set-cookie"));
+  const newPassword = await login(baseUrl, "admin", "next-secret-password-12");
+  assert.equal(newPassword.session.username, "admin");
 });
 
 test("group administrators are limited to authorized groups and operational features", async (t) => {
@@ -380,33 +455,17 @@ test("group administrators are limited to authorized groups and operational feat
   });
   assert.equal(inviteResponse.status, 201);
   const invite = await inviteResponse.json() as { token: string };
-
-  const accepted = await request(baseUrl, "/api/auth/invites/accept", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ inviteToken: invite.token, username: "operator", password: "operator-password" }),
-  });
-  assert.equal(accepted.status, 200);
-  const enrollment = await accepted.json() as { status: string; enrollmentToken: string; totpSecret: string };
-  assert.equal(enrollment.status, "totp_enrollment_required");
-  const enrolled = await request(baseUrl, "/api/auth/totp/enroll", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enrollmentToken: enrollment.enrollmentToken, code: makeTotp(enrollment.totpSecret) }),
-  });
-  assert.equal(enrolled.status, 200);
-  const cookie = enrolled.headers.get("set-cookie")?.split(";", 1)[0];
-  assert.ok(cookie);
-  const sessionResponse = await request(baseUrl, "/api/session", { headers: { Cookie: cookie } });
-  const groupAdminSession = await sessionResponse.json() as { csrfToken: string; role: string; allowedGroupIds: string[] };
-  assert.equal(groupAdminSession.role, "group_admin");
-  assert.deepEqual(groupAdminSession.allowedGroupIds, ["67890"]);
+  const groupAdmin = await acceptInviteAsAdmin(baseUrl, invite.token, "operator");
+  assert.equal(groupAdmin.session.role, "group_admin");
+  assert.deepEqual(groupAdmin.session.allowedGroupIds, ["67890"]);
+  const cookie = groupAdmin.cookie;
+  const groupCsrf = groupAdmin.csrf;
 
   const crossGroup = await request(baseUrl, "/api/groups/100200/config", { headers: { Cookie: cookie } });
   assert.equal(crossGroup.status, 403);
   const crossGroupMemberRefresh = await request(baseUrl, "/api/groups/100200/members/refresh", {
     method: "POST",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" },
     body: "{}",
   });
   assert.equal(crossGroupMemberRefresh.status, 403);
@@ -423,21 +482,21 @@ test("group administrators are limited to authorized groups and operational feat
 
   const createMemory = await request(baseUrl, "/api/memories", {
     method: "POST",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" },
     body: JSON.stringify({ groupId: "67890", type: "group_fact", title: "运营事实", content: "管理员明确保存。" }),
   });
   assert.equal(createMemory.status, 201);
 
   const forbiddenConfig = await request(baseUrl, "/api/groups/67890/config", {
     method: "PUT",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" },
     body: JSON.stringify({ switcherUserIds: ["77777"] }),
   });
   assert.equal(forbiddenConfig.status, 403);
 
   const ambientContextUpdate = await request(baseUrl, "/api/groups/67890/config", {
     method: "PUT",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" },
     body: JSON.stringify({ ambientGroupContextEnabled: false }),
   });
   assert.equal(ambientContextUpdate.status, 200);
@@ -448,18 +507,18 @@ test("group administrators are limited to authorized groups and operational feat
 
   const optOut = await request(baseUrl, "/api/groups/67890/members/20001/privacy-opt-out", {
     method: "POST",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" },
     body: "{}",
   });
   assert.equal(optOut.status, 200);
   const restore = await request(baseUrl, "/api/groups/67890/members/20001/privacy-opt-out", {
     method: "DELETE",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdminSession.csrfToken },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf },
   });
   assert.equal(restore.status, 403);
 });
 
-test("super admin can bind and unbind an account QQ identity after recent MFA", async (t) => {
+test("super admin can bind and unbind an account QQ identity after recent reauth", async (t) => {
   const { baseUrl } = await startFixture(t);
   const unauthenticated = await request(baseUrl, "/api/admin-accounts/missing/qq-binding", {
     method: "POST",
@@ -545,7 +604,7 @@ test("HTML preview admin endpoints expose metadata only, enforce group scope, CS
   assert.equal((await afterDelete.json() as { pagination: { total: number } }).pagination.total, 0);
 });
 
-test("meme library APIs restrict reads and previews to super admins, require recent MFA for changes, and audit uploads", async (t) => {
+test("meme library APIs restrict reads and previews to super admins, require recent reauth for changes, and audit uploads", async (t) => {
   const { baseUrl, db, operations } = await startFixture(t);
   const superAdmin = await login(baseUrl);
   const sessionHeaders = { Cookie: superAdmin.cookie };
@@ -690,14 +749,14 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     entry.action === "meme_library_asset_upload" && entry.target === uploaded.id
   )), true);
 
-  db.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
+  db.db.prepare("UPDATE admin_sessions SET reauth_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
   const stalePolicy = await request(baseUrl, "/api/meme-library/policy", {
     method: "PUT",
     headers: writeHeaders,
     body: JSON.stringify({ enabled: false }),
   });
   assert.equal(stalePolicy.status, 403);
-  assert.equal((await stalePolicy.json() as { error: string }).error, "recent_mfa_required");
+  assert.equal((await stalePolicy.json() as { error: string }).error, "recent_reauth_required");
 
   const staleUpload = await request(baseUrl, uploadPath, {
     method: "POST",
@@ -705,7 +764,17 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     body: image,
   });
   assert.equal(staleUpload.status, 403);
-  assert.equal((await staleUpload.json() as { error: string }).error, "recent_mfa_required");
+  assert.equal((await staleUpload.json() as { error: string }).error, "recent_reauth_required");
+
+  const reauthResponse = await reauth(baseUrl, superAdmin, "secret-password");
+  assert.equal(reauthResponse.status, 200);
+
+  const restoredPolicy = await request(baseUrl, "/api/meme-library/policy", {
+    method: "PUT",
+    headers: writeHeaders,
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(restoredPolicy.status, 200);
 
   assert.equal((await request(baseUrl, "/api/meme-library", { headers: sessionHeaders })).status, 200);
 });
@@ -719,21 +788,8 @@ test("group administrators cannot list or delete HTML previews outside their gra
     body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
   });
   const invite = await inviteResponse.json() as { token: string };
-  const accepted = await request(baseUrl, "/api/auth/invites/accept", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ inviteToken: invite.token, username: "preview-operator", password: "operator-password" }),
-  });
-  const enrollment = await accepted.json() as { enrollmentToken: string; totpSecret: string };
-  const enrolled = await request(baseUrl, "/api/auth/totp/enroll", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enrollmentToken: enrollment.enrollmentToken, code: makeTotp(enrollment.totpSecret) }),
-  });
-  const cookie = enrolled.headers.get("set-cookie")?.split(";", 1)[0];
-  assert.ok(cookie);
-  const session = await request(baseUrl, "/api/session", { headers: { Cookie: cookie } });
-  const groupAdmin = await session.json() as { csrfToken: string };
+  const groupAdmin = await acceptInviteAsAdmin(baseUrl, invite.token, "preview-operator");
+  const cookie = groupAdmin.cookie;
 
   const allowedList = await request(baseUrl, "/api/html-previews?groupId=67890", { headers: { Cookie: cookie } });
   assert.equal(allowedList.status, 200);
@@ -744,7 +800,7 @@ test("group administrators cannot list or delete HTML previews outside their gra
 
   const crossGroupDelete = await request(baseUrl, "/api/html-previews/preview-forbidden", {
     method: "DELETE",
-    headers: { Cookie: cookie, "X-CSRF-Token": groupAdmin.csrfToken },
+    headers: { Cookie: cookie, "X-CSRF-Token": groupAdmin.csrf },
   });
   assert.equal(crossGroupDelete.status, 403);
 });
@@ -829,7 +885,7 @@ test("member refresh reports an unavailable NapCat directory without caching an 
   assert.equal(data.cacheStatus, "unloaded");
 });
 
-test("super admin config updates cannot bypass recent MFA for privacy opt-outs", async (t) => {
+test("super admin config updates cannot bypass recent reauth for privacy opt-outs", async (t) => {
   const { baseUrl, db } = await startFixture(t);
   const auth = await login(baseUrl);
   const optOut = await request(baseUrl, "/api/groups/67890/members/20001/privacy-opt-out", {
@@ -839,23 +895,23 @@ test("super admin config updates cannot bypass recent MFA for privacy opt-outs",
   });
   assert.equal(optOut.status, 200);
 
-  db.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
+  db.db.prepare("UPDATE admin_sessions SET reauth_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
   const bypass = await request(baseUrl, "/api/groups/67890/config", {
     method: "PUT",
     headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
     body: JSON.stringify({ memoryDisabledUserIds: [] }),
   });
   assert.equal(bypass.status, 403);
-  assert.equal((await bypass.json() as { error: string }).error, "recent_mfa_required");
+  assert.equal((await bypass.json() as { error: string }).error, "recent_reauth_required");
 
   const group = await request(baseUrl, "/api/groups/67890/config", { headers: { Cookie: auth.cookie } });
   assert.deepEqual((await group.json() as { memoryDisabledUserIds: string[] }).memoryDisabledUserIds, ["20001"]);
 });
 
-test("sensitive global writes require recent MFA while their read views remain available", async (t) => {
+test("sensitive global writes require recent reauth while their read views remain available", async (t) => {
   const { baseUrl, db } = await startFixture(t);
   const auth = await login(baseUrl);
-  db.db.prepare("UPDATE admin_sessions SET mfa_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
+  db.db.prepare("UPDATE admin_sessions SET reauth_verified_at = ?").run(Date.now() - 11 * 60 * 1_000);
   const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
 
   const settings = await request(baseUrl, "/api/system-settings", {
@@ -864,7 +920,7 @@ test("sensitive global writes require recent MFA while their read views remain a
     body: JSON.stringify({ onlineLookupEnabled: true }),
   });
   assert.equal(settings.status, 403);
-  assert.equal((await settings.json() as { error: string }).error, "recent_mfa_required");
+  assert.equal((await settings.json() as { error: string }).error, "recent_reauth_required");
 
   const persona = await request(baseUrl, "/api/persona/huixian", {
     method: "PUT",
@@ -872,7 +928,7 @@ test("sensitive global writes require recent MFA while their read views remain a
     body: JSON.stringify({ name: "会仙", systemPrompt: "updated" }),
   });
   assert.equal(persona.status, 403);
-  assert.equal((await persona.json() as { error: string }).error, "recent_mfa_required");
+  assert.equal((await persona.json() as { error: string }).error, "recent_reauth_required");
 
   const commands = await request(baseUrl, "/api/commands", {
     method: "PUT",
@@ -880,37 +936,9 @@ test("sensitive global writes require recent MFA while their read views remain a
     body: JSON.stringify({ commands: [] }),
   });
   assert.equal(commands.status, 403);
-  assert.equal((await commands.json() as { error: string }).error, "recent_mfa_required");
+  assert.equal((await commands.json() as { error: string }).error, "recent_reauth_required");
 
   assert.equal((await request(baseUrl, "/api/system-settings", { headers: { Cookie: auth.cookie } })).status, 200);
   assert.equal((await request(baseUrl, "/api/persona/huixian", { headers: { Cookie: auth.cookie } })).status, 200);
   assert.equal((await request(baseUrl, "/api/commands", { headers: { Cookie: auth.cookie } })).status, 200);
 });
-
-function makeTotp(secret: string, now = Date.now()): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const text = secret.toUpperCase().replace(/[=\s-]/g, "");
-  let bits = 0;
-  let value = 0;
-  const bytes: number[] = [];
-  for (const character of text) {
-    const index = alphabet.indexOf(character);
-    if (index < 0) throw new Error("invalid_test_totp_secret");
-    value = (value << 5) | index;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push((value >>> (bits - 8)) & 0xff);
-      bits -= 8;
-    }
-  }
-  const counter = Math.floor(now / 30_000);
-  const counterBuffer = Buffer.alloc(8);
-  counterBuffer.writeBigUInt64BE(BigInt(counter));
-  const digest = createHmac("sha1", Buffer.from(bytes)).update(counterBuffer).digest();
-  const offset = digest[digest.length - 1]! & 0x0f;
-  const code = ((digest[offset]! & 0x7f) << 24) |
-    (digest[offset + 1]! << 16) |
-    (digest[offset + 2]! << 8) |
-    digest[offset + 3]!;
-  return String(code % 1_000_000).padStart(6, "0");
-}

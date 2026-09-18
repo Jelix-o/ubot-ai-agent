@@ -41,7 +41,6 @@ const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
   reply: "Reply Model",
   summary: "Summary Model",
   knowledge: "Knowledge Model",
-  tts: "TTS Model",
   image: "Image Model",
   custom: "Custom Model",
 };
@@ -407,7 +406,7 @@ onMounted(() => {
       <div v-else class="settings-grid">
         <div class="card setting-card">
           <h3>群显示 / 隐藏</h3>
-          <p class="muted">隐藏群会禁用机器人回复、语音、日报、定时任务和记忆收集。</p>
+
           <input v-model="groupQuery" class="input" placeholder="搜索群名或群号" />
           <div class="compact-list">
             <label v-for="group in visibleGroups()" :key="group.groupId" class="switch-row">
@@ -435,7 +434,7 @@ onMounted(() => {
             </div>
             <div class="policy-row policy-wide">
               <label class="policy-toggle"><span>全局启用自动实时查询</span><input v-model="settings.onlineLookupEnabled" type="checkbox" /></label>
-              <p class="muted">已启用群会按需查询天气、A 股和时效信息；单群可单独关闭。</p>
+
             </div>
           </div>
         </div>

@@ -27,6 +27,7 @@ export interface IngressMessageRow {
   images_json: string;
   sender_card: string | null;
   sender_nickname: string | null;
+  sender_role: string | null;
   reply_to: string | null;
   verified_mention_user_ids_json: string;
   has_at_bot: number;
@@ -92,6 +93,7 @@ export interface RecentGroupEvidenceRow {
   images_json: string;
   sender_card: string | null;
   sender_nickname: string | null;
+  sender_role: string | null;
   occurred_at: number;
 }
 
@@ -155,6 +157,7 @@ CREATE TABLE IF NOT EXISTS messages (
   images_json TEXT NOT NULL DEFAULT '[]',
   sender_card TEXT,
   sender_nickname TEXT,
+  sender_role TEXT,
   reply_to TEXT,
   verified_mention_user_ids_json TEXT NOT NULL DEFAULT '[]',
   has_at_bot INTEGER NOT NULL DEFAULT 0,
@@ -497,9 +500,6 @@ CREATE TABLE IF NOT EXISTS admin_accounts (
   username TEXT NOT NULL COLLATE NOCASE UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('super_admin','group_admin')),
-  totp_secret_ciphertext TEXT,
-  totp_enabled_at INTEGER,
-  mfa_last_counter INTEGER NOT NULL DEFAULT -1,
   disabled_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -521,7 +521,7 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
-  mfa_verified_at INTEGER NOT NULL,
+  reauth_verified_at INTEGER NOT NULL,
   revoked_at INTEGER,
   ip_hash TEXT,
   user_agent_hash TEXT
@@ -536,18 +536,6 @@ CREATE TABLE IF NOT EXISTS admin_login_rate_limits (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(scope,key_hash)
 );
-CREATE TABLE IF NOT EXISTS admin_auth_challenges (
-  id TEXT PRIMARY KEY,
-  token_hash TEXT NOT NULL UNIQUE,
-  account_id TEXT NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('login_totp','totp_enroll')),
-  secret_ciphertext TEXT,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER,
-  ip_hash TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_admin_auth_challenges_account ON admin_auth_challenges(account_id,expires_at);
 CREATE TABLE IF NOT EXISTS admin_invites (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
@@ -560,14 +548,6 @@ CREATE TABLE IF NOT EXISTS admin_invites (
   revoked_at INTEGER,
   accepted_account_id TEXT REFERENCES admin_accounts(id)
 );
-CREATE TABLE IF NOT EXISTS admin_recovery_codes (
-  id TEXT PRIMARY KEY,
-  account_id TEXT NOT NULL REFERENCES admin_accounts(id) ON DELETE CASCADE,
-  code_hash TEXT NOT NULL UNIQUE,
-  created_at INTEGER NOT NULL,
-  used_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_admin_recovery_codes_account ON admin_recovery_codes(account_id,used_at);
 CREATE TABLE IF NOT EXISTS admin_auth_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id TEXT,
@@ -733,6 +713,118 @@ function addVerifiedMentionUserIdsColumn(db: DatabaseSync): void {
   }
 }
 
+function retireAdminMfa(db: DatabaseSync): void {
+  const now = Date.now();
+  const sessionColumns = new Set((db.prepare("PRAGMA table_info(admin_sessions)").all() as Array<{ name: string }>).map((row) => row.name));
+  if (!sessionColumns.has("reauth_verified_at")) {
+    db.exec("ALTER TABLE admin_sessions ADD COLUMN reauth_verified_at INTEGER NOT NULL DEFAULT 0");
+  }
+  db.prepare("UPDATE admin_sessions SET revoked_at = COALESCE(revoked_at, ?)").run(now);
+  db.exec("DROP INDEX IF EXISTS idx_admin_auth_challenges_account");
+  db.exec("DROP INDEX IF EXISTS idx_admin_recovery_codes_account");
+  db.exec("DROP TABLE IF EXISTS admin_auth_challenges");
+  db.exec("DROP TABLE IF EXISTS admin_recovery_codes");
+  db.prepare("DELETE FROM admin_login_rate_limits WHERE scope = 'totp' OR scope LIKE 'totp_%' OR scope = 'recovery_login'").run();
+  dropColumnIfPresent(db, "admin_accounts", "totp_secret_ciphertext");
+  dropColumnIfPresent(db, "admin_accounts", "totp_enabled_at");
+  dropColumnIfPresent(db, "admin_accounts", "mfa_last_counter");
+  dropColumnIfPresent(db, "admin_sessions", "mfa_verified_at");
+}
+
+function addSenderRoleColumn(db: DatabaseSync): void {
+  const columns = new Set((db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((row) => row.name));
+  if (!columns.has("sender_role")) {
+    db.exec("ALTER TABLE messages ADD COLUMN sender_role TEXT");
+  }
+}
+
+function retireVoiceState(db: DatabaseSync): void {
+  const now = Date.now();
+  const settingsRow = db.prepare(
+    "SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'",
+  ).get() as { settings_json: string } | undefined;
+  if (settingsRow) {
+    const settings = parseJsonObject(settingsRow.settings_json, "invalid_v3_system_settings_for_voice_retirement");
+    const models = Array.isArray(settings.models) ? settings.models : [];
+    const retiredModelIds = models
+      .filter((item) => isRecord(item) && item.purpose === "tts")
+      .map((item) => String(item.id ?? "").trim())
+      .filter(Boolean);
+    settings.models = models.filter((item) => !(isRecord(item) && item.purpose === "tts"));
+    if (isRecord(settings.selectedModelIds)) delete settings.selectedModelIds.tts;
+    if (Array.isArray(settings.commands)) {
+      settings.commands = settings.commands.filter((item) => !(
+        isRecord(item) && (item.id === "voice" || item.id === "voice_reply" || item.id === "sing")
+      ));
+    }
+    if (Array.isArray(settings.removedDefaultModelIds)) {
+      const retired = new Set([...retiredModelIds, "tts", "tts-mimo-v25"]);
+      settings.removedDefaultModelIds = settings.removedDefaultModelIds.filter((id) => !retired.has(String(id)));
+    }
+    db.prepare("UPDATE v3_system_settings SET settings_json = ?, updated_at = ? WHERE settings_key = 'default'")
+      .run(JSON.stringify(settings), now);
+    const deleteSecret = db.prepare("DELETE FROM v3_system_secrets WHERE secret_key = ?");
+    for (const modelId of new Set([...retiredModelIds, "tts", "tts-mimo-v25"])) {
+      deleteSecret.run(`model:${modelId}:api_key`);
+    }
+  }
+
+  const groups = db.prepare("SELECT group_id, config_json FROM v3_groups").all() as Array<{ group_id: string; config_json: string }>;
+  const updateGroup = db.prepare("UPDATE v3_groups SET config_json = ?, updated_at = ? WHERE group_id = ?");
+  for (const row of groups) {
+    const config = parseJsonObject(row.config_json, "invalid_v3_group_config_for_voice_retirement");
+    delete config.voiceReplyEnabled;
+    delete config.defaultVoiceReplyEnabled;
+    updateGroup.run(JSON.stringify(config), now, row.group_id);
+  }
+
+  for (const table of ["v3_character_profiles", "v3_character_profile_revisions"] as const) {
+    const key = table === "v3_character_profiles" ? "id" : "id";
+    const rows = db.prepare(`SELECT ${key} AS row_key, profile_json FROM ${table}`).all() as Array<{ row_key: string | number; profile_json: string }>;
+    const update = db.prepare(`UPDATE ${table} SET profile_json = ? WHERE ${key} = ?`);
+    for (const row of rows) {
+      const profile = parseJsonObject(row.profile_json, "invalid_v3_character_profile_for_voice_retirement");
+      delete profile.ttsConfig;
+      delete profile.ttsStyleHint;
+      update.run(JSON.stringify(profile), row.row_key);
+    }
+  }
+
+  const policies = db.prepare("SELECT policy_key, policy_json FROM v3_capability_policies").all() as Array<{ policy_key: string; policy_json: string }>;
+  const updatePolicy = db.prepare("UPDATE v3_capability_policies SET policy_json = ?, updated_at = ? WHERE policy_key = ?");
+  for (const row of policies) {
+    const policy = parseJsonObject(row.policy_json, "invalid_v3_capability_policy_for_voice_retirement");
+    if (Array.isArray(policy.enabledCapabilities)) {
+      policy.enabledCapabilities = policy.enabledCapabilities.filter((value) => value !== "voice" && value !== "singing");
+    }
+    updatePolicy.run(JSON.stringify(policy), now, row.policy_key);
+  }
+  db.prepare(
+    `DELETE FROM v3_state_documents
+      WHERE document_type = 'model-health'
+        AND (document_json LIKE '%\"purpose\":\"tts\"%' OR document_json LIKE '%\"probeType\":\"tts\"%')`,
+  ).run();
+}
+
+function dropColumnIfPresent(db: DatabaseSync, table: "admin_accounts" | "admin_sessions", column: string): void {
+  const columns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name));
+  if (columns.has(column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+}
+
+function parseJsonObject(value: string, errorCode: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (isRecord(parsed)) return parsed;
+  } catch {
+    // The migration must fail atomically rather than silently discard state.
+  }
+  throw new Error(errorCode);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 const MIGRATIONS: readonly SqliteMigration[] = [
   {
     version: 1,
@@ -793,6 +885,21 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     version: 12,
     name: "persist-verified-message-mention-targets",
     apply: addVerifiedMentionUserIdsColumn,
+  },
+  {
+    version: 13,
+    name: "retire-admin-mfa",
+    apply: retireAdminMfa,
+  },
+  {
+    version: 14,
+    name: "persist-platform-sender-role",
+    apply: addSenderRoleColumn,
+  },
+  {
+    version: 15,
+    name: "retire-voice-state",
+    apply: retireVoiceState,
   },
 ];
 
@@ -1027,6 +1134,7 @@ export class SharedDb {
     imagesJson: string;
     senderCard?: string;
     senderNickname?: string;
+    senderRole?: string;
     replyTo?: string;
     verifiedMentionUserIds?: string[];
     hasAtBot: boolean;
@@ -1040,9 +1148,9 @@ export class SharedDb {
         .prepare(
           `INSERT INTO messages
              (group_id, user_id, self_id, msg_id, msg_time, text, images_json,
-              sender_card, sender_nickname, reply_to, verified_mention_user_ids_json,
+              sender_card, sender_nickname, sender_role, reply_to, verified_mention_user_ids_json,
               has_at_bot, is_bot_msg, processable, drop_reason, created_at, dedup_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.groupId,
@@ -1054,6 +1162,7 @@ export class SharedDb {
           row.imagesJson,
           normalizeOptionalText(row.senderCard),
           normalizeOptionalText(row.senderNickname),
+          normalizeSenderRole(row.senderRole),
           row.replyTo ?? null,
           JSON.stringify(normalizeVerifiedMentionUserIds(row.verifiedMentionUserIds)),
           row.hasAtBot ? 1 : 0,
@@ -1230,7 +1339,7 @@ export class SharedDb {
     const rows = this.db
       .prepare(
         `SELECT m.id, m.group_id, m.user_id, m.self_id, m.msg_id, m.msg_time, m.text,
-                m.images_json, m.sender_card, m.sender_nickname, m.reply_to,
+                m.images_json, m.sender_card, m.sender_nickname, m.sender_role, m.reply_to,
                 m.verified_mention_user_ids_json,
                 m.has_at_bot, m.is_bot_msg, m.processable, m.drop_reason, m.created_at,
                 r.topic_id AS context_topic_id,
@@ -1764,6 +1873,11 @@ function parseOutboxDeliveryId(value: string): number | undefined {
 function normalizeOptionalText(value: string | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function normalizeSenderRole(value: string | undefined): "owner" | "admin" | "member" | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "owner" || normalized === "admin" || normalized === "member" ? normalized : null;
 }
 
 function normalizeVerifiedMentionUserIds(values: string[] | undefined): string[] {

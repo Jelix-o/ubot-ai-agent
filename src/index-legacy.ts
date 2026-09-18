@@ -7,7 +7,6 @@ import { AiService } from "./services/ai-service.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { AdminTaskStore } from "./services/admin-task-store.js";
 import { ConfiguredAiService } from "./services/configured-ai-service.js";
-import { ConfiguredTtsService } from "./services/configured-tts-service.js";
 import { ConversationStore } from "./services/conversation-store.js";
 import { SqliteConversationStore } from "./services/conversation-store-v3.js";
 import { ConversationContextRepository } from "./services/conversation-context-repository.js";
@@ -32,7 +31,6 @@ import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
-import { TtsService } from "./services/tts-service.js";
 import { logError, logInfo } from "./logger.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageTransport } from "./bot.js";
@@ -82,21 +80,6 @@ async function startLegacyBot(): Promise<BotApplication> {
     undefined,
     capabilityPolicy,
   );
-  const defaultTtsService = new TtsService(
-    config.ttsBaseUrl,
-    config.ttsApiKey,
-    config.ttsModel,
-    config.ttsVoice,
-    config.ttsAudioFormat,
-    config.ttsCacheDir,
-    config.ttsStyleHint,
-  );
-  const runtimeTtsService = new ConfiguredTtsService(defaultTtsService, systemSettingsStore, {
-    voice: config.ttsVoice,
-    audioFormat: config.ttsAudioFormat,
-    cacheDir: config.ttsCacheDir,
-    globalStyleHint: config.ttsStyleHint,
-  });
   const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath, v3State);
   const characterProfileService = v3State ? new CharacterProfileService(v3State) : undefined;
   const skillService = characterProfileService ?? new SkillService(config.skillsDir);
@@ -139,7 +122,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     skillService,
     v3State ? new SqliteConversationStore(contextRepository) : new ConversationStore(config.conversationsPath),
     runtimeReplyAiService,
-    runtimeTtsService,
+    undefined,
     new DailyReportService(
       new DailyReportStore(config.dailyReportStorePath, v3State),
       runtimeReplyAiService,
@@ -155,7 +138,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     new GroupLock(1),
     new LiveChatService(),
     config.botQq,
-    config.ttsAllowNapCatAiFallback,
+    false,
     groupMemoryStore,
     knowledgeBaseStore,
     undefined,
@@ -219,6 +202,7 @@ async function startLegacyBot(): Promise<BotApplication> {
         imagesJson: JSON.stringify(images),
         senderCard: event.sender?.card,
         senderNickname: event.sender?.nickname,
+        senderRole: event.sender?.role,
         replyTo: parsed.replyMessageId,
         hasAtBot: parsed.hasAtBot,
         isBotMsg: false,
@@ -235,8 +219,7 @@ async function startLegacyBot(): Promise<BotApplication> {
         text: row.text || (safeImageCount(row.images_json) > 0 ? "[图片消息]" : ""),
         timestamp: new Date(row.msg_time).toISOString(),
       })).filter((message) => Boolean(message.text)), messageTime);
-      const isAdministrativeCommand = parsed.text.trim().startsWith("#") &&
-        !/^(?:#语音(?:\s|$)|#唱歌(?:\s|$))/u.test(parsed.text.trim());
+      const isAdministrativeCommand = parsed.text.trim().startsWith("#");
       // A OneBot reply segment alone is not an authorization to speak. Match
       // the worker path: only a same-group, acknowledged bot message may
       // continue without an explicit @.

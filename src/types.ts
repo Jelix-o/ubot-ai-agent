@@ -50,7 +50,7 @@ export interface AiHealthStatus {
   latencyMs: number;
   cached: boolean;
   skipped?: boolean;
-  probeType?: "chat" | "tts" | "image";
+  probeType?: "chat" | "image";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -96,9 +96,6 @@ export interface CharacterProfile {
   systemPrompt: string;
   styleRules: string[];
   knowledge: string[];
-  /** @deprecated Read only for old skill JSON imports. New saves migrate it to ttsConfig.stylePrompt. */
-  ttsStyleHint?: string;
-  ttsConfig?: SkillTtsConfig;
   exampleExchanges?: Array<{
     user: string;
     assistant: string;
@@ -119,13 +116,6 @@ export interface CharacterProfile {
 
 /** @deprecated Use CharacterProfile. Retained for legacy JSON compatibility. */
 export type SkillDefinition = CharacterProfile;
-
-export interface SkillTtsConfig {
-  stylePrompt?: string;
-  voice?: string;
-  dialect?: string;
-  personaTone?: string;
-}
 
 export interface MessageImageInput {
   url?: string;
@@ -345,8 +335,6 @@ export interface GroupBotConfig {
     keyword: string;
     enabled: boolean;
   }>;
-  voiceReplyEnabled?: boolean;
-  defaultVoiceReplyEnabled?: boolean;
   memoryDisabledUserIds?: string[];
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
@@ -442,7 +430,7 @@ export interface AdminSession {
   expiresAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "tts" | "image" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "custom";
 /**
  * Values accepted only while importing pre-V3 settings. They are never
  * selected by V3 runtime services.
@@ -528,14 +516,6 @@ export interface AppConfig {
   openAiApiKey: string;
   openAiModel: string;
   realtimeSearchUrl: string;
-  ttsBaseUrl: string;
-  ttsApiKey: string;
-  ttsModel: string;
-  ttsVoice: string;
-  ttsAudioFormat: "wav" | "mp3" | "pcm" | "pcm16";
-  ttsStyleHint?: string;
-  ttsAllowNapCatAiFallback: boolean;
-  ttsCacheDir: string;
   dataDir: string;
   /** Public origin deliberately separate from the authenticated admin host. */
   htmlPreviewPublicBaseUrl: string;
@@ -557,7 +537,6 @@ export interface AppConfig {
   adminHttpEnabled: boolean;
   adminHttpHost: string;
   adminHttpPort: number;
-  adminMfaRequired?: boolean;
   adminPublicBaseUrl: string;
   adminUsername?: string;
   adminPassword?: string;

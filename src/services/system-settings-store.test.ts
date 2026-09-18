@@ -6,19 +6,13 @@ import test from "node:test";
 
 import { SharedDb } from "../shared/sqlite.js";
 import type { SystemSettings } from "../types.js";
-import {
-  LEGACY_MIMO_TTS_BASE_URL,
-  LEGACY_MIMO_TTS_MODEL,
-  MIMO_TTS_BASE_URL,
-  MIMO_TTS_MODEL,
-} from "./mimo-tts-config.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
 import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-function model(id: string, purpose: "reply" | "summary" | "knowledge" | "tts" | "image" | "custom", apiKey = `${id}-key`) {
+function model(id: string, purpose: "reply" | "summary" | "knowledge" | "image" | "custom", apiKey = `${id}-key`) {
   return {
     id,
     name: `${id} model`,
@@ -45,7 +39,7 @@ test("SystemSettingsStore redacts provider keys from public reads", async () => 
   await withDir(async (dir) => {
     const store = new SystemSettingsStore(path.join(dir, "settings.json"), [
       model("reply", "reply", "reply-secret"),
-      model("tts", "tts", "tts-secret"),
+      { ...model("legacy-tts", "custom", "tts-secret"), purpose: "tts" as never },
     ]);
 
     const publicSettings = await store.get();
@@ -53,7 +47,7 @@ test("SystemSettingsStore redacts provider keys from public reads", async () => 
     assert.equal(publicSettings.models.every((item) => item.hasApiKey), true);
     const internal = await store.getInternal();
     assert.equal(internal.models.find((item) => item.id === "reply")?.apiKey, "reply-secret");
-    assert.equal(internal.models.find((item) => item.id === "tts")?.apiKey, "tts-secret");
+    assert.equal(internal.models.some((item) => item.id === "legacy-tts"), false);
   });
 });
 
@@ -105,6 +99,10 @@ test("SystemSettingsStore accepts only V3 model purposes and safe identifiers", 
       /invalid_model_purpose/,
     );
     await assert.rejects(
+      store.update({ models: [{ ...model("legacy-tts", "reply"), purpose: "tts" as never }] }),
+      /voice_feature_retired/,
+    );
+    await assert.rejects(
       store.update({ models: [{ ...model("../bad", "reply") }] }),
       /invalid_model_id/,
     );
@@ -139,29 +137,33 @@ test("SystemSettingsStore persists retained cost controls and online lookup", as
   });
 });
 
-test("SystemSettingsStore migrates built-in MiMo TTS configuration only", async () => {
+test("SystemSettingsStore rejects tts purpose updates and strips tts models on read", async () => {
   await withDir(async (dir) => {
-    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
-    await store.update({
+    const file = path.join(dir, "settings.json");
+    const store = new SystemSettingsStore(file);
+    await assert.rejects(
+      store.update({
+        models: [{ ...model("tts-mimo", "reply", "tts-key"), purpose: "tts" as never }],
+        selectedModelIds: { tts: "tts-mimo" } as never,
+      }),
+      /voice_feature_retired/,
+    );
+
+    await writeFile(file, JSON.stringify({
       models: [
-        {
-          ...model("tts-mimo-v25", "tts", "tts-key"),
-          baseUrl: `${LEGACY_MIMO_TTS_BASE_URL}/`,
-          model: LEGACY_MIMO_TTS_MODEL,
-        },
-        {
-          ...model("custom-tts", "tts", "custom-key"),
-          baseUrl: LEGACY_MIMO_TTS_BASE_URL,
-          model: LEGACY_MIMO_TTS_MODEL,
-        },
+        model("reply", "reply", "reply-secret"),
+        { ...model("legacy-tts", "reply"), purpose: "tts" },
       ],
-      selectedModelIds: { tts: "tts-mimo-v25" },
-    });
-    const internal = await store.getInternal();
-    assert.equal(internal.models.find((item) => item.id === "tts-mimo-v25")?.baseUrl, MIMO_TTS_BASE_URL);
-    assert.equal(internal.models.find((item) => item.id === "tts-mimo-v25")?.model, MIMO_TTS_MODEL);
-    assert.equal(internal.models.find((item) => item.id === "custom-tts")?.baseUrl, LEGACY_MIMO_TTS_BASE_URL);
-    assert.equal(internal.models.find((item) => item.id === "custom-tts")?.model, LEGACY_MIMO_TTS_MODEL);
+      selectedModelIds: { reply: "reply", tts: "legacy-tts" },
+      updatedAt: "2026-08-25T00:00:00.000Z",
+    }), "utf8");
+
+    const reloaded = new SystemSettingsStore(file);
+    const internal = await reloaded.getInternal();
+    assert.equal(internal.models.some((item) => item.id === "legacy-tts"), false);
+    assert.equal(internal.models.find((item) => item.id === "reply")?.apiKey, "reply-secret");
+    assert.equal(Object.hasOwn(internal.selectedModelIds, "tts"), false);
+    assert.equal(internal.selectedModelIds.reply, "reply");
   });
 });
 

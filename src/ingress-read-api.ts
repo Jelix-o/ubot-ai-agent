@@ -66,7 +66,9 @@ export class IngressReadApi {
         if (!this.transport.listGroupMembers) {
           return this.json(res, 501, { error: "listGroupMembers unavailable" });
         }
-        const members = await this.transport.listGroupMembers(groupId);
+        const members = await this.transport.listGroupMembers(groupId, {
+          refresh: url.searchParams.get("refresh") === "1",
+        });
         return this.json(res, 200, { members });
       }
 
@@ -163,8 +165,10 @@ export class IngressReadApiClient {
     return body.message ?? undefined;
   }
 
-  async listGroupMembers(groupId: string): Promise<Array<{ user_id: number; nickname?: string; card?: string; role?: string }>> {
-    const response = await this.safeFetch(`${this.baseUrl}/read/group_members?group_id=${encodeURIComponent(groupId)}`);
+  async listGroupMembers(groupId: string, options?: { refresh?: boolean }): Promise<Array<{ user_id: number; nickname?: string; card?: string; role?: string }>> {
+    const query = new URLSearchParams({ group_id: groupId });
+    if (options?.refresh) query.set("refresh", "1");
+    const response = await this.safeFetch(`${this.baseUrl}/read/group_members?${query.toString()}`);
     if (!response) {
       return [];
     }

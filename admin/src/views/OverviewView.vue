@@ -115,7 +115,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
             <strong>{{ data?.stats.knowledgeCount ?? 0 }}</strong>
             <span>条群知识条目</span>
           </div>
-          <p class="muted">可进入知识库页面查看条目明细、添加新问答或调整匹配关键词。</p>
+
         </div>
       </section>
     </div>

@@ -43,7 +43,6 @@ import {
   type HtmlPreviewService,
   type ParsedHtmlPreviewRequest,
 } from "./services/html-preview-service.js";
-import type { RuntimeTtsService } from "./services/configured-tts-service.js";
 import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
@@ -54,7 +53,6 @@ import {
   ImageGenerationError,
   type ImageGenerationRuntime,
 } from "./services/image-generation-service.js";
-import { TtsServiceError } from "./services/tts-service.js";
 import type {
   ProviderCapabilityFeature,
   ProviderProtocol,
@@ -98,12 +96,8 @@ import {
 } from "./utils/reply-length.js";
 import { classifyUpstreamFailure } from "./utils/upstream-failure.js";
 import { withTimeout } from "./utils/with-timeout.js";
-import { parseVoiceCommand } from "./utils/voice-command.js";
 
 const MODEL_PREFIX = "#模型";
-const VOICE_PREFIX = "#语音";
-const VOICE_REPLY_PREFIX = "#语音回复";
-const SING_PREFIX = "#唱歌";
 const CONVERSATION_PREFIX = "#对话";
 const LIVE_CHAT_PREFIX = "#实时对话";
 const DAILY_REPORT_PREFIX = "#日报";
@@ -143,14 +137,13 @@ const DEFAULT_TOKEN_COST_CONTROL: TokenCostControlSettings = {
 };
 
 const MSG_AI_FAIL = "我刚刚思考超时了，请稍后再试一次";
-const MSG_VOICE_FAIL = "语音发送失败，我先用文字回复你";
 const MSG_CONVERSATION_NO_PERMISSION = "你没有清理其他人对话上下文的权限";
 const MSG_LIVE_CHAT_NO_PERMISSION = "你没有管理实时对话的权限";
 const MSG_INVALID_QQ = "请提供有效的 QQ 号";
 const MSG_DAILY_REPORT_NO_PERMISSION = "你没有管理群聊日报的权限";
 const MSG_HOLIDAY_COUNTDOWN_NO_PERMISSION = "你没有管理节假日倒计时的权限";
 const MSG_SCHEDULED_REMINDER_NO_PERMISSION = "你没有管理定时任务总开关的权限";
-const MSG_ADMIN_RETIRED = "QQ 管理员已退休；请使用后台账号、TOTP 和群授权管理权限";
+const MSG_ADMIN_RETIRED = "#管理员 已退休；后台账号绑定和 QQ 群角色会自动决定群内权限";
 const MSG_ADMIN_NO_PERMISSION = "你没有管理管理员的权限";
 const MSG_MUTE_NO_PERMISSION = "你没有让机器人闭嘴或说话的权限";
 const MSG_BLACKLIST_NO_PERMISSION = "你没有管理机器人黑名单的权限";
@@ -159,7 +152,6 @@ const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限"
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
-const MSG_VOICE_REPLY_NO_PERMISSION = "你没有管理语音回复的权限";
 
 const ROAST_MODE_SCENARIO_INSTRUCTION = [
   "本轮触发了群管理后台配置的“嘴臭模式”。",
@@ -189,9 +181,6 @@ const RUNTIME_COMMAND_SPECS = {
   scheduled_reminder: { builtinPrefix: SCHEDULED_REMINDER_PREFIX, builtinAliases: [] },
   server: { builtinPrefix: SERVER_PREFIX, builtinAliases: [] },
   status: { builtinPrefix: STATUS_PREFIX, builtinAliases: [] },
-  sing: { builtinPrefix: SING_PREFIX, builtinAliases: [] },
-  voice: { builtinPrefix: VOICE_PREFIX, builtinAliases: [] },
-  voice_reply: { builtinPrefix: VOICE_REPLY_PREFIX, builtinAliases: [] },
 } as const;
 
 type RuntimeCommandId = keyof typeof RUNTIME_COMMAND_SPECS;
@@ -268,10 +257,8 @@ export interface MessageTransport {
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
   /** Queues a worker-local generated image for ingress delivery and cleanup. */
   sendGeneratedGroupImage?(groupId: string, imagePath: string): Promise<void | MessageReceipt>;
-  sendGroupRecord(groupId: string, recordFile: string): Promise<void | MessageReceipt>;
-  sendGroupAiRecord(groupId: string, text: string): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
-  listGroupMembers?(groupId: string): Promise<NapcatGroupMember[]>;
+  listGroupMembers?(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]>;
   listGroups?(): Promise<NapcatGroupInfo[]>;
   resolveMentionTargets?(groupId: string, candidates: string[]): Promise<string[]>;
   resolveMemberIdentities?(groupId: string, candidates: string[]): Promise<GroupMemberIdentity[]>;
@@ -361,8 +348,6 @@ interface HandleGroupMessageOptions {
   allowReplyWithoutMention?: boolean;
 }
 
-type ReplyOutputMode = "text" | "voice" | "singing";
-
 type OpsAlertType = "startup" | "napcat-down" | "memory-high" | "send-failure" | "send-recovered";
 
 interface OpsAlertRuntimeState {
@@ -395,7 +380,7 @@ export class BotApplication {
     private readonly skillService: Pick<SkillService | CharacterProfileService, "getSkill">,
     private readonly conversationStore: ConversationRuntimeStore,
     private readonly aiService: RuntimeAiService,
-    private readonly ttsService: RuntimeTtsService,
+    _retiredSpeechService: unknown,
     private readonly dailyReportService: DailyReportService,
     private readonly holidayCountdownService: HolidayCountdownService,
     private readonly scheduledReminderService: ScheduledReminderService,
@@ -403,7 +388,7 @@ export class BotApplication {
     private readonly groupLock: GroupLock,
     private readonly liveChatService: LiveChatService,
     private readonly botQq: string,
-    private readonly allowNapCatAiVoiceFallback = false,
+    _retiredSpeechFallback = false,
     private readonly groupMemoryStore?: GroupMemoryStore,
     private readonly knowledgeBaseStore?: KnowledgeBaseStore,
     // Retired V1/V2 constructor slots remain so external embeddings do not
@@ -637,12 +622,6 @@ export class BotApplication {
       return;
     }
 
-    const voiceReplyCommand = matchRuntimeCommand(commandText, runtimeCommands, "voice_reply");
-    if (voiceReplyCommand) {
-      await this.handleVoiceReplyCommand(groupConfig, event, voiceReplyCommand.rewrittenText);
-      return;
-    }
-
     if (groupConfig.botMuted === true) {
       const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
       if (dailyReportCommand) {
@@ -820,82 +799,6 @@ export class BotApplication {
       parsedMessage.text.trim().length > 0 &&
       parsedMessage.images.length === 0 &&
       (messageContext.replyContext?.images?.length ?? 0) === 0;
-    const singCommand = matchRuntimeCommand(commandText, runtimeCommands, "sing");
-    if (singCommand) {
-      if (!this.isCapabilityEnabled("singing")) {
-        await this.rejectCapability(groupId, "singing");
-        return;
-      }
-      if (groupConfig.voiceReplyEnabled === false) {
-        await this.sendText(groupId, "本群语音功能已关闭");
-        return;
-      }
-      const singInput = singCommand.suffix.trim();
-      if (!singInput) {
-        await this.sendText(groupId, `唱歌命令格式：${runtimeCommandPrimary(runtimeCommands, "sing")} <内容>`);
-        return;
-      }
-      await this.groupLock.run(groupId, async () => {
-        await this.handleConversation(
-          groupConfig,
-          userId,
-          singInput,
-          parsedMessage.images,
-          "singing",
-          [],
-          messageContext,
-          false,
-          conversationRoute,
-        );
-      });
-      return;
-    }
-
-    const voiceRuntimeCommand = matchRuntimeCommand(commandText, runtimeCommands, "voice");
-    const voiceCommandEnabled = isRuntimeCommandEnabled(runtimeCommands, "voice");
-    const voiceCommand = parseVoiceCommand(
-      voiceRuntimeCommand?.rewrittenText ?? commandText,
-      parsedMessage.text,
-      parsedMessage.hasAtBot,
-    );
-
-    if (voiceCommand.matched) {
-      if (!this.isCapabilityEnabled("voice")) {
-        await this.rejectCapability(groupId, "voice");
-        return;
-      }
-      if (!voiceCommandEnabled) {
-        logInfo("Ignored voice command because runtime command is disabled.", { groupId, userId });
-        return;
-      }
-      if (groupConfig.voiceReplyEnabled === false) {
-        logInfo("Ignored voice command because voice reply is disabled for group.", { groupId, userId });
-        return;
-      }
-      if (!voiceCommand.valid) {
-        await this.sendText(
-          groupId,
-          voiceCommand.errorMessage ?? `语音命令格式：${VOICE_PREFIX} <内容>`,
-        );
-        return;
-      }
-
-      await this.groupLock.run(groupId, async () => {
-        await this.handleConversation(
-          groupConfig,
-          userId,
-          voiceCommand.userInput ?? "",
-          parsedMessage.images,
-          "voice",
-          [],
-          messageContext,
-          false,
-          conversationRoute,
-        );
-      });
-      return;
-    }
-
     const chatSummaryRequest = parsedMessage.hasAtBot
       ? parseChatSummaryRequest(parsedMessage.text, new Date())
       : null;
@@ -1623,7 +1526,7 @@ export class BotApplication {
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_LIVE_CHAT_NO_PERMISSION);
       return;
     }
@@ -1737,7 +1640,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_MUTE_NO_PERMISSION);
       return;
     }
@@ -1754,81 +1657,11 @@ export class BotApplication {
     await this.sendText(groupId, "机器人已恢复说话");
   }
 
-  private async handleVoiceReplyCommand(
-    groupConfig: GroupBotConfig,
-    event: NapcatGroupMessageEvent,
-    commandText: string,
-  ): Promise<void> {
-    const groupId = groupConfig.groupId;
-    const userId = String(event.user_id);
-    const normalized = commandText.replace(/\s+/g, " ").trim();
-
-    if (!this.isCapabilityEnabled("voice")) {
-      await this.rejectCapability(groupId, "voice");
-      return;
-    }
-
-    if (!(await this.isAdmin(groupConfig, userId))) {
-      await this.sendText(groupId, MSG_VOICE_REPLY_NO_PERMISSION);
-      return;
-    }
-
-    if (
-      normalized === VOICE_REPLY_PREFIX ||
-      normalized === `${VOICE_REPLY_PREFIX} 状态` ||
-      normalized === `${VOICE_REPLY_PREFIX} 查看`
-    ) {
-      await this.sendText(
-        groupId,
-        [
-          `语音功能：${groupConfig.voiceReplyEnabled === false ? "已关闭" : "已开启"}`,
-          `默认语音回复：${groupConfig.defaultVoiceReplyEnabled === true ? "已开启" : "已关闭"}`,
-          "说明：默认语音回复只影响普通 AI 回复，系统指令仍用文字返回。",
-        ].join("\n"),
-      );
-      return;
-    }
-
-    if (
-      normalized === `${VOICE_REPLY_PREFIX} 开启` ||
-      normalized === `${VOICE_REPLY_PREFIX} 打开` ||
-      normalized.toLowerCase() === `${VOICE_REPLY_PREFIX} on`.toLowerCase()
-    ) {
-      await this.groupConfigService.updateGroupConfig(groupId, {
-        voiceReplyEnabled: true,
-        defaultVoiceReplyEnabled: true,
-      });
-      await this.logAdminOperation(groupId, userId, "默认语音回复开启", undefined, "语音功能与默认语音回复均已开启");
-      await this.sendText(groupId, "已开启语音功能和默认语音回复，普通 AI 回复会优先发送语音条。");
-      return;
-    }
-
-    if (
-      normalized === `${VOICE_REPLY_PREFIX} 关闭` ||
-      normalized.toLowerCase() === `${VOICE_REPLY_PREFIX} off`.toLowerCase()
-    ) {
-      await this.groupConfigService.updateGroupConfig(groupId, { defaultVoiceReplyEnabled: false });
-      await this.logAdminOperation(groupId, userId, "默认语音回复关闭", undefined, "普通 AI 回复恢复文字");
-      await this.sendText(groupId, "已关闭默认语音回复，普通 AI 回复会恢复文字。");
-      return;
-    }
-
-    await this.sendText(
-      groupId,
-      [
-        "语音回复命令格式：",
-        `${VOICE_REPLY_PREFIX} 状态`,
-        `${VOICE_REPLY_PREFIX} 开启`,
-        `${VOICE_REPLY_PREFIX} 关闭`,
-      ].join("\n"),
-    );
-  }
-
   private async handleStatusCommand(groupConfig: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
       return;
     }
@@ -1847,12 +1680,11 @@ export class BotApplication {
         `说话：${groupConfig.botMuted === true ? "已闭嘴" : "正常"}`,
         `当前技能：${groupConfig.currentSkillId}${currentSkill ? `（${currentSkill.name}）` : "（未找到配置）"}`,
         `实时对话：${liveUsers.length > 0 ? `${liveUsers.length} 人，倒计时 ${formatLiveChatDelay(groupConfig)}` : `未开启，倒计时 ${formatLiveChatDelay(groupConfig)}`}`,
-        `语音回复：${groupConfig.voiceReplyEnabled === false ? "语音功能已关闭" : `语音功能已开启，默认语音${groupConfig.defaultVoiceReplyEnabled === true ? "已开启" : "已关闭"}`}`,
         `定时任务：${groupConfig.scheduledRemindersEnabled === false ? "已关闭" : "已开启"}，${scheduledTasks.length} 个`,
         `群聊日报：${groupConfig.dailyReportEnabled === false ? "已关闭" : `已开启，${groupConfig.dailyReportTime ?? "17:59"}`}`,
         `节假日倒计时：${groupConfig.holidayCountdownEnabled === false ? "已关闭" : `已开启，${groupConfig.holidayCountdownTime ?? "09:00"}`}`,
         `黑名单：${blacklistedUsers.length > 0 ? `${blacklistedUsers.length} 人` : "无"}`,
-        "权限：后台账号、TOTP 与群授权管理",
+        "权限：后台账号绑定优先；未绑定时按群主或群管理员身份授权",
       ].join("\n"),
     );
   }
@@ -1861,7 +1693,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_HEALTH_NO_PERMISSION);
       return;
     }
@@ -1889,7 +1721,7 @@ export class BotApplication {
         `定时任务：${groupConfig.scheduledRemindersEnabled === false ? "总开关已关闭" : "总开关已开启"}，${scheduledTasks.length} 个${nextTask ? `，下次 ${formatLocalDateTime(new Date(nextTask.nextRunAt))}` : ""}`,
         `群聊日报：${groupConfig.dailyReportEnabled === false ? "已关闭" : `已开启，${groupConfig.dailyReportTime ?? "17:59"}`}`,
         `节假日倒计时：${groupConfig.holidayCountdownEnabled === false ? "已关闭" : `已开启，${groupConfig.holidayCountdownTime ?? "09:00"}`}`,
-        `黑名单：${(groupConfig.blacklistedUserIds ?? []).length} 人；权限由后台账号、TOTP 与群授权管理`,
+        `黑名单：${(groupConfig.blacklistedUserIds ?? []).length} 人；权限由后台绑定或当前群管理身份决定`,
       ].join("\n"),
     );
   }
@@ -1923,7 +1755,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_OPERATION_LOG_NO_PERMISSION);
       return;
     }
@@ -1955,7 +1787,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_SERVER_NO_PERMISSION);
       return;
     }
@@ -1991,7 +1823,7 @@ export class BotApplication {
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_OPS_ALERT_NO_PERMISSION);
       return;
     }
@@ -2052,7 +1884,7 @@ export class BotApplication {
         return false;
       }
 
-      if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
         await this.sendText(groupId, MSG_BLACKLIST_NO_PERMISSION);
         return true;
       }
@@ -2068,7 +1900,7 @@ export class BotApplication {
       return true;
     }
 
-    const isAdmin = await this.isAdmin(groupConfig, userId);
+    const isAdmin = await this.isAdmin(groupConfig, userId, event.sender?.role);
     if (!isAdmin) {
       if (this.isBlacklistedUser(groupConfig, userId)) {
         return false;
@@ -2132,7 +1964,7 @@ export class BotApplication {
 
     const manualRegex = new RegExp(`^${escapeRegex(DAILY_REPORT_PREFIX)}\\s*(?:发送|预览)$`);
     if (manualRegex.test(normalized)) {
-      if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
         await this.sendText(groupId, MSG_DAILY_REPORT_NO_PERMISSION);
         return;
       }
@@ -2149,7 +1981,7 @@ export class BotApplication {
       return;
     }
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_DAILY_REPORT_NO_PERMISSION);
       return;
     }
@@ -2224,7 +2056,7 @@ export class BotApplication {
 
     const manualRegex = new RegExp(`^${escapeRegex(HOLIDAY_COUNTDOWN_PREFIX)}\\s*(?:发送|预览)$`);
     if (manualRegex.test(normalized)) {
-      if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
         await this.sendText(groupId, MSG_HOLIDAY_COUNTDOWN_NO_PERMISSION);
         return;
       }
@@ -2239,7 +2071,7 @@ export class BotApplication {
       return;
     }
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_HOLIDAY_COUNTDOWN_NO_PERMISSION);
       return;
     }
@@ -2312,7 +2144,7 @@ export class BotApplication {
         return;
       }
 
-      if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
         await this.sendText(groupId, MSG_SCHEDULED_REMINDER_NO_PERMISSION);
         return;
       }
@@ -2473,7 +2305,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
-    const isAdmin = await this.isAdmin(groupConfig, userId);
+    const isAdmin = await this.isAdmin(groupConfig, userId, event.sender?.role);
     const isSuperAdmin = await this.groupConfigService.isSuperAdmin(userId);
 
     if (!isAdmin) {
@@ -2589,7 +2421,7 @@ export class BotApplication {
       return;
     }
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_CONVERSATION_NO_PERMISSION);
       return;
     }
@@ -2619,7 +2451,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_CONVERSATION_NO_PERMISSION);
       return;
     }
@@ -2644,16 +2476,6 @@ export class BotApplication {
     if (!this.isCapabilityEnabled("conversation")) {
       await this.rejectCapability(groupConfig.groupId, "conversation");
       return;
-    }
-    if (replyMode === "singing" && !this.isCapabilityEnabled("singing")) {
-      await this.rejectCapability(groupConfig.groupId, "singing");
-      return;
-    }
-    if ((replyMode === "voice" || replyMode === "singing") && !this.isCapabilityEnabled("voice")) {
-      // Default voice replies degrade to text when voice is disabled between
-      // dispatch and execution. Explicit #语音/#唱歌 requests were rejected
-      // before entering this method, so they never produce an unexpected AI call.
-      replyMode = "text";
     }
     const conversationStartedAt = Date.now();
     const sourceRowId = messageContext.sourceMessageId
@@ -3132,30 +2954,6 @@ export class BotApplication {
         },
       ];
 
-      if (replyMode === "voice" || replyMode === "singing") {
-        const receipts = await this.handleVoiceReply(
-          groupConfig.groupId,
-          skill,
-          replyText,
-          replyMode,
-          replyFormatBudget,
-          conversationRoute,
-        );
-        await this.persistAssistantContext(conversationRoute, replyText, receipts);
-        logInfo(replyMode === "singing" ? "Sent AI singing voice reply." : "Sent AI voice reply.", {
-          groupId: groupConfig.groupId,
-          skillId: skill.id,
-          model: reply.model,
-          contextScope: conversationRoute ? "causal_branch" : "isolated",
-          topicId: conversationRoute?.topicId,
-          branchId: conversationRoute?.branchId,
-          ambientGroupContextStatus,
-          ambientGroupContextCount: ambientGroupContext.length,
-          ambientGroupContextChars,
-        });
-        return;
-      }
-
       const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
       if (outgoingMessages.length === 0) {
         throw new Error("Formatted AI reply was empty.");
@@ -3422,11 +3220,10 @@ export class BotApplication {
     if (configured) {
       return this.formatConfiguredReplyModelLabel(mode, configured);
     }
-    return mode === "mimo" ? "Mimo（mimo-v2.5-pro）" : "GPT";
+    return "GPT";
   }
 
   private formatConfiguredReplyModelLabel(mode: ReplyModelMode, name: string): string {
-    if (mode === "mimo") return `Mimo（${name}）`;
     if (mode === "gpt") return `GPT（${name}）`;
     return `${name}（${mode}）`;
   }
@@ -3450,90 +3247,6 @@ export class BotApplication {
         error: (error as Error).message,
       });
       return undefined;
-    }
-  }
-
-  private async handleVoiceReply(
-    groupId: string,
-    skill: SkillDefinition,
-    replyText: string,
-    mode: Exclude<ReplyOutputMode, "text"> = "voice",
-    replyFormatBudget?: ReplyFormatBudget,
-    conversationRoute?: ConversationRoute,
-  ): Promise<MessageReceipt[]> {
-    if (!(await this.hasEnabledTtsModel())) {
-      logInfo("Skipped voice synthesis because no TTS model is configured.", { groupId, skillId: skill.id });
-      return this.sendTextMessages(groupId, formatReplyMessages(skill, replyText, replyFormatBudget), [], conversationRoute);
-    }
-
-    let cleanup: (() => Promise<void>) | undefined;
-
-    try {
-      const synthesis = await this.ttsService.synthesize(replyText, skill, {
-        mode: mode === "singing" ? "singing" : "speech",
-      });
-      cleanup = synthesis.cleanup;
-      const receipt = await this.sendRecord(groupId, synthesis.recordFile, conversationRoute);
-      scheduleCleanup(synthesis.cleanup);
-      return receipt ? [receipt] : [];
-    } catch (error) {
-      if (cleanup) {
-        scheduleCleanup(cleanup);
-      }
-      logWarn("Primary TTS voice send failed.", {
-        groupId,
-        skillId: skill.id,
-        error: (error as Error).message,
-        ...formatTtsErrorMeta(error),
-      });
-    }
-
-    if (mode === "singing") {
-      const warning = await this.sendTextWithContext(groupId, "当前 TTS 模型不支持唱歌，请切换到 mimo-v2.5-tts 后再试。", conversationRoute);
-      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
-      return [
-        ...(warning ? [warning] : []),
-        ...await this.sendTextMessages(groupId, outgoingMessages, [], conversationRoute),
-      ];
-    }
-
-    if (!this.allowNapCatAiVoiceFallback) {
-      const warning = await this.sendTextWithContext(groupId, MSG_VOICE_FAIL, conversationRoute);
-      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
-      return [
-        ...(warning ? [warning] : []),
-        ...await this.sendTextMessages(groupId, outgoingMessages, [], conversationRoute),
-      ];
-    }
-
-    try {
-      const receipt = await this.sendAiRecord(groupId, replyText, conversationRoute);
-      return receipt ? [receipt] : [];
-    } catch (fallbackError) {
-      logError("Voice fallback failed.", {
-        groupId,
-        skillId: skill.id,
-        error: (fallbackError as Error).message,
-      });
-      const warning = await this.sendTextWithContext(groupId, MSG_VOICE_FAIL, conversationRoute);
-      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
-      return [
-        ...(warning ? [warning] : []),
-        ...await this.sendTextMessages(groupId, outgoingMessages, [], conversationRoute),
-      ];
-    }
-  }
-
-  private async hasEnabledTtsModel(): Promise<boolean> {
-    if (!this.systemSettingsStore) {
-      return false;
-    }
-    try {
-      const settings = await this.systemSettingsStore.getInternal();
-      return settings.models.some((model) => model.purpose === "tts" && model.enabled && Boolean(model.apiKey?.trim()));
-    } catch (error) {
-      logWarn("Failed to read TTS model configuration.", { error: (error as Error).message });
-      return false;
     }
   }
 
@@ -3565,7 +3278,7 @@ export class BotApplication {
       return;
     }
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, "你没有切换群聊回复模型的权限");
       return;
     }
@@ -3600,7 +3313,7 @@ export class BotApplication {
     const suffix = commandText.slice(MEMORY_PREFIX.length).trim();
 
     if (!suffix || ["状态", "查看"].includes(suffix)) {
-      if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
         await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
         return;
       }
@@ -3688,7 +3401,7 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
 
-    if (!(await this.isAdmin(groupConfig, userId))) {
+    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
       await this.sendText(groupId, MSG_STATUS_NO_PERMISSION);
       return;
     }
@@ -3828,9 +3541,14 @@ export class BotApplication {
     return nextCount === REPEAT_THRESHOLD;
   }
 
-  private async isAdmin(groupConfig: GroupBotConfig, userId: string): Promise<boolean> {
+  private async isAdmin(groupConfig: GroupBotConfig, userId: string, senderRole?: string): Promise<boolean> {
     if (this.usesV3AdminAuthority()) {
-      return Boolean(this.qqAdminAuthorization?.resolve(userId, groupConfig.groupId));
+      if (this.qqAdminAuthorization?.resolve(userId, groupConfig.groupId)) return true;
+      if (senderRole === "owner" || senderRole === "admin") return true;
+      if (senderRole === "member") return false;
+      const member = (await this.safeListGroupMembers(groupConfig.groupId, { refresh: true }))
+        .find((item) => String(item.user_id) === userId);
+      return member?.role === "owner" || member?.role === "admin";
     }
     if (groupConfig.switcherUserIds.includes(userId)) {
       return true;
@@ -3896,13 +3614,13 @@ export class BotApplication {
     }
   }
 
-  private async safeListGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+  private async safeListGroupMembers(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]> {
     if (!this.transport.listGroupMembers) {
       return [];
     }
 
     try {
-      return await this.transport.listGroupMembers(groupId);
+      return await this.transport.listGroupMembers(groupId, options);
     } catch (error) {
       logWarn("Failed to list group members for AI context.", {
         groupId,
@@ -3932,6 +3650,15 @@ export class BotApplication {
   ): Promise<void> {
     try {
       const principal = this.qqAdminAuthorization?.resolve(operatorUserId, groupId);
+      const platformMember = principal ? undefined : (await this.safeListGroupMembers(groupId, { refresh: true }))
+        .find((item) => String(item.user_id) === operatorUserId);
+      const operatorAuthority = principal
+        ? "account_binding"
+        : platformMember?.role === "owner"
+          ? "qq_group_owner"
+          : platformMember?.role === "admin"
+            ? "qq_group_admin"
+            : undefined;
       await this.adminOperationLogService.record({
         groupId,
         operatorUserId,
@@ -3940,6 +3667,7 @@ export class BotApplication {
           operatorUsername: principal.username,
           operatorRole: principal.role,
         } : {}),
+        ...(operatorAuthority ? { operatorAuthority } : {}),
         action,
         target,
         detail,
@@ -4440,47 +4168,6 @@ export class BotApplication {
     }
   }
 
-  private async sendRecord(
-    groupId: string,
-    recordFile: string,
-    route?: ConversationRoute,
-  ): Promise<MessageReceipt | undefined> {
-    const contextualTransport = this.transport as MessageTransport & {
-      runWithConversationContext?<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T>;
-      setConversationContext?(route?: ConversationRoute): void;
-    };
-    if (route && contextualTransport.runWithConversationContext) {
-      const receipt = await contextualTransport.runWithConversationContext(
-        route,
-        () => this.transport.sendGroupRecord(groupId, recordFile),
-      );
-      this.liveChatService.recordBotActivity(groupId);
-      return receipt ?? undefined;
-    }
-    contextualTransport.setConversationContext?.(route);
-    const receipt = await this.transport.sendGroupRecord(groupId, recordFile).finally(() => contextualTransport.setConversationContext?.(undefined));
-    this.liveChatService.recordBotActivity(groupId);
-    return receipt ?? undefined;
-  }
-
-  private async sendAiRecord(groupId: string, text: string, route?: ConversationRoute): Promise<MessageReceipt | undefined> {
-    const contextualTransport = this.transport as MessageTransport & {
-      runWithConversationContext?<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T>;
-      setConversationContext?(route?: ConversationRoute): void;
-    };
-    if (route && contextualTransport.runWithConversationContext) {
-      const receipt = await contextualTransport.runWithConversationContext(
-        route,
-        () => this.transport.sendGroupAiRecord(groupId, text),
-      );
-      this.liveChatService.recordBotActivity(groupId);
-      return receipt ?? undefined;
-    }
-    contextualTransport.setConversationContext?.(route);
-    const receipt = await this.transport.sendGroupAiRecord(groupId, text).finally(() => contextualTransport.setConversationContext?.(undefined));
-    this.liveChatService.recordBotActivity(groupId);
-    return receipt ?? undefined;
-  }
 }
 
 function extractCommandText(message: NapcatGroupMessageEvent["message"]): string {
@@ -5210,17 +4897,6 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `说明：普通群消息不会触发，必须 @机器人；${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })} 需要群管理员或超级管理员`,
       ],
     },
-    {
-      title: "语音",
-      aliases: ["语音", "tts", "voice"],
-      lines: [
-        `1. ${command("voice")} <内容>`,
-        "2. @机器人 语音说 <内容>",
-        `3. ${command("voice_reply")} 状态 / 开启 / 关闭（管理员）`,
-        `4. ${command("sing")} <内容>`,
-        "作用：一次性语音会先生成回复再转成语音；默认语音回复会让普通 AI 回复优先发送语音条；唱歌使用 MiMo 唱歌模式",
-      ],
-    },
     ...(includeImageGeneration ? [{
       title: "画图",
       aliases: ["画图", "生图", "image"],
@@ -5279,9 +4955,9 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
       title: "权限",
       aliases: ["权限", "auth", "permission"],
       lines: [
-        "普通成员：可用对话、语音、唱歌、帮助和部分状态查询",
-        "群内权限由后台账号、TOTP 与群授权管理",
-        "QQ 号、共享群密码和 #管理员 已退休",
+        "普通成员：可用对话、帮助和部分状态查询",
+        "群内权限优先由后台账号绑定决定；未绑定时，群主和群管理员自动获得本群管理权限",
+        "共享群密码和 #管理员 已退休",
       ],
     },
   ];
@@ -5294,7 +4970,6 @@ function buildHelpOverviewMessage(
 ): string {
   const features = [
     "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
-    `语音：${command("voice")} <内容>、${command("voice_reply")} 开启/关闭、${command("sing")} <内容>`,
     ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>（仅超级管理员）`] : []),
     `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
     `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
@@ -5310,7 +4985,7 @@ function buildHelpOverviewMessage(
     ...features.map((feature, index) => `${index + 1}. ${feature}`),
     `分类帮助：${command("help")} ${sections.map((section) => section.title).join(" / ")}`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
-    "权限说明：群内 QQ 号不再授予管理员权限；请在后台使用账号、TOTP 和群授权管理运营设置",
+    "权限说明：后台账号绑定优先；未绑定时，群主和群管理员自动拥有当前群的管理指令权限",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,
     `可用分类：${sections.map((section) => section.title).join("、")}`,
   ].join("\n");
@@ -5382,6 +5057,8 @@ function collectMemoryIdentityTerms(groupConfig: GroupBotConfig, userIds: string
     .map((name) => name.trim())
     .filter((name) => name.length >= 2);
 }
+
+type ReplyOutputMode = "text";
 
 type SavedAliasEvaluationResolution =
   | { status: "none" }
@@ -5585,9 +5262,7 @@ function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
 }
 
 function resolveDefaultReplyMode(groupConfig: GroupBotConfig): ReplyOutputMode {
-  return groupConfig.defaultVoiceReplyEnabled === true && groupConfig.voiceReplyEnabled !== false
-    ? "voice"
-    : "text";
+  return "text";
 }
 
 function normalizeReplyModelMode(value: unknown): ReplyModelMode {
@@ -5694,19 +5369,6 @@ function parseLiveChatDelay(raw: string): { unit: "seconds" | "minutes"; value: 
   return { unit: "minutes", value: numericValue };
 }
 
-function formatTtsErrorMeta(error: unknown): Record<string, unknown> {
-  if (!(error instanceof TtsServiceError)) {
-    return {};
-  }
-  return {
-    ...(error.details.systemModelId ? { ttsSystemModelId: error.details.systemModelId } : {}),
-    ttsBaseUrl: error.details.baseUrl,
-    ttsModel: error.details.model,
-    ...(error.details.statusCode ? { ttsStatusCode: error.details.statusCode } : {}),
-    ...(error.details.failureKind ? { ttsFailureKind: error.details.failureKind } : {}),
-  };
-}
-
 function formatFailureKind(kind: string): string {
   const labels: Record<string, string> = {
     auth: "鉴权失败",
@@ -5727,18 +5389,7 @@ function formatModelPurpose(purpose: string): string {
     memory: "记忆",
     dedup: "去重",
     summary: "总结",
-    tts: "语音",
   };
   return labels[purpose] ?? purpose;
 }
 
-function scheduleCleanup(cleanup: () => Promise<void>): void {
-  const timer = setTimeout(() => {
-    void cleanup().catch((error) => {
-      logWarn("Failed to cleanup temporary TTS audio file.", {
-        error: (error as Error).message,
-      });
-    });
-  }, 15000);
-  timer.unref();
-}
