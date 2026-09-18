@@ -11,7 +11,6 @@ import { CircuitOpenError, degradedMessage, GatewayProxy } from "./services/gate
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
-import { isAiConversationCommand } from "./services/group-participation-service.js";
 import type { ParticipationDecision } from "./services/participation-policy.js";
 import { BotApplication, type BackgroundLlmGate, type MessageTransport } from "./bot.js";
 import { GroupLock } from "./services/group-lock.js";
@@ -21,8 +20,6 @@ import { ConversationStore } from "./services/conversation-store.js";
 import { SqliteConversationStore } from "./services/conversation-store-v3.js";
 import { AiService } from "./services/ai-service.js";
 import { ConfiguredAiService } from "./services/configured-ai-service.js";
-import { TtsService } from "./services/tts-service.js";
-import { ConfiguredTtsService } from "./services/configured-tts-service.js";
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
@@ -150,7 +147,7 @@ export class WorkerApp {
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
         // 等指令全部被当成自由发言跳过，指令不生效）。
         const isCommand = message.text.trim().startsWith("#");
-        if (isCommand && !isAiConversationCommand(message.text)) {
+        if (isCommand) {
           const decision = await this.getOrRecordParticipationDecision(message);
           this.metrics.inc(`participation_decision_${decision.action}`);
           // Commands mutate pointers/configuration and must not create a
@@ -250,7 +247,7 @@ export class WorkerApp {
       Boolean(message.has_at_bot),
     );
     const isPreview = Boolean(previewRequest);
-    const isCommand = message.text.trim().startsWith("#") && !isAiConversationCommand(message.text);
+    const isCommand = message.text.trim().startsWith("#");
     const participation = isCommand || isPreview
       ? undefined
       : await this.getOrRecordParticipationDecision(message);
@@ -500,6 +497,7 @@ export class WorkerApp {
     images_json?: string;
     sender_card?: string | null;
     sender_nickname?: string | null;
+    sender_role?: string | null;
     reply_to?: string | null;
     verified_mention_user_ids_json?: string;
     has_at_bot?: number;
@@ -547,6 +545,7 @@ export class WorkerApp {
         user_id: Number(message.user_id),
         ...(message.sender_card ? { card: message.sender_card } : {}),
         ...(message.sender_nickname ? { nickname: message.sender_nickname } : {}),
+        ...(message.sender_role ? { role: message.sender_role } : {}),
       },
     };
   }
@@ -613,21 +612,6 @@ async function buildBotApp(
     capabilityPolicy,
     true,
   );
-  const defaultTtsService = new TtsService(
-    config.ttsBaseUrl,
-    config.ttsApiKey,
-    config.ttsModel,
-    config.ttsVoice,
-    config.ttsAudioFormat,
-    config.ttsCacheDir,
-    config.ttsStyleHint,
-  );
-  const runtimeTtsService = new ConfiguredTtsService(defaultTtsService, systemSettingsStore, {
-    voice: config.ttsVoice,
-    audioFormat: config.ttsAudioFormat,
-    cacheDir: config.ttsCacheDir,
-    globalStyleHint: config.ttsStyleHint,
-  });
   const knowledgeBaseStore = new KnowledgeBaseStore(config.knowledgeBasePath, v3State);
   const skillService = v3State
     ? new CharacterProfileService(v3State)
@@ -657,7 +641,7 @@ async function buildBotApp(
     skillService,
     v3State ? new SqliteConversationStore(contextRepository) : new ConversationStore(config.conversationsPath),
     runtimeReplyAiService,
-    runtimeTtsService,
+    undefined,
     new DailyReportService(
       new DailyReportStore(config.dailyReportStorePath, v3State),
       runtimeReplyAiService,
@@ -671,7 +655,7 @@ async function buildBotApp(
     new GroupLock(),
     new LiveChatService(),
     config.botQq,
-    config.ttsAllowNapCatAiFallback,
+    false,
     groupMemoryStore,
     knowledgeBaseStore,
     undefined,
@@ -756,7 +740,7 @@ export async function main(): Promise<void> {
   const sharedDb = openSharedDb(config.dataDir);
   const transport = new WorkerTransport(sharedDb, {
     resolveImageInputs: (images) => readClient.resolveImages(images),
-    listGroupMembers: (groupId) => readClient.listGroupMembers(groupId),
+    listGroupMembers: (groupId, options) => readClient.listGroupMembers(groupId, options),
     listGroups: () => readClient.listGroups(),
     resolveMentionTargets: (groupId, candidates) => readClient.resolveMentionTargets(groupId, candidates),
     resolveMemberIdentities: (groupId, candidates) => readClient.resolveMemberIdentities(groupId, candidates),

@@ -1,7 +1,6 @@
 import path from "node:path";
 import dotenv from "dotenv";
 
-import { MIMO_TTS_BASE_URL, MIMO_TTS_MODEL } from "./services/mimo-tts-config.js";
 import type { AppConfig } from "./types.js";
 
 dotenv.config();
@@ -28,9 +27,6 @@ export function loadConfig(): AppConfig {
   const openAiBaseUrl = requireEnv("OPENAI_BASE_URL");
   const openAiApiKey = requireEnv("OPENAI_API_KEY");
   const openAiModel = requireEnv("OPENAI_MODEL");
-  const ttsAudioFormat = (process.env.TTS_AUDIO_FORMAT ?? "wav").trim().toLowerCase();
-  const ttsAllowNapCatAiFallback =
-    (process.env.TTS_ALLOW_NAPCAT_AI_FALLBACK ?? "false").trim().toLowerCase() === "true";
   const napcatWsUrl =
     napcatMode === "forward"
       ? requireEnv("NAPCAT_WS_URL")
@@ -46,9 +42,6 @@ export function loadConfig(): AppConfig {
   }
   if (!Number.isFinite(adminHttpPort) || adminHttpPort <= 0 || adminHttpPort > 65535) {
     throw new Error("ADMIN_HTTP_PORT must be a valid TCP port (1-65535).");
-  }
-  if (!["wav", "mp3", "pcm", "pcm16"].includes(ttsAudioFormat)) {
-    throw new Error("TTS_AUDIO_FORMAT must be one of 'wav', 'mp3', 'pcm', or 'pcm16'.");
   }
   const napcatAccessToken = optionalEnv("NAPCAT_ACCESS_TOKEN");
   const reverseHost = optionalEnv("NAPCAT_REVERSE_WS_HOST") ?? "127.0.0.1";
@@ -68,14 +61,6 @@ export function loadConfig(): AppConfig {
     openAiApiKey,
     openAiModel,
     realtimeSearchUrl: optionalEnv("REALTIME_SEARCH_URL") ?? "http://127.0.0.1:8088",
-    ttsBaseUrl: optionalEnv("TTS_BASE_URL") ?? MIMO_TTS_BASE_URL,
-    ttsApiKey: optionalEnv("TTS_API_KEY") ?? openAiApiKey,
-    ttsModel: optionalEnv("TTS_MODEL") ?? MIMO_TTS_MODEL,
-    ttsVoice: optionalEnv("TTS_VOICE") ?? "mimo_default",
-    ttsAudioFormat: ttsAudioFormat as AppConfig["ttsAudioFormat"],
-    ttsStyleHint: process.env.TTS_STYLE_HINT?.trim() || undefined,
-    ttsAllowNapCatAiFallback,
-    ttsCacheDir: path.join(dataDir, "tts-cache"),
     dataDir,
     htmlPreviewPublicBaseUrl: optionalEnv("HTML_PREVIEW_PUBLIC_BASE_URL") ?? "https://preview.9958.uk",
     htmlPreviewRoot: optionalEnv("HTML_PREVIEW_ROOT") ?? path.join(dataDir, "generated-pages"),
@@ -95,7 +80,6 @@ export function loadConfig(): AppConfig {
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,
-    adminMfaRequired: (process.env.ADMIN_MFA_REQUIRED ?? "false").trim().toLowerCase() === "true",
     adminPublicBaseUrl: optionalEnv("ADMIN_PUBLIC_BASE_URL") ?? "https://bot.9958.uk",
     adminUsername: optionalEnv("ADMIN_USERNAME"),
     adminPassword: optionalEnv("ADMIN_PASSWORD"),

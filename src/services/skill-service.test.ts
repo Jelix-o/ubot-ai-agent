@@ -55,11 +55,18 @@ test("Huixian profile updates in place and strips legacy source material", async
     });
     assert.equal(updated?.id, "huixian");
     assert.equal(updated?.name, "会仙");
-    assert.deepEqual(updated?.ttsConfig, { stylePrompt: "自然亲切", voice: "Chloe" });
+    assert.deepEqual(updated?.knowledge, ["不编造现实可核验的事实。"]);
+    const updatedRecord = updated as unknown as Record<string, unknown> | undefined;
+    assert.equal(Object.hasOwn(updatedRecord ?? {}, "ttsConfig"), false);
+    assert.equal(Object.hasOwn(updatedRecord ?? {}, "ttsStyleHint"), false);
+    assert.equal(Object.hasOwn(updatedRecord ?? {}, "sourceSkillLines"), false);
+    assert.equal(Object.hasOwn(updatedRecord ?? {}, "sourceSkillLineLimit"), false);
 
     const saved = JSON.parse(await readFile(path.join(dir, "huixian.json"), "utf8"));
     assert.equal(Object.hasOwn(saved, "sourceSkillLines"), false);
     assert.equal(Object.hasOwn(saved, "sourceSkillLineLimit"), false);
+    assert.equal(Object.hasOwn(saved, "ttsConfig"), false);
+    assert.equal(Object.hasOwn(saved, "ttsStyleHint"), false);
     assert.equal(saved.id, "huixian");
   } finally {
     await rm(dir, { recursive: true, force: true });

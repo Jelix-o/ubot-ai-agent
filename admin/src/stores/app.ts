@@ -11,7 +11,7 @@ export const useAppStore = defineStore("app", () => {
   const groups = shallowRef<GroupConfig[]>([]);
   const groupId = shallowRef("");
   const username = shallowRef("");
-  const role = shallowRef<AdminSession["role"]>("super_admin");
+  const role = shallowRef<AdminSession["role"] | "">("");
   const allowedGroupIds = shallowRef<string[]>([]);
   const publicBaseUrl = shallowRef("");
   const sessionLoaded = shallowRef(false);
@@ -21,7 +21,7 @@ export const useAppStore = defineStore("app", () => {
   let sessionPromise: Promise<void> | undefined;
 
   const currentGroup = computed(() => groups.value.find((group) => group.groupId === groupId.value));
-  const readonly = computed(() => false);
+  const readonly = computed(() => !sessionLoaded.value);
 
   function applyTheme(mode = themeMode.value): void {
     themeMode.value = mode;
@@ -57,12 +57,21 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function loadSessionNow(): Promise<void> {
-    const session = await api<AdminSession>("/api/session");
-    username.value = session.username;
-    role.value = session.role;
-    allowedGroupIds.value = session.allowedGroupIds;
-    publicBaseUrl.value = session.publicBaseUrl;
-    sessionLoaded.value = true;
+    try {
+      const session = await api<AdminSession>("/api/session");
+      username.value = session.username;
+      role.value = session.role;
+      allowedGroupIds.value = session.allowedGroupIds;
+      publicBaseUrl.value = session.publicBaseUrl;
+    } catch (error) {
+      username.value = "";
+      role.value = "";
+      allowedGroupIds.value = [];
+      publicBaseUrl.value = "";
+      throw error;
+    } finally {
+      sessionLoaded.value = true;
+    }
   }
 
   async function loadGroups(options: { includeDisabled?: boolean } = {}): Promise<void> {
@@ -81,6 +90,7 @@ export const useAppStore = defineStore("app", () => {
     sessionLoaded.value = false;
     sessionPromise = undefined;
     username.value = "";
+    role.value = "";
     allowedGroupIds.value = [];
     publicBaseUrl.value = "";
     window.location.href = "/login";

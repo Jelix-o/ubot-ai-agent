@@ -640,7 +640,7 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
               placeholder="例如：技术骨干、后端开发、常驻核心"
               autofocus
             />
-            <small class="muted">用于在后台直观标识该成员身份与特征。</small>
+
           </div>
           <div class="form-group">
             <label class="form-label">别名 / 称呼（多项用逗号分隔）</label>
@@ -649,7 +649,7 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
               class="input"
               placeholder="例如：小李, 老李, 李哥"
             />
-            <small class="muted">机器人在群聊中识别这些称呼时，将自动关联此成员并调取专属记忆。</small>
+
           </div>
         </div>
         <div class="modal-footer">

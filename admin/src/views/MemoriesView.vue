@@ -91,7 +91,7 @@ function isBusy(id: string): boolean {
 
 function ensureWritable(): boolean {
   if (!readonly.value) return true;
-  app.showToast("只读模式不能修改长期记忆", "error");
+  app.showToast("会话尚未就绪，无法修改长期记忆", "error");
   return false;
 }
 

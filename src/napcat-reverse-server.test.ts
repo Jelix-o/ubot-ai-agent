@@ -198,7 +198,7 @@ test("reverse server rejects pending actions when socket closes", async () => {
     ws.once("error", (err) => reject(err));
   });
 
-  const pending = server.sendGroupAiRecord("866209871", "你好");
+  const pending = server.sendGroupMessage("866209871", "你好");
   ws.close();
 
   await assert.rejects(pending, /closed|stopped/i);

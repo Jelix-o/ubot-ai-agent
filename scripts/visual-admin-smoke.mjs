@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -47,7 +46,7 @@ try {
     version: 1,
     enabledCapabilities: [
       "conversation", "explicit_memory", "knowledge", "scheduled_reminders",
-      "daily_reports", "holiday_countdown", "realtime_lookup", "voice", "singing",
+      "daily_reports", "holiday_countdown", "realtime_lookup",
     ],
     providerCapabilities: {
       openai: ["chat", "vision", "streaming"],
@@ -99,7 +98,6 @@ try {
     adminTaskStore: taskStore,
     memeLibraryService,
     adminOperationLogService: operations,
-    mfaRequired: true,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
   });
   server.start();
@@ -109,27 +107,16 @@ try {
   if (!address || typeof address === "string") throw new Error("Admin smoke server did not bind a TCP port.");
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  const enrollment = await postJson(baseUrl, "/api/auth/password", {
+  const login = await postJson(baseUrl, "/api/auth/password", {
     username: USERNAME,
     password: PASSWORD,
   });
-  if (enrollment.response.status !== 200 || enrollment.data.status !== "totp_enrollment_required") {
-    throw new Error(`V3 password step did not require TOTP enrollment: ${enrollment.response.status} ${JSON.stringify(enrollment.data)}`);
+  if (login.response.status !== 200 || login.data.ok !== true || login.data.status !== "authenticated") {
+    throw new Error(`V3 password login failed: ${login.response.status} ${JSON.stringify(login.data)}`);
   }
-  if (typeof enrollment.data.enrollmentToken !== "string" || typeof enrollment.data.totpSecret !== "string") {
-    throw new Error("V3 enrollment response omitted its one-time challenge.");
-  }
-
-  const completed = await postJson(baseUrl, "/api/auth/totp/enroll", {
-    enrollmentToken: enrollment.data.enrollmentToken,
-    code: makeTotp(enrollment.data.totpSecret),
-  });
-  if (!completed.response.ok || completed.data.ok !== true || !Array.isArray(completed.data.recoveryCodes)) {
-    throw new Error(`V3 TOTP enrollment failed: ${completed.response.status} ${JSON.stringify(completed.data)}`);
-  }
-  const cookie = completed.response.headers.get("set-cookie")?.split(";")[0];
-  const csrf = completed.data.session?.csrfToken;
-  if (!cookie || typeof csrf !== "string") throw new Error("V3 enrollment did not issue an opaque session and CSRF token.");
+  const cookie = login.response.headers.get("set-cookie")?.split(";")[0];
+  const csrf = login.data.session?.csrfToken;
+  if (!cookie || typeof csrf !== "string") throw new Error("V3 password login did not issue an opaque session and CSRF token.");
 
   const pages = ["/", "/login", "/groups", "/members", "/memories", "/knowledge", "/memes", "/tasks", "/audit", "/health", "/persona", "/commands", "/settings"];
   for (const page of pages) {
@@ -165,6 +152,13 @@ try {
   if (legacyLoginResponse.status !== 410) throw new Error(`Legacy login API should be 410, got ${legacyLoginResponse.status}`);
   const legacyProfileResponse = await fetch(`${baseUrl}/api/profile-records`, { headers: { Cookie: cookie } });
   if (legacyProfileResponse.status !== 410) throw new Error(`Retired profile API should be 410, got ${legacyProfileResponse.status}`);
+
+  const totpResponse = await fetch(`${baseUrl}/api/auth/totp/enroll`, {
+    method: "POST",
+    headers: { Cookie: cookie, "Content-Type": "application/json", "X-CSRF-Token": csrf },
+    body: JSON.stringify({ enrollmentToken: "unused", code: "000000" }),
+  });
+  if (totpResponse.status !== 404) throw new Error(`TOTP enrollment route should be 404, got ${totpResponse.status}`);
 
   const persona = await getJson(baseUrl, "/api/persona/huixian", cookie);
   if (persona.id !== "huixian" || !/普通对话中主动解释自己的实现方式/.test(persona.systemPrompt)) {
@@ -238,32 +232,4 @@ function waitForListening(server) {
       reject(error);
     });
   });
-}
-
-function makeTotp(secret, now = Date.now()) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const text = secret.toUpperCase().replace(/[=\s-]/g, "");
-  let bits = 0;
-  let value = 0;
-  const bytes = [];
-  for (const character of text) {
-    const index = alphabet.indexOf(character);
-    if (index < 0) throw new Error("invalid_totp_secret");
-    value = (value << 5) | index;
-    bits += 5;
-    if (bits >= 8) {
-      bytes.push((value >>> (bits - 8)) & 0xff);
-      bits -= 8;
-    }
-  }
-  const counter = Math.floor(now / 30_000);
-  const counterBuffer = Buffer.alloc(8);
-  counterBuffer.writeBigUInt64BE(BigInt(counter));
-  const digest = createHmac("sha1", Buffer.from(bytes)).update(counterBuffer).digest();
-  const offset = digest[digest.length - 1] & 0x0f;
-  const code = ((digest[offset] & 0x7f) << 24) |
-    (digest[offset + 1] << 16) |
-    (digest[offset + 2] << 8) |
-    digest[offset + 3];
-  return String(code % 1_000_000).padStart(6, "0");
 }

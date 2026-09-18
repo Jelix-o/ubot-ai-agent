@@ -241,5 +241,5 @@ function isUsableModel(model: SystemModelConfig): boolean {
 }
 
 function isSelectableModelPurpose(purpose: SystemModelPurpose): boolean {
-  return purpose === "reply" || purpose === "summary" || purpose === "knowledge" || purpose === "tts" || purpose === "custom";
+  return purpose === "reply" || purpose === "summary" || purpose === "knowledge" || purpose === "custom";
 }
