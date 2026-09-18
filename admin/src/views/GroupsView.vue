@@ -831,35 +831,33 @@ watch(() => app.groupId, () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 10px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-  box-shadow: var(--shadow-sm);
-  margin-top: 4px;
+  border-radius: var(--radius-lg);
+  padding: 4px 6px;
+  margin-top: 0;
   flex-wrap: wrap;
 }
 
 .tabs-group {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 
 .tab-btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  border-radius: var(--radius-sm);
-  font-size: 13.5px;
+  padding: 7px 12px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--muted);
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: all 0.15s ease;
 }
 
 .tab-btn:hover {
@@ -868,51 +866,55 @@ watch(() => app.groupId, () => {
 }
 
 .tab-btn.active {
-  color: var(--accent);
+  color: var(--accent-strong);
   background: var(--accent-soft);
-  font-weight: 700;
+  font-weight: 650;
 }
 
 .tab-save-btn {
-  min-height: 34px;
-  padding: 0 16px;
+  min-height: 32px;
+  padding: 0 14px;
 }
 
 .group-top {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 14px;
 }
 
 .group-picker {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .group-picker label,
 .group-config-card label,
 .json-card label {
   display: grid;
-  gap: 8px;
-  font-weight: 800;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--muted);
 }
 
 .group-summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(320px, 0.9fr);
-  gap: 22px;
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, 0.85fr);
+  gap: 16px;
   align-items: center;
 }
 
 .summary-icon {
   display: grid;
   place-items: center;
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
   background: var(--accent-soft);
   color: var(--accent-strong);
-  font-weight: 900;
+  font-weight: 700;
+  font-size: 14px;
+  border: 1px solid color-mix(in oklch, var(--accent) 22%, var(--line));
 }
 
 .group-summary h2 {
@@ -1315,8 +1317,8 @@ dd {
   color: var(--muted);
   padding: 0 24px;
   font-size: 15px;
-  font-weight: 900;
-  box-shadow: 0 8px 18px oklch(0.48 0.04 220 / 5%);
+  font-weight: 700;
+  box-shadow: none;
   white-space: nowrap;
 }
 
@@ -1351,10 +1353,10 @@ dd {
 
 .reminder-form label {
   display: grid;
-  gap: 10px;
+  gap: 6px;
   color: var(--muted);
-  font-size: 14px;
-  font-weight: 900;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .reminder-field-label {
@@ -1434,15 +1436,15 @@ dd {
 }
 
 .reminder-rule-head span {
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 900;
+  color: var(--text-strong);
+  font-size: 13.5px;
+  font-weight: 650;
 }
 
 .reminder-rule-head small {
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .reminder-rule-card :deep(.date-rule-picker) {
@@ -1489,7 +1491,7 @@ dd {
   height: 18px;
   border-radius: 50%;
   background: var(--surface);
-  box-shadow: 0 2px 7px oklch(0.35 0.04 220 / 22%);
+  box-shadow: none;
   content: "";
   transition: transform 0.18s ease;
 }
@@ -1546,15 +1548,15 @@ dd {
   min-height: 52px;
   background: color-mix(in oklch, var(--surface-soft) 50%, var(--surface));
   color: var(--muted);
-  font-size: 14px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .reminder-row {
-  min-height: 58px;
+  min-height: 52px;
   background: var(--surface);
-  font-size: 14px;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 550;
 }
 
 .reminder-row:hover {
@@ -1577,9 +1579,9 @@ dd {
 .rule-tag {
   justify-self: start;
   border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 900;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 650;
   white-space: nowrap;
 }
 
@@ -1590,8 +1592,8 @@ dd {
 }
 
 .rule-tag.holiday {
-  background: color-mix(in oklch, var(--blue) 14%, var(--surface));
-  color: var(--blue);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .rule-tag.custom {
@@ -1609,9 +1611,9 @@ dd {
   justify-self: start;
   gap: 7px;
   border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 900;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 650;
   white-space: nowrap;
 }
 
@@ -1648,8 +1650,8 @@ dd {
 
 .link-btn {
   background: transparent;
-  color: var(--blue);
-  font-weight: 900;
+  color: var(--accent-strong);
+  font-weight: 650;
   padding: 0;
 }
 

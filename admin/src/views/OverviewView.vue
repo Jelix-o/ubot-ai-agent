@@ -44,7 +44,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 </script>
 
 <template>
-  <section class="overview-page">
+  <section class="page overview-page">
     <div class="metric-grid">
       <MetricCard title="已配置群" :value="data?.stats.groupCount ?? '-'" icon="users" tone="green" />
       <MetricCard title="当前群记忆" :value="data?.stats.memoryCount ?? '-'" icon="memory" tone="blue" />
@@ -57,7 +57,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>最近保存的记忆 <span class="tag">{{ data?.stats.memoryCount ?? 0 }}</span></h2>
-            <p>仅展示成员或管理员明确要求保存的信息。</p>
+            <p>仅显示明确保存的记忆。</p>
           </div>
           <RouterLink class="ghost-btn" to="/memories">管理记忆</RouterLink>
         </div>
@@ -79,11 +79,11 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>会仙人格</h2>
-            <p>当前群统一使用会仙。她会自然参与、认真帮忙；现实证明类问题会简短转场，不编造可核验事实。</p>
+            <p>当前群统一使用会仙人格。</p>
           </div>
           <RouterLink v-if="app.role === 'super_admin'" class="ghost-btn" to="/persona">编辑人格</RouterLink>
         </div>
-        <div class="empty compact-empty">会仙通过成员明确保存的记忆维持对话连续性；不会从普通聊天自动收集个人信息。</div>
+        <div class="empty compact-empty">记忆仅在成员或管理员明确要求时保存。</div>
       </section>
     </div>
 
@@ -92,7 +92,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>系统状态</h2>
-            <p>模型、传输层和服务器异常会影响消息收发与排程任务。</p>
+            <p>模型、传输层与排程健康。</p>
           </div>
           <RouterLink v-if="app.role === 'super_admin'" class="ghost-btn" to="/health">查看系统状态</RouterLink>
         </div>
@@ -106,7 +106,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
         <div class="section-head">
           <div>
             <h2>知识库（FAQ）<span class="tag">{{ data?.stats.knowledgeCount ?? 0 }}</span></h2>
-            <p>维护群专属问答与高频知识，加速精准应答。</p>
+            <p>群专属问答条目。</p>
           </div>
           <RouterLink class="ghost-btn" to="/knowledge">管理知识库</RouterLink>
         </div>
@@ -115,7 +115,6 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
             <strong>{{ data?.stats.knowledgeCount ?? 0 }}</strong>
             <span>条群知识条目</span>
           </div>
-
         </div>
       </section>
     </div>
@@ -125,7 +124,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 <style scoped>
 .overview-page {
   display: grid;
-  gap: 18px;
+  gap: 16px;
   min-height: 100%;
   height: auto;
   overflow: visible;
@@ -135,7 +134,7 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 .overview-side-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 18px;
+  gap: 16px;
   min-height: 0;
 }
 
@@ -143,15 +142,15 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 .overview-status-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  min-height: 260px;
+  min-height: 240px;
 }
 
 .overview-list-panel {
-  min-height: 580px;
+  min-height: 480px;
 }
 
 .overview-scroll-list {
-  max-height: 500px;
+  max-height: 420px;
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 4px;
@@ -178,30 +177,32 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   display: flex;
   flex-direction: column;
   justify-content: center;
-  align-items: center;
-  gap: 10px;
-  padding: 24px 20px;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px;
   background: var(--surface-soft);
-  border: 1px dashed var(--line);
+  border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  text-align: center;
+  text-align: left;
+  min-height: 100px;
 }
 
 .faq-summary-count {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
 }
 
 .faq-summary-count strong {
-  font-size: 32px;
-  font-weight: 800;
-  color: var(--purple);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-strong);
   line-height: 1;
+  letter-spacing: -0.03em;
 }
 
 .faq-summary-count span {
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--muted);
   font-weight: 500;
 }
@@ -211,11 +212,17 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
     height: auto;
     min-height: 0;
     overflow: visible;
+    gap: 12px;
   }
 
   .overview-main-grid,
   .overview-side-grid {
     grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .overview-list-panel {
+    min-height: 0;
   }
 
   .health-mini {
