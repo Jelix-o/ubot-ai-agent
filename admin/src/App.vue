@@ -32,8 +32,8 @@ const navItems = computed(() => routes.filter((item) => (
 )));
 const title = computed(() => String(route.meta.title || "UBot"));
 const subtitle = computed(() => String(route.meta.subtitle || ""));
-const roleLabel = computed(() => app.role === "super_admin" ? "超级管理员" : "群管理员");
-const userInitials = computed(() => app.role === "super_admin" ? "SA" : "GA");
+const roleLabel = computed(() => app.role === "super_admin" ? "超级管理员" : app.role === "group_admin" ? "群管理员" : "…");
+const userInitials = computed(() => app.role === "super_admin" ? "SA" : app.role === "group_admin" ? "GA" : "…");
 const pageCommandItems = computed(() => {
   const q = commandQuery.value.trim().toLowerCase();
   return navItems.value.filter((item) => {

@@ -80,12 +80,6 @@ export class WorkerTransport implements MessageTransport {
     return { deliveryId: `outbox:${id}` };
   }
 
-  async sendGroupRecord(groupId: string, recordFile: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, recordFile, "record", this.outboxContext());
-    logInfo("Worker enqueued record to outbox.", { outboxId: id, groupId });
-    return { deliveryId: `outbox:${id}` };
-  }
-
   async sendGroupImage(groupId: string, imageFile: string): Promise<MessageReceipt | undefined> {
     const id = this.db.enqueueOutbox(groupId, null, imageFile, "image", this.outboxContext());
     logInfo("Worker enqueued image to outbox.", { outboxId: id, groupId });
@@ -97,13 +91,6 @@ export class WorkerTransport implements MessageTransport {
     logInfo("Worker enqueued generated image to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };
   }
-
-  async sendGroupAiRecord(groupId: string, text: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, text, "airecord", this.outboxContext());
-    logInfo("Worker enqueued AI record to outbox.", { outboxId: id, groupId });
-    return { deliveryId: `outbox:${id}` };
-  }
-
   private outboxContext(): OutboxContext | undefined {
     const route = this.routeStorage.getStore() ?? this.conversationRoute;
     if (!route) {
@@ -126,9 +113,9 @@ export class WorkerTransport implements MessageTransport {
       : Promise.resolve(images.filter((image) => Boolean(image.url)));
   }
 
-  listGroupMembers?(groupId: string): Promise<NapcatGroupMember[]> {
+  listGroupMembers?(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]> {
     return this.readTransport?.listGroupMembers
-      ? this.readTransport.listGroupMembers(groupId)
+      ? this.readTransport.listGroupMembers(groupId, options)
       : Promise.resolve([]);
   }
 

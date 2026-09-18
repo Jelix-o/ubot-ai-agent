@@ -145,7 +145,6 @@ function normalizePurpose(value: unknown): SystemModelPurpose {
   return value === "reply" ||
     value === "summary" ||
     value === "knowledge" ||
-    value === "tts" ||
     value === "custom"
     ? value
     : "custom";

@@ -39,8 +39,6 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "blacklistedUserIds"
   | "opsAlertsEnabled"
   | "triggerKeywords"
-  | "voiceReplyEnabled"
-  | "defaultVoiceReplyEnabled"
   | "memoryDisabledUserIds"
   | "onlineLookupEnabled"
   | "visionEnabled"
@@ -565,9 +563,13 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 }
 
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
-  const voiceReplyEnabled = group.voiceReplyEnabled === true;
+  const legacy = group as GroupBotConfig & {
+    voiceReplyEnabled?: unknown;
+    defaultVoiceReplyEnabled?: unknown;
+  };
+  const { voiceReplyEnabled: _voiceReplyEnabled, defaultVoiceReplyEnabled: _defaultVoiceReplyEnabled, ...rest } = legacy;
   return {
-    ...group,
+    ...rest,
     groupId: String(group.groupId || "").trim(),
     groupName: normalizeOptionalText(group.groupName, 80),
     currentSkillId: HUIXIAN_PERSONA_ID,
@@ -595,8 +597,6 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     blacklistedUserIds: normalizeUserIds(group.blacklistedUserIds),
     opsAlertsEnabled: group.opsAlertsEnabled === true,
     triggerKeywords: normalizeTriggerKeywords(group.triggerKeywords),
-    voiceReplyEnabled,
-    defaultVoiceReplyEnabled: voiceReplyEnabled && group.defaultVoiceReplyEnabled === true,
     memoryDisabledUserIds: normalizeUserIds(group.memoryDisabledUserIds),
     onlineLookupEnabled: group.onlineLookupEnabled === true,
     // Image understanding is enabled for newly discovered groups unless an
@@ -615,6 +615,10 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
 function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUpdateInput): GroupBotConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new GroupConfigValidationError("invalid_group_config");
+  }
+  const legacyInput = input as Record<string, unknown>;
+  if ("voiceReplyEnabled" in legacyInput || "defaultVoiceReplyEnabled" in legacyInput) {
+    throw new GroupConfigValidationError("voice_feature_retired");
   }
 
   const next: GroupBotConfig = { ...current };
@@ -688,18 +692,6 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   }
   if ("triggerKeywords" in input) {
     next.triggerKeywords = normalizeTriggerKeywordsStrict(input.triggerKeywords);
-  }
-  if ("voiceReplyEnabled" in input) {
-    next.voiceReplyEnabled = normalizeBoolean(input.voiceReplyEnabled, "invalid_group_config");
-    if (!next.voiceReplyEnabled) {
-      next.defaultVoiceReplyEnabled = false;
-    }
-  }
-  if ("defaultVoiceReplyEnabled" in input) {
-    next.defaultVoiceReplyEnabled = normalizeBoolean(input.defaultVoiceReplyEnabled, "invalid_group_config");
-    if (!next.voiceReplyEnabled) {
-      next.defaultVoiceReplyEnabled = false;
-    }
   }
   if ("memoryDisabledUserIds" in input) {
     next.memoryDisabledUserIds = normalizeUserIdsStrict(input.memoryDisabledUserIds);

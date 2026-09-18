@@ -14,15 +14,30 @@ test("ModelHealthHistoryStore serializes concurrent records", async () => {
     await Promise.all([
       store.record(makeEntry("reply-main", "reply")),
       store.record(makeEntry("knowledge-main", "knowledge")),
-      store.record(makeEntry("tts-main", "tts")),
+      store.record(makeEntry("custom-main", "custom")),
     ]);
 
     const entries = await store.list();
     assert.deepEqual(new Set(entries.map((entry) => entry.id)), new Set([
       "reply-main",
       "knowledge-main",
-      "tts-main",
+      "custom-main",
     ]));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ModelHealthHistoryStore remaps retired tts purpose to custom for historical retention", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "model-health-history-"));
+  try {
+    const store = new ModelHealthHistoryStore(path.join(dir, "model-health.json"));
+    await store.record(makeEntry("tts-main", "tts" as never));
+
+    const entries = await store.list();
+    const entry = entries.find((item) => item.id === "tts-main");
+    assert.ok(entry);
+    assert.equal(entry.purpose, "custom");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

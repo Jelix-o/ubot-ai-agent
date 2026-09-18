@@ -73,7 +73,7 @@ restricted backup.
    `ubot-worker.service`, and `ubot-admin.service` are active.
 3. Confirm `ubot-maintenance.timer` is enabled. It removes expired raw message
    metadata, encrypted rollback archives and 30-day generated preview pages.
-4. Sign in over HTTPS, complete TOTP enrollment when required, and perform one
+4. Sign in over HTTPS with an admin password (at least 12 characters), and perform one
    `@机器人` message plus one reply to a confirmed bot message.
 
 For the production release switch and NapCat configuration update, follow

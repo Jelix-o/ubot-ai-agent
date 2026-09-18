@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 
 import AppIcon from "../components/AppIcon.vue";
@@ -46,7 +46,7 @@ const scheduleEffectText = computed(() => [
   form.scheduledRemindersEnabled ? "定时提醒已启用" : undefined,
   `时区 ${scheduleTimezone.value}`,
 ].filter(Boolean).join(" · "));
-const readonly = computed(() => app.readonly);
+const readonly = computed(() => !app.sessionLoaded);
 const reminderSubmitLabel = computed(() => editingReminderId.value ? "保存任务" : "添加任务");
 
 function defaultGroupConfig(): GroupConfig {
@@ -75,8 +75,6 @@ function defaultGroupConfig(): GroupConfig {
     blacklistedUserIds: [],
     opsAlertsEnabled: false,
     triggerKeywords: [{ keyword: "乘风", enabled: true }],
-    voiceReplyEnabled: false,
-    defaultVoiceReplyEnabled: false,
     onlineLookupEnabled: false,
     visionEnabled: true,
     ambientGroupContextEnabled: true,
@@ -115,6 +113,10 @@ async function load(): Promise<void> {
     resetForm(data);
     await loadReminders(groupId, serial);
     await loadSchedulePreview(groupId, serial);
+  } catch (error) {
+    if (serial === loadSerial) {
+      app.showToast((error as Error).message || "群配置加载失败", "error");
+    }
   } finally {
     if (serial === loadSerial) loading.value = false;
   }
@@ -171,7 +173,7 @@ async function loadReminders(groupId = app.groupId, serial = loadSerial): Promis
 async function save(): Promise<void> {
   if (!app.groupId) return;
   if (readonly.value) {
-    app.showToast("普通用户只读模式不能保存群配置", "error");
+    app.showToast("会话尚未就绪，无法保存群配置", "error");
     return;
   }
   saving.value = true;
@@ -286,7 +288,7 @@ function reminderStatusClass(reminder: ScheduledReminderTask): string {
 
 async function submitReminder(): Promise<void> {
   if (readonly.value) {
-    app.showToast("普通用户只读模式不能修改定时任务", "error");
+    app.showToast("会话尚未就绪，无法修改定时任务", "error");
     return;
   }
   if (!app.groupId || !reminderForm.topic.trim()) {
@@ -394,17 +396,6 @@ watch(() => app.groupId, () => {
   void load();
 });
 
-watch(() => form.voiceReplyEnabled, (enabled) => {
-  if (!enabled) {
-    form.defaultVoiceReplyEnabled = false;
-  }
-});
-
-watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
-  if (enabled && !form.voiceReplyEnabled) {
-    form.defaultVoiceReplyEnabled = false;
-  }
-});
 </script>
 
 <template>
@@ -417,7 +408,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <option v-for="group in app.groups" :key="group.groupId" :value="group.groupId">群 {{ group.groupId }}</option>
           </select>
         </label>
-        <span class="muted">仅允许编辑已有群配置，不新增或删除群。</span>
       </article>
 
       <article class="panel group-summary">
@@ -481,7 +471,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-line"><input v-model="form.enabled" :disabled="readonly" type="checkbox" /> 显示并启用该群</label>
             <label>当前人格
               <div class="fixed-persona">会仙 / huixian</div>
-              <small class="muted">所有群统一使用会仙人格；人格细节由超级管理员在“会仙人格”页面维护。</small>
+
             </label>
             <label>回复模型
               <select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels">
@@ -490,7 +480,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
                   {{ model.label }}
                 </option>
               </select>
-              <small class="muted">系统设置中启用的对话模型会同步进入群内 #模型 切换列表</small>
+
             </label>
             <label>参与方式
               <select v-model="form.participationMode" class="select" :disabled="readonly">
@@ -498,7 +488,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
                 <option value="mentions_and_keywords">@ / 引用 + 关键词</option>
                 <option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option>
               </select>
-              <small class="muted">默认不主动插话；“指定成员低频参与”仅对下方实时对话 QQ 生效，并仍遵守延迟与静音。</small>
+
             </label>
             <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /></label>
             <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
@@ -509,12 +499,12 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
 
         <section class="panel group-config-card">
           <h3>回复策略与能力开关</h3>
-          <p class="muted">当前群固定使用会仙人格。群级配置可灵活控制自动化功能、模型模式与多模态特性。</p>
+
           <div class="switch-grid">
             <label class="switch-card" :class="{ checked: form.dailyReportEnabled }">
               <div>
                 <strong>群聊日报</strong>
-                <small class="muted">定时提炼每日核心话题与成员互动</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" />
@@ -525,7 +515,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.holidayCountdownEnabled }">
               <div>
                 <strong>节日倒计时</strong>
-                <small class="muted">工作日推送节假日倒数与温馨贴士</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" />
@@ -536,7 +526,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.scheduledRemindersEnabled }">
               <div>
                 <strong>定时提醒</strong>
-                <small class="muted">执行自定义周期性定时播报任务</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" />
@@ -547,7 +537,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.opsAlertsEnabled }">
               <div>
                 <strong>运维告警</strong>
-                <small class="muted">服务及网络异常时静默或发送告警</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" />
@@ -558,7 +548,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.botMuted }">
               <div>
                 <strong>机器人静音</strong>
-                <small class="muted">暂停当前群内全部被动与主动发言</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.botMuted" :disabled="readonly" type="checkbox" />
@@ -566,21 +556,10 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
               </div>
             </label>
 
-            <label class="switch-card" :class="{ checked: form.voiceReplyEnabled }">
-              <div>
-                <strong>语音功能</strong>
-                <small class="muted">支持 #语音 指令或语音回复</small>
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.voiceReplyEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
             <label class="switch-card" :class="{ checked: form.onlineLookupEnabled }">
               <div>
                 <strong>自动查询实时资料</strong>
-                <small class="muted">天气、股票与网络公开数据检索</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" />
@@ -591,7 +570,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.visionEnabled }">
               <div>
                 <strong>图片理解</strong>
-                <small class="muted">支持识图对话与图片场景解析</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" />
@@ -602,7 +581,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.ambientGroupContextEnabled }">
               <div>
                 <strong>短时群聊语境</strong>
-                <small class="muted">理解近三分钟内的多人接话、代词和接梗</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.ambientGroupContextEnabled" :disabled="readonly" type="checkbox" />
@@ -613,7 +592,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <label class="switch-card" :class="{ checked: form.htmlPreviewEnabled }">
               <div>
                 <strong>静态网页预览</strong>
-                <small class="muted">生成 HTML 静态页面并输出预览链接</small>
+
               </div>
               <div class="switch-toggle">
                 <input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" />
@@ -621,16 +600,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
               </div>
             </label>
 
-            <label class="switch-card" :class="{ checked: form.defaultVoiceReplyEnabled, disabled: !form.voiceReplyEnabled }">
-              <div>
-                <strong>默认语音回复</strong>
-                <small class="muted">所有回复默认转为语音音频消息</small>
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.defaultVoiceReplyEnabled" :disabled="readonly || !form.voiceReplyEnabled" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
           </div>
         </section>
 
@@ -650,19 +619,19 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
       <template v-else-if="activeTab === 'permissions'">
         <section class="panel group-config-card">
           <h3>群管理与权限成员</h3>
-          <p class="muted">指定在不同模式下被机器人特殊关注或受限的成员列表。</p>
+
           <div class="field-grid">
             <label>实时对话 QQ
               <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" />
-              <small class="muted">仅在参与方式设置为“指定成员低频参与”时生效。</small>
+
             </label>
             <label>嘴臭模式 QQ
               <MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-              <small class="muted">开启后机器人对此 QQ 发送的消息会采用幽默调侃的语气回复。</small>
+
             </label>
             <label class="wide">黑名单 QQ
               <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-              <small class="muted">黑名单中的 QQ 发送的任何消息都会被机器人完全忽略。</small>
+
             </label>
           </div>
         </section>
@@ -676,7 +645,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
             <span class="schedule-icon"><AppIcon name="bell" /></span>
             <div>
               <h3>定时规则</h3>
-              <p class="muted">配置日报、节日倒计时和定时提醒的基础参数与执行规则。</p>
+
             </div>
           </div>
           <span class="schedule-effect"><AppIcon name="check" :size="16" /> 当前生效：{{ scheduleEffectText }}</span>
@@ -737,7 +706,7 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
           <div class="sub-head">
             <div>
               <h4>未来 7 天执行预览</h4>
-              <p class="muted">服务端按当前日报、节日倒计时和群定时任务规则计算。</p>
+
             </div>
             <button class="ghost-btn" type="button" @click="loadSchedulePreview()">刷新预览</button>
           </div>
@@ -852,7 +821,6 @@ watch(() => form.defaultVoiceReplyEnabled, (enabled) => {
       <div class="save-bar">
         <button class="btn" type="submit" :disabled="readonly || loading || saving">{{ readonly ? "只读模式不可保存" : saving ? "保存中..." : "保存群配置" }}</button>
         <button class="ghost-btn" type="button" :disabled="loading || saving" @click="load">重新读取</button>
-        <span class="muted">保存后机器人会按最新配置运行。</span>
       </div>
     </form>
   </section>

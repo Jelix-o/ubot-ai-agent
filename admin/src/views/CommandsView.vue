@@ -13,6 +13,7 @@ const query = shallowRef("");
 const permission = shallowRef("");
 const onlyEnabled = shallowRef(false);
 const activeId = shallowRef("");
+const readonly = computed(() => app.role !== "super_admin");
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
@@ -29,6 +30,8 @@ async function load(): Promise<void> {
     const data = await api<{ commands: SystemCommandConfig[] }>("/api/commands");
     commands.value = data.commands;
     if (!activeId.value && data.commands[0]) activeId.value = data.commands[0].id;
+  } catch (error) {
+    app.showToast((error as Error).message || "指令配置加载失败", "error");
   } finally {
     loading.value = false;
   }
@@ -80,7 +83,8 @@ onMounted(() => {
         </select>
         <label class="switch"><span>仅看启用</span><input v-model="onlyEnabled" type="checkbox" /></label>
         <button class="ghost-btn" type="button" :disabled="loading" @click="load">刷新</button>
-        <button class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存全部修改" }}</button>
+        <button v-if="!readonly" class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存全部修改" }}</button>
+        <span v-else class="tag">只读</span>
       </div>
 
       <div v-if="loading" class="empty">正在加载指令...</div>
@@ -98,35 +102,35 @@ onMounted(() => {
           <span>{{ command.primary }}</span>
           <span>{{ command.aliases.join("、") || "-" }}</span>
           <span class="tag" :class="{ warn: command.permission === 'group_admin', danger: command.permission === 'super_admin' }">{{ permissionLabel(command.permission) }}</span>
-          <label class="switch"><input v-model="command.enabled" type="checkbox" @click.stop /> {{ command.enabled ? "启用" : "停用" }}</label>
+          <span>{{ command.enabled ? "启用" : "停用" }}</span>
           <span>{{ formatDateTime(command.updatedAt) }}</span>
         </article>
       </div>
       <div class="table-footer">
         <span class="muted">共 {{ filtered.length }} 条指令</span>
-        <button class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存全部修改" }}</button>
+        <button v-if="!readonly" class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存全部修改" }}</button>
       </div>
     </section>
 
     <aside class="panel command-editor sticky-detail-panel">
       <div class="section-head">
         <div>
-          <h2>指令编辑</h2>
-          <p>只维护系统内置指令的名称、主命令、别名和开关。</p>
+          <h2>{{ readonly ? "指令详情" : "指令编辑" }}</h2>
+          <p>{{ readonly ? "当前账号可以查看指令配置，但不能修改。" : "只维护系统内置指令的名称、主命令、别名和开关。" }}</p>
         </div>
         <button class="ghost-btn" type="button" @click="activeId = ''">×</button>
       </div>
       <template v-if="activeCommand">
         <div class="warn-box">底层行为不可修改；停用后群内对应指令不会触发。</div>
         <div class="form-grid">
-          <label>指令名称<input v-model="activeCommand.title" class="input" /></label>
-          <label>主命令<input v-model="activeCommand.primary" class="input" /></label>
-          <label class="wide">别名<input class="input" :value="activeCommand.aliases.join('\n')" placeholder="支持换行、逗号、空格" @input="activeCommand.aliases = splitAliases(($event.target as HTMLInputElement).value)" /></label>
+          <label>指令名称<input v-model="activeCommand.title" class="input" :disabled="readonly" /></label>
+          <label>主命令<input v-model="activeCommand.primary" class="input" :disabled="readonly" /></label>
+          <label class="wide">别名<input class="input" :value="activeCommand.aliases.join('\n')" :disabled="readonly" placeholder="支持换行、逗号、空格" @input="activeCommand.aliases = splitAliases(($event.target as HTMLInputElement).value)" /></label>
           <label>权限级别<input class="input" :value="permissionLabel(activeCommand.permission)" disabled /></label>
-          <label class="switch editor-switch"><input v-model="activeCommand.enabled" type="checkbox" /> {{ activeCommand.enabled ? "已启用" : "已停用" }}</label>
-          <label class="wide">帮助文案<textarea v-model="activeCommand.help" class="textarea" maxlength="400" /></label>
+          <label class="switch editor-switch"><input v-model="activeCommand.enabled" type="checkbox" :disabled="readonly" /> {{ activeCommand.enabled ? "已启用" : "已停用" }}</label>
+          <label class="wide">帮助文案<textarea v-model="activeCommand.help" class="textarea" maxlength="400" :disabled="readonly" /></label>
         </div>
-        <div class="editor-footer">
+        <div v-if="!readonly" class="editor-footer">
           <button class="ghost-btn" type="button" @click="load">取消</button>
           <button class="btn" type="button" :disabled="saving" @click="save">保存</button>
         </div>

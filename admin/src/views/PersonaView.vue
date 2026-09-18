@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, shallowRef } from "vue";
 
 import AppIcon from "../components/AppIcon.vue";
-import { api, type SkillDefinition, type SkillTtsConfig } from "../services/api";
+import { api, type SkillDefinition } from "../services/api";
 import { useAppStore } from "../stores/app";
 
 const app = useAppStore();
@@ -23,7 +23,6 @@ function blankPersona(): SkillDefinition {
     maxTotalReplyChars: 3000,
     maxReplyMessages: 8,
     preferredMaxReplyMessages: 4,
-    ttsConfig: {},
     exampleExchanges: [],
     stripAsterisks: false,
     singleSentencePerMessage: false,
@@ -41,7 +40,6 @@ function clonePersona(persona: SkillDefinition): SkillDefinition {
     id: "huixian",
     styleRules: [...persona.styleRules],
     knowledge: [...persona.knowledge],
-    ttsConfig: { ...(persona.ttsConfig || {}) },
     highEmotionKeywords: [...(persona.highEmotionKeywords || [])],
     exampleExchanges: (persona.exampleExchanges || []).map((item) => ({ ...item })),
   };
@@ -49,11 +47,6 @@ function clonePersona(persona: SkillDefinition): SkillDefinition {
 
 function splitLines(value: string): string[] {
   return value.split("\n").map((item) => item.trim()).filter(Boolean);
-}
-
-function config(): SkillTtsConfig {
-  form.ttsConfig ||= {};
-  return form.ttsConfig;
 }
 
 async function load(): Promise<void> {
@@ -98,9 +91,6 @@ function reset(): void {
   void load();
 }
 
-const ttsVoiceOptions = ["", "mimo_default", "冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"];
-const ttsDialectOptions = ["", "东北话", "四川话", "河南话", "粤语"];
-const ttsPersonaToneOptions = ["", "夹子音", "御姐音", "正太音", "大叔音", "台湾腔"];
 const exampleCount = computed(() => form.exampleExchanges?.length || 0);
 
 function addExample(): void {
@@ -148,7 +138,7 @@ onMounted(() => void load());
       <section class="panel">
         <div class="section-head">
           <div>
-            <h2>回复节奏与语音</h2>
+            <h2>回复节奏</h2>
             <p>会仙可以轻松、俏皮或认真，但不以幼态、羞辱、操控或虚假承诺制造亲密感。</p>
           </div>
         </div>
@@ -156,10 +146,6 @@ onMounted(() => void load());
           <label>单条字数上限<input v-model.number="form.maxReplyCharsPerMessage" class="input" type="number" min="20" max="4000" /></label>
           <label>总字数上限<input v-model.number="form.maxTotalReplyChars" class="input" type="number" min="20" max="8000" /></label>
           <label>最多消息数<input v-model.number="form.maxReplyMessages" class="input" type="number" min="1" max="20" /></label>
-          <label>TTS 音色<select v-model="config().voice" class="select"><option v-for="item in ttsVoiceOptions" :key="item" :value="item">{{ item || "跟随系统默认" }}</option></select></label>
-          <label>方言<select v-model="config().dialect" class="select"><option v-for="item in ttsDialectOptions" :key="item" :value="item">{{ item || "不指定" }}</option></select></label>
-          <label>声线风格<select v-model="config().personaTone" class="select"><option v-for="item in ttsPersonaToneOptions" :key="item" :value="item">{{ item || "不指定" }}</option></select></label>
-          <label class="wide">TTS 风格提示<textarea v-model="config().stylePrompt" class="textarea compact" placeholder="描述稳定、自然的说话节奏；不添加无法核验的声线来源。" /></label>
         </div>
         <div class="switch-grid">
           <label><input v-model="form.respectLineBreaks" type="checkbox" /> 尊重换行</label>

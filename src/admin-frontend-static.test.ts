@@ -152,7 +152,7 @@ test("admin exposes a super-admin-only meme library with authenticated image pre
   assert.match(api, /keywords:\s*string\[\]/);
   assert.match(api, /interface MemeAsset/);
   assert.match(server, /handleMemeLibrary/);
-  assert.match(server, /requireRecentSuperAdminMfa/);
+  assert.match(server, /requireRecentSuperAdminReauth/);
   assert.match(server, /meme_library_asset_upload/);
   assert.match(adminEntry, /new MemeLibraryService\(config\.dataDir, v3State\)/);
 });

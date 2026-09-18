@@ -1,13 +1,8 @@
 import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
-import type { CharacterProfile, SkillDefinition, SkillTtsConfig } from "../types.js";
+import type { CharacterProfile, SkillDefinition } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
-import {
-  MIMO_TTS_DIALECTS,
-  MIMO_TTS_PERSONA_TONES,
-  MIMO_TTS_PRESET_VOICES,
-} from "./mimo-tts-config.js";
 
 export const HUIXIAN_SKILL_ID = "huixian";
 /** V3 name for the only supported persona identifier. */
@@ -212,15 +207,12 @@ export function normalizeHuixianCharacterProfile(value: SkillDefinition): Charac
   if (!name || !systemPrompt) {
     throw new Error("invalid_skill");
   }
-  const legacyTtsStyleHint = typeof value.ttsStyleHint === "string" ? value.ttsStyleHint.trim().slice(0, 400) : "";
-  const ttsConfig = normalizeSkillTtsConfig(value.ttsConfig, legacyTtsStyleHint);
   return {
     id: HUIXIAN_SKILL_ID,
     name: name.slice(0, 80),
     systemPrompt,
     styleRules: normalizeStringArray(value.styleRules),
     knowledge: normalizeStringArray(value.knowledge),
-    ...(Object.keys(ttsConfig).length > 0 ? { ttsConfig } : {}),
     ...(Array.isArray(value.exampleExchanges) ? { exampleExchanges: value.exampleExchanges.map((item) => ({
       user: String(item?.user ?? "").trim().slice(0, 1000),
       assistant: String(item?.assistant ?? "").trim().slice(0, 1000),
@@ -247,38 +239,6 @@ export function cloneHuixianCharacterProfile(profile: CharacterProfile): Charact
 /** @deprecated Internal compatibility helper for the legacy JSON archive adapter. */
 function cloneSkill(profile: SkillDefinition): SkillDefinition {
   return cloneHuixianCharacterProfile(profile);
-}
-
-function normalizeSkillTtsConfig(value: unknown, legacyStylePrompt = ""): SkillTtsConfig {
-  const record = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Partial<Record<keyof SkillTtsConfig, unknown>>
-    : {};
-  const next: SkillTtsConfig = {};
-
-  const stylePrompt = normalizeOptionalString(record.stylePrompt, 800) || legacyStylePrompt;
-  if (stylePrompt) next.stylePrompt = stylePrompt;
-  addEnum(next, "voice", record.voice, MIMO_TTS_PRESET_VOICES);
-  addEnum(next, "dialect", record.dialect, MIMO_TTS_DIALECTS);
-  addEnum(next, "personaTone", record.personaTone, MIMO_TTS_PERSONA_TONES);
-  return next;
-}
-
-function addEnum<K extends keyof SkillTtsConfig>(
-  target: SkillTtsConfig,
-  key: K,
-  value: unknown,
-  allowed: readonly string[],
-): void {
-  const text = normalizeOptionalString(value, 80);
-  if (!text) return;
-  if (!allowed.includes(text)) {
-    throw new Error("invalid_skill_tts_config");
-  }
-  (target as Record<keyof SkillTtsConfig, string | undefined>)[key] = text;
-}
-
-function normalizeOptionalString(value: unknown, limit: number): string {
-  return typeof value === "string" ? value.trim().slice(0, limit) : "";
 }
 
 function normalizeSkillId(value: unknown): string {

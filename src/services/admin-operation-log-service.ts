@@ -15,6 +15,7 @@ export interface AdminOperationLogEntry {
   operatorAccountId?: string;
   operatorUsername?: string;
   operatorRole?: AdminRole;
+  operatorAuthority?: "account_binding" | "qq_group_owner" | "qq_group_admin";
   action: string;
   target?: string;
   detail?: string;
@@ -34,6 +35,7 @@ export class AdminOperationLogService {
       ...(entry.operatorAccountId ? { operatorAccountId: entry.operatorAccountId } : {}),
       ...(entry.operatorUsername ? { operatorUsername: entry.operatorUsername } : {}),
       ...(entry.operatorRole ? { operatorRole: entry.operatorRole } : {}),
+      ...(entry.operatorAuthority ? { operatorAuthority: entry.operatorAuthority } : {}),
       action: entry.action,
       ...(entry.target ? { target: entry.target } : {}),
       ...(entry.detail ? { detail: entry.detail } : {}),
@@ -67,6 +69,7 @@ export class AdminOperationLogService {
           entry.operatorUserId,
           entry.operatorAccountId,
           entry.operatorUsername,
+          entry.operatorAuthority,
           entry.action,
           entry.target,
           entry.detail,
@@ -105,6 +108,7 @@ export class AdminOperationLogService {
             entry.operatorUserId,
             entry.operatorAccountId,
             entry.operatorUsername,
+            entry.operatorAuthority,
             entry.action,
             entry.target,
             entry.detail,
@@ -149,6 +153,9 @@ function normalizeEntry(value: unknown): AdminOperationLogEntry | undefined {
     ...(typeof parsed.operatorAccountId === "string" && parsed.operatorAccountId ? { operatorAccountId: parsed.operatorAccountId } : {}),
     ...(typeof parsed.operatorUsername === "string" && parsed.operatorUsername ? { operatorUsername: parsed.operatorUsername } : {}),
     ...(parsed.operatorRole === "super_admin" || parsed.operatorRole === "group_admin" ? { operatorRole: parsed.operatorRole } : {}),
+    ...(parsed.operatorAuthority === "account_binding" || parsed.operatorAuthority === "qq_group_owner" || parsed.operatorAuthority === "qq_group_admin"
+      ? { operatorAuthority: parsed.operatorAuthority }
+      : {}),
     action: parsed.action,
     ...(typeof parsed.target === "string" && parsed.target ? { target: parsed.target } : {}),
     ...(typeof parsed.detail === "string" && parsed.detail ? { detail: parsed.detail } : {}),
