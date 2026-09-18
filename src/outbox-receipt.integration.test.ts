@@ -221,6 +221,32 @@ test("generated images retry only when NapCat was disconnected before dispatch",
   assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 1);
 });
 
+test("retired voice outbox rows are never delivered as text or retried", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const transport = new ReceiptTransport(() => "qq-never");
+  for (const kind of ["record", "airecord"]) {
+    const id = db.enqueueOutbox("group-voice", null, `${kind}-payload`, kind);
+    const row = db.claimOutbox(1)[0]!;
+    await assert.rejects(
+      deliverOutboxRow(db, transport, row),
+      /Retired voice outbox kind/,
+    );
+    assert.equal(markOutboxDeliveryFailed(db, row, new Error("retired voice")), "terminal");
+    const stored = db.db.prepare("SELECT status, retry_after FROM outbox WHERE id = ?").get(id) as {
+      status: string;
+      retry_after: number | null;
+    };
+    assert.deepEqual({ ...stored }, { status: "failed", retry_after: null });
+  }
+  assert.deepEqual(transport.deliveries, []);
+});
+
 test("ordinary outbox messages retain their existing retry behavior", (t) => {
   const { dbPath, dir } = tempDbPath();
   const db = new SharedDb(dbPath);

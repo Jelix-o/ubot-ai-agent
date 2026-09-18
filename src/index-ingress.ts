@@ -72,7 +72,9 @@ export async function deliverOutboxRow(
 ): Promise<string> {
   let receipt: MessageReceipt | void;
   let generatedImagePath: string | undefined;
-  if (row.kind === "image") {
+  if (row.kind === "record" || row.kind === "airecord") {
+    throw new Error("Retired voice outbox kind cannot be delivered.");
+  } else if (row.kind === "image") {
     receipt = await transport.sendGroupImage(row.group_id, row.text);
   } else if (row.kind === "generated_image") {
     if (!generatedImageRoot || !isGeneratedImagePath(generatedImageRoot, row.text)) {
@@ -122,7 +124,8 @@ export function markOutboxDeliveryFailed(
   row: Pick<OutboxRow, "id" | "kind">,
   error: unknown,
 ): OutboxFailureDisposition {
-  const retryable = row.kind !== "generated_image" || error instanceof NapCatActionNotSentError;
+  const retiredVoice = row.kind === "record" || row.kind === "airecord";
+  const retryable = !retiredVoice && (row.kind !== "generated_image" || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }
