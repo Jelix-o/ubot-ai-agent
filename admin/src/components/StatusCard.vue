@@ -34,14 +34,14 @@ defineProps<{
 
 <style scoped>
 .status-card {
-  border: 1px solid color-mix(in oklch, var(--ok) 50%, var(--line));
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 14px;
 }
 
 .status-card.bad {
-  border-color: color-mix(in oklch, var(--danger) 55%, var(--line));
+  border-color: color-mix(in oklch, var(--danger) 40%, var(--line));
 }
 
 .status-head {
@@ -50,44 +50,53 @@ defineProps<{
   gap: 8px;
 }
 
+.status-head strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .dot {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--ok);
-  box-shadow: 0 0 0 5px color-mix(in oklch, var(--ok) 18%, transparent);
+  box-shadow: 0 0 0 3px var(--ok-soft);
 }
 
 .bad .dot {
   background: var(--danger);
-  box-shadow: 0 0 0 5px color-mix(in oklch, var(--danger) 18%, transparent);
+  box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
 p {
-  margin: 14px 0 0;
+  margin: 10px 0 0;
   color: var(--muted);
-  line-height: 1.65;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 dl {
   display: grid;
-  gap: 8px;
-  margin: 14px 0 0;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: 12px;
 }
 
 dl div {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
 }
 
 dt {
-  color: var(--muted);
+  color: var(--subtle);
 }
 
 dd {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 </style>

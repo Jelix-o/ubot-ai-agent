@@ -675,39 +675,36 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
 .stat-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 16px 20px;
+  gap: 12px;
+  padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
 }
 
 .stat-icon-wrap {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius-md);
   display: grid;
   place-items: center;
   flex-shrink: 0;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
 }
 
-.stat-icon-wrap.blue { background: #eff6ff; color: #2563eb; }
-.stat-icon-wrap.amber { background: #fffbeb; color: #d97706; }
-.stat-icon-wrap.purple { background: #f5f3ff; color: #7c3aed; }
-.stat-icon-wrap.red { background: #fef2f2; color: #dc2626; }
-
-:root[data-theme="dark"] .stat-icon-wrap.blue { background: rgba(37, 99, 235, 0.2); color: #60a5fa; }
-:root[data-theme="dark"] .stat-icon-wrap.amber { background: rgba(217, 119, 6, 0.2); color: #fbbf24; }
-:root[data-theme="dark"] .stat-icon-wrap.purple { background: rgba(124, 58, 237, 0.2); color: #a78bfa; }
-:root[data-theme="dark"] .stat-icon-wrap.red { background: rgba(220, 38, 38, 0.2); color: #f87171; }
+.stat-icon-wrap.blue { color: var(--accent); }
+.stat-icon-wrap.amber { color: var(--warning); }
+.stat-icon-wrap.purple { color: var(--purple); }
+.stat-icon-wrap.red { color: var(--danger); }
 
 .stat-num {
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.1;
-  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text-strong);
   letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-label {
@@ -925,11 +922,11 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
 }
 
 .badge-owner { background: #fef3c7; color: #b45309; }
-.badge-admin { background: #dbeafe; color: #1d4ed8; }
+.badge-admin { background: var(--accent-soft); color: var(--accent-strong); border: 1px solid color-mix(in oklch, var(--accent) 25%, var(--line)); }
 .badge-member { background: var(--surface-soft); color: var(--muted); border: 1px solid var(--line); }
 
 :root[data-theme="dark"] .badge-owner { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
-:root[data-theme="dark"] .badge-admin { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+:root[data-theme="dark"] .badge-admin { background: var(--accent-soft); color: var(--accent-strong); }
 
 .qq-row {
   display: inline-flex;

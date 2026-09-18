@@ -185,6 +185,31 @@ useRefreshEvents({ refresh: () => void load() });
 </template>
 
 <style scoped>
-.security-page { display: grid; gap: 18px; }.security-grid { grid-template-columns: minmax(0, 1.3fr) minmax(280px, .7fr); }.inline-form { display: flex; align-items: end; gap: 10px; margin-top: 12px; }.inline-form label, .stack-form label, .invite-form > label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 700; }.stack-form { display: grid; gap: 10px; max-width: 480px; margin-top: 28px; }.stack-form h3 { margin: 0; }.align-start { justify-self: start; }.invite-form { display: grid; grid-template-columns: minmax(160px, .35fr) minmax(160px, .35fr) minmax(260px, 1fr) auto; align-items: end; gap: 14px; }.grant-picker { display: grid; gap: 7px; max-height: 160px; overflow: auto; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 9px 11px; }.check-row { display: flex; gap: 8px; align-items: center; font-size: 13px; }.invite-result { display: grid; gap: 8px; margin-top: 14px; padding: 14px; border: 1px solid var(--line); }.invite-result code { overflow-wrap: anywhere; }.account-list { display: grid; gap: 12px; }.account-row { display: grid; grid-template-columns: minmax(170px, .6fr) minmax(300px, 1fr) auto; gap: 16px; align-items: start; border: 1px solid var(--line); padding: 14px; }.account-main p, .account-main small, .panel > p { color: var(--muted); }.account-settings { display: grid; gap: 10px; }.compact-form { margin: 0; }.account-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }.danger-action, .danger-link { color: var(--danger); }.list-row, .audit-row { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 10px 0; }.audit-row span, .list-row small { color: var(--muted); font-size: 13px; }
-@media (max-width: 1100px) { .security-grid, .invite-form, .account-row { grid-template-columns: 1fr; }.account-actions { justify-content: start; } } @media (max-width: 620px) { .inline-form { align-items: stretch; flex-direction: column; } }
+.security-page { display: grid; gap: 16px; }
+.security-grid { grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr); gap: 16px; }
+.security-page .panel { padding: 16px 18px; }
+.security-page label { display: grid; gap: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.inline-form { display: flex; align-items: end; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.inline-form .input { max-width: 220px; }
+.stack-form { display: grid; gap: 10px; max-width: 420px; margin-top: 20px; }
+.stack-form h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.align-start { justify-self: start; }
+.invite-form { display: grid; grid-template-columns: minmax(140px, 0.35fr) minmax(140px, 0.35fr) minmax(220px, 1fr) auto; align-items: end; gap: 10px; }
+.grant-picker { display: grid; gap: 6px; max-height: 150px; overflow: auto; margin: 0; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 10px; background: var(--surface-soft); }
+.check-row { display: flex; gap: 8px; align-items: center; font-size: 12.5px; font-weight: 500; color: var(--text); }
+.invite-result { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
+.invite-result code { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
+.account-list { display: grid; gap: 10px; }
+.account-row { display: grid; grid-template-columns: minmax(150px, 0.55fr) minmax(260px, 1fr) auto; gap: 14px; align-items: start; border: 1px solid var(--line); border-radius: var(--radius-md); padding: 12px 14px; background: var(--surface); }
+.account-main strong { font-size: 13.5px; }
+.account-main p, .account-main small, .panel > p { color: var(--muted); font-size: 12.5px; }
+.account-settings { display: grid; gap: 8px; }
+.compact-form { margin: 0; }
+.account-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 6px; }
+.danger-action, .danger-link { color: var(--danger); }
+.list-row, .audit-row { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding: 9px 0; font-size: 13px; }
+.audit-row span, .list-row small { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.security-side h2 { margin-top: 0; font-size: 14px; }
+@media (max-width: 1100px) { .security-grid, .invite-form, .account-row { grid-template-columns: 1fr; } .account-actions { justify-content: start; } }
+@media (max-width: 620px) { .inline-form { align-items: stretch; flex-direction: column; } .inline-form .input { max-width: none; } }
 </style>
