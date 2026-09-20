@@ -233,7 +233,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         </article>
       </div>
 
-      <div class="filter-card">
+      <div class="filter-bar task-filter-bar">
         <label>关键词
           <input v-model="filters.q" class="input" placeholder="任务 ID、标题、操作者、目标或结果" @keyup.enter="applyFilters" />
         </label>
@@ -353,14 +353,6 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 </template>
 
 <style scoped>
-.task-summary,
-.filter-card {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
-  max-width: 100%;
-}
-
 .page,
 .panel {
   min-width: 0;
@@ -368,47 +360,58 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 .task-summary {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 14px;
-}
-
-.task-summary article,
-.filter-card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 14px;
+  gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 12px;
 }
 
 .task-summary article {
   display: grid;
   gap: 6px;
   min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 12px;
+  box-shadow: none;
 }
 
-.task-summary span,
-.task-title small {
+.task-summary span {
   color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .task-summary strong {
-  font-size: 24px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-strong);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.filter-card {
-  grid-template-columns: minmax(220px, 1.2fr) 130px minmax(160px, 0.8fr) minmax(160px, 0.8fr) 120px auto;
-  align-items: end;
-  margin-bottom: 14px;
+.task-filter-bar label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.filter-card label {
-  display: grid;
-  gap: 8px;
-  color: var(--muted);
-  font-weight: 800;
+.task-filter-bar .input {
+  min-width: 200px;
+}
+
+.task-filter-bar .select {
+  width: auto;
+  min-width: 120px;
 }
 
 .filter-actions {
@@ -416,6 +419,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+  align-self: end;
 }
 
 .task-table {
@@ -425,17 +429,21 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .task-table-head,
 .task-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.2fr) 120px 150px 180px 100px 170px 96px;
-  gap: 14px;
+  grid-template-columns: minmax(260px, 1.2fr) 108px 132px minmax(150px, 0.8fr) 88px 160px 88px;
+  gap: 8px;
   align-items: center;
-  min-width: 1130px;
+  min-width: 1080px;
   border-bottom: 1px solid var(--line);
-  padding: 12px 16px;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .task-table-head {
@@ -443,8 +451,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   top: 0;
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .task-row:last-child {
@@ -452,40 +460,52 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 .task-row.active {
-  background: var(--surface-soft);
+  background: var(--accent-soft);
 }
 
 .task-title {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
-.task-title strong,
+.task-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
 .task-title small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .progress-cell {
   display: grid;
   gap: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 .progress-cell i {
   display: block;
-  height: 8px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
   background: var(--surface-soft);
+  border: 1px solid var(--line);
 }
 
 .progress-cell b {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent-strong);
+  background: var(--accent);
 }
 
 .row-action {
@@ -496,7 +516,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   margin-top: 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  background: var(--surface);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -504,8 +525,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px;
+  gap: 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-soft);
 }
@@ -518,23 +539,25 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 .detail-head h3 {
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .detail-head p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--muted);
+  font-size: 12.5px;
 }
 
 .detail-body {
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(240px, 0.8fr) minmax(320px, 1.2fr);
+  grid-template-columns: minmax(240px, 0.9fr) minmax(220px, 0.8fr) minmax(300px, 1.2fr);
   gap: 0;
 }
 
 .detail-block {
   min-width: 0;
-  padding: 16px;
+  padding: 14px 16px;
   border-right: 1px solid var(--line);
 }
 
@@ -543,25 +566,29 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 .detail-block h4 {
-  margin-bottom: 12px;
-  color: var(--text);
-  font-size: 14px;
+  margin-bottom: 10px;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .detail-list {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr);
-  gap: 10px 12px;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
+  font-size: 13px;
 }
 
 .detail-list dt {
   color: var(--muted);
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .detail-list dd {
   min-width: 0;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-result pre {
@@ -569,10 +596,11 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   margin: 0;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
   padding: 12px;
   color: var(--text);
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -581,7 +609,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 .error-text {
   margin: 0;
   color: var(--danger);
-  font-weight: 800;
+  font-weight: 600;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
@@ -594,24 +623,29 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 .compact {
-  min-height: 120px;
+  min-height: 96px;
 }
 
 @media (max-width: 760px) {
-  .task-summary,
-  .filter-card {
+  .task-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .task-filter-bar {
+    display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .task-filter-bar .input,
+  .task-filter-bar .select {
+    max-width: none;
+    width: 100%;
   }
 
   .filter-actions {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
     justify-content: stretch;
-  }
-
-  .filter-actions .btn,
-  .filter-actions .ghost-btn {
-    width: 100%;
   }
 
   .detail-head,

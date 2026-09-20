@@ -54,7 +54,10 @@ function statusLabel(status: HtmlPreviewStatus): string {
 }
 
 function statusClass(status: HtmlPreviewStatus): string {
-  return status === "published" ? "ok" : status === "pending" ? "pending" : "danger";
+  if (status === "published") return "ok";
+  if (status === "pending") return "pending";
+  if (status === "failed") return "danger";
+  return "neutral";
 }
 
 function formatBytes(value?: number): string {
@@ -246,7 +249,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 .preview-toolbar {
   display: grid;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .preview-summary {
@@ -257,8 +260,8 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 .preview-toolbar {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 14px;
+  background: var(--surface);
+  padding: 12px 14px;
 }
 
 .preview-summary article {
@@ -268,13 +271,16 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 }
 
 .preview-summary span,
-.preview-summary strong,
 .preview-title small,
 .muted {
   color: var(--muted);
+  font-size: 12.5px;
 }
 
 .preview-summary strong {
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -287,9 +293,10 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 
 .preview-toolbar label {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   color: var(--muted);
-  font-weight: 800;
+  font-size: 12.5px;
+  font-weight: 650;
 }
 
 .toolbar-actions {
@@ -301,34 +308,41 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  background: var(--surface);
 }
 
 .preview-table-head,
 .preview-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.35fr) 90px 120px 170px 170px 82px minmax(180px, auto);
-  gap: 14px;
+  grid-template-columns: minmax(220px, 1.35fr) 92px 120px 160px 160px 78px minmax(170px, auto);
+  gap: 12px;
   align-items: center;
-  min-width: 1120px;
-  padding: 12px 16px;
+  min-width: 1080px;
+  padding: 12px 14px;
 }
 
 .preview-table-head {
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 12.5px;
+  font-weight: 650;
 }
 
 .preview-row {
   border-top: 1px solid var(--line);
-  background: var(--surface-raised);
+  background: var(--surface);
 }
 
 .preview-title {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
+}
+
+.preview-title strong {
+  color: var(--text-strong);
+  font-size: 14px;
+  font-weight: 650;
 }
 
 .preview-title strong,
@@ -336,6 +350,10 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.preview-row > span {
+  font-size: 12.5px;
 }
 
 .row-actions {
@@ -353,11 +371,24 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 }
 
 .tag.ok {
-  color: var(--success, #16825d);
+  background: var(--ok-soft);
+  color: var(--ok);
 }
 
 .tag.pending {
+  background: var(--accent-soft);
   color: var(--accent-strong);
+}
+
+.tag.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.tag.neutral {
+  background: var(--surface-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
 }
 
 .unavailable {
@@ -366,43 +397,58 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 
 .empty-state {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-columns: 170px minmax(0, 1fr);
   align-items: center;
-  gap: 24px;
-  min-height: 210px;
+  gap: 20px;
+  min-height: 180px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 28px;
+  background: var(--surface);
+  padding: 22px;
 }
 
 .empty-visual {
   display: grid;
   place-items: center;
-  min-height: 110px;
+  min-height: 96px;
+  border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--line));
   border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--accent-soft) 72%, var(--surface));
+  background: color-mix(in oklch, var(--accent-soft) 55%, var(--surface));
   color: var(--accent-strong);
-  font-size: 28px;
-  font-weight: 900;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
-.empty-state h3,
-.empty-state p {
+.empty-state h3 {
   margin: 0;
+  font-size: 14px;
+  font-weight: 650;
 }
 
 .empty-state p {
-  margin-top: 8px;
+  margin: 6px 0 0;
   color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .pager {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pager .ghost-btn {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.pager .muted {
+  font-size: 12.5px;
 }
 
 @media (max-width: 900px) {

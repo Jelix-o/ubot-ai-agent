@@ -169,7 +169,7 @@ watch(() => app.role, () => {
         </article>
       </div>
 
-      <div class="filter-card">
+      <div class="filter-bar audit-filter-bar">
         <label>关键词
           <input v-model="filters.q" class="input" placeholder="操作者、动作、目标或详情" @keyup.enter="applyFilters" />
         </label>
@@ -250,75 +250,85 @@ watch(() => app.role, () => {
 </template>
 
 <style scoped>
-.audit-summary,
-.filter-card {
-  display: grid;
-  gap: 12px;
-}
-
 .audit-summary {
+  display: grid;
   grid-template-columns: 1.2fr 0.7fr 1fr;
-  margin-bottom: 14px;
-}
-
-.audit-summary article,
-.filter-card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 14px;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 12px;
 }
 
 .audit-summary article {
   display: grid;
   gap: 6px;
   min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 12px;
+  box-shadow: none;
 }
 
 .audit-summary span {
   color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .audit-summary strong {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.filter-card {
-  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) 130px 110px auto;
-  align-items: end;
-  margin-bottom: 14px;
+.audit-filter-bar label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.filter-card label {
-  display: grid;
-  gap: 8px;
-  color: var(--muted);
-  font-weight: 800;
+.audit-filter-bar .input {
+  min-width: 180px;
+}
+
+.audit-filter-bar .select {
+  width: auto;
+  min-width: 120px;
 }
 
 .filter-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  align-self: end;
 }
 
 .audit-table {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .audit-head,
 .audit-row {
   display: grid;
-  grid-template-columns: 180px 110px 130px 140px 150px minmax(260px, 1fr) 96px;
-  gap: 14px;
+  grid-template-columns: 160px 108px 120px 130px 140px minmax(220px, 1fr) 88px;
+  gap: 8px;
   align-items: center;
-  min-width: 1190px;
+  min-width: 1080px;
   border-bottom: 1px solid var(--line);
-  padding: 12px 16px;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .audit-head {
@@ -326,16 +336,21 @@ watch(() => app.role, () => {
   top: 0;
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .audit-row:last-child {
   border-bottom: 0;
 }
 
+.audit-row strong {
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
 .audit-row.active {
-  background: var(--surface-soft);
+  background: var(--accent-soft);
 }
 
 .detail {
@@ -343,6 +358,7 @@ watch(() => app.role, () => {
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12.5px;
 }
 
 .row-action {
@@ -354,15 +370,16 @@ watch(() => app.role, () => {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
+  background: var(--surface);
+  box-shadow: none;
 }
 
 .detail-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px;
+  gap: 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-soft);
 }
@@ -376,61 +393,79 @@ watch(() => app.role, () => {
 }
 
 .detail-head h3 {
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .detail-head p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--muted);
+  font-size: 12.5px;
 }
 
 .detail-body {
   display: grid;
-  grid-template-columns: minmax(320px, 0.9fr) minmax(360px, 1.1fr);
+  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
 }
 
 .detail-list {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr);
-  gap: 10px 12px;
-  padding: 16px;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 14px 16px;
   border-right: 1px solid var(--line);
+  font-size: 13px;
 }
 
 .detail-list dt {
   color: var(--muted);
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .detail-list dd {
   min-width: 0;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-text {
   min-width: 0;
-  padding: 16px;
+  padding: 14px 16px;
 }
 
 .detail-text h4 {
-  margin-bottom: 12px;
-  font-size: 14px;
+  margin-bottom: 10px;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .detail-text p {
   overflow-wrap: anywhere;
   color: var(--text);
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .compact {
-  min-height: 120px;
+  min-height: 96px;
 }
 
 @media (max-width: 960px) {
-  .audit-summary,
-  .filter-card {
+  .audit-summary {
     grid-template-columns: 1fr;
+  }
+
+  .audit-filter-bar {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .audit-filter-bar .input,
+  .audit-filter-bar .select {
+    max-width: none;
+    width: 100%;
   }
 
   .filter-actions {
