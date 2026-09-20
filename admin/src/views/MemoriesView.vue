@@ -710,7 +710,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <div><dt>消息数量</dt><dd>{{ evidenceItem.evidence?.messageCount ?? 0 }} 条</dd></div>
           <div><dt>发言人</dt><dd>{{ evidenceSpeakers(evidenceItem.evidence) }}</dd></div>
         </dl>
-        <div v-if="evidenceLoading" class="empty compact">Loading full evidence...</div>
+        <div v-if="evidenceLoading" class="empty compact">正在加载完整溯源...</div>
         <article class="evidence-text">{{ formattedEvidenceSummary() }}</article>
       </div>
     </aside>
@@ -720,23 +720,39 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 <style scoped>
 .create-panel {
   display: grid;
-  gap: 14px;
-  border: 1px solid color-mix(in oklch, var(--accent) 38%, var(--line));
+  gap: 12px;
+  border: 1px solid color-mix(in oklch, var(--accent) 32%, var(--line));
   border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--accent-soft) 40%, var(--surface));
-  padding: 16px;
-  margin-bottom: 14px;
+  background: color-mix(in oklch, var(--accent-soft) 35%, var(--surface));
+  padding: 14px;
+  margin-bottom: 12px;
 }
 
 .create-panel h3,
 .create-panel p { margin: 0; }
-.create-panel p { color: var(--muted); margin-top: 5px; }
+.create-panel h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+.create-panel p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
 .create-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
-.create-grid label { display: grid; gap: 8px; color: var(--muted); font-weight: 700; }
+.create-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 650;
+}
 .create-actions { display: flex; justify-content: flex-end; }
 
 .filter-card {
@@ -747,20 +763,21 @@ watch(() => [pagination.page, pagination.pageSize], () => {
     minmax(150px, 0.62fr)
     minmax(130px, 0.52fr)
     minmax(130px, 0.52fr);
-  gap: 16px;
+  gap: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 16px;
-  margin-bottom: 14px;
+  background: var(--surface);
+  padding: 14px;
+  margin-bottom: 12px;
 }
 
 .filter-card label,
 .edit-grid label {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   color: var(--muted);
-  font-weight: 700;
+  font-size: 12.5px;
+  font-weight: 650;
 }
 
 .notice {
@@ -768,24 +785,25 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid color-mix(in oklch, var(--accent) 35%, var(--line));
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, var(--line));
   border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--accent-soft) 55%, var(--surface));
+  background: color-mix(in oklch, var(--accent-soft) 45%, var(--surface));
   color: var(--accent-strong);
-  padding: 12px 16px;
-  margin-bottom: 14px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
 }
 
 .dedup-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
+  gap: 12px;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 16px;
-  margin-bottom: 14px;
+  background: var(--surface);
+  padding: 14px;
+  margin-bottom: 12px;
 }
 
 .dedup-panel h3,
@@ -793,9 +811,17 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   margin: 0;
 }
 
+.dedup-panel h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
+}
+
 .dedup-panel p {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .dedup-actions {
@@ -809,13 +835,13 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 6px 12px;
   align-items: center;
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  padding-top: 10px;
   color: var(--accent-strong);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 12.5px;
+  font-weight: 650;
 }
 
 .dedup-results {
@@ -823,13 +849,13 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   display: grid;
   gap: 8px;
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .dedup-summary {
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 12.5px;
+  font-weight: 650;
 }
 
 .dedup-row {
@@ -847,22 +873,24 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .memory-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .memory-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 16px;
+  gap: 12px;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 16px;
+  background: var(--surface);
+  padding: 12px 14px;
 }
 
 .memory-main {
@@ -873,7 +901,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 .row-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .row-actions {
@@ -887,15 +915,16 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 .row-meta-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px 12px;
+  margin-top: 8px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .edit-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .wide {
@@ -911,8 +940,18 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pager .ghost-btn {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.pager .muted {
+  font-size: 12.5px;
 }
 
 .evidence-drawer {
@@ -921,7 +960,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   z-index: 40;
   display: flex;
   justify-content: flex-end;
-  background: color-mix(in oklch, var(--text) 18%, transparent);
+  background: color-mix(in oklch, var(--text) 16%, transparent);
 }
 
 .drawer-panel {
@@ -930,33 +969,48 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   overflow: auto;
   border-left: 1px solid var(--line);
   background: var(--surface);
-  box-shadow: var(--shadow-md);
-  padding: 22px;
+  box-shadow: var(--shadow-lg);
+  padding: 18px;
+}
+
+.drawer-panel .section-head h3 {
+  font-size: 15px;
+  font-weight: 650;
 }
 
 .icon-close {
-  width: 34px;
-  height: 34px;
-  border-radius: 999px;
-  background: var(--surface-soft);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface);
   color: var(--muted);
-  font-size: 22px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.icon-close:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--text);
 }
 
 .evidence-meta {
   display: grid;
-  gap: 12px;
-  margin: 0 0 16px;
+  gap: 10px;
+  margin: 0 0 14px;
 }
 
 .evidence-meta div {
   display: grid;
   grid-template-columns: 86px minmax(0, 1fr);
-  gap: 12px;
+  gap: 10px;
+  font-size: 13px;
 }
 
 .evidence-meta dt {
   color: var(--muted);
+  font-size: 12.5px;
 }
 
 .evidence-meta dd {
@@ -966,11 +1020,12 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 
 .evidence-text {
   white-space: pre-wrap;
-  line-height: 1.8;
+  line-height: 1.7;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface-soft);
-  padding: 14px;
+  padding: 12px 14px;
+  font-size: 13px;
 }
 
 @media (max-width: 1180px) {

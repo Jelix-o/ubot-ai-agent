@@ -71,9 +71,15 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="commands-page">
+  <div class="page commands-page">
     <section class="panel command-list-panel">
-      <div class="command-toolbar">
+      <div class="section-head">
+        <div>
+          <h2>指令配置</h2>
+          <p>查看与维护系统内置指令的名称、主命令、别名和开关。</p>
+        </div>
+      </div>
+      <div class="filter-bar command-toolbar">
         <input v-model="query" class="input" placeholder="搜索指令名称、主命令或别名" />
         <select v-model="permission" class="select">
           <option value="">全部权限</option>
@@ -82,9 +88,11 @@ onMounted(() => {
           <option value="super_admin">超级管理员</option>
         </select>
         <label class="switch"><span>仅看启用</span><input v-model="onlyEnabled" type="checkbox" /></label>
-        <button class="ghost-btn" type="button" :disabled="loading" @click="load">刷新</button>
-        <button v-if="!readonly" class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存全部修改" }}</button>
-        <span v-else class="tag">只读</span>
+        <div class="toolbar-actions">
+          <button class="ghost-btn" type="button" :disabled="loading" @click="load">刷新</button>
+          <button v-if="!readonly" class="btn" type="button" :disabled="saving" @click="save">{{ saving ? "保存中..." : "保存全部修改" }}</button>
+          <span v-else class="tag">只读</span>
+        </div>
       </div>
 
       <div v-if="loading" class="empty">正在加载指令...</div>
@@ -142,35 +150,47 @@ onMounted(() => {
 
 <style scoped>
 .commands-page {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 390px);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
 }
 
 .command-toolbar {
-  display: grid;
-  grid-template-columns: minmax(210px, 1fr) 150px auto auto auto;
-  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.command-toolbar .input {
+  min-width: 220px;
+  max-width: 280px;
+}
+
+.command-toolbar .select {
+  width: auto;
+  min-width: 140px;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  border-bottom: 1px solid var(--line);
-  margin: 0 -22px;
-  padding: 8px 22px 18px;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .command-table {
   overflow: hidden;
-  margin: 0 -22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
 }
 
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: minmax(92px, 0.8fr) minmax(90px, 0.7fr) minmax(120px, 1fr) 92px 88px 136px;
-  gap: 10px;
+  grid-template-columns: minmax(96px, 0.85fr) minmax(88px, 0.7fr) minmax(120px, 1fr) 96px 80px 140px;
+  gap: 8px;
   align-items: center;
-  min-height: 58px;
   border-bottom: 1px solid var(--line);
-  padding: 0 22px;
+  padding: 0 12px;
 }
 
 .table-row > span,
@@ -179,23 +199,45 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+}
+
+.table-row > strong {
+  font-weight: 650;
+  color: var(--text-strong);
 }
 
 .table-head {
-  min-height: 48px;
+  min-height: 36px;
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .table-row {
+  min-height: 48px;
   cursor: pointer;
-  background: var(--surface-raised);
+  background: var(--surface);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.table-row:hover {
+  background: color-mix(in oklch, var(--surface-soft) 65%, transparent);
 }
 
 .table-row.active {
-  background: color-mix(in oklch, var(--accent-soft) 62%, var(--surface-raised));
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.table-row.active > strong {
+  color: var(--accent-strong);
+}
+
+.table-row:last-child,
+.table-head:last-child {
+  border-bottom: 0;
 }
 
 .table-footer,
@@ -204,7 +246,12 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 16px;
+  margin-top: 12px;
+}
+
+.table-footer .muted {
+  margin: 0;
+  font-size: 12.5px;
 }
 
 .command-editor {
@@ -214,7 +261,15 @@ onMounted(() => {
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
+}
+
+.form-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .wide {
@@ -226,30 +281,61 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .editor-switch {
   align-self: end;
-  min-height: 40px;
+  min-height: 36px;
 }
 
 .warn-box {
-  border: 1px solid color-mix(in oklch, var(--warning) 45%, var(--line));
-  border-radius: var(--radius-sm);
-  background: color-mix(in oklch, var(--warning) 16%, var(--surface));
-  color: oklch(0.48 0.12 72);
-  padding: 12px;
+  border: 1px solid color-mix(in oklch, var(--warning) 40%, var(--line));
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  color: var(--warning);
+  padding: 10px 12px;
   margin-bottom: 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 @media (max-width: 900px) {
-  .commands-page,
-  .command-toolbar,
-  .table-head,
-  .table-row,
-  .form-grid {
+  .commands-page {
     grid-template-columns: 1fr;
   }
 
+  .form-grid,
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar-actions {
+    margin-left: 0;
+  }
+
+  .toolbar-actions .btn,
+  .toolbar-actions .ghost-btn {
+    width: 100%;
+  }
+
+  .command-toolbar .input,
+  .command-toolbar .select {
+    max-width: none;
+    width: 100%;
+  }
+
+  .table-head {
+    display: none;
+  }
+
+  .table-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
 }
 </style>
