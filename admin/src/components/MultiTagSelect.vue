@@ -134,17 +134,18 @@ onUnmounted(() => {
 .tag-input-shell {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-  min-height: 42px;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--surface);
-  padding: 7px;
+  padding: 4px 6px;
 }
 
 .tag-input-shell:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent-soft) 70%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .tag-input-shell.disabled {
@@ -153,59 +154,83 @@ onUnmounted(() => {
 
 .selected-tag {
   max-width: 100%;
-  gap: 6px;
+  gap: 5px;
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .selected-tag button {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
   background: color-mix(in oklch, var(--accent-strong) 14%, transparent);
   color: var(--accent-strong);
-  line-height: 18px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.selected-tag button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .tag-search-input {
   flex: 1;
-  min-width: 160px;
+  min-width: 140px;
+  min-height: 26px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
-  padding: 3px 4px;
+  font-size: 13px;
+  padding: 2px 4px;
 }
 
 .tag-menu {
   position: absolute;
   z-index: 35;
-  top: calc(100% + 6px);
+  top: calc(100% + 4px);
   left: 0;
   right: 0;
   display: grid;
-  gap: 4px;
+  gap: 2px;
   max-height: 280px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-md);
-  padding: 8px;
+  padding: 4px;
 }
 
 .tag-option {
   display: grid;
   gap: 2px;
-  min-height: 38px;
+  min-height: 34px;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  padding: 7px 9px;
+  padding: 6px 8px;
   text-align: left;
+  font-size: 13px;
 }
 
-.tag-option:hover {
+.tag-option small {
+  font-size: 11.5px;
+}
+
+.tag-option:hover,
+.tag-option:focus-visible {
   background: var(--accent-soft);
   color: var(--accent-strong);
+}
+
+.tag-option:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .tag-option small,
@@ -215,11 +240,12 @@ onUnmounted(() => {
 
 .custom-option {
   color: var(--accent-strong);
-  font-weight: 800;
+  font-weight: 650;
 }
 
 .tag-empty {
   padding: 10px;
   text-align: center;
+  font-size: 12.5px;
 }
 </style>

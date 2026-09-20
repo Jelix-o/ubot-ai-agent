@@ -108,48 +108,68 @@ onUnmounted(() => {
 }
 
 .searchable-input {
+  height: 36px;
+  min-height: 36px;
   padding-right: 56px;
+  border: 1px solid var(--line);
+}
+
+.searchable-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
 }
 
 .select-clear {
   position: absolute;
-  top: 7px;
-  right: 8px;
+  top: 5px;
+  right: 6px;
   min-height: 26px;
   border-radius: 999px;
+  border: 1px solid var(--line);
   background: var(--surface-soft);
   color: var(--muted);
-  padding: 0 9px;
-  font-size: 12px;
-  font-weight: 800;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.select-clear:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.select-clear:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .select-menu {
   position: absolute;
   z-index: 35;
-  top: calc(100% + 6px);
+  top: calc(100% + 4px);
   left: 0;
   right: 0;
   display: grid;
-  gap: 4px;
+  gap: 2px;
   max-height: 220px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-md);
-  padding: 8px;
+  padding: 4px;
 }
 
 .select-option {
   display: grid;
   gap: 2px;
-  min-height: 38px;
+  min-height: 34px;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  padding: 7px 9px;
+  padding: 6px 8px;
   text-align: left;
+  font-size: 13px;
 }
 
 .select-option span,
@@ -160,10 +180,21 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.select-option small {
+  font-size: 11.5px;
+}
+
 .select-option:hover,
 .select-option.active {
   background: var(--accent-soft);
   color: var(--accent-strong);
+}
+
+.select-option:focus-visible {
+  outline: none;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  box-shadow: var(--focus-ring);
 }
 
 .select-option small,
@@ -172,8 +203,13 @@ onUnmounted(() => {
   color: var(--muted);
 }
 
+.select-option.active small {
+  color: var(--accent-strong);
+}
+
 .select-empty {
   padding: 10px;
   text-align: center;
+  font-size: 12.5px;
 }
 </style>

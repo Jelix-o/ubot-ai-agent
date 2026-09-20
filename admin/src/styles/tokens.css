@@ -61,6 +61,7 @@
   --accent-ring: color-mix(in oklch, var(--accent) 40%, transparent);
   --danger-soft: color-mix(in oklch, #dc2626 18%, transparent);
   --warning-soft: color-mix(in oklch, #d97706 18%, transparent);
+  --ok: #34d399;
   --ok-soft: color-mix(in oklch, #059669 18%, transparent);
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.35);
   --shadow-md: 0 8px 20px rgb(0 0 0 / 0.35);
