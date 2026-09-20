@@ -248,7 +248,8 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 </script>
 
 <template>
-  <section class="panel">
+  <section class="page">
+  <section class="panel health-panel">
     <div class="section-head">
       <div>
         <h2>系统状态</h2>
@@ -398,21 +399,27 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
       <pre>{{ JSON.stringify(data, null, 2) }}</pre>
     </details>
   </section>
+  </section>
 </template>
 
 <style scoped>
+.health-panel {
+  display: grid;
+  gap: 0;
+}
+
 .health-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
 }
 
 .status-section {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   border-top: 1px solid var(--line);
-  padding-top: 18px;
-  margin-top: 18px;
+  padding-top: 16px;
+  margin-top: 16px;
 }
 
 .status-section:first-of-type {
@@ -433,78 +440,87 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   margin: 0;
 }
 
-.sub-head p {
-  margin-top: 5px;
-  color: var(--muted);
+.sub-head h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-strong);
 }
 
-.participation-table {
+.sub-head p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.participation-table,
+.history-table {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .participation-head,
 .participation-row {
   display: grid;
-  grid-template-columns: 180px 120px 96px minmax(180px, 1fr) 80px 140px;
-  gap: 12px;
+  grid-template-columns: 160px 112px 96px minmax(160px, 1fr) 72px 120px;
+  gap: 8px;
   align-items: center;
-  min-width: 800px;
+  min-width: 760px;
   border-bottom: 1px solid var(--line);
-  padding: 12px 14px;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
-.participation-head {
+.participation-head,
+.history-head {
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.participation-row:last-child {
+.participation-row:last-child,
+.history-row:last-child {
   border-bottom: 0;
 }
 
-.history-table {
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+.participation-row strong,
+.history-row strong {
+  font-weight: 650;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-head,
 .history-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 110px 90px 90px 110px 180px 90px;
-  gap: 12px;
+  grid-template-columns: minmax(160px, 1fr) 100px 88px 80px 100px 160px 88px;
+  gap: 8px;
   align-items: center;
-  min-width: 920px;
+  min-width: 880px;
   border-bottom: 1px solid var(--line);
-  padding: 12px 14px;
-}
-
-.history-head {
-  background: var(--surface-soft);
-  color: var(--muted);
+  padding: 10px 12px;
   font-size: 13px;
-  font-weight: 900;
-}
-
-.history-row:last-child {
-  border-bottom: 0;
 }
 
 .history-row.active {
-  background: var(--surface-soft);
+  background: var(--accent-soft);
 }
 
 .model-detail {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  padding: 16px;
+  background: var(--surface);
+  box-shadow: none;
+  padding: 14px 16px;
 }
 
 .detail-head {
@@ -521,33 +537,42 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   margin: 0;
 }
 
+.detail-head h3 {
+  font-size: 15px;
+  font-weight: 650;
+}
+
 .detail-head p {
-  margin-top: 5px;
+  margin-top: 4px;
   color: var(--muted);
+  font-size: 12.5px;
 }
 
 .detail-body {
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
-  gap: 14px;
+  grid-template-columns: minmax(240px, 0.9fr) minmax(280px, 1.1fr);
+  gap: 12px;
 }
 
 .detail-list {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 10px 12px;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px 12px;
   margin: 0;
+  font-size: 13px;
 }
 
 .detail-list dt {
   color: var(--muted);
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .detail-list dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail-text {
@@ -555,35 +580,62 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   gap: 8px;
   min-width: 0;
   border-left: 1px solid var(--line);
-  padding-left: 14px;
+  padding-left: 12px;
+}
+
+.detail-text h4 {
+  margin-bottom: 0;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .detail-text p {
   color: var(--muted);
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.65;
   overflow-wrap: anywhere;
 }
 
 .compact {
-  min-height: 120px;
+  min-height: 96px;
 }
 
 .diagnostics {
-  margin-top: 18px;
+  margin-top: 16px;
   color: var(--muted);
+  font-size: 12.5px;
+}
+
+.diagnostics summary {
+  cursor: pointer;
+  font-weight: 600;
 }
 
 pre {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 14px;
+  padding: 12px;
+  margin: 10px 0 0;
   background: var(--surface-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.row-action {
+  justify-self: start;
 }
 
 @media (max-width: 760px) {
   .health-grid {
     grid-template-columns: 1fr;
+  }
+
+  .sub-head {
+    display: grid;
   }
 
   .detail-body {
@@ -594,7 +646,7 @@ pre {
     border-left: 0;
     border-top: 1px solid var(--line);
     padding-left: 0;
-    padding-top: 14px;
+    padding-top: 12px;
   }
 }
 </style>

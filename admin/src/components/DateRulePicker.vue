@@ -108,7 +108,7 @@ watch(() => props.rule, (value) => {
 <style scoped>
 .date-rule-picker {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .rule-title {
@@ -119,11 +119,14 @@ watch(() => props.rule, (value) => {
 }
 
 .rule-title strong {
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-strong);
 }
 
 .rule-title small {
   color: var(--muted);
+  font-size: 12px;
 }
 
 .rule-segment {
@@ -132,20 +135,28 @@ watch(() => props.rule, (value) => {
   gap: 0;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--surface);
 }
 
 .rule-option {
   min-width: 0;
-  min-height: 42px;
-  padding: 0 10px;
+  min-height: 36px;
+  padding: 0 8px;
   border-right: 1px solid var(--line);
   background: transparent;
   color: var(--text);
-  font-weight: 800;
+  font-size: 12.5px;
+  font-weight: 650;
   line-height: 1.2;
   white-space: normal;
+}
+
+.rule-option:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  position: relative;
+  z-index: 1;
 }
 
 .rule-option:last-child {
@@ -161,23 +172,28 @@ watch(() => props.rule, (value) => {
 .weekday-preview {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .weekday-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 30px;
-  height: 28px;
+  min-width: 28px;
+  height: 26px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface-soft);
   color: var(--muted);
-  font-size: 13px;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.weekday-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .weekday-chip.active {
@@ -197,19 +213,19 @@ watch(() => props.rule, (value) => {
 
 .compact .rule-segment {
   min-width: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: color-mix(in oklch, var(--surface-soft) 40%, var(--surface));
 }
 
 .compact .rule-option {
-  min-height: 38px;
-  padding: 0 14px;
-  font-size: 13px;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
   color: var(--muted);
 }
 
 .compact .rule-option.active {
-  background: color-mix(in oklch, var(--accent-soft) 82%, var(--surface));
+  background: var(--accent-soft);
   color: var(--accent-strong);
   box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 58%, transparent);
 }
