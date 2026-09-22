@@ -33,6 +33,7 @@ const settings = reactive<SystemSettings>({
 
 const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; detail: string }> = [
   { value: "reply", label: "对话回复", detail: "普通群聊回复、实时对话和群内 #模型 切换列表" },
+  { value: "image", label: "图片生成", detail: "#画图 使用；主模型失败时按列表顺序切换备用" },
 ];
 
 const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
@@ -40,6 +41,7 @@ const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
   reply: "Reply Model",
   summary: "Summary Model",
   knowledge: "Knowledge Model",
+  image: "Image Model",
   custom: "Custom Model",
 };
 
@@ -278,6 +280,26 @@ function removeModel(index: number, model: SystemModelConfig): void {
   markModelsDirty();
 }
 
+function moveImageModel(model: SystemModelConfig, direction: -1 | 1): void {
+  if (model.purpose !== "image") return;
+  const imageModels = settings.models.filter((item) => item.purpose === "image");
+  const currentIndex = imageModels.indexOf(model);
+  const target = imageModels[currentIndex + direction];
+  if (!target) return;
+  const sourceIndex = settings.models.indexOf(model);
+  const targetIndex = settings.models.indexOf(target);
+  settings.models.splice(sourceIndex, 1, target);
+  settings.models.splice(targetIndex, 1, model);
+  markModelsDirty();
+}
+
+function canMoveImageModel(model: SystemModelConfig, direction: -1 | 1): boolean {
+  if (model.purpose !== "image") return false;
+  const models = settings.models.filter((item) => item.purpose === "image");
+  const index = models.indexOf(model);
+  return index >= 0 && index + direction >= 0 && index + direction < models.length;
+}
+
 function selectModel(model: SystemModelConfig): void {
   if (model.purpose === "reply") return;
   settings.selectedModelIds[model.purpose] = model.id;
@@ -293,6 +315,7 @@ function isReplyModel(model: SystemModelConfig): boolean {
 }
 
 async function testModel(model: SystemModelConfig): Promise<void> {
+  if (model.purpose === "image" && !confirm("检测图片模型会实际生成一张低质量测试图片并产生费用，继续吗？")) return;
   testingModelId.value = model.id;
   try {
     const result = await api<ModelHealthStatus>(`/api/models/${encodeURIComponent(model.id)}/test`, {
@@ -466,14 +489,16 @@ onMounted(() => {
           </div>
           <input v-model="model.baseUrl" class="input" placeholder="https://api.example.com/v1" @input="markModelsDirty" />
           <input v-model="model.model" class="input" placeholder="model-name" @input="markModelsDirty" />
-          <select v-model="model.apiProtocol" class="input" @change="markModelsDirty">
+          <select v-model="model.apiProtocol" class="input" :disabled="model.purpose === 'image'" @change="markModelsDirty">
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
           </select>
           <label class="mini-check"><input v-model="model.enabled" type="checkbox" @change="markModelsDirty" /> 启用</label>
           <input v-model="model.apiKey" class="input" type="password" :placeholder="model.hasApiKey ? '已保存，留空保留' : '未设置'" @input="markModelsDirty" />
           <div class="row-actions">
-            <button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? "检测中" : "检测连接" }}</button>
+            <button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? "检测中" : model.purpose === "image" ? "检测连接（有费用）" : "检测连接" }}</button>
+            <button v-if="model.purpose === 'image'" class="link-btn" type="button" title="提高备用顺序" :disabled="!canMoveImageModel(model, -1)" @click="moveImageModel(model, -1)">↑</button>
+            <button v-if="model.purpose === 'image'" class="link-btn" type="button" title="降低备用顺序" :disabled="!canMoveImageModel(model, 1)" @click="moveImageModel(model, 1)">↓</button>
             <button class="link-btn danger" type="button" @click="removeModel(modelIndex(model), model)">删除</button>
             <small v-if="modelHealthById[model.id]" class="model-health-text" :class="{ failed: modelHasFailure(model), skipped: modelHealthById[model.id]?.skipped || !model.enabled }">{{ modelHealthLabel(model) }}</small>
           </div>

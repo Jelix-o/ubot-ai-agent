@@ -290,6 +290,14 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
       liveChatUserIds: [],
       visionEnabled: false,
     }), Date.now());
+    new V3StateRepository(initial, { stateEncryptionKey: TEST_STATE_KEY }).saveCapabilityPolicy({
+      version: 1,
+      enabledCapabilities: ["conversation", "html_preview"],
+      providerCapabilities: {
+        openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout"],
+      },
+      updatedAt: new Date().toISOString(),
+    });
   } finally {
     initial.close();
   }
@@ -310,6 +318,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     migrationVersions: number[];
     huixianProfileRevision: { applied: boolean; revision: string };
     groupVisionEnabled: { applied: boolean; groupsUpdated: number };
+    imageGenerationCapability: { changed: boolean; initialized?: boolean };
   };
   assert.equal(report.mode, "existing-cutover-upgrade");
   assert.equal(report.cutover, "already-complete");
@@ -317,6 +326,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
   assert.ok(report.migrationVersions.includes(9));
   assert.deepEqual(report.huixianProfileRevision, { applied: true, revision: "immersive-natural-v3.0.3" });
   assert.deepEqual(report.groupVisionEnabled, { applied: true, groupsUpdated: 1 });
+  assert.deepEqual(report.imageGenerationCapability, { changed: true });
   assert.equal(existsSync(path.join(dataDir, "v3-rollback")), false);
   assert.equal(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8"), "{ malformed groups JSON");
   assert.equal(readFileSync(path.join(dataDir, "group-memory.json"), "utf8"), "{ malformed memory JSON");
@@ -333,6 +343,9 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     assert.equal(revision.changed_by, "release:3.0.3:huixian-immersive");
     await repository.saveHuixianProfile({ ...profile!, name: "会仙·管理员调整" }, "admin:test");
     repository.saveGroup({ ...repository.getGroup("10001")!, visionEnabled: false });
+    const policy = repository.getCapabilityPolicy();
+    assert.equal(policy?.enabledCapabilities.includes("image_generation"), true);
+    assert.equal(policy?.providerCapabilities?.openai?.includes("imageGeneration"), true);
   } finally {
     migrated.close();
   }
@@ -348,9 +361,11 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
   })) as {
     huixianProfileRevision: { applied: boolean; revision: string };
     groupVisionEnabled: { applied: boolean; groupsUpdated: number };
+    imageGenerationCapability: { changed: boolean; initialized?: boolean };
   };
   assert.deepEqual(repeated.huixianProfileRevision, { applied: false, revision: "immersive-natural-v3.0.3" });
   assert.deepEqual(repeated.groupVisionEnabled, { applied: false, groupsUpdated: 0 });
+  assert.deepEqual(repeated.imageGenerationCapability, { changed: false });
 
   const afterRepeat = new SharedDb(dbPath);
   try {

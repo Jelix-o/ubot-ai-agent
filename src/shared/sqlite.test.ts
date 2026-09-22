@@ -648,6 +648,44 @@ test("old outbox schema without retry_after is migrated without losing rows", (t
   db.close();
 });
 
+test("voice retirement migration terminalizes unsent legacy voice outbox rows", (t) => {
+  const dbPath = tempDb(t);
+  const first = new SharedDb(dbPath);
+  const pending = first.enqueueOutbox("10001", null, "voice-pending", "record");
+  const retrying = first.enqueueOutbox("10001", null, "voice-retrying", "airecord");
+  const preparing = first.enqueueOutbox("10001", null, "voice-preparing", "record");
+  const sending = first.enqueueOutbox("10001", null, "voice-sending", "airecord");
+  const sent = first.enqueueOutbox("10001", null, "voice-sent", "record");
+  const text = first.enqueueOutbox("10001", null, "ordinary-text", "text");
+  first.db.prepare("UPDATE outbox SET status = 'failed', retry_after = ?, updated_at = ? WHERE id = ?").run(Date.now() + 60_000, Date.now(), retrying);
+  first.db.prepare("UPDATE outbox SET status = 'preparing', updated_at = ? WHERE id = ?").run(Date.now(), preparing);
+  first.db.prepare("UPDATE outbox SET status = 'sending', updated_at = ? WHERE id = ?").run(Date.now(), sending);
+  first.db.prepare("UPDATE outbox SET status = 'sent', retry_after = NULL, sent_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), sent);
+  first.db.prepare("DELETE FROM schema_migrations WHERE version = 15").run();
+  first.close();
+
+  const upgraded = new SharedDb(dbPath);
+  const rows = upgraded.db.prepare("SELECT id, status, retry_after FROM outbox ORDER BY id").all() as Array<{
+    id: number;
+    status: string;
+    retry_after: number | null;
+  }>;
+  assert.deepEqual(rows.map((row) => ({ ...row })), [
+    { id: pending, status: "failed", retry_after: null },
+    { id: retrying, status: "failed", retry_after: null },
+    { id: preparing, status: "failed", retry_after: null },
+    { id: sending, status: "failed", retry_after: null },
+    { id: sent, status: "sent", retry_after: null },
+    { id: text, status: "pending", retry_after: null },
+  ]);
+  assert.deepEqual(upgraded.claimOutbox(10).map((row) => row.id), [text]);
+  upgraded.close();
+
+  const reopened = new SharedDb(dbPath);
+  assert.equal(reopened.listSchemaMigrations().filter((migration) => migration.version === 15).length, 1);
+  reopened.close();
+});
+
 test("token bucket counting uses received-time window", (t) => {
   const db = new SharedDb(tempDb(t));
   const now = 1_700_000_000_000;
@@ -663,7 +701,7 @@ test("token bucket counting uses received-time window", (t) => {
   db.close();
 });
 
-test("recent group evidence is bounded before the source message and merges only sent bot text", (t) => {
+test("recent group evidence omits bot text whenever a member is excluded", (t) => {
   const db = new SharedDb(tempDb(t));
   const now = 1_800_000_000_000;
   db.insertMessage({
@@ -686,7 +724,7 @@ test("recent group evidence is bounded before the source message and merges only
     msgTime: now - 3_000, text: "#模型 secret", imagesJson: "[]",
     hasAtBot: false, isBotMsg: false, createdAt: now - 3_000,
   });
-  const sent = db.enqueueOutbox("10001", null, "机器人回复");
+  const sent = db.enqueueOutbox("10001", null, "机器人复述：private text");
   db.ackOutboxDelivery(sent, "bot-message", now - 2_000);
   db.enqueueOutbox("10001", null, "pending reply");
   const sourceRowId = db.insertMessage({
@@ -715,10 +753,17 @@ test("recent group evidence is bounded before the source message and merges only
 
   assert.deepEqual(evidence.map((row) => [row.role, row.text]), [
     ["member", "能源是根源"],
-    ["bot", "机器人回复"],
   ]);
   assert.equal(evidence[0]?.sender_nickname, "企鹅");
-  assert.deepEqual(evidence.map((row) => row.message_id), ["member", "bot-message"]);
+  assert.deepEqual(evidence.map((row) => row.message_id), ["member"]);
+
+  const withoutExclusions = db.listRecentGroupEvidence({
+    groupId: "10001",
+    beforeSourceRowId: sourceRowId,
+    sinceMs: now - 7 * 24 * 60 * 60 * 1_000,
+    limit: 30,
+  });
+  assert.equal(withoutExclusions.some((row) => row.role === "bot" && row.text.includes("private text")), true);
   db.close();
 });
 
@@ -754,15 +799,14 @@ test("ambient group context uses the source receipt time and applies privacy and
 
   assert.deepEqual(context.map((row) => [row.role, row.message_id, row.text]), [
     ["member", "boundary", "boundary"],
-    ["bot", "bot-context", "机器人说常公"],
   ]);
   db.close();
 });
 
-test("ambient group context retains only the newest twelve eligible messages", (t) => {
+test("ambient group context retains only the newest thirty eligible messages", (t) => {
   const db = new SharedDb(tempDb(t));
   const now = 1_800_000_000_000;
-  for (let index = 1; index <= 13; index += 1) {
+  for (let index = 1; index <= 31; index += 1) {
     db.insertMessage({
       groupId: "10001", userId: "20001", selfId: "30001", msgId: `m${index}`,
       msgTime: now - 20_000 + index, text: `message ${index}`, imagesJson: "[]",
@@ -778,13 +822,13 @@ test("ambient group context retains only the newest twelve eligible messages", (
   const context = db.listAmbientGroupContext({
     groupId: "10001",
     beforeSourceRowId: sourceRowId,
-    lookbackMs: 3 * 60 * 1_000,
-    limit: 12,
+    lookbackMs: 10 * 60 * 1_000,
+    limit: 30,
   });
 
-  assert.equal(context.length, 12);
+  assert.equal(context.length, 30);
   assert.equal(context[0]?.message_id, "m2");
-  assert.equal(context[11]?.message_id, "m13");
+  assert.equal(context[29]?.message_id, "m31");
   db.close();
 });
 

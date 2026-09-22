@@ -175,7 +175,7 @@ export interface HealthStatus {
   latencyMs?: number;
   cached?: boolean;
   skipped?: boolean;
-  probeType?: "chat";
+  probeType?: "chat" | "image";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -296,7 +296,7 @@ export interface AdminAuthAuditEntry {
   createdAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "custom";
 export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {

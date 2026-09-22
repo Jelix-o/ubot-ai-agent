@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, shallowRef, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { api, queryString, type KnowledgeEntry, type Pagination } from "../services/api";
@@ -8,7 +8,33 @@ import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
 const route = useRoute();
+const router = useRouter();
 const app = useAppStore();
+const activeTab = shallowRef<"faq" | "ranking">(route.query.tab === "ranking" ? "ranking" : "faq");
+interface RankingEntry {
+  rank: number;
+  name: string;
+  province: string;
+  revenueWan: number;
+  headquarters?: { city: string; sourceUrl: string; asOf: string };
+}
+interface RankingMetadata {
+  edition: number;
+  revenueYear: number;
+  publishedOn: string;
+  rankingSource: string;
+  screenshotSha256: string;
+  rowsSha256: string;
+  cityCoverage: number;
+  cityReady: boolean;
+  provinces: string[];
+}
+const rankingItems = shallowRef<RankingEntry[]>([]);
+const rankingMetadata = shallowRef<RankingMetadata | null>(null);
+const rankingPagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
+const rankingQuery = shallowRef("");
+const rankingProvince = shallowRef("");
+const rankingLoading = shallowRef(false);
 const items = shallowRef<KnowledgeEntry[]>([]);
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const query = shallowRef("");
@@ -95,6 +121,38 @@ async function load(): Promise<void> {
 function applyFilters(): void {
   pagination.page = 1;
   void load().catch((error) => app.showToast(error.message, "error"));
+}
+
+async function loadRanking(): Promise<void> {
+  rankingLoading.value = true;
+  try {
+    const data = await api<{ items: RankingEntry[]; metadata: RankingMetadata; pagination: Pagination }>(
+      `/api/knowledge/rankings/2026${queryString({
+        q: rankingQuery.value,
+        province: rankingProvince.value,
+        page: rankingPagination.page,
+        pageSize: rankingPagination.pageSize,
+      })}`,
+    );
+    rankingItems.value = data.items;
+    rankingMetadata.value = data.metadata;
+    Object.assign(rankingPagination, data.pagination);
+  } catch (error) {
+    app.showToast((error as Error).message, "error");
+  } finally {
+    rankingLoading.value = false;
+  }
+}
+
+function applyRankingFilters(): void {
+  rankingPagination.page = 1;
+  void loadRanking();
+}
+
+function selectTab(tab: "faq" | "ranking"): void {
+  activeTab.value = tab;
+  void router.replace({ query: { ...route.query, tab: tab === "ranking" ? "ranking" : undefined } });
+  if (tab === "ranking" && !rankingMetadata.value) void loadRanking();
 }
 
 async function save(): Promise<void> {
@@ -213,24 +271,37 @@ async function applyImport(): Promise<void> {
 }
 
 function onRefresh(): void {
-  void load().catch((error) => app.showToast(error.message, "error"));
+  if (activeTab.value === "ranking") void loadRanking();
+  else void load().catch((error) => app.showToast(error.message, "error"));
 }
 
 onMounted(() => {
   const q = typeof route.query.q === "string" ? route.query.q : "";
   if (q) query.value = q;
-  void load();
+  if (activeTab.value === "ranking") void loadRanking();
+  else void load();
 });
 
 useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 
 watch(() => [pagination.page, pagination.pageSize], () => {
-  void load();
+  if (activeTab.value === "faq") void load();
+});
+watch(() => [rankingPagination.page, rankingPagination.pageSize], () => {
+  if (activeTab.value === "ranking") void loadRanking();
+});
+watch(() => route.query.tab, (tab) => {
+  activeTab.value = tab === "ranking" ? "ranking" : "faq";
+  onRefresh();
 });
 </script>
 
 <template>
-  <section class="panel">
+  <nav class="knowledge-tabs" aria-label="知识库视图">
+    <button type="button" :aria-current="activeTab === 'faq' ? 'page' : undefined" :class="{ active: activeTab === 'faq' }" @click="selectTab('faq')">群内 FAQ</button>
+    <button type="button" :aria-current="activeTab === 'ranking' ? 'page' : undefined" :class="{ active: activeTab === 'ranking' }" @click="selectTab('ranking')">2026 民营企业 500 强</button>
+  </nav>
+  <section v-if="activeTab === 'faq'" class="panel">
     <div class="section-head">
       <div>
         <h2>知识库（FAQ）<span class="tag">{{ pagination.total }}</span></h2>
@@ -338,9 +409,65 @@ watch(() => [pagination.page, pagination.pageSize], () => {
       <button class="ghost-btn" type="button" :disabled="pagination.page >= pagination.totalPages" @click="pagination.page += 1">下一页</button>
     </div>
   </section>
+  <section v-else class="panel ranking-panel">
+    <div class="section-head">
+      <div>
+        <h2>2026 民营企业 500 强 <span class="tag">500</span></h2>
+        <p>榜单省份与排名按 2025 年营业收入统计；总部城市为独立核验口径。</p>
+      </div>
+      <span class="tag">只读数据</span>
+    </div>
+    <div v-if="rankingMetadata" class="ranking-provenance">
+      <span>发布：{{ rankingMetadata.publishedOn }}</span>
+      <span>总部城市：{{ rankingMetadata.cityCoverage }}/500 已核验{{ rankingMetadata.cityReady ? '，可查询' : '，暂不开放精确统计' }}</span>
+      <a :href="rankingMetadata.rankingSource" target="_blank" rel="noopener noreferrer">核对榜单来源</a>
+      <span :title="rankingMetadata.screenshotSha256">截图校验：{{ rankingMetadata.screenshotSha256.slice(0, 12) }}…</span>
+    </div>
+    <div class="ranking-toolbar">
+      <label>企业或名次<input v-model="rankingQuery" class="input" type="search" placeholder="搜索企业名称或名次" @change="applyRankingFilters" /></label>
+      <label>榜单省份<select v-model="rankingProvince" class="select" @change="applyRankingFilters">
+        <option value="">全部省份</option>
+        <option v-for="province in rankingMetadata?.provinces ?? []" :key="province" :value="province">{{ province }}</option>
+      </select></label>
+      <label>每页<select v-model.number="rankingPagination.pageSize" class="select"><option :value="20">20 条</option><option :value="50">50 条</option></select></label>
+      <button class="ghost-btn" type="button" @click="rankingQuery = ''; rankingProvince = ''; applyRankingFilters()">重置</button>
+    </div>
+    <div v-if="rankingLoading && !rankingMetadata" class="empty">正在加载榜单...</div>
+    <div v-else-if="!rankingItems.length" class="empty">没有匹配的企业。</div>
+    <div v-else class="ranking-table" :class="{ 'with-city': rankingMetadata?.cityReady }">
+      <div class="ranking-row ranking-head"><span>名次</span><span>企业名称</span><span>榜单省份</span><span>营收（万元）</span><span v-if="rankingMetadata?.cityReady">总部城市</span></div>
+      <div v-for="entry in rankingItems" :key="entry.rank" class="ranking-row">
+        <span class="ranking-number">{{ entry.rank }}</span>
+        <strong>{{ entry.name }}</strong>
+        <span>{{ entry.province }}</span>
+        <span class="ranking-revenue">{{ entry.revenueWan.toLocaleString('zh-CN') }}</span>
+        <a v-if="rankingMetadata?.cityReady && entry.headquarters" :href="entry.headquarters.sourceUrl" target="_blank" rel="noopener noreferrer" :title="`核验截至 ${entry.headquarters.asOf}`">{{ entry.headquarters.city }}</a>
+      </div>
+    </div>
+    <div class="pager">
+      <button class="ghost-btn" type="button" :disabled="rankingPagination.page <= 1 || rankingLoading" @click="rankingPagination.page -= 1">上一页</button>
+      <span class="muted">{{ rankingPagination.total }} 条 · 第 {{ rankingPagination.page }} / {{ rankingPagination.totalPages }} 页</span>
+      <button class="ghost-btn" type="button" :disabled="rankingPagination.page >= rankingPagination.totalPages || rankingLoading" @click="rankingPagination.page += 1">下一页</button>
+    </div>
+  </section>
 </template>
 
 <style scoped>
+.knowledge-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+.knowledge-tabs button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 0 14px; font: inherit; cursor: pointer; }
+.knowledge-tabs button.active { border-bottom-color: var(--accent); color: var(--text-strong); font-weight: 650; }
+.knowledge-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.ranking-provenance { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 16px; color: var(--muted); font-size: 12.5px; }
+.ranking-provenance a, .ranking-row a { color: var(--accent-strong); }
+.ranking-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, 210px) 120px auto; align-items: end; gap: 10px; margin-bottom: 14px; }
+.ranking-toolbar label { display: grid; gap: 5px; color: var(--muted); font-size: 12.5px; font-weight: 650; }
+.ranking-toolbar .ghost-btn { min-height: 38px; }
+.ranking-table { border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+.ranking-row { display: grid; grid-template-columns: 72px minmax(260px, 1fr) minmax(110px, 0.4fr) minmax(140px, 0.4fr); align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; }
+.ranking-row.with-city, .ranking-table.with-city .ranking-row { grid-template-columns: 72px minmax(230px, 1fr) minmax(100px, 0.35fr) minmax(130px, 0.4fr) minmax(110px, 0.35fr); }
+.ranking-head { border-top: 0; background: var(--surface-soft); color: var(--muted); font-weight: 650; }
+.ranking-number, .ranking-revenue { font-variant-numeric: tabular-nums; }
+.ranking-row strong { min-width: 0; overflow-wrap: anywhere; color: var(--text-strong); font-weight: 650; }
 .knowledge-toolbar {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) 150px auto;
@@ -564,6 +691,10 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 }
 
 @media (max-width: 1180px) {
+  .ranking-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ranking-row, .ranking-table.with-city .ranking-row { grid-template-columns: 54px minmax(0, 1fr); gap: 5px 12px; }
+  .ranking-row > :nth-child(n + 3) { grid-column: 2; }
+  .ranking-head { display: none; }
   .knowledge-toolbar,
   .form-grid,
   .empty-state,
@@ -576,4 +707,5 @@ watch(() => [pagination.page, pagination.pageSize], () => {
     display: none;
   }
 }
+@media (max-width: 600px) { .ranking-toolbar { grid-template-columns: 1fr; } }
 </style>

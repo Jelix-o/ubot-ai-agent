@@ -18,6 +18,8 @@ import { ScheduledReminderService } from "./services/scheduled-reminder-service.
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { HtmlPreviewError, type HtmlPreviewMetadata, type HtmlPreviewProcessResult } from "./services/html-preview-service.js";
+import { loadPrivateEnterpriseRanking, type PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
+import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -42,6 +44,7 @@ import type {
 class FakeTransport implements MessageTransport {
   readonly sent: Array<{ groupId: string; text: string }> = [];
   readonly images: Array<{ groupId: string; imageFile: string }> = [];
+  readonly generatedImages: Array<{ groupId: string; imagePath: string }> = [];
   readonly outbound: Array<{ kind: "text" | "image"; groupId: string }> = [];
   readonly records: Array<{ groupId: string; recordFile: string }> = [];
   readonly aiRecords: Array<{ groupId: string; text: string }> = [];
@@ -76,6 +79,11 @@ class FakeTransport implements MessageTransport {
     }
     this.images.push({ groupId, imageFile });
     this.outbound.push({ kind: "image", groupId });
+    return { messageId: String(this.nextSentMessageId++) };
+  }
+
+  async sendGeneratedGroupImage(groupId: string, imagePath: string): Promise<{ messageId: string }> {
+    this.generatedImages.push({ groupId, imagePath });
     return { messageId: String(this.nextSentMessageId++) };
   }
 
@@ -1006,6 +1014,8 @@ function createApp(options?: {
     } | undefined;
   };
   memeLibraryService?: FakeMemeLibraryService;
+  imageGenerationService?: ImageGenerationRuntime;
+  privateEnterpriseRanking?: PrivateEnterpriseRanking;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1111,6 +1121,8 @@ function createApp(options?: {
     options?.qqAdminAuthorization,
     options?.recentGroupEvidenceService,
     options?.memeLibraryService,
+    options?.imageGenerationService,
+    options?.privateEnterpriseRanking,
   );
 
   return {
@@ -1143,6 +1155,22 @@ test("responds to mentioned group message without writing legacy personal histor
   assert.equal(aiService.calls[0]?.userInput, "summarize this");
   assert.equal(transport.sent[0]?.text, "AI reply");
   assert.equal(conversationStore.turnsByKey["67890:20001"], undefined);
+});
+
+test("mentioned ranking questions use the shared verified dataset without calling AI", async () => {
+  const { app, transport, aiService } = createApp({ privateEnterpriseRanking: loadPrivateEnterpriseRanking() });
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "腾讯在2026中国民营企业500强排名第几？" } },
+  ]));
+  assert.match(transport.sent[0]?.text ?? "", /第6/);
+  assert.equal(aiService.calls.length, 0);
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "杭州有多少家民营企业500强？" } },
+  ], 20002));
+  assert.match(transport.sent[1]?.text ?? "", /总部城市尚未全部核验/);
+  assert.equal(aiService.calls.length, 0);
 });
 
 test("#网页 routes an explicit page request to the durable publisher instead of normal chat", async () => {
@@ -1179,6 +1207,168 @@ test("#网页 routes an explicit page request to the durable publisher instead o
   assert.deepEqual(calls.map((call) => call.request), ["做一个待办清单", "做一个待办清单"]);
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent.length, 0);
+});
+
+test("#画图 queues the generated file without invoking conversational AI", async () => {
+  const prompts: string[] = [];
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      prompts.push(input.prompt);
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: true,
+  }], ["20001"]);
+  const { app, transport, aiService } = createApp({ groupConfigService, imageGenerationService });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图  海边灯塔" } }]));
+
+  assert.deepEqual(prompts, ["海边灯塔"]);
+  assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
+  assert.equal(aiService.calls.length, 0);
+  assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
+});
+
+test("#画图 explains missing prompts and ignores the retired per-group switch", async () => {
+  let calls = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      calls += 1;
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const enabledGroups = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: false,
+  }], ["20001"]);
+  const enabled = createApp({ groupConfigService: enabledGroups, imageGenerationService });
+  await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图" } }]));
+  assert.match(enabled.transport.sent[0]?.text ?? "", /#画图 <提示词>/);
+  await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 海边灯塔" } }]));
+  assert.equal(calls, 1);
+  assert.equal(enabled.transport.sent[1]?.text, "正在生成图片，请稍候…");
+  assert.equal(enabled.transport.generatedImages.length, 1);
+});
+
+test("V3 image generation is silent for everyone except a bound super administrator", async () => {
+  let calls = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      calls += 1;
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "huixian",
+    allowedSkillIds: ["huixian"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: false,
+  }], [], true);
+  const { app, transport } = createApp({
+    groupConfigService,
+    imageGenerationService,
+    qqAdminAuthorization: {
+      resolve(qqUserId) {
+        if (qqUserId === "20001") return { accountId: "super", username: "root", role: "super_admin", qqUserId };
+        if (qqUserId === "20002") return { accountId: "group", username: "operator", role: "group_admin", qqUserId };
+        return undefined;
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 普通成员" } }], 20003));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图 群管理员" } }], 20002));
+  assert.equal(calls, 0);
+  assert.equal(transport.sent.length, 0);
+  assert.equal(transport.generatedImages.length, 0);
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 超级管理员" } }], 20001));
+  assert.equal(calls, 1);
+  assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
+  assert.equal(transport.generatedImages.length, 1);
+});
+
+test("#画图 reports the exact Unicode prompt overage before starting generation", async () => {
+  let calls = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate() { calls += 1; throw new Error("must not run"); },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+  }], ["20001"]);
+  const { app, transport } = createApp({ groupConfigService, imageGenerationService });
+  await app.handleGroupMessage(createEvent([{
+    type: "text",
+    data: { text: `#画图 ${"😀".repeat(5_001)}` },
+  }]));
+  assert.equal(calls, 0);
+  assert.equal(transport.sent[0]?.text, "提示词当前 5001 字，最多 5000 字，请删减 1 字");
+});
+
+test("image generation help is hidden from members and shown to super administrators", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+  }], ["20001"]);
+  const { app, transport } = createApp({ groupConfigService });
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能" } }], 20002));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能 画图" } }], 20002));
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能 画图" } }], 20001));
+  assert.doesNotMatch(transport.sent[0]?.text ?? "", /画图|#画图|#生图/);
+  assert.match(transport.sent[1]?.text ?? "", /没找到“画图”/);
+  assert.match(transport.sent[2]?.text ?? "", /仅绑定超级管理员可用/);
+  assert.match(transport.sent[2]?.text ?? "", /最多 5000 字/);
 });
 
 test("HTML preview sticks to the silent ds fallback after a transient GPT failure", async () => {
@@ -2694,8 +2884,8 @@ test("injects ambient group context for unquoted conversation and skips explicit
   ], 20001, 67890, 7201));
 
   assert.equal(ambientCalls.length, 1);
-  assert.equal(ambientCalls[0]?.lookbackMs, 3 * 60 * 1_000);
-  assert.equal(ambientCalls[0]?.limit, 12);
+  assert.equal(ambientCalls[0]?.lookbackMs, 10 * 60 * 1_000);
+  assert.equal(ambientCalls[0]?.limit, 30);
   assert.deepEqual(ambientCalls[0]?.excludedUserIds, ["30001", "30002"]);
   assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext?.[0]?.text, "现代梗圈顶流必须是常公");
 
@@ -2990,7 +3180,7 @@ test("injects person-evaluation evidence for one unique saved alias without send
   assert.doesNotMatch(transport.sent[0]?.text ?? "", /\[CQ:at|@/);
 });
 
-test("does not resolve a saved alias outside person-evaluation requests", async () => {
+test("does not resolve a saved alias outside person-evaluation or local-transcript requests", async () => {
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
     currentSkillId: "assistant",
@@ -3008,6 +3198,103 @@ test("does not resolve a saved alias outside person-evaluation requests", async 
 
   assert.equal(aiService.calls[0]?.identityContext?.interactionTargets, undefined);
   assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, undefined);
+});
+
+test("resolves a unique saved alias for a factual request explicitly grounded in nearby chat", async () => {
+  const ambientCalls: Array<{
+    groupId: string;
+    beforeSourceRowId: number;
+    lookbackMs: number;
+    excludedUserIds?: string[];
+    limit?: number;
+  }> = [];
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["1574084048"], names: ["Linux", "渣渣辉"] }],
+  }]);
+  const { app, aiService } = createApp({
+    groupConfigService,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list() {
+        throw new Error("A locally grounded transcript must use the bounded ambient reader.");
+      },
+      listAmbient(input) {
+        ambientCalls.push(input);
+        return [{
+          role: "member" as const,
+          userId: "1574084048",
+          senderNickname: "Linux",
+          text: "钱肯定不罚，就是不想去掉我的首违。",
+          timestamp: "2026-09-17T03:40:22.000Z",
+        }];
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 从以上聊天看，渣渣辉将最高接受什么处罚 " } },
+  ], 1569671790, 67890, 7206));
+
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "1574084048",
+    names: ["Linux", "渣渣辉"],
+    source: "alias",
+  }]);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceRequested, true);
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidenceTargetUserId, "1574084048");
+  assert.equal(aiService.calls[0]?.identityContext?.recentGroupEvidence?.[0]?.text, "钱肯定不罚，就是不想去掉我的首违。");
+  assert.equal(ambientCalls.length, 1);
+  assert.equal(ambientCalls[0]?.groupId, "67890");
+  assert.equal(ambientCalls[0]?.beforeSourceRowId, 99);
+  assert.equal(ambientCalls[0]?.lookbackMs, 10 * 60 * 1_000);
+  assert.equal(ambientCalls[0]?.limit, 30);
+});
+
+test("does not read a local transcript when nearby group context is disabled", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    ambientGroupContextEnabled: false,
+    manualIdentities: [{ userIds: ["1574084048"], names: ["Linux", "渣渣辉"] }],
+  }]);
+  let ambientCalls = 0;
+  const { app, aiService, transport } = createApp({
+    groupConfigService,
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: () => { throw new Error("not used without a route"); },
+    },
+    recentGroupEvidenceService: {
+      list: () => [],
+      listAmbient() {
+        ambientCalls += 1;
+        return [];
+      },
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 从以上聊天看，渣渣辉将最高接受什么处罚 " } },
+  ], 1569671790, 67890, 7207));
+
+  assert.equal(ambientCalls, 0);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent[0]?.text, "本群未开启近期群聊上下文，无法根据以上聊天记录回答。");
 });
 
 test("resolves a saved alias in natural person impression question '在你眼中xxx是个什么样的人'", async () => {
@@ -3227,6 +3514,40 @@ test("saved-alias evaluation fails closed for collisions and multiple resolved t
   }
 });
 
+test("fails closed for a multi-QQ alias but still prefers a longer unique nested alias", async () => {
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    manualIdentities: [
+      { userIds: ["10001", "10002"], names: ["季博醋"] },
+      { userIds: ["493213481"], names: ["季博醋柚肠"] },
+      { userIds: ["20001", "20002"], names: ["共享别名"] },
+    ],
+  }]);
+  const { app, aiService, transport } = createApp({ groupConfigService });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 怎么看季博醋柚肠 " } },
+  ]));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 从以上聊天看，共享别名说了什么 " } },
+  ], 20001, 67890, 2));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.interactionTargets, [{
+    userId: "493213481",
+    names: ["季博醋柚肠"],
+    source: "alias",
+  }]);
+  assert.equal(transport.sent.length, 2);
+  assert.equal(transport.sent[1]?.text, "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。");
+});
+
 test("uses the longest nested saved alias and enforces privacy opt-out", async () => {
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
@@ -3258,7 +3579,7 @@ test("uses the longest nested saved alias and enforces privacy opt-out", async (
 
   assert.equal(aiService.calls.length, 0);
   assert.equal(evidenceCalls, 0);
-  assert.equal(transport.sent[0]?.text, "当前没有可用于评价这位群友的聊天记录。");
+  assert.equal(transport.sent[0]?.text, "当前没有可用于回答这位群友相关问题的聊天记录。");
 });
 
 test("unrouted calls fail closed instead of reading legacy personal context", async () => {

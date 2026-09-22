@@ -86,6 +86,11 @@ export class WorkerTransport implements MessageTransport {
     return { deliveryId: `outbox:${id}` };
   }
 
+  async sendGeneratedGroupImage(groupId: string, imagePath: string): Promise<MessageReceipt | undefined> {
+    const id = this.db.enqueueOutbox(groupId, null, imagePath, "generated_image", this.outboxContext());
+    logInfo("Worker enqueued generated image to outbox.", { outboxId: id, groupId });
+    return { deliveryId: `outbox:${id}` };
+  }
   private outboxContext(): OutboxContext | undefined {
     const route = this.routeStorage.getStore() ?? this.conversationRoute;
     if (!route) {

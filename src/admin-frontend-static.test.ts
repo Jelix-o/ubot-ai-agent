@@ -118,6 +118,7 @@ test("admin manages HTML preview metadata without embedding generated page conte
   assert.match(groups, /htmlPreviewEnabled/);
   assert.match(groups, /ambientGroupContextEnabled/);
   assert.match(groups, /短时群聊语境/);
+  assert.doesNotMatch(groups, /imageGenerationEnabled|图片生成/);
   assert.match(previewView, /\/api\/html-previews/);
   assert.match(previewView, /rel="noopener noreferrer"/);
   assert.match(previewView, /url\.hostname !== "preview\.9958\.uk"/);

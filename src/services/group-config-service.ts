@@ -606,6 +606,9 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     // Generated pages are a normal member-facing capability. Existing groups
     // upgrade enabled unless an administrator explicitly turns it off.
     htmlPreviewEnabled: group.htmlPreviewEnabled !== false,
+    // Kept in the read model for old persisted records. Image generation is
+    // globally available and authorization is enforced by the command.
+    imageGenerationEnabled: true,
   };
 }
 
@@ -705,7 +708,6 @@ function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUp
   if ("htmlPreviewEnabled" in input) {
     next.htmlPreviewEnabled = normalizeBoolean(input.htmlPreviewEnabled, "invalid_group_config");
   }
-
   return normalizeGroupConfig(next);
 }
 

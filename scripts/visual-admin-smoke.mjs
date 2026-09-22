@@ -11,6 +11,7 @@ import { GroupConfigService } from "../dist/services/group-config-service.js";
 import { GroupMemoryStore } from "../dist/services/group-memory-store.js";
 import { KnowledgeBaseStore } from "../dist/services/knowledge-base-store.js";
 import { MemeLibraryService } from "../dist/services/meme-library-service.js";
+import { loadPrivateEnterpriseRanking } from "../dist/services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "../dist/services/system-settings-store.js";
 import { V3StateRepository } from "../dist/services/v3-state-repository.js";
 
@@ -46,10 +47,10 @@ try {
     version: 1,
     enabledCapabilities: [
       "conversation", "explicit_memory", "knowledge", "scheduled_reminders",
-      "daily_reports", "holiday_countdown", "realtime_lookup",
+      "daily_reports", "holiday_countdown", "realtime_lookup", "html_preview", "image_generation",
     ],
     providerCapabilities: {
-      openai: ["chat", "vision", "streaming"],
+      openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout", "imageGeneration"],
       anthropic: ["chat", "vision", "streaming"],
     },
     updatedAt: new Date().toISOString(),
@@ -93,6 +94,7 @@ try {
     groupConfigService,
     groupMemoryStore: memoryStore,
     knowledgeBaseStore,
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     characterProfileService,
     systemSettingsStore: settingsStore,
     adminTaskStore: taskStore,
@@ -131,6 +133,15 @@ try {
     throw new Error("Overview still exposes retired candidate data.");
   }
   if (overview.stats.memoryCount !== 1) throw new Error(`Unexpected V3 memory count: ${JSON.stringify(overview.stats)}`);
+
+  const ranking = await getJson(baseUrl, "/api/knowledge/rankings/2026?pageSize=1", cookie);
+  if (ranking.pagination?.total !== 500 || ranking.items?.[0]?.name !== "京东集团" || ranking.metadata?.cityReady !== false) {
+    throw new Error(`2026 ranking is unavailable: ${JSON.stringify(ranking)}`);
+  }
+  const zhejiang = await getJson(baseUrl, `/api/knowledge/rankings/2026?province=${encodeURIComponent("浙江省")}&pageSize=1`, cookie);
+  if (zhejiang.pagination?.total !== 104) throw new Error(`Incorrect Zhejiang ranking count: ${JSON.stringify(zhejiang.pagination)}`);
+  const city = await fetch(`${baseUrl}/api/knowledge/rankings/2026?city=${encodeURIComponent("杭州市")}`, { headers: { Cookie: cookie } });
+  if (city.status !== 409) throw new Error(`Unverified headquarters city should return 409, got ${city.status}`);
 
   const memes = await getJson(baseUrl, "/api/meme-library", cookie);
   if (!Array.isArray(memes.assets) || !memes.assets.some((asset) => asset.id === "blacklisted-at-meme-seed" && asset.protected === true)) {

@@ -22,6 +22,7 @@ import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import { HolidayCountdownStore } from "./services/holiday-countdown-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
@@ -160,6 +161,13 @@ async function startLegacyBot(): Promise<BotApplication> {
     contextRepository,
     contextRouter,
     capabilityPolicy,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    loadPrivateEnterpriseRanking(),
   );
 
   const adminHttpServer = config.adminHttpEnabled
@@ -327,6 +335,7 @@ function createAdminHttpServer(
     groupConfigService,
     groupMemoryStore,
     knowledgeBaseStore,
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     scheduledReminderService,
     characterProfileService,
     systemSettingsStore,

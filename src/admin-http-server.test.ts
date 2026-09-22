@@ -13,6 +13,7 @@ import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
+import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import type { CharacterProfile, NapcatGroupMember } from "./types.js";
@@ -174,6 +175,7 @@ async function startFixture(
     groupConfigService,
     groupMemoryStore: memories,
     knowledgeBaseStore: knowledge,
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     characterProfileService,
     systemSettingsStore: settings,
     htmlPreviewService,
@@ -516,6 +518,51 @@ test("group administrators are limited to authorized groups and operational feat
     headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf },
   });
   assert.equal(restore.status, 403);
+});
+
+test("2026 ranking API is authenticated, paginated and strictly read-only", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const endpoint = "/api/knowledge/rankings/2026";
+  assert.equal((await request(baseUrl, endpoint)).status, 401);
+
+  const superAdmin = await login(baseUrl);
+  const inviteResponse = await request(baseUrl, "/api/admin-accounts/invites", {
+    method: "POST",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
+  });
+  assert.equal(inviteResponse.status, 201);
+  const groupAdmin = await acceptInviteAsAdmin(baseUrl, (await inviteResponse.json() as { token: string }).token, "ranking-reader");
+
+  const page = await request(baseUrl, `${endpoint}?province=%E6%B5%99%E6%B1%9F%E7%9C%81&page=2&pageSize=50`, {
+    headers: { Cookie: groupAdmin.cookie },
+  });
+  assert.equal(page.status, 200);
+  const data = await page.json() as {
+    items: Array<{ rank: number; name: string }>;
+    pagination: { total: number; page: number; pageSize: number };
+    metadata: { cityCoverage: number; cityReady: boolean; rowsSha256: string };
+  };
+  assert.equal(data.pagination.total, 104);
+  assert.equal(data.pagination.page, 2);
+  assert.equal(data.items.length, 50);
+  assert.equal(data.metadata.cityCoverage, 0);
+  assert.equal(data.metadata.cityReady, false);
+  assert.match(data.metadata.rowsSha256, /^[a-f0-9]{64}$/);
+
+  const search = await request(baseUrl, `${endpoint}?q=${encodeURIComponent("京东集团")}`, { headers: { Cookie: superAdmin.cookie } });
+  assert.deepEqual((await search.json() as { items: Array<{ rank: number }> }).items.map((entry) => entry.rank), [1]);
+  const pendingCity = await request(baseUrl, `${endpoint}?city=${encodeURIComponent("杭州市")}`, { headers: { Cookie: groupAdmin.cookie } });
+  assert.equal(pendingCity.status, 409);
+  assert.equal((await pendingCity.json() as { error: string }).error, "headquarters_not_verified");
+  for (const method of ["POST", "PUT", "DELETE"] as const) {
+    const write = await request(baseUrl, endpoint, {
+      method,
+      headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(write.status, 405, method);
+  }
 });
 
 test("super admin can bind and unbind an account QQ identity after recent reauth", async (t) => {
