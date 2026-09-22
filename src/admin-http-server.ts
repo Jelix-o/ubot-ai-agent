@@ -36,6 +36,7 @@ import {
 } from "./services/group-memory-deduplicate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import type { PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import type { MemorySemanticJudgeInput, MemorySemanticJudgeResult } from "./services/ai-service.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import type { CharacterProfileService } from "./services/character-profile-service.js";
@@ -58,6 +59,7 @@ interface AdminHttpServerOptions {
   groupConfigService: GroupConfigService;
   groupMemoryStore: GroupMemoryStore;
   knowledgeBaseStore: KnowledgeBaseStore;
+  privateEnterpriseRanking?: PrivateEnterpriseRanking;
   scheduledReminderService?: ScheduledReminderService;
   characterProfileService?: CharacterProfileService;
   systemSettingsStore?: SystemSettingsStore;
@@ -102,7 +104,7 @@ type HealthStatusResponse = {
   checkedAt?: string;
   latencyMs?: number;
   cached?: boolean;
-  probeType?: "chat";
+  probeType?: "chat" | "image";
   upstreamStatusCode?: number;
   failureKind?: AiHealthStatus["failureKind"];
 };
@@ -919,6 +921,24 @@ export class AdminHttpServer {
 
     if (pathname.startsWith("/api/memory-candidates")) {
       this.sendJson(res, { error: "memory_candidates_retired" }, 410);
+      return;
+    }
+
+    if (pathname === "/api/knowledge/rankings/2026") {
+      if (req.method !== "GET") {
+        this.sendJson(res, { error: "method_not_allowed" }, 405);
+      } else if (!this.options.privateEnterpriseRanking) {
+        this.sendJson(res, { error: "ranking_unavailable" }, 503);
+      } else if (url.searchParams.has("city") && !this.options.privateEnterpriseRanking.cityReady) {
+        this.sendJson(res, { error: "headquarters_not_verified" }, 409);
+      } else {
+        this.sendJson(res, this.options.privateEnterpriseRanking.listPage({
+          query: normalizeSearchQuery(url.searchParams.get("q") ?? undefined),
+          province: url.searchParams.get("province") ?? undefined,
+          city: url.searchParams.get("city") ?? undefined,
+          ...paginationParams(url, 20, 100),
+        }));
+      }
       return;
     }
 
@@ -2039,6 +2059,7 @@ export class AdminHttpServer {
           "invalid_model_id",
           "duplicate_model_id",
           "invalid_model_purpose",
+          "invalid_image_model_protocol",
           "voice_feature_retired",
           "invalid_memory_confidence_thresholds",
         ].includes(errorCode)) {
@@ -2590,6 +2611,9 @@ export class AdminHttpServer {
 
     const source = options.source ?? "manual";
     return await Promise.all(runtimeModels(settings).map(async (model) => {
+      if (model.purpose === "image") {
+        return this.buildModelHealthSkippedStatus(model, settings, "图片模型需单独检测；检测会产生一次低质量图片生成费用。");
+      }
       const status = await this.buildModelHealthStatus(model, settings);
       this.modelHealthCache.set(model.id, { expiresAt: Date.now() + 60 * 60 * 1000, status });
       await this.recordModelHealth(status, source);
@@ -3490,6 +3514,7 @@ function normalizeModelPurpose(value: string): SystemModelPurpose {
   return value === "reply" ||
     value === "summary" ||
     value === "knowledge" ||
+    value === "image" ||
     value === "custom"
     ? value
     : "custom";
@@ -3500,7 +3525,7 @@ function runtimeModels(settings: SystemSettings): RuntimeSystemModelConfig[] {
 }
 
 function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
-  return value === "reply" || value === "summary" || value === "knowledge" || value === "custom";
+  return value === "reply" || value === "summary" || value === "knowledge" || value === "image" || value === "custom";
 }
 
 function normalizeLogLimit(value: string | undefined): number {

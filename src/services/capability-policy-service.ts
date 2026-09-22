@@ -12,6 +12,7 @@ export const V3_RUNTIME_CAPABILITIES = [
   "holiday_countdown",
   "realtime_lookup",
   "html_preview",
+  "image_generation",
 ] as const;
 
 export type V3RuntimeCapability = typeof V3_RUNTIME_CAPABILITIES[number];
@@ -22,6 +23,7 @@ export const PROVIDER_CAPABILITY_FEATURES = [
   "streaming",
   "reasoningEffort",
   "requestTimeout",
+  "imageGeneration",
 ] as const;
 
 export type ProviderCapabilityFeature = typeof PROVIDER_CAPABILITY_FEATURES[number];
@@ -129,6 +131,7 @@ export class V3CapabilityPolicyService implements RuntimeCapabilityPolicy {
         streaming: false,
         reasoningEffort: false,
         requestTimeout: false,
+        imageGeneration: false,
       };
     }
     return {
@@ -136,6 +139,7 @@ export class V3CapabilityPolicyService implements RuntimeCapabilityPolicy {
       streaming: features.has("streaming"),
       reasoningEffort: features.has("reasoningEffort"),
       requestTimeout: features.has("requestTimeout"),
+      imageGeneration: features.has("imageGeneration"),
     };
   }
 

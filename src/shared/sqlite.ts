@@ -740,6 +740,14 @@ function addSenderRoleColumn(db: DatabaseSync): void {
 
 function retireVoiceState(db: DatabaseSync): void {
   const now = Date.now();
+  // Voice outbox payloads cannot be safely reinterpreted after the sender
+  // implementation is retired. Keep sent rows for audit, but terminalize all
+  // other states so a later ingress cannot emit a record payload as text.
+  db.prepare(
+    `UPDATE outbox
+        SET status = 'failed', retry_after = NULL, updated_at = ?
+      WHERE kind IN ('record', 'airecord') AND status <> 'sent'`,
+  ).run(now);
   const settingsRow = db.prepare(
     "SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'",
   ).get() as { settings_json: string } | undefined;
@@ -1248,7 +1256,7 @@ export class SharedDb {
 
     const requestedLookbackMs = Number.isFinite(args.lookbackMs)
       ? Math.trunc(args.lookbackMs)
-      : 3 * 60 * 1_000;
+      : 10 * 60 * 1_000;
     const lookbackMs = Math.max(1, Math.min(10 * 60 * 1_000, requestedLookbackMs));
     return this.listGroupTranscriptBefore({
       groupId: args.groupId,
@@ -1257,7 +1265,7 @@ export class SharedDb {
       memberBeforeOccurredAt: source.created_at,
       sinceMs: source.created_at - lookbackMs,
       excludedUserIds: args.excludedUserIds,
-      limit: Math.max(1, Math.min(12, args.limit ?? 12)),
+      limit: Math.max(1, Math.min(30, args.limit ?? 30)),
     });
   }
 
@@ -1303,21 +1311,26 @@ export class SharedDb {
         ...excluded,
         args.limit,
       ) as unknown as RecentGroupEvidenceRow[];
-    const botRows = this.db
-      .prepare(
-        `SELECT 'bot' AS role, platform_message_id AS message_id, NULL AS user_id, text, '[]' AS images_json,
-                NULL AS sender_card, NULL AS sender_nickname, sent_at AS occurred_at
-           FROM outbox
-          WHERE group_id = ?
-            AND status = 'sent'
-            AND kind = 'text'
-            AND sent_at IS NOT NULL
-            AND sent_at >= ?
-            AND sent_at < ?
-          ORDER BY sent_at DESC, id DESC
-          LIMIT ?`,
-      )
-      .all(args.groupId, args.sinceMs, args.beforeOccurredAt, args.limit) as unknown as RecentGroupEvidenceRow[];
+    // Bot replies may quote a member verbatim, but outbox records do not carry
+    // the quoted speaker's provenance. When any member is excluded, omit bot
+    // text rather than risking a reintroduction of opted-out content.
+    const botRows = excluded.length === 0
+      ? this.db
+        .prepare(
+          `SELECT 'bot' AS role, platform_message_id AS message_id, NULL AS user_id, text, '[]' AS images_json,
+                  NULL AS sender_card, NULL AS sender_nickname, sent_at AS occurred_at
+             FROM outbox
+            WHERE group_id = ?
+              AND status = 'sent'
+              AND kind = 'text'
+              AND sent_at IS NOT NULL
+              AND sent_at >= ?
+              AND sent_at < ?
+            ORDER BY sent_at DESC, id DESC
+            LIMIT ?`,
+        )
+        .all(args.groupId, args.sinceMs, args.beforeOccurredAt, args.limit) as unknown as RecentGroupEvidenceRow[]
+      : [];
 
     return [...memberRows, ...botRows]
       .sort((left, right) => left.occurred_at - right.occurred_at)

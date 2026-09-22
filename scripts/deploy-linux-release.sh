@@ -891,7 +891,8 @@ fi
 mkdir -p "$STAGING_DIR"
 tar -xzf "$BUNDLE" -C "$STAGING_DIR"
 for required in \
-  package.json package-lock.json dist/index.js assets/huixian-profile.json \
+  package.json package-lock.json dist/index.js assets/huixian-profile.json assets/private-enterprises-2026.json \
+  assets/private-enterprises-2026-audit.json assets/private-enterprises-2026-review.md \
   scripts/deploy-linux-release.sh scripts/migrate-v3-state.mjs scripts/normalize-dotenv-bom.mjs \
   scripts/configure-v3-network.mjs \
   deploy/systemd/ubot-ingress.service.template deploy/systemd/ubot-worker.service.template \

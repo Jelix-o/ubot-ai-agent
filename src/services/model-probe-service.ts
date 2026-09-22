@@ -3,13 +3,16 @@ import os from "node:os";
 import { AiService } from "./ai-service.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { AiHealthStatus, SystemModelConfig } from "../types.js";
+import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
+import { requestGeneratedImage } from "./image-generation-service.js";
 
 export interface ModelProbeStatus extends AiHealthStatus {
-  probeType: "chat";
+  probeType: "chat" | "image";
   upstreamStatusCode?: number;
 }
 
-export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol">): Promise<ModelProbeStatus> {
+export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "requestTimeoutMs">): Promise<ModelProbeStatus> {
+  if (model.purpose === "image") return probeImageModel(model);
   return probeChatModel(model);
 }
 
@@ -56,6 +59,36 @@ async function probeChatModel(model: Pick<SystemModelConfig, "baseUrl" | "model"
   };
 }
 
+async function probeImageModel(
+  model: Pick<SystemModelConfig, "baseUrl" | "model" | "apiKey" | "requestTimeoutMs">,
+): Promise<ModelProbeStatus> {
+  const startedAt = Date.now();
+  try {
+    const image = await requestGeneratedImage(model, "A simple solid blue circle on a white background", { quality: "low" });
+    return {
+      ok: image.data.byteLength > 0,
+      detail: "图片模型连接正常，已完成一次低质量测试生成。",
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      cached: false,
+      probeType: "image",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `图片模型请求失败：${error instanceof Error ? error.message : String(error)}`,
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      cached: false,
+      probeType: "image",
+      failureKind: classifyUpstreamFailure({ error }),
+    };
+  }
+}
 function normalizeProbeDetail(detail: string): string {
   return detail.replace(/^画像\/记忆模型不可用：?/, "模型检测不通过：");
 }

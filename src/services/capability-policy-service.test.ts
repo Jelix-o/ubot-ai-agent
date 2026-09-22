@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { validateV3CapabilityPolicy } from "./capability-policy-service.js";
 
-test("capability policy accepts html preview while older persisted policies remain valid", () => {
+test("capability policy accepts image generation while older persisted policies remain valid", () => {
   assert.doesNotThrow(() => validateV3CapabilityPolicy({
     version: 1,
     enabledCapabilities: ["conversation"],
@@ -12,7 +12,16 @@ test("capability policy accepts html preview while older persisted policies rema
 
   assert.doesNotThrow(() => validateV3CapabilityPolicy({
     version: 1,
-    enabledCapabilities: ["conversation", "html_preview"],
+    enabledCapabilities: ["conversation", "html_preview", "image_generation"],
+    providerFeatures: {
+      openai: {
+        vision: true,
+        streaming: true,
+        reasoningEffort: true,
+        requestTimeout: true,
+        imageGeneration: true,
+      },
+    },
     updatedAt: "2026-08-28T00:00:00.000Z",
   }));
 });

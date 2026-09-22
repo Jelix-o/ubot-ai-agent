@@ -1,0 +1,3544 @@
+{
+  "edition": 2026,
+  "revenueYear": 2025,
+  "publishedOn": "2026-09-22",
+  "rankingSource": "https://finance.sina.com.cn/zt_d/subject-1790044885/?ver=cj",
+  "transcriptionRowsSha256": "8ef757a62e1cfcfd456c20d985bf7756873aa42988369f7cf774f1fb9e8ee545",
+  "screenshotSha256": "cf806582f0119ebb2a9628d0b606e749b2a4eab141ad7ac15b32c2e010f81e87",
+  "rowsSha256": "bbe2ef2c1aa564e63b798e0d51ee8c776b447fee4c1fb7db8e1e9b6167445e08",
+  "screenshotCheckedRanks": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    232,
+    233,
+    234,
+    235,
+    236,
+    237,
+    238,
+    239,
+    240,
+    241,
+    242,
+    243,
+    244,
+    245,
+    246,
+    247,
+    248,
+    249,
+    250,
+    251,
+    252,
+    253,
+    254,
+    255,
+    256,
+    257,
+    258,
+    259,
+    260,
+    261,
+    262,
+    263,
+    264,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    273,
+    274,
+    275,
+    276,
+    277,
+    278,
+    279,
+    280,
+    281,
+    282,
+    283,
+    284,
+    285,
+    286,
+    287,
+    288,
+    289,
+    290,
+    291,
+    292,
+    293,
+    294,
+    295,
+    296,
+    297,
+    298,
+    299,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    306,
+    307,
+    308,
+    309,
+    310,
+    311,
+    312,
+    313,
+    314,
+    315,
+    316,
+    317,
+    318,
+    319,
+    320,
+    321,
+    322,
+    323,
+    324,
+    325,
+    326,
+    327,
+    328,
+    329,
+    330,
+    331,
+    332,
+    333,
+    334,
+    335,
+    336,
+    337,
+    338,
+    339,
+    340,
+    341,
+    342,
+    343,
+    344,
+    345,
+    346,
+    347,
+    348,
+    349,
+    350,
+    351,
+    352,
+    353,
+    354,
+    355,
+    356,
+    357,
+    358,
+    359,
+    360,
+    361,
+    362,
+    363,
+    364,
+    365,
+    366,
+    367,
+    368,
+    369,
+    370,
+    371,
+    372,
+    373,
+    374,
+    375,
+    376,
+    377,
+    378,
+    379,
+    380,
+    381,
+    382,
+    383,
+    384,
+    385,
+    386,
+    387,
+    388,
+    389,
+    390,
+    391,
+    392,
+    393,
+    394,
+    395,
+    396,
+    397,
+    398,
+    399,
+    400,
+    401,
+    402,
+    403,
+    404,
+    405,
+    406,
+    407,
+    408,
+    409,
+    410,
+    411,
+    412,
+    413,
+    414,
+    415,
+    416,
+    417,
+    418,
+    419,
+    420,
+    421,
+    422,
+    423,
+    424,
+    425,
+    426,
+    427,
+    428,
+    429,
+    430,
+    431,
+    432,
+    433,
+    434,
+    435,
+    436,
+    437,
+    438,
+    439,
+    440,
+    441,
+    442,
+    443,
+    444,
+    445,
+    446,
+    447,
+    448,
+    449,
+    450,
+    451,
+    452,
+    453,
+    454,
+    455,
+    456,
+    457,
+    458,
+    459,
+    460,
+    461,
+    462,
+    463,
+    464,
+    465,
+    466,
+    467,
+    468,
+    469,
+    470,
+    471,
+    472,
+    473,
+    474,
+    475,
+    476,
+    477,
+    478,
+    479,
+    480,
+    481,
+    482,
+    483,
+    484,
+    485,
+    486,
+    487,
+    488,
+    489,
+    490,
+    491,
+    492,
+    493,
+    494,
+    495,
+    496,
+    497,
+    498,
+    499,
+    500
+  ],
+  "screenshotSpotCheckedRanks": [
+    1,
+    2,
+    3,
+    500
+  ],
+  "screenshotCorrections": [
+    54,
+    116,
+    126,
+    163,
+    175,
+    242,
+    255,
+    263,
+    271,
+    304,
+    317,
+    319,
+    350,
+    370,
+    381,
+    393,
+    396,
+    412,
+    422,
+    423,
+    428,
+    473
+  ],
+  "headquartersBasis": "published-date headquarters; independently sourced, not inferred from ranking province",
+  "entries": [
+    {
+      "rank": 1,
+      "name": "京东集团",
+      "province": "北京市",
+      "revenueWan": 130908500
+    },
+    {
+      "rank": 2,
+      "name": "阿里巴巴（中国）有限公司",
+      "province": "浙江省",
+      "revenueWan": 101674400
+    },
+    {
+      "rank": 3,
+      "name": "恒力集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 89906901
+    },
+    {
+      "rank": 4,
+      "name": "华为投资控股有限公司",
+      "province": "广东省",
+      "revenueWan": 88094100
+    },
+    {
+      "rank": 5,
+      "name": "比亚迪股份有限公司",
+      "province": "广东省",
+      "revenueWan": 80396495
+    },
+    {
+      "rank": 6,
+      "name": "腾讯控股有限公司",
+      "province": "广东省",
+      "revenueWan": 75176600
+    },
+    {
+      "rank": 7,
+      "name": "浙江荣盛控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 68161503
+    },
+    {
+      "rank": 8,
+      "name": "浙江吉利控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 63155474
+    },
+    {
+      "rank": 9,
+      "name": "联想控股股份有限公司",
+      "province": "北京市",
+      "revenueWan": 60594512
+    },
+    {
+      "rank": 10,
+      "name": "山东魏桥创业集团有限公司",
+      "province": "山东省",
+      "revenueWan": 59156453
+    },
+    {
+      "rank": 11,
+      "name": "盛虹控股集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 58802777
+    },
+    {
+      "rank": 12,
+      "name": "浙江恒逸集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 50156564
+    },
+    {
+      "rank": 13,
+      "name": "美的集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 45850240
+    },
+    {
+      "rank": 14,
+      "name": "小米通讯技术有限公司",
+      "province": "北京市",
+      "revenueWan": 45728669
+    },
+    {
+      "rank": 15,
+      "name": "青山控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 43220015
+    },
+    {
+      "rank": 16,
+      "name": "宁德时代新能源科技股份有限公司",
+      "province": "福建省",
+      "revenueWan": 42370183
+    },
+    {
+      "rank": 17,
+      "name": "泰康保险集团股份有限公司",
+      "province": "北京市",
+      "revenueWan": 37318808
+    },
+    {
+      "rank": 18,
+      "name": "敬业集团有限公司",
+      "province": "河北省",
+      "revenueWan": 36911801
+    },
+    {
+      "rank": 19,
+      "name": "北京三快在线科技有限公司（美团）",
+      "province": "北京市",
+      "revenueWan": 36485475
+    },
+    {
+      "rank": 20,
+      "name": "立讯精密工业股份有限公司",
+      "province": "广东省",
+      "revenueWan": 33234444
+    },
+    {
+      "rank": 21,
+      "name": "信发集团有限公司",
+      "province": "山东省",
+      "revenueWan": 32079581
+    },
+    {
+      "rank": 22,
+      "name": "顺丰控股股份有限公司",
+      "province": "广东省",
+      "revenueWan": 30822665
+    },
+    {
+      "rank": 23,
+      "name": "南山集团有限公司",
+      "province": "山东省",
+      "revenueWan": 28601498
+    },
+    {
+      "rank": 24,
+      "name": "海亮集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 26934048
+    },
+    {
+      "rank": 25,
+      "name": "江苏沙钢集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 26581871
+    },
+    {
+      "rank": 26,
+      "name": "冀南钢铁集团有限公司",
+      "province": "河北省",
+      "revenueWan": 26553776
+    },
+    {
+      "rank": 27,
+      "name": "通威集团有限公司",
+      "province": "四川省",
+      "revenueWan": 25589465
+    },
+    {
+      "rank": 28,
+      "name": "德龙钢铁产业集团有限公司",
+      "province": "天津市",
+      "revenueWan": 25103394
+    },
+    {
+      "rank": 29,
+      "name": "北京建龙重工集团有限公司",
+      "province": "北京市",
+      "revenueWan": 24583584
+    },
+    {
+      "rank": 30,
+      "name": "桐昆控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 22722435
+    },
+    {
+      "rank": 31,
+      "name": "北京嘀嘀无限科技发展有限公司（滴滴出行）",
+      "province": "北京市",
+      "revenueWan": 22670143
+    },
+    {
+      "rank": 32,
+      "name": "长城汽车股份有限公司",
+      "province": "河北省",
+      "revenueWan": 22282423
+    },
+    {
+      "rank": 33,
+      "name": "亨通集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 22022785
+    },
+    {
+      "rank": 34,
+      "name": "天能控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 21680916
+    },
+    {
+      "rank": 35,
+      "name": "万向集团公司",
+      "province": "浙江省",
+      "revenueWan": 21538557
+    },
+    {
+      "rank": 36,
+      "name": "洛阳栾川钼业集团股份有限公司",
+      "province": "河南省",
+      "revenueWan": 20668365
+    },
+    {
+      "rank": 37,
+      "name": "中天钢铁集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 19390301
+    },
+    {
+      "rank": 38,
+      "name": "正泰集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 18503107
+    },
+    {
+      "rank": 39,
+      "name": "TCL科技集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 18421092
+    },
+    {
+      "rank": 40,
+      "name": "雅戈尔集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 18115676
+    },
+    {
+      "rank": 41,
+      "name": "东方希望集团有限公司",
+      "province": "上海市",
+      "revenueWan": 18114020
+    },
+    {
+      "rank": 42,
+      "name": "利华益集团股份有限公司",
+      "province": "山东省",
+      "revenueWan": 17521842
+    },
+    {
+      "rank": 43,
+      "name": "复星国际有限公司",
+      "province": "上海市",
+      "revenueWan": 17342531
+    },
+    {
+      "rank": 44,
+      "name": "华勤技术股份有限公司",
+      "province": "上海市",
+      "revenueWan": 17143693
+    },
+    {
+      "rank": 45,
+      "name": "珠海格力电器股份有限公司",
+      "province": "广东省",
+      "revenueWan": 17111816
+    },
+    {
+      "rank": 46,
+      "name": "蚂蚁科技集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 17088968
+    },
+    {
+      "rank": 47,
+      "name": "TCL实业控股股份有限公司",
+      "province": "广东省",
+      "revenueWan": 17069392
+    },
+    {
+      "rank": 48,
+      "name": "永卓控股有限公司",
+      "province": "江苏省",
+      "revenueWan": 16553986
+    },
+    {
+      "rank": 49,
+      "name": "万达控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 16506833
+    },
+    {
+      "rank": 50,
+      "name": "赛力斯集团股份有限公司",
+      "province": "重庆市",
+      "revenueWan": 16505364
+    },
+    {
+      "rank": 51,
+      "name": "中升（大连）集团有限公司",
+      "province": "辽宁省",
+      "revenueWan": 16440343
+    },
+    {
+      "rank": 52,
+      "name": "河北新华联合冶金控股集团有限公司",
+      "province": "河北省",
+      "revenueWan": 16173514
+    },
+    {
+      "rank": 53,
+      "name": "九州通医药集团股份有限公司",
+      "province": "湖北省",
+      "revenueWan": 16138999
+    },
+    {
+      "rank": 54,
+      "name": "弘润石化（潍坊）有限责任公司",
+      "province": "山东省",
+      "revenueWan": 16114941
+    },
+    {
+      "rank": 55,
+      "name": "山东东明石化集团有限公司",
+      "province": "山东省",
+      "revenueWan": 15963916
+    },
+    {
+      "rank": 56,
+      "name": "卓尔智联集团有限公司",
+      "province": "湖北省",
+      "revenueWan": 15502934
+    },
+    {
+      "rank": 57,
+      "name": "海澜集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 15182930
+    },
+    {
+      "rank": 58,
+      "name": "新凤鸣控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 15149446
+    },
+    {
+      "rank": 59,
+      "name": "宁波金田投资控股有限公司",
+      "province": "浙江省",
+      "revenueWan": 15081750
+    },
+    {
+      "rank": 60,
+      "name": "富冶集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 15063612
+    },
+    {
+      "rank": 61,
+      "name": "中基宁波集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 15031846
+    },
+    {
+      "rank": 62,
+      "name": "新奥集团股份有限公司",
+      "province": "河北省",
+      "revenueWan": 15010015
+    },
+    {
+      "rank": 63,
+      "name": "牧原实业集团有限公司",
+      "province": "河南省",
+      "revenueWan": 14911030
+    },
+    {
+      "rank": 64,
+      "name": "三一集团有限公司",
+      "province": "湖南省",
+      "revenueWan": 14848160
+    },
+    {
+      "rank": 65,
+      "name": "协鑫集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 14512990
+    },
+    {
+      "rank": 66,
+      "name": "神州数码集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 14375104
+    },
+    {
+      "rank": 67,
+      "name": "中国民生银行股份有限公司",
+      "province": "北京市",
+      "revenueWan": 14286500
+    },
+    {
+      "rank": 68,
+      "name": "北京快手科技有限公司",
+      "province": "北京市",
+      "revenueWan": 14277600
+    },
+    {
+      "rank": 69,
+      "name": "其亚集团有限公司",
+      "province": "四川省",
+      "revenueWan": 14147377
+    },
+    {
+      "rank": 70,
+      "name": "传化集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 14133936
+    },
+    {
+      "rank": 71,
+      "name": "超威集团",
+      "province": "浙江省",
+      "revenueWan": 14117523
+    },
+    {
+      "rank": 72,
+      "name": "天津荣程祥泰投资控股集团有限公司",
+      "province": "天津市",
+      "revenueWan": 13970231
+    },
+    {
+      "rank": 73,
+      "name": "同程旅行集团",
+      "province": "江苏省",
+      "revenueWan": 13824521
+    },
+    {
+      "rank": 74,
+      "name": "河北津西钢铁集团股份有限公司",
+      "province": "河北省",
+      "revenueWan": 13800547
+    },
+    {
+      "rank": 75,
+      "name": "河北鑫达钢铁集团有限公司",
+      "province": "河北省",
+      "revenueWan": 13683815
+    },
+    {
+      "rank": 76,
+      "name": "河北普阳钢铁有限公司",
+      "province": "河北省",
+      "revenueWan": 13664399
+    },
+    {
+      "rank": 77,
+      "name": "福建大东海实业集团有限公司",
+      "province": "福建省",
+      "revenueWan": 13200360
+    },
+    {
+      "rank": 78,
+      "name": "华友控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 13163812
+    },
+    {
+      "rank": 79,
+      "name": "百度公司",
+      "province": "北京市",
+      "revenueWan": 12907900
+    },
+    {
+      "rank": 80,
+      "name": "广东海大集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 12846823
+    },
+    {
+      "rank": 81,
+      "name": "云账户技术（天津）有限公司",
+      "province": "天津市",
+      "revenueWan": 12764199
+    },
+    {
+      "rank": 82,
+      "name": "山东寿光鲁清石化有限公司",
+      "province": "山东省",
+      "revenueWan": 12590330
+    },
+    {
+      "rank": 83,
+      "name": "齐成（山东）石化集团有限公司",
+      "province": "山东省",
+      "revenueWan": 12315697
+    },
+    {
+      "rank": 84,
+      "name": "江苏新长江实业集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 12295425
+    },
+    {
+      "rank": 85,
+      "name": "河北鑫海控股集团有限公司",
+      "province": "河北省",
+      "revenueWan": 12000014
+    },
+    {
+      "rank": 86,
+      "name": "江西双胞胎控股有限公司",
+      "province": "江西省",
+      "revenueWan": 11924236
+    },
+    {
+      "rank": 87,
+      "name": "浙江卫星控股股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 11663272
+    },
+    {
+      "rank": 88,
+      "name": "内蒙古伊利实业集团股份有限公司",
+      "province": "内蒙古自治区",
+      "revenueWan": 11593110
+    },
+    {
+      "rank": 89,
+      "name": "永荣控股集团有限公司",
+      "province": "福建省",
+      "revenueWan": 11501610
+    },
+    {
+      "rank": 90,
+      "name": "中景石化集团有限公司",
+      "province": "福建省",
+      "revenueWan": 11348415
+    },
+    {
+      "rank": 91,
+      "name": "网易（杭州）网络有限公司",
+      "province": "浙江省",
+      "revenueWan": 11262581
+    },
+    {
+      "rank": 92,
+      "name": "理想汽车",
+      "province": "北京市",
+      "revenueWan": 11231251
+    },
+    {
+      "rank": 93,
+      "name": "山东京博控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 11080026
+    },
+    {
+      "rank": 94,
+      "name": "广西盛隆冶金有限公司",
+      "province": "广西壮族自治区",
+      "revenueWan": 11049975
+    },
+    {
+      "rank": 95,
+      "name": "中天科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 10968279
+    },
+    {
+      "rank": 96,
+      "name": "海航航空集团有限公司",
+      "province": "海南省",
+      "revenueWan": 10860552
+    },
+    {
+      "rank": 97,
+      "name": "新希望六和股份有限公司",
+      "province": "四川省",
+      "revenueWan": 10685630
+    },
+    {
+      "rank": 98,
+      "name": "河北太行钢铁集团有限公司",
+      "province": "河北省",
+      "revenueWan": 10682640
+    },
+    {
+      "rank": 99,
+      "name": "山西鹏飞集团有限公司",
+      "province": "山西省",
+      "revenueWan": 10604524
+    },
+    {
+      "rank": 100,
+      "name": "唯品会（中国）有限公司",
+      "province": "广东省",
+      "revenueWan": 10591954
+    },
+    {
+      "rank": 101,
+      "name": "恒申控股集团有限公司",
+      "province": "福建省",
+      "revenueWan": 10538934
+    },
+    {
+      "rank": 102,
+      "name": "上海寻梦信息技术有限公司",
+      "province": "上海市",
+      "revenueWan": 10386938
+    },
+    {
+      "rank": 103,
+      "name": "温氏食品集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 10386219
+    },
+    {
+      "rank": 104,
+      "name": "远景能源有限公司",
+      "province": "江苏省",
+      "revenueWan": 10313731
+    },
+    {
+      "rank": 105,
+      "name": "宁波富邦控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 10288856
+    },
+    {
+      "rank": 106,
+      "name": "新疆特变电工集团有限公司",
+      "province": "新疆维吾尔自治区",
+      "revenueWan": 10237908
+    },
+    {
+      "rank": 107,
+      "name": "富海集团新能源控股有限公司",
+      "province": "山东省",
+      "revenueWan": 10122611
+    },
+    {
+      "rank": 108,
+      "name": "江西方大钢铁集团有限公司",
+      "province": "江西省",
+      "revenueWan": 10110818
+    },
+    {
+      "rank": 109,
+      "name": "华泰集团有限公司",
+      "province": "山东省",
+      "revenueWan": 10026326
+    },
+    {
+      "rank": 110,
+      "name": "巨星控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 10017437
+    },
+    {
+      "rank": 111,
+      "name": "深圳市立业集团有限公司",
+      "province": "广东省",
+      "revenueWan": 9838956
+    },
+    {
+      "rank": 112,
+      "name": "龙湖集团控股有限公司",
+      "province": "重庆市",
+      "revenueWan": 9730863
+    },
+    {
+      "rank": 113,
+      "name": "汇能控股集团有限公司",
+      "province": "内蒙古自治区",
+      "revenueWan": 9714728
+    },
+    {
+      "rank": 114,
+      "name": "歌尔股份有限公司",
+      "province": "山东省",
+      "revenueWan": 9655016
+    },
+    {
+      "rank": 115,
+      "name": "阳光保险集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 9460466
+    },
+    {
+      "rank": 116,
+      "name": "贝壳控股有限公司",
+      "province": "北京市",
+      "revenueWan": 9458021
+    },
+    {
+      "rank": 117,
+      "name": "方同舟控股有限公司",
+      "province": "北京市",
+      "revenueWan": 9350871
+    },
+    {
+      "rank": 118,
+      "name": "山东齐润控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 9283628
+    },
+    {
+      "rank": 119,
+      "name": "四川省川威集团有限公司",
+      "province": "四川省",
+      "revenueWan": 9251212
+    },
+    {
+      "rank": 120,
+      "name": "迁安市九江线材有限责任公司",
+      "province": "河北省",
+      "revenueWan": 9065706
+    },
+    {
+      "rank": 121,
+      "name": "内蒙古伊泰集团有限公司",
+      "province": "内蒙古自治区",
+      "revenueWan": 8990374
+    },
+    {
+      "rank": 122,
+      "name": "阳光电源股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 8918436
+    },
+    {
+      "rank": 123,
+      "name": "东方润安集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 8896139
+    },
+    {
+      "rank": 124,
+      "name": "蔚来控股有限公司",
+      "province": "安徽省",
+      "revenueWan": 8791654
+    },
+    {
+      "rank": 125,
+      "name": "武安市裕华钢铁有限公司",
+      "province": "河北省",
+      "revenueWan": 8781856
+    },
+    {
+      "rank": 126,
+      "name": "中天控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 8503163
+    },
+    {
+      "rank": 127,
+      "name": "山东太阳控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 8366931
+    },
+    {
+      "rank": 128,
+      "name": "杭州滨江房产集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 8288776
+    },
+    {
+      "rank": 129,
+      "name": "陕西泰丰盛合控股集团有限公司",
+      "province": "陕西省",
+      "revenueWan": 8269260
+    },
+    {
+      "rank": 130,
+      "name": "人民控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 8211271
+    },
+    {
+      "rank": 131,
+      "name": "心里程控股集团有限公司",
+      "province": "广东省",
+      "revenueWan": 8200568
+    },
+    {
+      "rank": 132,
+      "name": "奥克斯集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 8162771
+    },
+    {
+      "rank": 133,
+      "name": "广西南丹南方金属有限公司",
+      "province": "广西壮族自治区",
+      "revenueWan": 8150222
+    },
+    {
+      "rank": 134,
+      "name": "杭州东恒石油有限公司",
+      "province": "浙江省",
+      "revenueWan": 8038069
+    },
+    {
+      "rank": 135,
+      "name": "安踏体育用品集团有限公司",
+      "province": "福建省",
+      "revenueWan": 8021900
+    },
+    {
+      "rank": 136,
+      "name": "宁夏天元锰业集团有限公司",
+      "province": "宁夏回族自治区",
+      "revenueWan": 7917809
+    },
+    {
+      "rank": 137,
+      "name": "玖龙纸业（控股）有限公司",
+      "province": "广东省",
+      "revenueWan": 7913452
+    },
+    {
+      "rank": 138,
+      "name": "唐山港陆钢铁有限公司",
+      "province": "河北省",
+      "revenueWan": 7778904
+    },
+    {
+      "rank": 139,
+      "name": "日照钢铁控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 7765072
+    },
+    {
+      "rank": 140,
+      "name": "山东创新金属科技有限公司",
+      "province": "山东省",
+      "revenueWan": 7681871
+    },
+    {
+      "rank": 141,
+      "name": "广东小鹏汽车科技集团有限公司",
+      "province": "广东省",
+      "revenueWan": 7679426
+    },
+    {
+      "rank": 142,
+      "name": "河北新金钢铁有限公司",
+      "province": "河北省",
+      "revenueWan": 7665251
+    },
+    {
+      "rank": 143,
+      "name": "新华三信息技术有限公司",
+      "province": "浙江省",
+      "revenueWan": 7598475
+    },
+    {
+      "rank": 144,
+      "name": "德力西集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 7583101
+    },
+    {
+      "rank": 145,
+      "name": "圆通速递股份有限公司",
+      "province": "上海市",
+      "revenueWan": 7527684
+    },
+    {
+      "rank": 146,
+      "name": "杭州锦江集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 7523063
+    },
+    {
+      "rank": 147,
+      "name": "宁夏宝丰集团有限公司",
+      "province": "宁夏回族自治区",
+      "revenueWan": 7519015
+    },
+    {
+      "rank": 148,
+      "name": "禾丰食品股份有限公司",
+      "province": "辽宁省",
+      "revenueWan": 7464315
+    },
+    {
+      "rank": 149,
+      "name": "远大物产集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 7448943
+    },
+    {
+      "rank": 150,
+      "name": "蓝思科技股份有限公司",
+      "province": "湖南省",
+      "revenueWan": 7440973
+    },
+    {
+      "rank": 151,
+      "name": "山东海科控股有限公司",
+      "province": "山东省",
+      "revenueWan": 7413337
+    },
+    {
+      "rank": 152,
+      "name": "恒信汽车集团股份有限公司",
+      "province": "湖北省",
+      "revenueWan": 7342801
+    },
+    {
+      "rank": 153,
+      "name": "江苏国泰国际集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 7328554
+    },
+    {
+      "rank": 154,
+      "name": "金风科技股份有限公司",
+      "province": "新疆维吾尔自治区",
+      "revenueWan": 7302348
+    },
+    {
+      "rank": 155,
+      "name": "河南金利金铅集团有限公司",
+      "province": "河南省",
+      "revenueWan": 7264952
+    },
+    {
+      "rank": 156,
+      "name": "天津华北集团有限公司",
+      "province": "天津市",
+      "revenueWan": 7258680
+    },
+    {
+      "rank": 157,
+      "name": "山西晋城钢铁控股集团有限公司",
+      "province": "山西省",
+      "revenueWan": 7253268
+    },
+    {
+      "rank": 158,
+      "name": "兴华财富集团有限公司",
+      "province": "河北省",
+      "revenueWan": 7252894
+    },
+    {
+      "rank": 159,
+      "name": "胜星集团有限责任公司",
+      "province": "山东省",
+      "revenueWan": 7225311
+    },
+    {
+      "rank": 160,
+      "name": "通鼎集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 7212695
+    },
+    {
+      "rank": 161,
+      "name": "福建省金纶高纤股份有限公司",
+      "province": "福建省",
+      "revenueWan": 7186597
+    },
+    {
+      "rank": 162,
+      "name": "修正药业集团",
+      "province": "吉林省",
+      "revenueWan": 7120157
+    },
+    {
+      "rank": 163,
+      "name": "山东东方华龙工贸集团有限公司",
+      "province": "山东省",
+      "revenueWan": 7100136
+    },
+    {
+      "rank": 164,
+      "name": "上海钢联电子商务股份有限公司",
+      "province": "上海市",
+      "revenueWan": 7069338
+    },
+    {
+      "rank": 165,
+      "name": "隆基绿能科技股份有限公司",
+      "province": "陕西省",
+      "revenueWan": 7034705
+    },
+    {
+      "rank": 166,
+      "name": "创维集团有限公司",
+      "province": "广东省",
+      "revenueWan": 7032400
+    },
+    {
+      "rank": 167,
+      "name": "华勤橡胶工业集团有限公司",
+      "province": "山东省",
+      "revenueWan": 7029502
+    },
+    {
+      "rank": 168,
+      "name": "明阳新能源投资控股集团有限公司",
+      "province": "广东省",
+      "revenueWan": 7000128
+    },
+    {
+      "rank": 169,
+      "name": "山东金岭集团有限公司",
+      "province": "山东省",
+      "revenueWan": 6982140
+    },
+    {
+      "rank": 170,
+      "name": "永道控股集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 6881012
+    },
+    {
+      "rank": 171,
+      "name": "北京蓝色光标数据科技集团股份有限公司",
+      "province": "北京市",
+      "revenueWan": 6869267
+    },
+    {
+      "rank": 172,
+      "name": "鲁丽集团有限公司",
+      "province": "山东省",
+      "revenueWan": 6821709
+    },
+    {
+      "rank": 173,
+      "name": "山西晋南钢铁集团有限公司",
+      "province": "山西省",
+      "revenueWan": 6718490
+    },
+    {
+      "rank": 174,
+      "name": "天合光能股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 6697455
+    },
+    {
+      "rank": 175,
+      "name": "三花控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 6670500
+    },
+    {
+      "rank": 176,
+      "name": "振石控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 6645670
+    },
+    {
+      "rank": 177,
+      "name": "重庆市博赛矿业(集团)有限公司",
+      "province": "重庆市",
+      "revenueWan": 6629926
+    },
+    {
+      "rank": 178,
+      "name": "湖南鸣鸣很忙商业连锁股份有限公司",
+      "province": "湖南省",
+      "revenueWan": 6617034
+    },
+    {
+      "rank": 179,
+      "name": "浙江东南网架集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 6559675
+    },
+    {
+      "rank": 180,
+      "name": "深圳传音控股股份有限公司",
+      "province": "广东省",
+      "revenueWan": 6559124
+    },
+    {
+      "rank": 181,
+      "name": "晶科能源股份有限公司",
+      "province": "江西省",
+      "revenueWan": 6549187
+    },
+    {
+      "rank": 182,
+      "name": "金发科技股份有限公司",
+      "province": "广东省",
+      "revenueWan": 6539621
+    },
+    {
+      "rank": 183,
+      "name": "伊电控股集团有限公司",
+      "province": "河南省",
+      "revenueWan": 6533203
+    },
+    {
+      "rank": 184,
+      "name": "宏旺控股集团有限公司",
+      "province": "广东省",
+      "revenueWan": 6505793
+    },
+    {
+      "rank": 185,
+      "name": "均胜集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 6505561
+    },
+    {
+      "rank": 186,
+      "name": "远东控股集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 6504419
+    },
+    {
+      "rank": 187,
+      "name": "零跑汽车有限公司",
+      "province": "浙江省",
+      "revenueWan": 6473186
+    },
+    {
+      "rank": 188,
+      "name": "山西建邦集团有限公司",
+      "province": "山西省",
+      "revenueWan": 6460416
+    },
+    {
+      "rank": 189,
+      "name": "南通四建集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 6454826
+    },
+    {
+      "rank": 190,
+      "name": "山东渤海实业集团有限公司",
+      "province": "山东省",
+      "revenueWan": 6450831
+    },
+    {
+      "rank": 191,
+      "name": "欣旺达电子股份有限公司",
+      "province": "广东省",
+      "revenueWan": 6324625
+    },
+    {
+      "rank": 192,
+      "name": "三河汇福粮油集团有限公司",
+      "province": "河北省",
+      "revenueWan": 6263443
+    },
+    {
+      "rank": 193,
+      "name": "携程集团有限公司",
+      "province": "上海市",
+      "revenueWan": 6251000
+    },
+    {
+      "rank": 194,
+      "name": "山东垦利石化集团有限公司",
+      "province": "山东省",
+      "revenueWan": 6200507
+    },
+    {
+      "rank": 195,
+      "name": "攀华集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 6181220
+    },
+    {
+      "rank": 196,
+      "name": "浙江前程投资股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 6150744
+    },
+    {
+      "rank": 197,
+      "name": "惠州亿纬锂能股份有限公司",
+      "province": "广东省",
+      "revenueWan": 6146963
+    },
+    {
+      "rank": 198,
+      "name": "稻花香集团",
+      "province": "湖北省",
+      "revenueWan": 6103570
+    },
+    {
+      "rank": 199,
+      "name": "安徽楚江科技新材料股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 6057669
+    },
+    {
+      "rank": 200,
+      "name": "三宝集团股份有限公司",
+      "province": "福建省",
+      "revenueWan": 6034941
+    },
+    {
+      "rank": 201,
+      "name": "华峰集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 6015998
+    },
+    {
+      "rank": 202,
+      "name": "宗申产业集团有限公司",
+      "province": "重庆市",
+      "revenueWan": 6001217
+    },
+    {
+      "rank": 203,
+      "name": "福佳集团有限公司",
+      "province": "辽宁省",
+      "revenueWan": 5997547
+    },
+    {
+      "rank": 204,
+      "name": "河北千喜鹤饮食股份有限公司",
+      "province": "河北省",
+      "revenueWan": 5965237
+    },
+    {
+      "rank": 205,
+      "name": "河南双汇投资发展股份有限公司",
+      "province": "河南省",
+      "revenueWan": 5945972
+    },
+    {
+      "rank": 206,
+      "name": "浙江中成控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 5831125
+    },
+    {
+      "rank": 207,
+      "name": "卧龙控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 5789758
+    },
+    {
+      "rank": 208,
+      "name": "物美科技集团有限公司",
+      "province": "北京市",
+      "revenueWan": 5773883
+    },
+    {
+      "rank": 209,
+      "name": "金澳科技（湖北）化工有限公司",
+      "province": "湖北省",
+      "revenueWan": 5693963
+    },
+    {
+      "rank": 210,
+      "name": "龙信建设集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 5662310
+    },
+    {
+      "rank": 211,
+      "name": "济源市万洋冶炼（集团）有限公司",
+      "province": "河南省",
+      "revenueWan": 5613841
+    },
+    {
+      "rank": 212,
+      "name": "弘阳集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 5608865
+    },
+    {
+      "rank": 213,
+      "name": "广东德赛集团有限公司",
+      "province": "广东省",
+      "revenueWan": 5598872
+    },
+    {
+      "rank": 214,
+      "name": "双良集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 5574047
+    },
+    {
+      "rank": 215,
+      "name": "万通海欣控股集团股份有限公司",
+      "province": "山东省",
+      "revenueWan": 5573920
+    },
+    {
+      "rank": 216,
+      "name": "太平鸟集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 5561914
+    },
+    {
+      "rank": 217,
+      "name": "申通快递有限公司",
+      "province": "上海市",
+      "revenueWan": 5558617
+    },
+    {
+      "rank": 218,
+      "name": "深圳市爱施德股份有限公司",
+      "province": "广东省",
+      "revenueWan": 5522220
+    },
+    {
+      "rank": 219,
+      "name": "内蒙古鄂尔多斯投资控股集团有限公司",
+      "province": "内蒙古自治区",
+      "revenueWan": 5515418
+    },
+    {
+      "rank": 220,
+      "name": "石横特钢控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 5492942
+    },
+    {
+      "rank": 221,
+      "name": "湖南博长控股集团有限公司",
+      "province": "湖南省",
+      "revenueWan": 5483140
+    },
+    {
+      "rank": 222,
+      "name": "浙江升华控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 5429588
+    },
+    {
+      "rank": 223,
+      "name": "山东九羊集团有限公司",
+      "province": "山东省",
+      "revenueWan": 5409064
+    },
+    {
+      "rank": 224,
+      "name": "通州建总集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 5352533
+    },
+    {
+      "rank": 225,
+      "name": "永辉超市股份有限公司",
+      "province": "福建省",
+      "revenueWan": 5350757
+    },
+    {
+      "rank": 226,
+      "name": "新城控股集团股份有限公司",
+      "province": "上海市",
+      "revenueWan": 5301163
+    },
+    {
+      "rank": 227,
+      "name": "农夫山泉股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 5255291
+    },
+    {
+      "rank": 228,
+      "name": "日善电脑配件（嘉善）有限公司",
+      "province": "浙江省",
+      "revenueWan": 5255285
+    },
+    {
+      "rank": 229,
+      "name": "淄博鑫泰石化有限公司",
+      "province": "山东省",
+      "revenueWan": 5239234
+    },
+    {
+      "rank": 230,
+      "name": "万洋集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 5234469
+    },
+    {
+      "rank": 231,
+      "name": "汇通达网络股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 5229746
+    },
+    {
+      "rank": 232,
+      "name": "雅迪科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 5216040
+    },
+    {
+      "rank": 233,
+      "name": "五得利面粉集团有限公司",
+      "province": "河北省",
+      "revenueWan": 5193821
+    },
+    {
+      "rank": 234,
+      "name": "宁波海天企业管理有限公司",
+      "province": "浙江省",
+      "revenueWan": 5166443
+    },
+    {
+      "rank": 235,
+      "name": "河南丰利石化有限公司",
+      "province": "河南省",
+      "revenueWan": 5157237
+    },
+    {
+      "rank": 236,
+      "name": "道恩集团有限公司",
+      "province": "山东省",
+      "revenueWan": 5156417
+    },
+    {
+      "rank": 237,
+      "name": "韵达控股集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 5147450
+    },
+    {
+      "rank": 238,
+      "name": "福建万辰食品集团股份有限公司",
+      "province": "福建省",
+      "revenueWan": 5145914
+    },
+    {
+      "rank": 239,
+      "name": "宁波合盛集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 5143217
+    },
+    {
+      "rank": 240,
+      "name": "广东领益智造股份有限公司",
+      "province": "广东省",
+      "revenueWan": 5142894
+    },
+    {
+      "rank": 241,
+      "name": "北京国联视讯信息技术股份有限公司",
+      "province": "北京市",
+      "revenueWan": 5098136
+    },
+    {
+      "rank": 242,
+      "name": "湖南五江控股集团有限公司",
+      "province": "湖南省",
+      "revenueWan": 5068621
+    },
+    {
+      "rank": 243,
+      "name": "天津友发钢管集团股份有限公司",
+      "province": "天津市",
+      "revenueWan": 5067109
+    },
+    {
+      "rank": 244,
+      "name": "OPPO（重庆）智能科技有限公司",
+      "province": "重庆市",
+      "revenueWan": 5048712
+    },
+    {
+      "rank": 245,
+      "name": "波司登股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 5027592
+    },
+    {
+      "rank": 246,
+      "name": "极兔速递有限公司",
+      "province": "上海市",
+      "revenueWan": 4962611
+    },
+    {
+      "rank": 247,
+      "name": "郑州宇通企业集团",
+      "province": "河南省",
+      "revenueWan": 4937544
+    },
+    {
+      "rank": 248,
+      "name": "瑞幸咖啡（中国）有限公司",
+      "province": "福建省",
+      "revenueWan": 4928810
+    },
+    {
+      "rank": 249,
+      "name": "晶澳太阳能科技股份有限公司",
+      "province": "河北省",
+      "revenueWan": 4912871
+    },
+    {
+      "rank": 250,
+      "name": "中通快递股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 4909866
+    },
+    {
+      "rank": 251,
+      "name": "苏宁易购集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 4895791
+    },
+    {
+      "rank": 252,
+      "name": "红狮控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4882318
+    },
+    {
+      "rank": 253,
+      "name": "得力集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4880605
+    },
+    {
+      "rank": 254,
+      "name": "桂林力源粮油食品集团有限公司",
+      "province": "广西壮族自治区",
+      "revenueWan": 4875669
+    },
+    {
+      "rank": 255,
+      "name": "四川冶控集团有限公司",
+      "province": "四川省",
+      "revenueWan": 4844788
+    },
+    {
+      "rank": 256,
+      "name": "中伟新材料股份有限公司",
+      "province": "贵州省",
+      "revenueWan": 4813997
+    },
+    {
+      "rank": 257,
+      "name": "河北诚信集团有限公司",
+      "province": "河北省",
+      "revenueWan": 4768219
+    },
+    {
+      "rank": 258,
+      "name": "江苏新霖飞投资有限公司",
+      "province": "江苏省",
+      "revenueWan": 4747655
+    },
+    {
+      "rank": 259,
+      "name": "先导科技集团有限公司",
+      "province": "广东省",
+      "revenueWan": 4730213
+    },
+    {
+      "rank": 260,
+      "name": "伟星集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4721321
+    },
+    {
+      "rank": 261,
+      "name": "常熟市龙腾特种钢有限公司",
+      "province": "江苏省",
+      "revenueWan": 4718492
+    },
+    {
+      "rank": 262,
+      "name": "广东圣丰集团有限公司",
+      "province": "广东省",
+      "revenueWan": 4713565
+    },
+    {
+      "rank": 263,
+      "name": "江苏满运软件科技有限公司",
+      "province": "江苏省",
+      "revenueWan": 4700648
+    },
+    {
+      "rank": 264,
+      "name": "江苏天工新材料科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 4696855
+    },
+    {
+      "rank": 265,
+      "name": "河北安丰钢铁集团有限公司",
+      "province": "河北省",
+      "revenueWan": 4691382
+    },
+    {
+      "rank": 266,
+      "name": "新和成控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4670140
+    },
+    {
+      "rank": 267,
+      "name": "山东恒信集团有限公司",
+      "province": "山东省",
+      "revenueWan": 4626193
+    },
+    {
+      "rank": 268,
+      "name": "浙江宝业建设集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4583816
+    },
+    {
+      "rank": 269,
+      "name": "福耀玻璃工业集团股份有限公司",
+      "province": "福建省",
+      "revenueWan": 4578744
+    },
+    {
+      "rank": 270,
+      "name": "江苏沃得机电集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 4570405
+    },
+    {
+      "rank": 271,
+      "name": "江苏江润铜业有限公司",
+      "province": "江苏省",
+      "revenueWan": 4551868
+    },
+    {
+      "rank": 272,
+      "name": "泰地控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4538955
+    },
+    {
+      "rank": 273,
+      "name": "深圳市汇川技术股份有限公司",
+      "province": "广东省",
+      "revenueWan": 4510484
+    },
+    {
+      "rank": 274,
+      "name": "国轩高科股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 4507046
+    },
+    {
+      "rank": 275,
+      "name": "永鼎集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 4502292
+    },
+    {
+      "rank": 276,
+      "name": "安徽天大企业（集团）有限公司",
+      "province": "安徽省",
+      "revenueWan": 4449539
+    },
+    {
+      "rank": 277,
+      "name": "中创新航科技集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 4440007
+    },
+    {
+      "rank": 278,
+      "name": "辛集市澳森特钢集团有限公司",
+      "province": "河北省",
+      "revenueWan": 4431378
+    },
+    {
+      "rank": 279,
+      "name": "河北新武安钢铁集团烘熔钢铁有限公司",
+      "province": "河北省",
+      "revenueWan": 4426108
+    },
+    {
+      "rank": 280,
+      "name": "江苏大明工业科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 4422121
+    },
+    {
+      "rank": 281,
+      "name": "滨化集团",
+      "province": "山东省",
+      "revenueWan": 4421046
+    },
+    {
+      "rank": 282,
+      "name": "华东医药股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 4361201
+    },
+    {
+      "rank": 283,
+      "name": "浙江正凯集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4348375
+    },
+    {
+      "rank": 284,
+      "name": "舜宇集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4322913
+    },
+    {
+      "rank": 285,
+      "name": "森马集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4306489
+    },
+    {
+      "rank": 286,
+      "name": "内蒙古蒙泰集团有限公司",
+      "province": "内蒙古自治区",
+      "revenueWan": 4306265
+    },
+    {
+      "rank": 287,
+      "name": "无棣鑫岳化工集团有限公司",
+      "province": "山东省",
+      "revenueWan": 4267346
+    },
+    {
+      "rank": 288,
+      "name": "甬金科技集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 4264628
+    },
+    {
+      "rank": 289,
+      "name": "宁波申洲针织有限公司",
+      "province": "浙江省",
+      "revenueWan": 4244368
+    },
+    {
+      "rank": 290,
+      "name": "雅鹿集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 4237583
+    },
+    {
+      "rank": 291,
+      "name": "海外海集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4231422
+    },
+    {
+      "rank": 292,
+      "name": "程力汽车集团股份有限公司",
+      "province": "湖北省",
+      "revenueWan": 4224502
+    },
+    {
+      "rank": 293,
+      "name": "福建省百宏科技集团有限公司",
+      "province": "福建省",
+      "revenueWan": 4219523
+    },
+    {
+      "rank": 294,
+      "name": "福建闽海能源科技集团有限公司",
+      "province": "福建省",
+      "revenueWan": 4215033
+    },
+    {
+      "rank": 295,
+      "name": "上海龙旗科技股份有限公司",
+      "province": "上海市",
+      "revenueWan": 4212481
+    },
+    {
+      "rank": 296,
+      "name": "中亿丰控股集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 4180389
+    },
+    {
+      "rank": 297,
+      "name": "浙江建华集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4157098
+    },
+    {
+      "rank": 298,
+      "name": "骆驼集团股份有限公司",
+      "province": "湖北省",
+      "revenueWan": 4155921
+    },
+    {
+      "rank": 299,
+      "name": "久立集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 4150941
+    },
+    {
+      "rank": 300,
+      "name": "四川德康控股集团有限公司",
+      "province": "四川省",
+      "revenueWan": 4137413
+    },
+    {
+      "rank": 301,
+      "name": "河南豫联能源集团有限责任公司",
+      "province": "河南省",
+      "revenueWan": 4121408
+    },
+    {
+      "rank": 302,
+      "name": "天洁集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4117785
+    },
+    {
+      "rank": 303,
+      "name": "深圳市铜锣湾商业发展有限公司",
+      "province": "广东省",
+      "revenueWan": 4099596
+    },
+    {
+      "rank": 304,
+      "name": "河北新武安钢铁集团鑫汇冶金有限公司",
+      "province": "河北省",
+      "revenueWan": 4095852
+    },
+    {
+      "rank": 305,
+      "name": "惠科股份有限公司",
+      "province": "广东省",
+      "revenueWan": 4089732
+    },
+    {
+      "rank": 306,
+      "name": "江苏金峰水泥集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 4081217
+    },
+    {
+      "rank": 307,
+      "name": "大华（集团）有限公司",
+      "province": "上海市",
+      "revenueWan": 4075606
+    },
+    {
+      "rank": 308,
+      "name": "万丰奥特控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4068376
+    },
+    {
+      "rank": 309,
+      "name": "深圳海王集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 4068061
+    },
+    {
+      "rank": 310,
+      "name": "福建纵腾网络有限公司",
+      "province": "福建省",
+      "revenueWan": 4041831
+    },
+    {
+      "rank": 311,
+      "name": "中哲控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4032599
+    },
+    {
+      "rank": 312,
+      "name": "阿特斯阳光电力集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 4025574
+    },
+    {
+      "rank": 313,
+      "name": "宁波力勤资源科技股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 4023979
+    },
+    {
+      "rank": 314,
+      "name": "湖南博深实业集团有限公司",
+      "province": "湖南省",
+      "revenueWan": 4020084
+    },
+    {
+      "rank": 315,
+      "name": "花园集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 4016401
+    },
+    {
+      "rank": 316,
+      "name": "苏州东山精密制造股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 4012485
+    },
+    {
+      "rank": 317,
+      "name": "河北文丰实业集团有限公司",
+      "province": "河北省",
+      "revenueWan": 3995651
+    },
+    {
+      "rank": 318,
+      "name": "精工控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3971011
+    },
+    {
+      "rank": 319,
+      "name": "南通化工轻工股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 3964540
+    },
+    {
+      "rank": 320,
+      "name": "致远控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3937558
+    },
+    {
+      "rank": 321,
+      "name": "四川渠心科技集团有限公司",
+      "province": "四川省",
+      "revenueWan": 3935940
+    },
+    {
+      "rank": 322,
+      "name": "大亚科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3935068
+    },
+    {
+      "rank": 323,
+      "name": "奥德集团有限公司",
+      "province": "山东省",
+      "revenueWan": 3934231
+    },
+    {
+      "rank": 324,
+      "name": "德华集团控股股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 3904722
+    },
+    {
+      "rank": 325,
+      "name": "江苏徐钢钢铁集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3902209
+    },
+    {
+      "rank": 326,
+      "name": "香驰控股有限公司",
+      "province": "山东省",
+      "revenueWan": 3901858
+    },
+    {
+      "rank": 327,
+      "name": "浙江富春江通信集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3899922
+    },
+    {
+      "rank": 328,
+      "name": "山东神驰控股有限公司",
+      "province": "山东省",
+      "revenueWan": 3895896
+    },
+    {
+      "rank": 329,
+      "name": "江阴市金桥化工有限公司",
+      "province": "江苏省",
+      "revenueWan": 3895722
+    },
+    {
+      "rank": 330,
+      "name": "唐山东华钢铁企业集团有限公司",
+      "province": "河北省",
+      "revenueWan": 3888432
+    },
+    {
+      "rank": 331,
+      "name": "深圳市天行云供应链有限公司",
+      "province": "广东省",
+      "revenueWan": 3888258
+    },
+    {
+      "rank": 332,
+      "name": "四联创业集团股份有限公司",
+      "province": "北京市",
+      "revenueWan": 3880801
+    },
+    {
+      "rank": 333,
+      "name": "江苏吴中集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3875535
+    },
+    {
+      "rank": 334,
+      "name": "东方恒信集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3855325
+    },
+    {
+      "rank": 335,
+      "name": "宁波中金石化有限公司",
+      "province": "浙江省",
+      "revenueWan": 3826923
+    },
+    {
+      "rank": 336,
+      "name": "邯郸正大制管集团股份有限公司",
+      "province": "河北省",
+      "revenueWan": 3822387
+    },
+    {
+      "rank": 337,
+      "name": "江苏万帮金之星车业投资集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3818342
+    },
+    {
+      "rank": 338,
+      "name": "石药控股集团有限公司",
+      "province": "河北省",
+      "revenueWan": 3808718
+    },
+    {
+      "rank": 339,
+      "name": "扬子江药业集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3803416
+    },
+    {
+      "rank": 340,
+      "name": "新疆农六师铝业有限公司",
+      "province": "新疆生产建设兵团",
+      "revenueWan": 3798385
+    },
+    {
+      "rank": 341,
+      "name": "浙江世纪华通集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 3789831
+    },
+    {
+      "rank": 342,
+      "name": "亚厦控股有限公司",
+      "province": "浙江省",
+      "revenueWan": 3771668
+    },
+    {
+      "rank": 343,
+      "name": "长治市南烨实业集团有限公司",
+      "province": "山西省",
+      "revenueWan": 3765798
+    },
+    {
+      "rank": 344,
+      "name": "上海瑶琨（集团）有限公司",
+      "province": "上海市",
+      "revenueWan": 3765021
+    },
+    {
+      "rank": 345,
+      "name": "兴惠化纤集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3759280
+    },
+    {
+      "rank": 346,
+      "name": "天颂建设集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3752137
+    },
+    {
+      "rank": 347,
+      "name": "震雄铜业集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3721577
+    },
+    {
+      "rank": 348,
+      "name": "北京泡泡玛特文化创意有限公司",
+      "province": "北京市",
+      "revenueWan": 3712005
+    },
+    {
+      "rank": 349,
+      "name": "齐鲁制药集团有限公司",
+      "province": "山东省",
+      "revenueWan": 3711927
+    },
+    {
+      "rank": 350,
+      "name": "成都蛟龙港（成都蛟龙投资有限责任公司、成都蛟龙经济开发有限公司）",
+      "province": "四川省",
+      "revenueWan": 3709915
+    },
+    {
+      "rank": 351,
+      "name": "方远控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3705896
+    },
+    {
+      "rank": 352,
+      "name": "碧桂园生活服务集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 3697712
+    },
+    {
+      "rank": 353,
+      "name": "大全集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3682559
+    },
+    {
+      "rank": 354,
+      "name": "赛轮集团股份有限公司",
+      "province": "山东省",
+      "revenueWan": 3679243
+    },
+    {
+      "rank": 355,
+      "name": "大自然钢业集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3642748
+    },
+    {
+      "rank": 356,
+      "name": "深圳前海微众银行股份有限公司",
+      "province": "广东省",
+      "revenueWan": 3628359
+    },
+    {
+      "rank": 357,
+      "name": "连云港亚新钢铁有限公司",
+      "province": "江苏省",
+      "revenueWan": 3626347
+    },
+    {
+      "rank": 358,
+      "name": "深圳市东阳光实业发展有限公司",
+      "province": "广东省",
+      "revenueWan": 3622162
+    },
+    {
+      "rank": 359,
+      "name": "众安在线财产保险股份有限公司",
+      "province": "上海市",
+      "revenueWan": 3620241
+    },
+    {
+      "rank": 360,
+      "name": "南通建工集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 3620029
+    },
+    {
+      "rank": 361,
+      "name": "日出实业集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3613928
+    },
+    {
+      "rank": 362,
+      "name": "江苏联鑫控股集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3606623
+    },
+    {
+      "rank": 363,
+      "name": "无锡江南电缆有限公司",
+      "province": "江苏省",
+      "revenueWan": 3601713
+    },
+    {
+      "rank": 364,
+      "name": "江苏国强镀锌实业有限公司",
+      "province": "江苏省",
+      "revenueWan": 3600549
+    },
+    {
+      "rank": 365,
+      "name": "苏州旭创科技有限公司",
+      "province": "江苏省",
+      "revenueWan": 3600242
+    },
+    {
+      "rank": 366,
+      "name": "瑞钢联集团有限公司",
+      "province": "北京市",
+      "revenueWan": 3587540
+    },
+    {
+      "rank": 367,
+      "name": "胜达集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3583367
+    },
+    {
+      "rank": 368,
+      "name": "月星集团有限公司",
+      "province": "上海市",
+      "revenueWan": 3575233
+    },
+    {
+      "rank": 369,
+      "name": "利时集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 3570497
+    },
+    {
+      "rank": 370,
+      "name": "福建晟育投资发展集团有限公司",
+      "province": "福建省",
+      "revenueWan": 3565859
+    },
+    {
+      "rank": 371,
+      "name": "福建圣农控股集团有限公司",
+      "province": "福建省",
+      "revenueWan": 3560015
+    },
+    {
+      "rank": 372,
+      "name": "南京金鹰国际集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3558845
+    },
+    {
+      "rank": 373,
+      "name": "江苏三木集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3556917
+    },
+    {
+      "rank": 374,
+      "name": "华新建材集团股份有限公司",
+      "province": "湖北省",
+      "revenueWan": 3534828
+    },
+    {
+      "rank": 375,
+      "name": "盈峰集团有限公司",
+      "province": "广东省",
+      "revenueWan": 3527361
+    },
+    {
+      "rank": 376,
+      "name": "香农芯创科技股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 3525089
+    },
+    {
+      "rank": 377,
+      "name": "江苏上上电缆集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3522421
+    },
+    {
+      "rank": 378,
+      "name": "河南明泰铝业股份有限公司",
+      "province": "河南省",
+      "revenueWan": 3513528
+    },
+    {
+      "rank": 379,
+      "name": "软通动力信息技术（集团）股份有限公司",
+      "province": "北京市",
+      "revenueWan": 3508990
+    },
+    {
+      "rank": 380,
+      "name": "江苏省镔鑫钢铁集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3504952
+    },
+    {
+      "rank": 381,
+      "name": "浙江协和集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3497839
+    },
+    {
+      "rank": 382,
+      "name": "荆门市格林美新材料有限公司",
+      "province": "湖北省",
+      "revenueWan": 3493273
+    },
+    {
+      "rank": 383,
+      "name": "浙江中南建设集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3471325
+    },
+    {
+      "rank": 384,
+      "name": "湖南裕能新能源电池材料股份有限公司",
+      "province": "湖南省",
+      "revenueWan": 3462477
+    },
+    {
+      "rank": 385,
+      "name": "江苏扬子江船业集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3461494
+    },
+    {
+      "rank": 386,
+      "name": "美欣达集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3460172
+    },
+    {
+      "rank": 387,
+      "name": "浙江龙盛控股有限公司",
+      "province": "浙江省",
+      "revenueWan": 3451555
+    },
+    {
+      "rank": 388,
+      "name": "红太阳集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3450697
+    },
+    {
+      "rank": 389,
+      "name": "兴达投资集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3448577
+    },
+    {
+      "rank": 390,
+      "name": "河南龙成集团有限公司",
+      "province": "河南省",
+      "revenueWan": 3445000
+    },
+    {
+      "rank": 391,
+      "name": "中新钢铁集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3435576
+    },
+    {
+      "rank": 392,
+      "name": "泰开集团有限公司",
+      "province": "山东省",
+      "revenueWan": 3431998
+    },
+    {
+      "rank": 393,
+      "name": "江苏瑞祥科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3401313
+    },
+    {
+      "rank": 394,
+      "name": "华芳集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3380485
+    },
+    {
+      "rank": 395,
+      "name": "纳爱斯集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3375485
+    },
+    {
+      "rank": 396,
+      "name": "东营市亚通石化有限公司",
+      "province": "山东省",
+      "revenueWan": 3342689
+    },
+    {
+      "rank": 397,
+      "name": "深圳迈瑞生物医疗电子股份有限公司",
+      "province": "广东省",
+      "revenueWan": 3328216
+    },
+    {
+      "rank": 398,
+      "name": "宜兴市紫金铜业有限公司",
+      "province": "江苏省",
+      "revenueWan": 3321601
+    },
+    {
+      "rank": 399,
+      "name": "河北冠丰冶金工业有限公司",
+      "province": "河北省",
+      "revenueWan": 3315551
+    },
+    {
+      "rank": 400,
+      "name": "福星集团控股有限公司",
+      "province": "湖北省",
+      "revenueWan": 3303211
+    },
+    {
+      "rank": 401,
+      "name": "山东能链控股有限公司",
+      "province": "山东省",
+      "revenueWan": 3285616
+    },
+    {
+      "rank": 402,
+      "name": "江苏无锡朝阳集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 3285370
+    },
+    {
+      "rank": 403,
+      "name": "三水实业有限公司",
+      "province": "上海市",
+      "revenueWan": 3282874
+    },
+    {
+      "rank": 404,
+      "name": "宁波博洋控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3280746
+    },
+    {
+      "rank": 405,
+      "name": "浙江大华技术股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 3274378
+    },
+    {
+      "rank": 406,
+      "name": "苏州金螳螂企业(集团)有限公司",
+      "province": "江苏省",
+      "revenueWan": 3272180
+    },
+    {
+      "rank": 407,
+      "name": "江苏中超投资集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3255357
+    },
+    {
+      "rank": 408,
+      "name": "荣民控股集团有限公司",
+      "province": "陕西省",
+      "revenueWan": 3244938
+    },
+    {
+      "rank": 409,
+      "name": "深圳华强集团有限公司",
+      "province": "广东省",
+      "revenueWan": 3219096
+    },
+    {
+      "rank": 410,
+      "name": "山东中海化工集团有限公司",
+      "province": "山东省",
+      "revenueWan": 3213789
+    },
+    {
+      "rank": 411,
+      "name": "立中四通轻合金集团股份有限公司",
+      "province": "河北省",
+      "revenueWan": 3212413
+    },
+    {
+      "rank": 412,
+      "name": "溧阳中联金电子商务有限公司",
+      "province": "江苏省",
+      "revenueWan": 3209351
+    },
+    {
+      "rank": 413,
+      "name": "云南玉溪玉昆钢铁集团有限公司",
+      "province": "云南省",
+      "revenueWan": 3198732
+    },
+    {
+      "rank": 414,
+      "name": "广州立白凯晟控股有限公司",
+      "province": "广东省",
+      "revenueWan": 3178222
+    },
+    {
+      "rank": 415,
+      "name": "朴朴科技(福建)有限公司",
+      "province": "福建省",
+      "revenueWan": 3177213
+    },
+    {
+      "rank": 416,
+      "name": "江苏恒瑞医药股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 3162942
+    },
+    {
+      "rank": 417,
+      "name": "江苏华宏实业集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3153176
+    },
+    {
+      "rank": 418,
+      "name": "江阴江东集团公司",
+      "province": "江苏省",
+      "revenueWan": 3144071
+    },
+    {
+      "rank": 419,
+      "name": "金鹏控股集团有限公司",
+      "province": "安徽省",
+      "revenueWan": 3133860
+    },
+    {
+      "rank": 420,
+      "name": "杭州青云控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3133043
+    },
+    {
+      "rank": 421,
+      "name": "无锡华东重机科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3124852
+    },
+    {
+      "rank": 422,
+      "name": "联峰钢铁（张家港）有限公司",
+      "province": "江苏省",
+      "revenueWan": 3109135
+    },
+    {
+      "rank": 423,
+      "name": "湖北鑫资再生资源集团有限公司",
+      "province": "湖北省",
+      "revenueWan": 3103773
+    },
+    {
+      "rank": 424,
+      "name": "河南济源钢铁（集团）有限公司",
+      "province": "河南省",
+      "revenueWan": 3102733
+    },
+    {
+      "rank": 425,
+      "name": "常州市化工轻工材料总公司",
+      "province": "江苏省",
+      "revenueWan": 3090172
+    },
+    {
+      "rank": 426,
+      "name": "临沂新程金锣肉制品集团有限公司",
+      "province": "山东省",
+      "revenueWan": 3085910
+    },
+    {
+      "rank": 427,
+      "name": "安徽灵通集团控股有限公司",
+      "province": "安徽省",
+      "revenueWan": 3082052
+    },
+    {
+      "rank": 428,
+      "name": "一柏集团有限公司",
+      "province": "福建省",
+      "revenueWan": 3080643
+    },
+    {
+      "rank": 429,
+      "name": "法尔胜泓昇集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3077849
+    },
+    {
+      "rank": 430,
+      "name": "宁波君安控股有限公司",
+      "province": "浙江省",
+      "revenueWan": 3061529
+    },
+    {
+      "rank": 431,
+      "name": "恒尊控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 3059125
+    },
+    {
+      "rank": 432,
+      "name": "江苏大经集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3058693
+    },
+    {
+      "rank": 433,
+      "name": "金浦投资控股集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 3053766
+    },
+    {
+      "rank": 434,
+      "name": "安克创新科技股份有限公司",
+      "province": "湖南省",
+      "revenueWan": 3051440
+    },
+    {
+      "rank": 435,
+      "name": "西子国际控股有限公司",
+      "province": "浙江省",
+      "revenueWan": 3046088
+    },
+    {
+      "rank": 436,
+      "name": "安钢集团信阳钢铁有限责任公司",
+      "province": "河南省",
+      "revenueWan": 3028681
+    },
+    {
+      "rank": 437,
+      "name": "云南曲靖呈钢钢铁（集团）有限公司",
+      "province": "云南省",
+      "revenueWan": 3014945
+    },
+    {
+      "rank": 438,
+      "name": "金东投资集团有限公司",
+      "province": "湖南省",
+      "revenueWan": 3011762
+    },
+    {
+      "rank": 439,
+      "name": "盛屯矿业集团股份有限公司",
+      "province": "福建省",
+      "revenueWan": 3000268
+    },
+    {
+      "rank": 440,
+      "name": "临沂临工机械集团有限公司",
+      "province": "山东省",
+      "revenueWan": 2989301
+    },
+    {
+      "rank": 441,
+      "name": "腾达建设集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 2985428
+    },
+    {
+      "rank": 442,
+      "name": "江西中力资源控股集团有限公司",
+      "province": "江西省",
+      "revenueWan": 2978253
+    },
+    {
+      "rank": 443,
+      "name": "西子联合控股有限公司",
+      "province": "浙江省",
+      "revenueWan": 2976448
+    },
+    {
+      "rank": 444,
+      "name": "唐人神集团股份有限公司",
+      "province": "湖南省",
+      "revenueWan": 2969586
+    },
+    {
+      "rank": 445,
+      "name": "安徽天康（集团）股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 2966368
+    },
+    {
+      "rank": 446,
+      "name": "浙江新月控股集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 2960398
+    },
+    {
+      "rank": 447,
+      "name": "新阳科技集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 2959536
+    },
+    {
+      "rank": 448,
+      "name": "宁波拓普集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 2958146
+    },
+    {
+      "rank": 449,
+      "name": "天山铝业集团股份有限公司",
+      "province": "新疆生产建设兵团",
+      "revenueWan": 2950215
+    },
+    {
+      "rank": 450,
+      "name": "浙江国泰建设集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 2937051
+    },
+    {
+      "rank": 451,
+      "name": "北京数据街控股集团有限公司",
+      "province": "北京市",
+      "revenueWan": 2933787
+    },
+    {
+      "rank": 452,
+      "name": "北京大北农科技集团股份有限公司",
+      "province": "北京市",
+      "revenueWan": 2911893
+    },
+    {
+      "rank": 453,
+      "name": "山西潞宝集团",
+      "province": "山西省",
+      "revenueWan": 2891556
+    },
+    {
+      "rank": 454,
+      "name": "佛山市海天调味食品股份有限公司",
+      "province": "广东省",
+      "revenueWan": 2887338
+    },
+    {
+      "rank": 455,
+      "name": "华南物资集团有限公司",
+      "province": "重庆市",
+      "revenueWan": 2886050
+    },
+    {
+      "rank": 456,
+      "name": "公元塑业集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 2881005
+    },
+    {
+      "rank": 457,
+      "name": "山鹰国际控股股份公司",
+      "province": "安徽省",
+      "revenueWan": 2877816
+    },
+    {
+      "rank": 458,
+      "name": "华翔集团股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 2874977
+    },
+    {
+      "rank": 459,
+      "name": "珠海万达商业管理集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 2849257
+    },
+    {
+      "rank": 460,
+      "name": "东吴黄金集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 2844129
+    },
+    {
+      "rank": 461,
+      "name": "广东生益科技股份有限公司",
+      "province": "广东省",
+      "revenueWan": 2843114
+    },
+    {
+      "rank": 462,
+      "name": "卫华集团有限公司",
+      "province": "河南省",
+      "revenueWan": 2836826
+    },
+    {
+      "rank": 463,
+      "name": "南京新华海科技产业集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 2833241
+    },
+    {
+      "rank": 464,
+      "name": "合肥维天运通信息科技股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 2824244
+    },
+    {
+      "rank": 465,
+      "name": "永兴特种材料科技股份有限公司",
+      "province": "浙江省",
+      "revenueWan": 2821030
+    },
+    {
+      "rank": 466,
+      "name": "山西安泰控股集团有限公司",
+      "province": "山西省",
+      "revenueWan": 2794536
+    },
+    {
+      "rank": 467,
+      "name": "昆山联滔电子有限公司",
+      "province": "江苏省",
+      "revenueWan": 2792683
+    },
+    {
+      "rank": 468,
+      "name": "通富微电子股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 2792142
+    },
+    {
+      "rank": 469,
+      "name": "诸城外贸有限责任公司",
+      "province": "山东省",
+      "revenueWan": 2786947
+    },
+    {
+      "rank": 470,
+      "name": "淮海控股集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 2783050
+    },
+    {
+      "rank": 471,
+      "name": "山东荣信集团有限公司",
+      "province": "山东省",
+      "revenueWan": 2782511
+    },
+    {
+      "rank": 472,
+      "name": "山西锦绣大象农牧集团股份有限公司",
+      "province": "山西省",
+      "revenueWan": 2776757
+    },
+    {
+      "rank": 473,
+      "name": "江苏盈泰供应链集团有限公司",
+      "province": "江苏省",
+      "revenueWan": 2774388
+    },
+    {
+      "rank": 474,
+      "name": "人本集团有限公司",
+      "province": "浙江省",
+      "revenueWan": 2760878
+    },
+    {
+      "rank": 475,
+      "name": "北京东方雨虹防水技术股份有限公司",
+      "province": "北京市",
+      "revenueWan": 2757865
+    },
+    {
+      "rank": 476,
+      "name": "山西高义钢铁有限公司",
+      "province": "山西省",
+      "revenueWan": 2756094
+    },
+    {
+      "rank": 477,
+      "name": "东华能源股份有限公司",
+      "province": "广东省",
+      "revenueWan": 2752564
+    },
+    {
+      "rank": 478,
+      "name": "大参林医药集团股份有限公司",
+      "province": "广东省",
+      "revenueWan": 2750218
+    },
+    {
+      "rank": 479,
+      "name": "吉利百矿集团有限公司",
+      "province": "广西壮族自治区",
+      "revenueWan": 2738832
+    },
+    {
+      "rank": 480,
+      "name": "北京爱奇艺科技有限公司",
+      "province": "北京市",
+      "revenueWan": 2729130
+    },
+    {
+      "rank": 481,
+      "name": "科大讯飞股份有限公司",
+      "province": "安徽省",
+      "revenueWan": 2710539
+    },
+    {
+      "rank": 482,
+      "name": "天津源泰德润钢管制造集团有限公司",
+      "province": "天津市",
+      "revenueWan": 2700038
+    },
+    {
+      "rank": 483,
+      "name": "正大天晴药业集团股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 2682174
+    },
+    {
+      "rank": 484,
+      "name": "青岛世纪瑞丰集团有限公司",
+      "province": "山东省",
+      "revenueWan": 2664524
+    },
+    {
+      "rank": 485,
+      "name": "中大控股集团有限公司",
+      "province": "江西省",
+      "revenueWan": 2646901
+    },
+    {
+      "rank": 486,
+      "name": "利群集团股份有限公司",
+      "province": "山东省",
+      "revenueWan": 2638559
+    },
+    {
+      "rank": 487,
+      "name": "瑞源控股集团有限公司",
+      "province": "山东省",
+      "revenueWan": 2635505
+    },
+    {
+      "rank": 488,
+      "name": "中国万向控股有限公司",
+      "province": "上海市",
+      "revenueWan": 2632514
+    },
+    {
+      "rank": 489,
+      "name": "江苏鼎胜新能源材料股份有限公司",
+      "province": "江苏省",
+      "revenueWan": 2630346
+    },
+    {
+      "rank": 490,
+      "name": "河南心连心化学工业集团股份有限公司",
+      "province": "河南省",
+      "revenueWan": 2627172
+    },
+    {
+      "rank": 491,
+      "name": "赤峰远联钢铁有限责任公司",
+      "province": "内蒙古自治区",
+      "revenueWan": 2614086
+    },
+    {
+      "rank": 492,
+      "name": "上海胜华电缆科技集团有限公司",
+      "province": "上海市",
+      "revenueWan": 2613056
+    },
+    {
+      "rank": 493,
+      "name": "名创优品（广州）有限责任公司",
+      "province": "广东省",
+      "revenueWan": 2610093
+    },
+    {
+      "rank": 494,
+      "name": "河北天柱钢铁集团有限公司",
+      "province": "河北省",
+      "revenueWan": 2607472
+    },
+    {
+      "rank": 495,
+      "name": "宝业湖北建工集团有限公司",
+      "province": "湖北省",
+      "revenueWan": 2605617
+    },
+    {
+      "rank": 496,
+      "name": "龙佰集团股份有限公司",
+      "province": "河南省",
+      "revenueWan": 2598754
+    },
+    {
+      "rank": 497,
+      "name": "山东科达集团有限公司",
+      "province": "山东省",
+      "revenueWan": 2582013
+    },
+    {
+      "rank": 498,
+      "name": "天津市宝来钢业有限公司",
+      "province": "天津市",
+      "revenueWan": 2569705
+    },
+    {
+      "rank": 499,
+      "name": "华侨凤凰集团股份有限公司",
+      "province": "四川省",
+      "revenueWan": 2567892
+    },
+    {
+      "rank": 500,
+      "name": "玲珑集团有限公司",
+      "province": "山东省",
+      "revenueWan": 2559930
+    }
+  ]
+}

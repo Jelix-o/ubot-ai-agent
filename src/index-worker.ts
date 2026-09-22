@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import path from "node:path";
 import { logError, logInfo } from "./logger.js";
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
 import { Metrics } from "./shared/metrics.js";
@@ -30,6 +31,7 @@ import { AdminOperationLogService } from "./services/admin-operation-log-service
 import { LiveChatService } from "./services/live-chat-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
@@ -43,6 +45,7 @@ import { HtmlPreviewService } from "./services/html-preview-service.js";
 import { QqAdminAuthorizationService } from "./services/qq-admin-authorization-service.js";
 import { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
+import { ConfiguredImageGenerationService } from "./services/image-generation-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
@@ -630,6 +633,17 @@ async function buildBotApp(
     rootDir: config.htmlPreviewRoot,
     publicBaseUrl: config.htmlPreviewPublicBaseUrl,
   });
+  const imageGenerationService = new ConfiguredImageGenerationService(
+    systemSettingsStore,
+    path.join(dataDir, "generated-images"),
+    v3State,
+    capabilityPolicy,
+    fetch,
+    Date.now,
+    () => (sharedDb.db.prepare(
+      "SELECT text FROM outbox WHERE kind = 'generated_image' AND status IN ('pending', 'sending')",
+    ).all() as Array<{ text: string }>).map((row) => row.text),
+  );
   // Keep the existing fixed blacklist response active until V3 cutover. The
   // library itself deliberately has no legacy persistence fallback.
   const memeLibraryService = v3State ? new MemeLibraryService(dataDir, v3State) : undefined;
@@ -689,6 +703,8 @@ async function buildBotApp(
     v3State ? new QqAdminAuthorizationService(sharedDb) : undefined,
     new RecentGroupEvidenceService(sharedDb),
     memeLibraryService,
+    imageGenerationService,
+    loadPrivateEnterpriseRanking(),
   );
   return { botApp, groupConfigService };
 }

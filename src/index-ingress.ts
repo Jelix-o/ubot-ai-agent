@@ -1,6 +1,12 @@
 import { loadConfig } from "./config.js";
+import { readFile, rm } from "node:fs/promises";
+import path from "node:path";
 import { logError, logInfo, logWarn } from "./logger.js";
-import { NapCatReverseServer } from "./napcat-reverse-server.js";
+import {
+  NapCatActionNotSentError,
+  NapCatActionOutcomeUnknownError,
+  NapCatReverseServer,
+} from "./napcat-reverse-server.js";
 import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { Metrics } from "./shared/metrics.js";
@@ -8,6 +14,11 @@ import { IngressReadApi } from "./ingress-read-api.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageReceipt, MessageTransport } from "./bot.js";
+import {
+  IMAGE_GENERATION_MAX_BYTES,
+  isGeneratedImagePath,
+  isSupportedGeneratedImage,
+} from "./services/image-generation-service.js";
 
 /**
  * Ingress process (plan section 1):
@@ -57,10 +68,24 @@ export async function deliverOutboxRow(
   row: OutboxRow,
   sentAtMs = Date.now(),
   onAckFailure?: (error: unknown) => void,
+  generatedImageRoot?: string,
 ): Promise<string> {
   let receipt: MessageReceipt | void;
-  if (row.kind === "image") {
+  let generatedImagePath: string | undefined;
+  if (row.kind === "record" || row.kind === "airecord") {
+    throw new Error("Retired voice outbox kind cannot be delivered.");
+  } else if (row.kind === "image") {
     receipt = await transport.sendGroupImage(row.group_id, row.text);
+  } else if (row.kind === "generated_image") {
+    if (!generatedImageRoot || !isGeneratedImagePath(generatedImageRoot, row.text)) {
+      throw new Error("Generated image outbox path is outside the managed directory.");
+    }
+    const image = await readFile(row.text);
+    if (image.byteLength === 0 || image.byteLength > IMAGE_GENERATION_MAX_BYTES || !isSupportedGeneratedImage(image)) {
+      throw new Error("Generated image outbox file has an invalid size or type.");
+    }
+    generatedImagePath = row.text;
+    receipt = await transport.sendGroupImage(row.group_id, `base64://${image.toString("base64")}`);
   } else {
     receipt = await transport.sendGroupMessage(row.group_id, row.text);
   }
@@ -71,12 +96,14 @@ export async function deliverOutboxRow(
   try {
     sharedDb.ackOutboxDelivery(row.id, platformMessageId, sentAtMs);
   } catch (error) {
+    if (generatedImagePath) await rm(generatedImagePath, { force: true }).catch(() => undefined);
     onAckFailure?.(error);
     // Never return this row to the send retry queue: the QQ action succeeded,
     // so retrying would create a duplicate. The row remains `sending` for
     // reconciliation/alerting with its causal turn still intact.
     throw new OutboxAcknowledgementError(platformMessageId, error);
   }
+  if (generatedImagePath) await rm(generatedImagePath, { force: true }).catch(() => undefined);
   return platformMessageId;
 }
 
@@ -88,6 +115,19 @@ export class OutboxAcknowledgementError extends Error {
     super("QQ send succeeded but the outbox acknowledgement could not be persisted");
     this.name = "OutboxAcknowledgementError";
   }
+}
+
+export type OutboxFailureDisposition = "retryable" | "terminal";
+
+export function markOutboxDeliveryFailed(
+  sharedDb: SharedDb,
+  row: Pick<OutboxRow, "id" | "kind">,
+  error: unknown,
+): OutboxFailureDisposition {
+  const retiredVoice = row.kind === "record" || row.kind === "airecord";
+  const retryable = !retiredVoice && (row.kind !== "generated_image" || error instanceof NapCatActionNotSentError);
+  sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
+  return retryable ? "retryable" : "terminal";
 }
 
 interface IngressOptions {
@@ -340,6 +380,7 @@ export class IngressApp {
           row,
           Date.now(),
           () => this.metrics.inc("outbox_ack_backfill_failed"),
+          path.join(this.options.dataDir, "generated-images"),
         );
         this.metrics.inc("outbox_sent");
         logInfo("Outbox message sent.", {
@@ -351,7 +392,13 @@ export class IngressApp {
         });
       } catch (error) {
         if (!(error instanceof OutboxAcknowledgementError)) {
-          this.sharedDb.markOutboxFailed(row.id);
+          const disposition = markOutboxDeliveryFailed(this.sharedDb, row, error);
+          if (row.kind === "generated_image" && disposition === "terminal") {
+            this.metrics.inc("generated_image_delivery_terminal");
+            if (error instanceof NapCatActionOutcomeUnknownError) {
+              this.metrics.inc("generated_image_delivery_ambiguous");
+            }
+          }
         }
         this.metrics.inc("outbox_failed");
         logWarn("Outbox send failed.", {

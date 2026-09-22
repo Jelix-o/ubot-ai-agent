@@ -50,7 +50,7 @@ export interface AiHealthStatus {
   latencyMs: number;
   cached: boolean;
   skipped?: boolean;
-  probeType?: "chat";
+  probeType?: "chat" | "image";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -290,7 +290,7 @@ export interface AiIdentityContext {
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
   realtimeLookup?: RealtimeLookupResult;
-  /** Explicitly requested, bounded group transcript evidence for person evaluation. */
+  /** Explicitly requested, bounded group transcript evidence about one verified member. */
   recentGroupEvidence?: RecentGroupEvidenceMessage[];
   recentGroupEvidenceRequested?: boolean;
   recentGroupEvidenceTargetUserId?: string;
@@ -341,6 +341,8 @@ export interface GroupBotConfig {
   ambientGroupContextEnabled?: boolean;
   /** Static HTML preview publishing is enabled for configured groups by default. */
   htmlPreviewEnabled?: boolean;
+  /** @deprecated Image generation is globally available and super-admin only. */
+  imageGenerationEnabled?: boolean;
 }
 
 export interface GroupsConfigFile {
@@ -428,7 +430,7 @@ export interface AdminSession {
   expiresAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "custom";
 /**
  * Values accepted only while importing pre-V3 settings. They are never
  * selected by V3 runtime services.
@@ -445,6 +447,8 @@ export interface ModelProviderCapabilities {
   reasoningEffort: boolean;
   /** The provider has an independently configurable request timeout. */
   requestTimeout: true;
+  /** The provider exposes an OpenAI-compatible Images generation endpoint. */
+  imageGeneration: boolean;
 }
 
 export interface SystemModelConfig {

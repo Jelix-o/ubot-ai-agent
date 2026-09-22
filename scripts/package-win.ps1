@@ -62,6 +62,7 @@ try {
 $itemsToCopy = @(
   "dist",
   "scripts/configure-v3-network.mjs",
+  "scripts/configure-image-model.mjs",
   "scripts/deploy-linux-release.sh",
   "scripts/normalize-dotenv-bom.mjs",
   "scripts/migrate-v3-state.mjs",
@@ -87,6 +88,9 @@ $itemsToCopy = @(
   "docs/MIGRATION-v3.md",
   "docs/ROLLBACK-v3.md",
   "assets/huixian-profile.json",
+  "assets/private-enterprises-2026.json",
+  "assets/private-enterprises-2026-audit.json",
+  "assets/private-enterprises-2026-review.md",
   "assets/blacklisted-at-meme.jpg"
 )
 

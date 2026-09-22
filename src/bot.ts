@@ -28,6 +28,7 @@ import type { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ImagePipelineError, type ImagePipeline } from "./services/image-pipeline.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import type { PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
@@ -47,6 +48,12 @@ import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.j
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { getBlacklistedAtMemeImageFile } from "./services/blacklisted-at-meme.js";
+import {
+  countImagePromptCharacters,
+  IMAGE_GENERATION_MAX_PROMPT_CHARS,
+  ImageGenerationError,
+  type ImageGenerationRuntime,
+} from "./services/image-generation-service.js";
 import type {
   ProviderCapabilityFeature,
   ProviderProtocol,
@@ -111,11 +118,12 @@ const OPS_ALERT_PREFIX = "#告警";
 const MEMORY_PREFIX = "#记忆";
 const KNOWLEDGE_PREFIX = "#知识库";
 const HTML_PREVIEW_PREFIX = "#网页";
+const IMAGE_GENERATION_PREFIX = "#画图";
 const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
-const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 3 * 60 * 1_000;
-const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 12;
+const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 10 * 60 * 1_000;
+const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 30;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 const SEND_FAILURE_ALERT_THRESHOLD = 3;
@@ -164,6 +172,7 @@ const RUNTIME_COMMAND_SPECS = {
   holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
   knowledge: { builtinPrefix: KNOWLEDGE_PREFIX, builtinAliases: [] },
   html_preview: { builtinPrefix: HTML_PREVIEW_PREFIX, builtinAliases: ["#html"] },
+  image_generation: { builtinPrefix: IMAGE_GENERATION_PREFIX, builtinAliases: ["#生图"] },
   live_chat: { builtinPrefix: LIVE_CHAT_PREFIX, builtinAliases: [] },
   memory: { builtinPrefix: MEMORY_PREFIX, builtinAliases: [] },
   model: { builtinPrefix: MODEL_PREFIX, builtinAliases: [] },
@@ -247,6 +256,8 @@ export interface TransportHealthStatus {
 export interface MessageTransport {
   sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
+  /** Queues a worker-local generated image for ingress delivery and cleanup. */
+  sendGeneratedGroupImage?(groupId: string, imagePath: string): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
   listGroupMembers?(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]>;
   listGroups?(): Promise<NapcatGroupInfo[]>;
@@ -412,6 +423,9 @@ export class BotApplication {
       Partial<Pick<RecentGroupEvidenceService, "listAmbient">>,
     /** Optional during the V3 library rollout so legacy embeddings remain valid. */
     private readonly memeLibraryService?: MemeLibraryRuntimeService,
+    /** Text-to-image generation is V3-only and absent in compatibility embeddings. */
+    private readonly imageGenerationService?: ImageGenerationRuntime,
+    private readonly privateEnterpriseRanking?: PrivateEnterpriseRanking,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -426,6 +440,7 @@ export class BotApplication {
         { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
         { id: "html-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runHtmlPreviewCleanupTick() },
+        { id: "image-generation-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runImageGenerationCleanupTick() },
       ],
       pollIntervalMs: BOT_MAINTENANCE_INTERVALS.poll,
     });
@@ -676,7 +691,7 @@ export class BotApplication {
 
     const helpCommand = matchRuntimeCommand(commandText, runtimeCommands, "help");
     if (helpCommand) {
-      await this.handleHelpCommand(groupConfig.groupId, helpCommand.rewrittenText, runtimeCommands);
+      await this.handleHelpCommand(groupConfig, event, helpCommand.rewrittenText, runtimeCommands);
       return;
     }
 
@@ -747,6 +762,12 @@ export class BotApplication {
         return;
       }
       await this.handleHtmlPreviewRequest(groupConfig, event, { request, source: "command" }, signal);
+      return;
+    }
+
+    const imageGenerationCommand = matchRuntimeCommand(commandText, runtimeCommands, "image_generation");
+    if (imageGenerationCommand) {
+      await this.handleImageGenerationCommand(groupConfig, event, imageGenerationCommand.suffix, signal);
       return;
     }
 
@@ -1227,6 +1248,100 @@ export class BotApplication {
       logWarn("Failed to clean generated HTML previews.", {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  private async runImageGenerationCleanupTick(): Promise<void> {
+    if (!this.imageGenerationService) return;
+    try {
+      const removed = await this.imageGenerationService.cleanup();
+      if (removed > 0) logInfo("Cleaned orphaned generated images.", { removed });
+    } catch (error) {
+      logWarn("Failed to clean generated image files.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async handleImageGenerationCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    rawPrompt: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const userId = String(event.user_id);
+    if (!(await this.isSuperAdmin(groupConfig, userId))) {
+      return;
+    }
+    if (!this.isCapabilityEnabled("image_generation")) {
+      await this.rejectCapability(groupId, "image_generation");
+      return;
+    }
+    const prompt = rawPrompt.trim();
+    if (!prompt) {
+      const commands = await this.getRuntimeCommands();
+      await this.sendText(groupId, `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
+      return;
+    }
+    const promptCharacters = countImagePromptCharacters(prompt);
+    if (promptCharacters > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
+      await this.sendText(
+        groupId,
+        `提示词当前 ${promptCharacters} 字，最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字，请删减 ${promptCharacters - IMAGE_GENERATION_MAX_PROMPT_CHARS} 字`,
+      );
+      return;
+    }
+    if (!this.imageGenerationService || !this.transport.sendGeneratedGroupImage) {
+      await this.sendText(groupId, "图片生成暂不可用，请稍后再试");
+      return;
+    }
+
+    let stagedFile: string | undefined;
+    try {
+      const generated = await this.imageGenerationService.generate({
+        groupId,
+        userId,
+        prompt,
+        signal,
+        onStarted: async () => {
+          await this.sendText(groupId, "正在生成图片，请稍候…");
+        },
+      });
+      stagedFile = generated.filePath;
+      await this.transport.sendGeneratedGroupImage(groupId, generated.filePath);
+      stagedFile = undefined;
+      logInfo("Generated image queued for group delivery.", {
+        groupId,
+        userId,
+        modelId: generated.modelId,
+        fallbackUsed: generated.fallbackUsed,
+        byteLength: generated.byteLength,
+      });
+    } catch (error) {
+      if (stagedFile) await this.imageGenerationService.discard(stagedFile);
+      if (signal?.aborted) return;
+      if (error instanceof ImageGenerationError) {
+        if (error.code === "cooldown") {
+          await this.sendText(groupId, `图片生成冷却中，请 ${error.retryAfterSeconds ?? 1} 秒后再试`);
+          return;
+        }
+        if (error.code === "prompt_too_long") {
+          const characters = countImagePromptCharacters(prompt);
+          await this.sendText(
+            groupId,
+            `提示词当前 ${characters} 字，最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字，请删减 ${Math.max(1, characters - IMAGE_GENERATION_MAX_PROMPT_CHARS)} 字`,
+          );
+          return;
+        }
+      }
+      logWarn("Image generation request failed.", {
+        groupId,
+        userId,
+        errorCode: error instanceof ImageGenerationError ? error.code : "unknown",
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+      await this.sendText(groupId, "图片生成失败，请稍后再试");
     }
   }
 
@@ -2171,11 +2286,16 @@ export class BotApplication {
   }
 
   private async handleHelpCommand(
-    groupId: string,
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
     commandText: string,
     runtimeCommands: SystemCommandConfig[],
   ): Promise<void> {
-    await this.sendText(groupId, buildFeatureListMessage(commandText, runtimeCommands));
+    const includeImageGeneration = await this.isSuperAdmin(groupConfig, String(event.user_id));
+    await this.sendText(
+      groupConfig.groupId,
+      buildFeatureListMessage(commandText, runtimeCommands, includeImageGeneration),
+    );
   }
 
   /** Pre-cutover compatibility only. V3 routes all admin authority to SQLite accounts. */
@@ -2406,8 +2526,9 @@ export class BotApplication {
       messageContext.interactionTargets,
       this.botQq,
     );
+    const localTranscriptTargetRequest = isLocalTranscriptTargetRequest(normalizedUserInput);
     const savedAliasResolution = explicitEvaluationTargetUserIds.length === 0 &&
-      isPersonEvaluationRequest(normalizedUserInput, true)
+      (isPersonEvaluationRequest(normalizedUserInput, true) || localTranscriptTargetRequest)
       ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
       : { status: "none" as const };
     if (savedAliasResolution.status === "resolved") {
@@ -2461,6 +2582,23 @@ export class BotApplication {
         ...(turn.userId ? { userId: turn.userId } : {}),
         timestamp: new Date(turn.createdAt).toISOString(),
       }));
+    const rankingAnswer = images.length === 0 && (messageContext.replyContext?.images?.length ?? 0) === 0
+      ? this.privateEnterpriseRanking?.answer(normalizedUserInput, history)
+      : undefined;
+    if (rankingAnswer) {
+      if (!this.isCapabilityEnabled("knowledge")) {
+        await this.rejectCapability(groupConfig.groupId, "knowledge");
+        return;
+      }
+      const receipts = await this.sendTextMessages(
+        groupConfig.groupId,
+        rankingAnswer.messages,
+        prefixMentionUserIds,
+        conversationRoute,
+      );
+      await this.persistAssistantContext(conversationRoute, rankingAnswer.messages.join("\n\n"), receipts);
+      return;
+    }
     const evaluationTargetUserIds = collectEvaluationTargetUserIds(
       messageContext.interactionTargets,
       this.botQq,
@@ -2469,6 +2607,8 @@ export class BotApplication {
       normalizedUserInput,
       messageContext.interactionTargets.length > 0,
     ) || savedAliasResolution.status === "ambiguous";
+    const targetedGroupEvidenceRequested =
+      (personEvaluationRequested || localTranscriptTargetRequest) && evaluationTargetUserIds.length === 1;
     const explicitGroupEvaluationRequested = isExplicitGroupEvaluationRequest(normalizedUserInput);
     const ordinaryEvaluationFallback =
       personEvaluationRequested &&
@@ -2496,17 +2636,26 @@ export class BotApplication {
       });
       return;
     }
+    if (localTranscriptTargetRequest && groupConfig.ambientGroupContextEnabled === false) {
+      const unavailableText = "本群未开启近期群聊上下文，无法根据以上聊天记录回答。";
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
+      logInfo("Skipped local transcript evidence because ambient group context is disabled.", {
+        groupId: groupConfig.groupId,
+      });
+      return;
+    }
     if (ordinaryEvaluationFallback) {
       logInfo("Falling back to an ordinary AI reply for an unverified open-ended evaluation.", {
         groupId: groupConfig.groupId,
         savedAliasStatus: savedAliasResolution.status,
       });
     }
-    const recentGroupEvidenceTriggered = personEvaluationRequested && evaluationTargetUserIds.length === 1;
-    const targetPrivacyOptedOut = recentGroupEvidenceTriggered &&
+    const recentGroupEvidenceTriggered = targetedGroupEvidenceRequested;
+    const targetPrivacyOptedOut = targetedGroupEvidenceRequested &&
       (groupConfig.memoryDisabledUserIds ?? []).includes(evaluationTargetUserIds[0]!);
     if (targetPrivacyOptedOut) {
-      const unavailableText = "当前没有可用于评价这位群友的聊天记录。";
+      const unavailableText = "当前没有可用于回答这位群友相关问题的聊天记录。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
       logInfo("Skipped group evidence for a privacy-opted-out target.", { groupId: groupConfig.groupId });
@@ -2515,13 +2664,25 @@ export class BotApplication {
     let recentGroupEvidence: NonNullable<AiIdentityContext["recentGroupEvidence"]> = [];
     if (recentGroupEvidenceTriggered && sourceRowId !== undefined) {
       try {
-        recentGroupEvidence = this.recentGroupEvidenceService?.list({
-          groupId: groupConfig.groupId,
-          beforeSourceRowId: sourceRowId,
-          sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1_000,
-          excludedUserIds: groupConfig.memoryDisabledUserIds,
-          limit: 30,
-        }) ?? [];
+        const excludedUserIds = [
+          ...(groupConfig.blacklistedUserIds ?? []),
+          ...(groupConfig.memoryDisabledUserIds ?? []),
+        ];
+        recentGroupEvidence = localTranscriptTargetRequest
+          ? this.recentGroupEvidenceService?.listAmbient?.({
+            groupId: groupConfig.groupId,
+            beforeSourceRowId: sourceRowId,
+            lookbackMs: AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
+            excludedUserIds,
+            limit: AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
+          }) ?? []
+          : this.recentGroupEvidenceService?.list({
+            groupId: groupConfig.groupId,
+            beforeSourceRowId: sourceRowId,
+            sinceMs: Date.now() - 7 * 24 * 60 * 60 * 1_000,
+            excludedUserIds,
+            limit: 30,
+          }) ?? [];
       } catch (error) {
         logWarn("Recent group evidence read failed closed.", {
           groupId: groupConfig.groupId,
@@ -2534,7 +2695,7 @@ export class BotApplication {
       | "loaded"
       | "disabled"
       | "explicit_reply"
-      | "person_evaluation"
+      | "targeted_group_evidence"
       | "missing_source"
       | "unavailable"
       | "read_failed";
@@ -2543,7 +2704,7 @@ export class BotApplication {
     } else if (messageContext.replyMessageId) {
       ambientGroupContextStatus = "explicit_reply";
     } else if (recentGroupEvidenceTriggered) {
-      ambientGroupContextStatus = "person_evaluation";
+      ambientGroupContextStatus = "targeted_group_evidence";
     } else if (sourceRowId === undefined) {
       ambientGroupContextStatus = "missing_source";
     } else if (!this.recentGroupEvidenceService?.listAmbient) {
@@ -3412,6 +3573,13 @@ export class BotApplication {
       return true;
     }
 
+    return this.groupConfigService.isSuperAdmin(userId);
+  }
+
+  private async isSuperAdmin(groupConfig: GroupBotConfig, userId: string): Promise<boolean> {
+    if (this.usesV3AdminAuthority()) {
+      return this.qqAdminAuthorization?.resolve(userId, groupConfig.groupId)?.role === "super_admin";
+    }
     return this.groupConfigService.isSuperAdmin(userId);
   }
 
@@ -4676,13 +4844,17 @@ function formatDuration(seconds: number): string {
   return parts.join("");
 }
 
-function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig[] = []): string {
+function buildFeatureListMessage(
+  commandText = "",
+  commands: SystemCommandConfig[] = [],
+  includeImageGeneration = false,
+): string {
   const topic = parseHelpTopic(commandText);
   const helper = createCommandHelpFormatter(commands);
-  const sections = buildHelpSections(helper);
+  const sections = buildHelpSections(helper, includeImageGeneration);
 
   if (!topic) {
-    return buildHelpOverviewMessage(sections, helper);
+    return buildHelpOverviewMessage(sections, helper, includeImageGeneration);
   }
 
   const matchedSection = sections.find((section) => section.aliases.includes(topic));
@@ -4690,10 +4862,10 @@ function buildFeatureListMessage(commandText = "", commands: SystemCommandConfig
     return [
       `没找到“${topic}”这个帮助分类`,
       "",
-      "可用分类：对话、会仙、实时对话、定时任务、日报、节假日、权限",
+      `可用分类：${sections.map((section) => section.title).join("、")}`,
       `示例：${helper("help")} 技能`,
       "",
-      buildHelpOverviewMessage(sections, helper),
+      buildHelpOverviewMessage(sections, helper, includeImageGeneration),
     ].join("\n");
   }
 
@@ -4730,7 +4902,7 @@ type HelpSection = {
   lines: string[];
 };
 
-function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
+function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean): HelpSection[] {
   return [
     {
       title: "对话",
@@ -4744,6 +4916,16 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
         `说明：普通群消息不会触发，必须 @机器人；${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })} 需要群管理员或超级管理员`,
       ],
     },
+    ...(includeImageGeneration ? [{
+      title: "画图",
+      aliases: ["画图", "生图", "image"],
+      lines: [
+        `1. ${command("image_generation")} <提示词>`,
+        `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
+        "作用：根据文字提示生成一张图片，仅绑定超级管理员可用",
+        `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；成功生成后冷却 60 秒`,
+      ],
+    }] : []),
     {
       title: "实时对话",
       aliases: ["实时对话", "实时", "live", "livechat"],
@@ -4800,19 +4982,27 @@ function buildHelpSections(command: CommandHelpFormatter): HelpSection[] {
   ];
 }
 
-function buildHelpOverviewMessage(sections: HelpSection[], command: CommandHelpFormatter): string {
+function buildHelpOverviewMessage(
+  sections: HelpSection[],
+  command: CommandHelpFormatter,
+  includeImageGeneration: boolean,
+): string {
+  const features = [
+    "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>（仅超级管理员）`] : []),
+    `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
+    `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
+    `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
+    `节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
+    `状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
+    `闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
+    `黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
+    `帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+  ];
   return [
     "系统功能总览：",
-    "1. 对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
-    `2. 实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
-    `3. 定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
-    `4. 日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
-    `5. 节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
-    `6. 状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（本群管理员）`,
-    `7. 闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（本群管理员）`,
-    `8. 黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
-    `9. 帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
-    `分类帮助：${command("help")} 对话 / 实时对话 / 定时任务 / 日报 / 节假日 / 权限`,
+    ...features.map((feature, index) => `${index + 1}. ${feature}`),
+    `分类帮助：${command("help")} ${sections.map((section) => section.title).join(" / ")}`,
     "定时任务限制：仅在工作日 9:00-18:00 范围内触发",
     "权限说明：后台账号绑定优先；未绑定时，群主和群管理员自动拥有当前群的管理指令权限",
     `提示：${command("help", { includeAliases: true }).join(" / ")} 只会回帮助信息，不会主动触发日报或节假日发送`,
@@ -4913,11 +5103,12 @@ function resolveSavedAliasEvaluationTarget(
     start: number;
     end: number;
     aliasLength: number;
-    target: AiInteractionTarget;
+    userIds: string[];
+    names: string[];
   }> = [];
   for (const identity of groupConfig.manualIdentities ?? []) {
-    const userId = identity.userIds[0]?.trim();
-    if (!userId || !/^\d+$/.test(userId)) continue;
+    const userIds = [...new Set(identity.userIds.map((userId) => userId.trim()).filter((userId) => /^\d+$/.test(userId)))];
+    if (userIds.length === 0) continue;
     for (const rawAlias of identity.names) {
       const alias = normalizeSavedAliasMatchText(rawAlias);
       const aliasLength = Array.from(alias).length;
@@ -4929,11 +5120,8 @@ function resolveSavedAliasEvaluationTarget(
           start,
           end: start + alias.length,
           aliasLength,
-          target: {
-            userId,
-            names: normalizeNames(identity.names),
-            source: "alias",
-          },
+          userIds,
+          names: normalizeNames(identity.names),
         });
         start = normalizedText.indexOf(alias, start + alias.length);
       }
@@ -4947,9 +5135,18 @@ function resolveSavedAliasEvaluationTarget(
     candidate.start <= match.start &&
     candidate.end >= match.end
   ));
+  // A shorter alias embedded in a longer, uniquely mapped name must not
+  // make the longer match ambiguous. Resolve ambiguity only after longest
+  // match selection, and never guess between multiple QQ accounts.
+  if (longestMatches.some((match) => match.userIds.length !== 1)) return { status: "ambiguous" };
   const byUserId = new Map<string, AiInteractionTarget>();
   for (const match of longestMatches) {
-    if (match.target.userId) byUserId.set(match.target.userId, match.target);
+    const userId = match.userIds[0]!;
+    byUserId.set(userId, {
+      userId,
+      names: match.names,
+      source: "alias",
+    });
   }
   if (byUserId.size !== 1) return { status: "ambiguous" };
   return { status: "resolved", target: [...byUserId.values()][0]! };
@@ -4962,6 +5159,11 @@ function normalizeSavedAliasMatchText(value: string): string {
 function isExplicitGroupEvaluationRequest(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
   return /(?:群友|群成员|本群|群里|群聊(?:记录|内容|消息)?|聊天记录)/u.test(normalized);
+}
+
+function isLocalTranscriptTargetRequest(text: string): boolean {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return /(?:从|根据|结合|看)(?:(?:以上|上面|前面|刚才|这段|本段)(?:的)?(?:聊天|群聊|对话|发言|消息|内容|记录)?|(?:群聊|聊天记录|上文|上下文))(?:中|里)?(?:看|判断|分析|来说)?/u.test(normalized);
 }
 
 function isPersonEvaluationRequest(text: string, hasInteractionTarget: boolean): boolean {

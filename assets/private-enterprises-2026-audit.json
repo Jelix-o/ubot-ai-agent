@@ -1,0 +1,7514 @@
+{
+  "screenshotSha256": "cf806582f0119ebb2a9628d0b606e749b2a4eab141ad7ac15b32c2e010f81e87",
+  "rankingRowsSha256": "bbe2ef2c1aa564e63b798e0d51ee8c776b447fee4c1fb7db8e1e9b6167445e08",
+  "method": "Windows Simplified Chinese OCR; each rank and field compared with the searchable table; OCR mismatches require manual review",
+  "ocrExactRows": 332,
+  "fieldMatches": {
+    "rank": 473,
+    "name": 464,
+    "province": 457,
+    "revenueWan": 352
+  },
+  "records": [
+    {
+      "rank": 1,
+      "screenshotY": 599,
+      "ocr": {
+        "name": "京 东 集 团",
+        "province": "北 京 市",
+        "revenueWan": "130908500"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 2,
+      "screenshotY": 636,
+      "ocr": {
+        "name": "阿 里 巴 巴 （ 中 国 ） 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "10167 00"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 3,
+      "screenshotY": 674,
+      "ocr": {
+        "name": "恒 力 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "89906901"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 4,
+      "screenshotY": 712,
+      "ocr": {
+        "name": "华 为 投 资 控 股 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "88094100"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 5,
+      "screenshotY": 749,
+      "ocr": {
+        "name": "比 亚 迪 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "8039 95"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 6,
+      "screenshotY": 787,
+      "ocr": {
+        "name": "腾 讯 控 股 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "75176600"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 7,
+      "screenshotY": 824,
+      "ocr": {
+        "name": "浙 江 荣 盛 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "68161503"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 8,
+      "screenshotY": 862,
+      "ocr": {
+        "name": "浙 江 吉 利 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "6315 74"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 9,
+      "screenshotY": 899,
+      "ocr": {
+        "name": "联 想 控 股 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "60594512"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 10,
+      "screenshotY": 937,
+      "ocr": {
+        "name": "山 东 魏 桥 创 业 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "5915 53"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 11,
+      "screenshotY": 975,
+      "ocr": {
+        "name": "盛 虹 控 股 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5 02777"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 12,
+      "screenshotY": 1012,
+      "ocr": {
+        "name": "浙 江 恒 逸 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "50156564"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 13,
+      "screenshotY": 1050,
+      "ocr": {
+        "name": "美 的 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "45850240"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 14,
+      "screenshotY": 1088,
+      "ocr": {
+        "name": "小 米 通 讯 技 术 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "45728669"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 15,
+      "screenshotY": 1125,
+      "ocr": {
+        "name": "青 山 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4322m15"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 16,
+      "screenshotY": 1163,
+      "ocr": {
+        "name": "宁 德 时 代 新 能 源 科 技 股 份 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "42370183"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 17,
+      "screenshotY": 1200,
+      "ocr": {
+        "name": "泰 康 保 险 集 团 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "37318808"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 18,
+      "screenshotY": 1238,
+      "ocr": {
+        "name": "敬 业 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "36911801"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 19,
+      "screenshotY": 1275,
+      "ocr": {
+        "name": "北 京 三 快 在 线 科 技 有 限 公 司 （ 美 团 ）",
+        "province": "北 京 市",
+        "revenueWan": "3 8 75"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 20,
+      "screenshotY": 1313,
+      "ocr": {
+        "name": "立 讯 精 密 工 业 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3323 44"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 21,
+      "screenshotY": 1351,
+      "ocr": {
+        "name": "信 发 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "32079581"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 22,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 23,
+      "screenshotY": 1426,
+      "ocr": {
+        "name": "南 山 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "28601498"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 24,
+      "screenshotY": 1463,
+      "ocr": {
+        "name": "海 亮 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2693 48"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 25,
+      "screenshotY": 1501,
+      "ocr": {
+        "name": "江 苏 沙 钢 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "26581871"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 26,
+      "screenshotY": 1539,
+      "ocr": {
+        "name": "冀 南 钢 铁 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "26553776"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 27,
+      "screenshotY": 1576,
+      "ocr": {
+        "name": "通 威 集 团 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "2558 65"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 28,
+      "screenshotY": 1614,
+      "ocr": {
+        "name": "德 龙 钢 铁 产 业 集 团 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "25103394"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 29,
+      "screenshotY": 1651,
+      "ocr": {
+        "name": "北 京 建 龙 重 工 集 团 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "24583584"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 30,
+      "screenshotY": 1689,
+      "ocr": {
+        "name": "桐 昆 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "22722435"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 31,
+      "screenshotY": 1744,
+      "ocr": {
+        "name": "（ 滴 滴 出 行 ）",
+        "province": "北 京 市",
+        "revenueWan": "22670143"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 32,
+      "screenshotY": 1800,
+      "ocr": {
+        "name": "长 城 汽 车 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "22282423"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 33,
+      "screenshotY": 1837,
+      "ocr": {
+        "name": "亨 通 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "22022785"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 34,
+      "screenshotY": 1875,
+      "ocr": {
+        "name": "天 能 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "21680916"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 35,
+      "screenshotY": 1912,
+      "ocr": {
+        "name": "万 向 集 团 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "21538557"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 36,
+      "screenshotY": 1950,
+      "ocr": {
+        "name": "洛 阳 栾 川 钼 业 集 团 股 份 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "2 ％ 68365"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 37,
+      "screenshotY": 1988,
+      "ocr": {
+        "name": "中 天 钢 铁 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "19390301"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 38,
+      "screenshotY": 2025,
+      "ocr": {
+        "name": "正 泰 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "18503107"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 39,
+      "screenshotY": 2063,
+      "ocr": {
+        "name": "TCL 科 技 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "18421092"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 40,
+      "screenshotY": 2101,
+      "ocr": {
+        "name": "雅 戈 尔 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "18115676"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 41,
+      "screenshotY": 2138,
+      "ocr": {
+        "name": "东 方 希 望 集 团 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "1811 20"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 42,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 43,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 44,
+      "screenshotY": 2307,
+      "ocr": {
+        "name": "华 勤 技 术 股 份 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "17143693"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 45,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 46,
+      "screenshotY": 2382,
+      "ocr": {
+        "name": "蚂 蚁 科 技 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "17088968"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 47,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 48,
+      "screenshotY": 2457,
+      "ocr": {
+        "name": "永 卓 控 股 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "16553986"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 49,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 50,
+      "screenshotY": 2532,
+      "ocr": {
+        "name": "赛 力 斯 集 团 股 份 有 限 公 司",
+        "province": "重 庆 市",
+        "revenueWan": "16505364"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 51,
+      "screenshotY": 2570,
+      "ocr": {
+        "name": "中 升 （ 大 连 ） 集 团 有 限 公 司",
+        "province": "辽 宁 省",
+        "revenueWan": "1 40343"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 52,
+      "screenshotY": 2608,
+      "ocr": {
+        "name": "河 北 新 华 联 合 冶 金 控 股 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "16173514"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 53,
+      "screenshotY": 2645,
+      "ocr": {
+        "name": "九 州 通 医 药 集 团 股 份 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "16138999"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 54,
+      "screenshotY": 2683,
+      "ocr": {
+        "name": "弘 润 石 化 （ 潍 坊 ） 有 限 责 任 公 司",
+        "province": "山 东 省",
+        "revenueWan": "16114941"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 55,
+      "screenshotY": 2720,
+      "ocr": {
+        "name": "山 东 东 明 石 化 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "15963916"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 56,
+      "screenshotY": 2758,
+      "ocr": {
+        "name": "卓 尔 智 联 集 团 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "15502934"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 57,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 58,
+      "screenshotY": 2833,
+      "ocr": {
+        "name": "新 凤 鸣 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "1514 46"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 59,
+      "screenshotY": 2871,
+      "ocr": {
+        "name": "宁 波 金 田 投 资 控 股 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "15081750"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 60,
+      "screenshotY": 2908,
+      "ocr": {
+        "name": "富 冶 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "15063612"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 61,
+      "screenshotY": 2946,
+      "ocr": {
+        "name": "中 基 宁 波 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "15031846"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 62,
+      "screenshotY": 2983,
+      "ocr": {
+        "name": "新 奥 集 团 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "1501 15"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 63,
+      "screenshotY": 3021,
+      "ocr": {
+        "name": "牧 原 实 业 集 团 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "14911030"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 64,
+      "screenshotY": 3059,
+      "ocr": {
+        "name": "一 集 团 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "14848160"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 65,
+      "screenshotY": 3096,
+      "ocr": {
+        "name": "协 鑫 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "14512990"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 66,
+      "screenshotY": 3134,
+      "ocr": {
+        "name": "神 州 数 码 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "14375104"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 67,
+      "screenshotY": 3171,
+      "ocr": {
+        "name": "中 国 民 生 银 行 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "14286500"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 68,
+      "screenshotY": 3209,
+      "ocr": {
+        "name": "北 京 快 手 科 技 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "14277600"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 69,
+      "screenshotY": 3247,
+      "ocr": {
+        "name": "其 亚 集 团 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "14147377"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 70,
+      "screenshotY": 3284,
+      "ocr": {
+        "name": "传 化 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "14133936"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 71,
+      "screenshotY": 3322,
+      "ocr": {
+        "name": "超 威 集 团",
+        "province": "浙 江 省",
+        "revenueWan": "14117523"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 72,
+      "screenshotY": 3359,
+      "ocr": {
+        "name": "天 津 荣 程 祥 泰 投 资 控 股 集 团 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "13970231"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 73,
+      "screenshotY": 3397,
+      "ocr": {
+        "name": "同 程 旅 行 集 团",
+        "province": "江 苏 省",
+        "revenueWan": "13824521"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 74,
+      "screenshotY": 3435,
+      "ocr": {
+        "name": "河 北 津 西 钢 铁 集 团 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "13800547"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 75,
+      "screenshotY": 3472,
+      "ocr": {
+        "name": "河 北 鑫 达 钢 铁 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "13683815"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 76,
+      "screenshotY": 3510,
+      "ocr": {
+        "name": "河 北 普 阳 钢 铁 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "13664399"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 77,
+      "screenshotY": 3547,
+      "ocr": {
+        "name": "福 建 大 东 海 实 业 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "13200360"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 78,
+      "screenshotY": 3585,
+      "ocr": {
+        "name": "华 友 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "13163812"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 79,
+      "screenshotY": 3623,
+      "ocr": {
+        "name": "百 度 公 司",
+        "province": "北 京 市",
+        "revenueWan": "12907900"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 80,
+      "screenshotY": 3660,
+      "ocr": {
+        "name": "广 东 海 大 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "1284 23"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 81,
+      "screenshotY": 3698,
+      "ocr": {
+        "name": "云 账 户 技 术 （ 天 津 ） 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "12764199"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 82,
+      "screenshotY": 3735,
+      "ocr": {
+        "name": "山 东 寿 光 鲁 清 石 化 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "12590330"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 83,
+      "screenshotY": 3773,
+      "ocr": {
+        "name": "齐 成 （ 山 东 ） 石 化 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "12315697"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 84,
+      "screenshotY": 3811,
+      "ocr": {
+        "name": "江 苏 新 长 江 实 业 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "12295425"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 85,
+      "screenshotY": 3848,
+      "ocr": {
+        "name": "河 北 鑫 海 控 股 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "1200 14"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 86,
+      "screenshotY": 3945,
+      "ocr": {
+        "name": "江 西 双 胞 胎 控 股 有 限 公 司",
+        "province": "江 西 省",
+        "revenueWan": "11924236"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 87,
+      "screenshotY": 3982,
+      "ocr": {
+        "name": "浙 江 卫 星 控 股 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "11663272"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 88,
+      "screenshotY": 4038,
+      "ocr": {
+        "name": "内 蒙 古 伊 利 实 业 集 团 股 份 有 限 公 司",
+        "province": "治 区",
+        "revenueWan": "11593110"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 89,
+      "screenshotY": 4093,
+      "ocr": {
+        "name": "永 荣 控 股 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "1 巧 01610"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 90,
+      "screenshotY": 4131,
+      "ocr": {
+        "name": "中 景 石 化 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "11348415"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 91,
+      "screenshotY": 4168,
+      "ocr": {
+        "name": "网 易 （ 杭 州 ） 网 络 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "11262581"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 92,
+      "screenshotY": 4206,
+      "ocr": {
+        "name": "理 想 汽 车",
+        "province": "北 京 市",
+        "revenueWan": "11231251"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 93,
+      "screenshotY": 4243,
+      "ocr": {
+        "name": "山 东 京 博 控 股 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "1108 26"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 94,
+      "screenshotY": 4299,
+      "ocr": {
+        "name": "广 西 盛 隆 冶 金 有 限 公 司",
+        "province": "自 治 区",
+        "revenueWan": "11049975"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 95,
+      "screenshotY": 4354,
+      "ocr": {
+        "name": "中 天 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "10968279"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 96,
+      "screenshotY": 4392,
+      "ocr": {
+        "name": "海 航 航 空 集 团 有 限 公 司",
+        "province": "海 南 省",
+        "revenueWan": "10860552"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 97,
+      "screenshotY": 4429,
+      "ocr": {
+        "name": "新 希 望 六 和 股 份 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "1 ％ 85630"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 98,
+      "screenshotY": 4467,
+      "ocr": {
+        "name": "河 北 太 行 钢 铁 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "1 ％ 82640"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 99,
+      "screenshotY": 4504,
+      "ocr": {
+        "name": "山 西 鹏 飞 集 团 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "1 ％ 04524"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 100,
+      "screenshotY": 4542,
+      "ocr": {
+        "name": "唯 品 会 （ 中 国 ） 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "10591954"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 101,
+      "screenshotY": 4580,
+      "ocr": {
+        "name": "恒 申 控 股 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "10538934"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 102,
+      "screenshotY": 4617,
+      "ocr": {
+        "name": "上 海 寻 梦 信 息 技 术 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "10386938"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 103,
+      "screenshotY": 4655,
+      "ocr": {
+        "name": "温 氏 食 品 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "10386219"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 104,
+      "screenshotY": 4693,
+      "ocr": {
+        "name": "远 景 能 源 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "10313731"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 105,
+      "screenshotY": 4730,
+      "ocr": {
+        "name": "宁 波 富 邦 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "10288856"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 106,
+      "screenshotY": 4785,
+      "ocr": {
+        "name": "新 疆 特 变 电 工 集 团 有 限 公 司",
+        "province": "",
+        "revenueWan": "10237908"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 107,
+      "screenshotY": 4841,
+      "ocr": {
+        "name": "富 海 集 团 新 能 源 控 股 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "10122611"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 108,
+      "screenshotY": 4879,
+      "ocr": {
+        "name": "江 西 方 大 钢 铁 集 团 有 限 公 司",
+        "province": "江 西 省",
+        "revenueWan": "10110818"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 109,
+      "screenshotY": 4916,
+      "ocr": {
+        "name": "华 泰 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "1m26326"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 110,
+      "screenshotY": 4954,
+      "ocr": {
+        "name": "巨 星 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "10017437"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 111,
+      "screenshotY": 4991,
+      "ocr": {
+        "name": "深 圳 市 立 业 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "9838956"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 112,
+      "screenshotY": 5029,
+      "ocr": {
+        "name": "龙 湖 集 团 控 股 有 限 公 司",
+        "province": "重 庆 市",
+        "revenueWan": "9730863"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 113,
+      "screenshotY": 5084,
+      "ocr": {
+        "name": "汇 能 控 股 集 团 有 限 公 司",
+        "province": "治 区",
+        "revenueWan": "9714728"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 114,
+      "screenshotY": 5140,
+      "ocr": {
+        "name": "歌 尔 股 份 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "9655016"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 115,
+      "screenshotY": 5177,
+      "ocr": {
+        "name": "阳 光 保 险 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "60 6"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 116,
+      "screenshotY": 5215,
+      "ocr": {
+        "name": "贝 壳 控 股 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "58021"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 117,
+      "screenshotY": 5252,
+      "ocr": {
+        "name": "方 同 舟 控 股 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "9350871"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 118,
+      "screenshotY": 5290,
+      "ocr": {
+        "name": "山 东 齐 润 控 股 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "9283628"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 119,
+      "screenshotY": 5328,
+      "ocr": {
+        "name": "四 川 省 川 威 集 团 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "9251212"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 120,
+      "screenshotY": 5365,
+      "ocr": {
+        "name": "迁 安 市 九 江 线 材 有 限 责 任 公 司",
+        "province": "河 北 省",
+        "revenueWan": "9065706"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 121,
+      "screenshotY": 5421,
+      "ocr": {
+        "name": "内 蒙 古 伊 泰 集 团 有 限 公 司",
+        "province": "治 区",
+        "revenueWan": "8990374"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 122,
+      "screenshotY": 5476,
+      "ocr": {
+        "name": "阳 光 电 源 股 份 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "8918436"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 123,
+      "screenshotY": 5513,
+      "ocr": {
+        "name": "东 方 润 安 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "96139"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 124,
+      "screenshotY": 5551,
+      "ocr": {
+        "name": "蔚 来 控 股 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "8791654"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 125,
+      "screenshotY": 5648,
+      "ocr": {
+        "name": "武 安 市 裕 华 钢 铁 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "8781856"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 126,
+      "screenshotY": 5685,
+      "ocr": {
+        "name": "中 天 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "8503163"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 127,
+      "screenshotY": 5723,
+      "ocr": {
+        "name": "山 东 太 阳 控 股 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "8366931"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 128,
+      "screenshotY": 5760,
+      "ocr": {
+        "name": "杭 州 滨 江 房 产 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "8288776"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 129,
+      "screenshotY": 5798,
+      "ocr": {
+        "name": "陕 西 泰 丰 盛 合 控 股 集 团 有 限 公 司",
+        "province": "陕 西 省",
+        "revenueWan": "8269260"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 130,
+      "screenshotY": 5836,
+      "ocr": {
+        "name": "人 民 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "8211271"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 131,
+      "screenshotY": 5873,
+      "ocr": {
+        "name": "心 里 程 控 股 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "8200568"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 132,
+      "screenshotY": 5911,
+      "ocr": {
+        "name": "奥 克 斯 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "8162771"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 133,
+      "screenshotY": 5966,
+      "ocr": {
+        "name": "广 西 南 丹 南 方 金 属 有 限 公 司",
+        "province": "自 治 区",
+        "revenueWan": "8150222"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 134,
+      "screenshotY": 6022,
+      "ocr": {
+        "name": "杭 州 东 恒 石 油 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "8038 ％ 9"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 135,
+      "screenshotY": 6059,
+      "ocr": {
+        "name": "安 踏 体 育 用 品 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "8021 ％ 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 136,
+      "screenshotY": 6115,
+      "ocr": {
+        "name": "宁 夏 天 元 锰 业 集 团 有 限 公 司",
+        "province": "自 治 区",
+        "revenueWan": "7917809"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 137,
+      "screenshotY": 6170,
+      "ocr": {
+        "name": "玖 龙 纸 业 （ 控 股 ） 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "7913452"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 138,
+      "screenshotY": 6208,
+      "ocr": {
+        "name": "唐 山 港 陆 钢 铁 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "7778904"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 139,
+      "screenshotY": 6245,
+      "ocr": {
+        "name": "日 照 钢 铁 控 股 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "7765072"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 140,
+      "screenshotY": 6283,
+      "ocr": {
+        "name": "山 东 创 新 金 属 科 技 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "7681871"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 141,
+      "screenshotY": 6321,
+      "ocr": {
+        "name": "广 东 小 鹏 汽 车 科 技 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "7679426"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 142,
+      "screenshotY": 6358,
+      "ocr": {
+        "name": "河 北 新 金 钢 铁 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "7665251"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 143,
+      "screenshotY": 6396,
+      "ocr": {
+        "name": "新 华 三 信 息 技 术 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "7598475"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 144,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 145,
+      "screenshotY": 6471,
+      "ocr": {
+        "name": "圆 通 速 递 股 份 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "7527 4"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 146,
+      "screenshotY": 6509,
+      "ocr": {
+        "name": "杭 州 锦 江 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "7523 ％ 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 147,
+      "screenshotY": 6564,
+      "ocr": {
+        "name": "宁 夏 宝 丰 集 团 有 限 公 司",
+        "province": "自 治 区",
+        "revenueWan": "7519015"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 148,
+      "screenshotY": 6620,
+      "ocr": {
+        "name": "禾 丰 食 品 股 份 有 限 公 司",
+        "province": "辽 宁 省",
+        "revenueWan": "7464315"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 149,
+      "screenshotY": 6657,
+      "ocr": {
+        "name": "远 大 物 产 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "7448 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 150,
+      "screenshotY": 6695,
+      "ocr": {
+        "name": "蓝 思 科 技 股 份 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "7 0973"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 151,
+      "screenshotY": 6733,
+      "ocr": {
+        "name": "山 东 海 科 控 股 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "7413337"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 152,
+      "screenshotY": 6770,
+      "ocr": {
+        "name": "恒 信 汽 车 集 团 股 份 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "7342801"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 153,
+      "screenshotY": 6808,
+      "ocr": {
+        "name": "江 苏 国 泰 国 际 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "7328554"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 154,
+      "screenshotY": 6863,
+      "ocr": {
+        "name": "金 风 科 技 股 份 有 限 公 司",
+        "province": "",
+        "revenueWan": "7302 8"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 155,
+      "screenshotY": 6919,
+      "ocr": {
+        "name": "河 南 金 利 金 铅 集 团 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "7264952"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 156,
+      "screenshotY": 6956,
+      "ocr": {
+        "name": "天 津 华 北 集 团 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "7258 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 157,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 158,
+      "screenshotY": 7031,
+      "ocr": {
+        "name": "兴 华 财 富 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "7252894"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 159,
+      "screenshotY": 7069,
+      "ocr": {
+        "name": "胜 星 集 团 有 限 责 任 公 司",
+        "province": "山 东 省",
+        "revenueWan": "7225311"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 160,
+      "screenshotY": 7107,
+      "ocr": {
+        "name": "通 鼎 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "7212695"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 161,
+      "screenshotY": 7144,
+      "ocr": {
+        "name": "福 建 省 金 纶 高 纤 股 份 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "7186597"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 162,
+      "screenshotY": 7182,
+      "ocr": {
+        "name": "修 正 药 业 集 团",
+        "province": "吉 林 省",
+        "revenueWan": "7120 巧 7"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 163,
+      "screenshotY": 7219,
+      "ocr": {
+        "name": "山 东 东 方 华 龙 工 贸 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "7100136"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 164,
+      "screenshotY": 7257,
+      "ocr": {
+        "name": "上 海 钢 联 电 子 商 务 股 份 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "7069338"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 165,
+      "screenshotY": 7354,
+      "ocr": {
+        "name": "隆 基 绿 能 科 技 股 份 有 限 公 司",
+        "province": "陕 西 省",
+        "revenueWan": "7034705"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 166,
+      "screenshotY": 7391,
+      "ocr": {
+        "name": "创 维 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "7032 羽 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 167,
+      "screenshotY": 7429,
+      "ocr": {
+        "name": "华 勤 橡 胶 工 业 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "7029502"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 168,
+      "screenshotY": 7466,
+      "ocr": {
+        "name": "明 阳 新 能 源 投 资 控 股 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "7000128"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 169,
+      "screenshotY": 7504,
+      "ocr": {
+        "name": "山 东 金 岭 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "6982140"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 170,
+      "screenshotY": 7542,
+      "ocr": {
+        "name": "永 道 控 股 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "6881012"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 171,
+      "screenshotY": 7579,
+      "ocr": {
+        "name": "北 京 蓝 色 光 标 数 据 科 技 集 团 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "69267"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 172,
+      "screenshotY": 7617,
+      "ocr": {
+        "name": "鲁 丽 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "21709"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 173,
+      "screenshotY": 7654,
+      "ocr": {
+        "name": "山 西 晋 南 钢 铁 集 团 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "6718490"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 174,
+      "screenshotY": 7692,
+      "ocr": {
+        "name": "天 合 光 能 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "97455"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 175,
+      "screenshotY": 7730,
+      "ocr": {
+        "name": "三 花 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "70500"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 176,
+      "screenshotY": 7767,
+      "ocr": {
+        "name": "振 石 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "45670"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 177,
+      "screenshotY": 7805,
+      "ocr": {
+        "name": "重 庆 市 博 赛 矿 业 （ 集 团 ） 有 限 公 司",
+        "province": "重 庆 市",
+        "revenueWan": "6629926"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 178,
+      "screenshotY": 7842,
+      "ocr": {
+        "name": "湖 南 鸣 鸣 很 忙 商 业 连 锁 股 份 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "17034"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 179,
+      "screenshotY": 7880,
+      "ocr": {
+        "name": "浙 江 东 南 网 架 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "6559675"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 180,
+      "screenshotY": 7918,
+      "ocr": {
+        "name": "深 圳 传 音 控 股 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "6559124"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 181,
+      "screenshotY": 7955,
+      "ocr": {
+        "name": "晶 科 能 源 股 份 有 限 公 司",
+        "province": "江 西 省",
+        "revenueWan": "6549187"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 182,
+      "screenshotY": 7993,
+      "ocr": {
+        "name": "金 发 科 技 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "6539621"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 183,
+      "screenshotY": 8030,
+      "ocr": {
+        "name": "伊 电 控 股 集 团 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "6532203"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 184,
+      "screenshotY": 8068,
+      "ocr": {
+        "name": "宏 旺 控 股 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "6505793"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 185,
+      "screenshotY": 8105,
+      "ocr": {
+        "name": "均 胜 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "6505561"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 186,
+      "screenshotY": 8143,
+      "ocr": {
+        "name": "远 东 控 股 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "6504419"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 187,
+      "screenshotY": 8181,
+      "ocr": {
+        "name": "零 跑 汽 车 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "糾 73186"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 188,
+      "screenshotY": 8218,
+      "ocr": {
+        "name": "山 西 建 邦 集 团 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "60416"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 189,
+      "screenshotY": 8256,
+      "ocr": {
+        "name": "南 通 四 建 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "54826"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 190,
+      "screenshotY": 8293,
+      "ocr": {
+        "name": "山 东 渤 海 实 业 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "50831"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 191,
+      "screenshotY": 8331,
+      "ocr": {
+        "name": "欣 旺 达 电 子 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "6324625"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 192,
+      "screenshotY": 8369,
+      "ocr": {
+        "name": "三 河 汇 福 粮 油 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "6263 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 193,
+      "screenshotY": 8406,
+      "ocr": {
+        "name": "携 程 集 团 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "6251m0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 194,
+      "screenshotY": 8444,
+      "ocr": {
+        "name": "山 东 垦 利 石 化 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "6200507"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 195,
+      "screenshotY": 8481,
+      "ocr": {
+        "name": "攀 华 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "6181220"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 196,
+      "screenshotY": 8519,
+      "ocr": {
+        "name": "浙 江 前 程 投 资 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "6150744"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 197,
+      "screenshotY": 8557,
+      "ocr": {
+        "name": "惠 州 亿 纬 锂 能 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "6146 ％ 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 198,
+      "screenshotY": 8594,
+      "ocr": {
+        "name": "稻 花 香 集 团",
+        "province": "湖 北 省",
+        "revenueWan": "6103570"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 199,
+      "screenshotY": 8632,
+      "ocr": {
+        "name": "安 徽 楚 江 科 技 新 材 料 股 份 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "57669"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 200,
+      "screenshotY": 8669,
+      "ocr": {
+        "name": "三 宝 集 团 股 份 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "34 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 201,
+      "screenshotY": 8707,
+      "ocr": {
+        "name": "华 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "15998"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 202,
+      "screenshotY": 8745,
+      "ocr": {
+        "name": "宗 申 产 业 集 团 有 限 公 司",
+        "province": "重 庆 市",
+        "revenueWan": "6001217"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 203,
+      "screenshotY": 8782,
+      "ocr": {
+        "name": "福 佳 集 团 有 限 公 司",
+        "province": "辽 宁 省",
+        "revenueWan": "5997 弘 7"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 204,
+      "screenshotY": 8820,
+      "ocr": {
+        "name": "河 北 千 喜 鹤 饮 食 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "5965237"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 205,
+      "screenshotY": 8857,
+      "ocr": {
+        "name": "河 南 双 汇 投 资 发 展 股 份 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "5945972"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 206,
+      "screenshotY": 8895,
+      "ocr": {
+        "name": "浙 江 中 成 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5831125"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 207,
+      "screenshotY": 8933,
+      "ocr": {
+        "name": "卧 龙 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5789758"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 208,
+      "screenshotY": 8970,
+      "ocr": {
+        "name": "物 美 科 技 集 团 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "5773 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 209,
+      "screenshotY": 9067,
+      "ocr": {
+        "name": "金 澳 科 技 （ 湖 北 ） 化 工 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "5693 ％ 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 210,
+      "screenshotY": 9104,
+      "ocr": {
+        "name": "龙 信 建 设 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5662310"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 211,
+      "screenshotY": 9142,
+      "ocr": {
+        "name": "济 源 市 万 洋 冶 炼 （ 集 团 ） 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "5613841"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 212,
+      "screenshotY": 9179,
+      "ocr": {
+        "name": "弘 阳 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5608865"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 213,
+      "screenshotY": 9217,
+      "ocr": {
+        "name": "广 东 德 赛 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "5598872"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 214,
+      "screenshotY": 9255,
+      "ocr": {
+        "name": "双 良 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5574047"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 215,
+      "screenshotY": 9292,
+      "ocr": {
+        "name": "万 通 海 欣 控 股 集 团 股 份 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "5573920"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 216,
+      "screenshotY": 9330,
+      "ocr": {
+        "name": "太 平 鸟 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5561914"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 217,
+      "screenshotY": 9367,
+      "ocr": {
+        "name": "申 通 快 递 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "5558617"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 218,
+      "screenshotY": 9405,
+      "ocr": {
+        "name": "深 圳 市 爱 施 德 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "5522220"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 219,
+      "screenshotY": 9460,
+      "ocr": {
+        "name": "内 蒙 古 鄂 尔 多 斯 投 资 控 股 集 团 有 限 公 司",
+        "province": "治 区",
+        "revenueWan": "5515418"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 220,
+      "screenshotY": 9516,
+      "ocr": {
+        "name": "石 横 特 钢 控 股 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "5492942"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 221,
+      "screenshotY": 9553,
+      "ocr": {
+        "name": "湖 南 博 长 控 股 集 团 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "83140"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 222,
+      "screenshotY": 9591,
+      "ocr": {
+        "name": "浙 江 升 华 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "29588"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 223,
+      "screenshotY": 9628,
+      "ocr": {
+        "name": "山 东 九 羊 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "5409064"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 224,
+      "screenshotY": 9666,
+      "ocr": {
+        "name": "通 州 建 总 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5352533"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 225,
+      "screenshotY": 9704,
+      "ocr": {
+        "name": "永 辉 超 市 股 份 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "5350757"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 226,
+      "screenshotY": 9741,
+      "ocr": {
+        "name": "新 城 控 股 集 团 股 份 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "5301163"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 227,
+      "screenshotY": 9779,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": "5255291"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 228,
+      "screenshotY": 9816,
+      "ocr": {
+        "name": "日 善 电 脑 配 件 （ 嘉 善 ） 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5255285"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 229,
+      "screenshotY": 9854,
+      "ocr": {
+        "name": "淄 博 鑫 泰 石 化 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "5239234"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 230,
+      "screenshotY": 9892,
+      "ocr": {
+        "name": "万 洋 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5234469"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 231,
+      "screenshotY": 9929,
+      "ocr": {
+        "name": "汇 通 达 网 络 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5229746"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 232,
+      "screenshotY": 9967,
+      "ocr": {
+        "name": "雅 迪 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5216 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 233,
+      "screenshotY": 10004,
+      "ocr": {
+        "name": "五 得 利 面 粉 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "5193821"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 234,
+      "screenshotY": 10042,
+      "ocr": {
+        "name": "宁 波 海 天 企 业 管 理 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5166443"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 235,
+      "screenshotY": 10080,
+      "ocr": {
+        "name": "河 南 丰 利 石 化 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "5157237"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 236,
+      "screenshotY": 10117,
+      "ocr": {
+        "name": "道 恩 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "5156417"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 237,
+      "screenshotY": 10155,
+      "ocr": {
+        "name": "韵 达 控 股 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5147450"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 238,
+      "screenshotY": 10192,
+      "ocr": {
+        "name": "福 建 万 辰 食 品 集 团 股 份 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "5145914"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 239,
+      "screenshotY": 10230,
+      "ocr": {
+        "name": "宁 波 合 盛 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "5143217"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 240,
+      "screenshotY": 10268,
+      "ocr": {
+        "name": "广 东 领 益 智 造 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "5142894"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 241,
+      "screenshotY": 10305,
+      "ocr": {
+        "name": "北 京 国 联 视 讯 信 息 技 术 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "5098136"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 242,
+      "screenshotY": 10343,
+      "ocr": {
+        "name": "湖 南 五 江 控 股 集 团 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "5068621"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 243,
+      "screenshotY": 10380,
+      "ocr": {
+        "name": "天 津 友 发 钢 管 集 团 股 份 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "5067109"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 244,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 245,
+      "screenshotY": 10456,
+      "ocr": {
+        "name": "波 司 登 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "5027592"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 246,
+      "screenshotY": 10493,
+      "ocr": {
+        "name": "极 兔 速 递 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "4962611"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 247,
+      "screenshotY": 10531,
+      "ocr": {
+        "name": "郑 州 宇 通 企 业 集 团",
+        "province": "河 南 省",
+        "revenueWan": "4937 4"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 248,
+      "screenshotY": 10568,
+      "ocr": {
+        "name": "瑞 幸 咖 啡 （ 中 国 ） 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "4928810"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 249,
+      "screenshotY": 10606,
+      "ocr": {
+        "name": "晶 澳 太 阳 能 科 技 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "4912871"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 250,
+      "screenshotY": 10644,
+      "ocr": {
+        "name": "中 通 快 递 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4909866"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 251,
+      "screenshotY": 10681,
+      "ocr": {
+        "name": "苏 宁 易 购 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "95791"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 252,
+      "screenshotY": 10778,
+      "ocr": {
+        "name": "红 狮 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4882318"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 253,
+      "screenshotY": 10815,
+      "ocr": {
+        "name": "得 力 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "80 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 254,
+      "screenshotY": 10871,
+      "ocr": {
+        "name": "桂 林 力 源 粮 油 食 品 集 团 有 限 公 司",
+        "province": "自 治 区",
+        "revenueWan": "4875669"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 255,
+      "screenshotY": 10926,
+      "ocr": {
+        "name": "四 川 冶 控 集 团 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "4844788"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 256,
+      "screenshotY": 10964,
+      "ocr": {
+        "name": "中 伟 新 材 料 股 份 有 限 公 司",
+        "province": "贵 州 省",
+        "revenueWan": "4813997"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 257,
+      "screenshotY": 11001,
+      "ocr": {
+        "name": "河 北 诚 信 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "4768219"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 258,
+      "screenshotY": 11039,
+      "ocr": {
+        "name": "江 苏 新 霖 飞 投 资 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4747655"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 259,
+      "screenshotY": 11076,
+      "ocr": {
+        "name": "先 导 科 技 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "4730213"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 260,
+      "screenshotY": 11114,
+      "ocr": {
+        "name": "伟 星 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4721321"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 261,
+      "screenshotY": 11152,
+      "ocr": {
+        "name": "常 熟 市 龙 腾 特 种 钢 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4718492"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 262,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 263,
+      "screenshotY": 11227,
+      "ocr": {
+        "name": "江 苏 满 运 软 件 科 技 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4700 8"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 264,
+      "screenshotY": 11264,
+      "ocr": {
+        "name": "江 苏 天 工 新 材 料 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "96855"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 265,
+      "screenshotY": 11302,
+      "ocr": {
+        "name": "河 北 安 丰 钢 铁 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "91382"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 266,
+      "screenshotY": 11339,
+      "ocr": {
+        "name": "新 和 成 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4670140"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 267,
+      "screenshotY": 11377,
+      "ocr": {
+        "name": "山 东 恒 信 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "26193"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 268,
+      "screenshotY": 11415,
+      "ocr": {
+        "name": "浙 江 宝 业 建 设 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4583816"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 269,
+      "screenshotY": 11452,
+      "ocr": {
+        "name": "福 耀 玻 璃 工 业 集 团 股 份 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "4578744"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 270,
+      "screenshotY": 11490,
+      "ocr": {
+        "name": "江 苏 沃 得 机 电 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4570 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 271,
+      "screenshotY": 11527,
+      "ocr": {
+        "name": "江 苏 江 氵 闰 铜 业 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4551868"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 272,
+      "screenshotY": 11565,
+      "ocr": {
+        "name": "泰 地 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4538955"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 273,
+      "screenshotY": 11603,
+      "ocr": {
+        "name": "深 圳 市 汇 川 技 术 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "4510 4"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 274,
+      "screenshotY": 11640,
+      "ocr": {
+        "name": "国 轩 高 科 股 份 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "4507 6"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 275,
+      "screenshotY": 11678,
+      "ocr": {
+        "name": "永 鼎 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4502292"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 276,
+      "screenshotY": 11715,
+      "ocr": {
+        "name": "安 徽 天 大 企 业 （ 集 团 ） 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "4449539"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 277,
+      "screenshotY": 11753,
+      "ocr": {
+        "name": "中 创 新 航 科 技 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4440m7"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 278,
+      "screenshotY": 11791,
+      "ocr": {
+        "name": "辛 集 市 澳 森 特 钢 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "4431378"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 279,
+      "screenshotY": 11828,
+      "ocr": {
+        "name": "河 北 新 武 安 钢 铁 集 团 烘 熔 钢 铁 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "26108"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 280,
+      "screenshotY": 11866,
+      "ocr": {
+        "name": "江 苏 大 明 工 业 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4422121"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 281,
+      "screenshotY": 11903,
+      "ocr": {
+        "name": "滨 化 集 团",
+        "province": "山 东 省",
+        "revenueWan": "21 6"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 282,
+      "screenshotY": 11941,
+      "ocr": {
+        "name": "华 东 医 药 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4361201"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 283,
+      "screenshotY": 11979,
+      "ocr": {
+        "name": "浙 江 正 凯 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4348375"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 284,
+      "screenshotY": 12016,
+      "ocr": {
+        "name": "舜 宇 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4322913"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 285,
+      "screenshotY": 12054,
+      "ocr": {
+        "name": "森 马 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4306489"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 286,
+      "screenshotY": 12109,
+      "ocr": {
+        "name": "内 蒙 古 蒙 泰 集 团 有 限 公 司",
+        "province": "治 区",
+        "revenueWan": "4306265"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 287,
+      "screenshotY": 12165,
+      "ocr": {
+        "name": "无 棣 鑫 岳 化 工 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "4267346"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 288,
+      "screenshotY": 12202,
+      "ocr": {
+        "name": "甬 金 科 技 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4264628"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 289,
+      "screenshotY": 12240,
+      "ocr": {
+        "name": "宁 波 申 洲 针 织 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4244368"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 290,
+      "screenshotY": 12277,
+      "ocr": {
+        "name": "雅 鹿 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4237583"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 291,
+      "screenshotY": 12315,
+      "ocr": {
+        "name": "海 外 海 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4231422"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 292,
+      "screenshotY": 12352,
+      "ocr": {
+        "name": "程 力 汽 车 集 团 股 份 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "4224502"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 293,
+      "screenshotY": 12390,
+      "ocr": {
+        "name": "福 建 省 百 宏 科 技 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "4219523"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 294,
+      "screenshotY": 12487,
+      "ocr": {
+        "name": "福 建 闽 海 能 源 科 技 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "4215033"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 295,
+      "screenshotY": 12524,
+      "ocr": {
+        "name": "上 海 龙 旗 科 技 股 份 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "4212 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 296,
+      "screenshotY": 12562,
+      "ocr": {
+        "name": "中 亿 丰 控 股 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4180389"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 297,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 298,
+      "screenshotY": 12637,
+      "ocr": {
+        "name": "骆 驼 集 团 股 份 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "4155921"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 299,
+      "screenshotY": 12675,
+      "ocr": {
+        "name": "久 立 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4150 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 300,
+      "screenshotY": 12712,
+      "ocr": {
+        "name": "四 川 德 康 控 股 集 团 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "4137413"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 301,
+      "screenshotY": 12750,
+      "ocr": {
+        "name": "河 南 豫 联 能 源 集 团 有 限 责 任 公 司",
+        "province": "河 南 省",
+        "revenueWan": "4121 8"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 302,
+      "screenshotY": 12788,
+      "ocr": {
+        "name": "天 洁 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4117785"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 303,
+      "screenshotY": 12825,
+      "ocr": {
+        "name": "深 圳 市 铜 锣 湾 商 业 发 展 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "羽 99596"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 304,
+      "screenshotY": 12863,
+      "ocr": {
+        "name": "河 北 新 武 安 钢 铁 集 团 鑫 汇 冶 金 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "4095852"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 305,
+      "screenshotY": 12900,
+      "ocr": {
+        "name": "惠 科 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "羽 89732"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 306,
+      "screenshotY": 12938,
+      "ocr": {
+        "name": "江 苏 金 水 泥 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "羽 81217"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 307,
+      "screenshotY": 12976,
+      "ocr": {
+        "name": "大 华 （ 集 团 ） 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "4075 6"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 308,
+      "screenshotY": 13013,
+      "ocr": {
+        "name": "万 丰 奥 特 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "羽 68376"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 309,
+      "screenshotY": 13051,
+      "ocr": {
+        "name": "深 圳 海 王 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "羽 68 ％ 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 310,
+      "screenshotY": 13088,
+      "ocr": {
+        "name": "福 建 纵 腾 网 络 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "4041831"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 311,
+      "screenshotY": 13126,
+      "ocr": {
+        "name": "中 哲 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "羽 32599"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 312,
+      "screenshotY": 13164,
+      "ocr": {
+        "name": "阿 特 斯 阳 光 电 力 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "4025574"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 313,
+      "screenshotY": 13201,
+      "ocr": {
+        "name": "宁 波 力 勤 资 源 科 技 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "羽 23979"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 314,
+      "screenshotY": 13239,
+      "ocr": {
+        "name": "湖 南 博 深 实 业 集 团 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "羽 20084"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 315,
+      "screenshotY": 13277,
+      "ocr": {
+        "name": "花 园 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "4016401"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 316,
+      "screenshotY": 13314,
+      "ocr": {
+        "name": "苏 州 东 山 精 密 制 造 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "羽 12 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 317,
+      "screenshotY": 13352,
+      "ocr": {
+        "name": "河 北 文 丰 实 业 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "3995651"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 318,
+      "screenshotY": 13389,
+      "ocr": {
+        "name": "精 工 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3971011"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 319,
+      "screenshotY": 13427,
+      "ocr": {
+        "name": "南 通 化 工 轻 工 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3964 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 320,
+      "screenshotY": 13465,
+      "ocr": {
+        "name": "致 远 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3937558"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 321,
+      "screenshotY": 13502,
+      "ocr": {
+        "name": "四 川 渠 心 科 技 集 团 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "3935 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 322,
+      "screenshotY": 13540,
+      "ocr": {
+        "name": "大 亚 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3935068"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 323,
+      "screenshotY": 13577,
+      "ocr": {
+        "name": "奥 德 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3934231"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 324,
+      "screenshotY": 13615,
+      "ocr": {
+        "name": "德 华 集 团 控 股 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3904722"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 325,
+      "screenshotY": 13653,
+      "ocr": {
+        "name": "江 苏 徐 钢 钢 铁 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3902209"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 326,
+      "screenshotY": 13690,
+      "ocr": {
+        "name": "香 驰 控 股 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3901858"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 327,
+      "screenshotY": 13728,
+      "ocr": {
+        "name": "浙 江 富 春 江 通 信 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3899922"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 328,
+      "screenshotY": 13766,
+      "ocr": {
+        "name": "山 东 神 驰 控 股 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3895896"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 329,
+      "screenshotY": 13803,
+      "ocr": {
+        "name": "江 阴 市 金 桥 化 工 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3895722"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 330,
+      "screenshotY": 13841,
+      "ocr": {
+        "name": "唐 山 东 华 钢 铁 企 业 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "3888432"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 331,
+      "screenshotY": 13878,
+      "ocr": {
+        "name": "深 圳 市 天 行 云 供 应 链 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3888258"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 332,
+      "screenshotY": 13916,
+      "ocr": {
+        "name": "四 联 创 业 集 团 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "3880801"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 333,
+      "screenshotY": 13954,
+      "ocr": {
+        "name": "江 苏 吴 中 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3875535"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 334,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 335,
+      "screenshotY": 14029,
+      "ocr": {
+        "name": "宁 波 中 金 石 化 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3826923"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 336,
+      "screenshotY": 14066,
+      "ocr": {
+        "name": "邯 郸 正 大 制 管 集 团 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "3822387"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 337,
+      "screenshotY": 14104,
+      "ocr": {
+        "name": "江 苏 万 帮 金 之 星 车 业 投 资 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3818 2"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 338,
+      "screenshotY": 14195,
+      "ocr": {
+        "name": "石 药 控 股 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "3808718"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 339,
+      "screenshotY": 14232,
+      "ocr": {
+        "name": "扬 子 江 药 业 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3803416"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 340,
+      "screenshotY": 14288,
+      "ocr": {
+        "name": "新 疆 农 六 师 铝 业 有 限 公 司",
+        "province": "",
+        "revenueWan": "3798385"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 341,
+      "screenshotY": 14343,
+      "ocr": {
+        "name": "浙 江 世 纪 华 通 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3789831"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 342,
+      "screenshotY": 14381,
+      "ocr": {
+        "name": "亚 厦 控 股 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3771668"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 343,
+      "screenshotY": 14418,
+      "ocr": {
+        "name": "长 治 市 南 烨 实 业 集 团 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "3765798"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 344,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 345,
+      "screenshotY": 14493,
+      "ocr": {
+        "name": "兴 惠 化 纤 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3759280"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 346,
+      "screenshotY": 14531,
+      "ocr": {
+        "name": "天 颂 建 设 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3752137"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 347,
+      "screenshotY": 14569,
+      "ocr": {
+        "name": "震 雄 铜 业 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3721577"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 348,
+      "screenshotY": 14606,
+      "ocr": {
+        "name": "北 京 泡 泡 玛 特 文 化 创 意 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "3712m5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 349,
+      "screenshotY": 14644,
+      "ocr": {
+        "name": "齐 鲁 制 药 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3711927"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 350,
+      "screenshotY": 14699,
+      "ocr": {
+        "name": "成 都 蛟 龙 经 济 开 发 有 限 公 司 ）",
+        "province": "四 川 省",
+        "revenueWan": "3709915"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 351,
+      "screenshotY": 14755,
+      "ocr": {
+        "name": "方 远 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3705896"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 352,
+      "screenshotY": 14792,
+      "ocr": {
+        "name": "碧 桂 园 生 活 服 务 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3697712"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 353,
+      "screenshotY": 14830,
+      "ocr": {
+        "name": "大 全 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3682559"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 354,
+      "screenshotY": 14867,
+      "ocr": {
+        "name": "赛 轮 集 团 股 份 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3679243"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 355,
+      "screenshotY": 14905,
+      "ocr": {
+        "name": "大 自 然 钢 业 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3642748"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 356,
+      "screenshotY": 14943,
+      "ocr": {
+        "name": "深 圳 前 海 微 众 银 行 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3628359"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 357,
+      "screenshotY": 14980,
+      "ocr": {
+        "name": "连 云 港 亚 新 钢 铁 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3626347"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 358,
+      "screenshotY": 15018,
+      "ocr": {
+        "name": "深 圳 市 东 阳 光 实 业 发 展 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3622162"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 359,
+      "screenshotY": 15055,
+      "ocr": {
+        "name": "众 安 在 线 财 产 保 险 股 份 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "3620241"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 360,
+      "screenshotY": 15093,
+      "ocr": {
+        "name": "南 通 建 工 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3620029"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 361,
+      "screenshotY": 15130,
+      "ocr": {
+        "name": "日 出 实 业 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3613928"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 362,
+      "screenshotY": 15168,
+      "ocr": {
+        "name": "江 苏 联 鑫 控 股 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3606623"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 363,
+      "screenshotY": 15206,
+      "ocr": {
+        "name": "无 锡 江 南 电 缆 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3601713"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 364,
+      "screenshotY": 15243,
+      "ocr": {
+        "name": "江 苏 国 强 镀 锌 实 业 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3600 9"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 365,
+      "screenshotY": 15281,
+      "ocr": {
+        "name": "苏 州 旭 创 科 技 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3600242"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 366,
+      "screenshotY": 15318,
+      "ocr": {
+        "name": "瑞 钢 联 集 团 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "3587 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 367,
+      "screenshotY": 15356,
+      "ocr": {
+        "name": "胜 达 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3583367"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 368,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 369,
+      "screenshotY": 15431,
+      "ocr": {
+        "name": "利 时 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3570497"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 370,
+      "screenshotY": 15469,
+      "ocr": {
+        "name": "福 建 晟 育 投 资 发 展 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "3565859"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 371,
+      "screenshotY": 15506,
+      "ocr": {
+        "name": "福 建 圣 农 控 股 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "3560015"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 372,
+      "screenshotY": 15544,
+      "ocr": {
+        "name": "南 京 金 鹰 国 际 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3558 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 373,
+      "screenshotY": 15582,
+      "ocr": {
+        "name": "江 苏 三 木 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3556917"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 374,
+      "screenshotY": 15619,
+      "ocr": {
+        "name": "华 新 建 材 集 团 股 份 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "3534828"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 375,
+      "screenshotY": 15657,
+      "ocr": {
+        "name": "盈 峰 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3527361"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 376,
+      "screenshotY": 15694,
+      "ocr": {
+        "name": "香 农 芯 创 科 技 股 份 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "3525089"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 377,
+      "screenshotY": 15732,
+      "ocr": {
+        "name": "江 苏 上 上 电 缆 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3522421"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 378,
+      "screenshotY": 15769,
+      "ocr": {
+        "name": "河 南 明 泰 铝 业 股 份 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "3513528"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 379,
+      "screenshotY": 15807,
+      "ocr": {
+        "name": "软 通 动 力 信 息 技 术 （ 集 团 ） 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "3508990"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 380,
+      "screenshotY": 15904,
+      "ocr": {
+        "name": "江 苏 省 镔 鑫 钢 铁 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3504952"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 381,
+      "screenshotY": 15941,
+      "ocr": {
+        "name": "浙 江 协 和 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "97839"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 382,
+      "screenshotY": 15979,
+      "ocr": {
+        "name": "荆 门 市 格 林 美 新 材 料 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "93273"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 383,
+      "screenshotY": 16016,
+      "ocr": {
+        "name": "浙 江 中 南 建 设 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "71325"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 384,
+      "screenshotY": 16054,
+      "ocr": {
+        "name": "湖 南 裕 能 新 能 源 电 池 材 料 股 份 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "62477"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 385,
+      "screenshotY": 16092,
+      "ocr": {
+        "name": "江 苏 扬 子 江 船 业 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "61494"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 386,
+      "screenshotY": 16129,
+      "ocr": {
+        "name": "美 欣 达 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "60172"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 387,
+      "screenshotY": 16167,
+      "ocr": {
+        "name": "浙 江 龙 盛 控 股 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "51555"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 388,
+      "screenshotY": 16204,
+      "ocr": {
+        "name": "红 太 阳 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "50697"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 389,
+      "screenshotY": 16242,
+      "ocr": {
+        "name": "兴 达 投 资 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "48577"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 390,
+      "screenshotY": 16280,
+      "ocr": {
+        "name": "河 南 龙 成 集 团 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "3445 開 0"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 391,
+      "screenshotY": 16317,
+      "ocr": {
+        "name": "中 新 钢 铁 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "35576"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 392,
+      "screenshotY": 16355,
+      "ocr": {
+        "name": "泰 开 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "31998"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 393,
+      "screenshotY": 16392,
+      "ocr": {
+        "name": "江 苏 瑞 祥 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "01313"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 394,
+      "screenshotY": 16430,
+      "ocr": {
+        "name": "华 芳 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3380 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 395,
+      "screenshotY": 16468,
+      "ocr": {
+        "name": "纳 爱 斯 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3375 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 396,
+      "screenshotY": 16505,
+      "ocr": {
+        "name": "东 营 市 亚 通 石 化 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3342 9"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 397,
+      "screenshotY": 16543,
+      "ocr": {
+        "name": "深 圳 迈 瑞 生 物 医 疗 电 子 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3328216"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 398,
+      "screenshotY": 16580,
+      "ocr": {
+        "name": "宜 兴 市 紫 金 铜 业 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3321 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 399,
+      "screenshotY": 16618,
+      "ocr": {
+        "name": "河 北 冠 丰 冶 金 工 业 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "3315551"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 400,
+      "screenshotY": 16655,
+      "ocr": {
+        "name": "福 星 集 团 控 股 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "3303211"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 401,
+      "screenshotY": 16693,
+      "ocr": {
+        "name": "山 东 能 链 控 股 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3285616"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 402,
+      "screenshotY": 16731,
+      "ocr": {
+        "name": "江 苏 无 锡 朝 阳 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3285370"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 403,
+      "screenshotY": 16768,
+      "ocr": {
+        "name": "三 水 实 业 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "3282874"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 404,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 405,
+      "screenshotY": 16843,
+      "ocr": {
+        "name": "浙 江 大 华 技 术 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3274378"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 406,
+      "screenshotY": 16881,
+      "ocr": {
+        "name": "苏 州 金 螳 螂 企 业 （ 集 团 ） 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3272180"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 407,
+      "screenshotY": 16919,
+      "ocr": {
+        "name": "江 苏 中 超 投 资 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3255357"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 408,
+      "screenshotY": 16956,
+      "ocr": {
+        "name": "荣 民 控 股 集 团 有 限 公 司",
+        "province": "陕 西 省",
+        "revenueWan": "3244938"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 409,
+      "screenshotY": 16994,
+      "ocr": {
+        "name": "深 圳 华 强 集 团 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3219 四 6"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 410,
+      "screenshotY": 17031,
+      "ocr": {
+        "name": "山 东 中 海 化 工 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3213789"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 411,
+      "screenshotY": 17069,
+      "ocr": {
+        "name": "立 中 四 通 轻 合 金 集 团 股 份 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "3212413"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 412,
+      "screenshotY": 17107,
+      "ocr": {
+        "name": "溧 阳 中 联 金 电 子 商 务 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3209351"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 413,
+      "screenshotY": 17144,
+      "ocr": {
+        "name": "云 南 玉 溪 玉 昆 钢 铁 集 团 有 限 公 司",
+        "province": "云 南 省",
+        "revenueWan": "3198732"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 414,
+      "screenshotY": 17182,
+      "ocr": {
+        "name": "广 州 立 白 凯 晟 控 股 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "3178222"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 415,
+      "screenshotY": 17219,
+      "ocr": {
+        "name": "朴 朴 科 技 （ 福 建 ） 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "3177213"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 416,
+      "screenshotY": 17257,
+      "ocr": {
+        "name": "江 苏 恒 瑞 医 药 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3162 2"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 417,
+      "screenshotY": 17295,
+      "ocr": {
+        "name": "江 苏 华 宏 实 业 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3153176"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 418,
+      "screenshotY": 17332,
+      "ocr": {
+        "name": "江 阴 江 东 集 团 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3144071"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 419,
+      "screenshotY": 17370,
+      "ocr": {
+        "name": "金 鹏 控 股 集 团 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "3133860"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 420,
+      "screenshotY": 17407,
+      "ocr": {
+        "name": "杭 州 青 云 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3133 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 421,
+      "screenshotY": 17445,
+      "ocr": {
+        "name": "无 锡 华 东 重 机 科 技 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3124852"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 422,
+      "screenshotY": 17483,
+      "ocr": {
+        "name": "联 峰 钢 铁 （ 张 家 港 ） 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3109135"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 423,
+      "screenshotY": 17520,
+      "ocr": {
+        "name": "湖 北 鑫 资 再 生 资 源 集 团 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "3103773"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 424,
+      "screenshotY": 17617,
+      "ocr": {
+        "name": "河 南 济 源 钢 铁 （ 集 团 ） 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "3102733"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 425,
+      "screenshotY": 17654,
+      "ocr": {
+        "name": "常 州 市 化 工 轻 工 材 料 总 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3090172"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 426,
+      "screenshotY": 17692,
+      "ocr": {
+        "name": "临 沂 新 程 金 锣 肉 制 品 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "3085910"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 427,
+      "screenshotY": 17729,
+      "ocr": {
+        "name": "安 徽 灵 通 集 团 控 股 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "3082052"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 428,
+      "screenshotY": 17767,
+      "ocr": {
+        "name": "一 柏 集 团 有 限 公 司",
+        "province": "福 建 省",
+        "revenueWan": "3080 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 429,
+      "screenshotY": 17805,
+      "ocr": {
+        "name": "法 尔 胜 泓 舁 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3077 9"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 430,
+      "screenshotY": 17842,
+      "ocr": {
+        "name": "宁 波 君 安 控 股 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3061529"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 431,
+      "screenshotY": 17880,
+      "ocr": {
+        "name": "恒 尊 控 股 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3059125"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 432,
+      "screenshotY": 17917,
+      "ocr": {
+        "name": "江 苏 大 经 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3058693"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 433,
+      "screenshotY": 17955,
+      "ocr": {
+        "name": "金 浦 投 资 控 股 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "3053766"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 434,
+      "screenshotY": 17993,
+      "ocr": {
+        "name": "安 克 创 新 科 技 股 份 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "3051440"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 435,
+      "screenshotY": 18030,
+      "ocr": {
+        "name": "西 子 国 际 控 股 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "3046088"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 436,
+      "screenshotY": 18068,
+      "ocr": {
+        "name": "安 钢 集 团 信 阳 钢 铁 有 限 责 任 公 司",
+        "province": "河 南 省",
+        "revenueWan": "3028 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 437,
+      "screenshotY": 18105,
+      "ocr": {
+        "name": "云 南 曲 靖 呈 钢 钢 铁 （ 集 团 ） 有 限 公 司",
+        "province": "云 南 省",
+        "revenueWan": "3014 5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 438,
+      "screenshotY": 18143,
+      "ocr": {
+        "name": "金 东 投 资 集 团 有 限 公 司",
+        "province": "湖 南 省",
+        "revenueWan": "3011762"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 439,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 440,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 441,
+      "screenshotY": 18256,
+      "ocr": {
+        "name": "腾 达 建 设 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2985428"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 442,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 443,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 444,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 445,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 446,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 447,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 448,
+      "screenshotY": 18519,
+      "ocr": {
+        "name": "宁 波 拓 普 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2958146"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 449,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 450,
+      "screenshotY": 18630,
+      "ocr": {
+        "name": "浙 江 国 泰 建 设 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2937051"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 451,
+      "screenshotY": 18667,
+      "ocr": {
+        "name": "北 京 数 据 街 控 股 集 团 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "2933787"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 452,
+      "screenshotY": 18705,
+      "ocr": {
+        "name": "北 京 大 北 衣 科 技 集 团 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "2911893"
+      },
+      "checks": {
+        "rank": true,
+        "name": false,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 453,
+      "screenshotY": 18742,
+      "ocr": {
+        "name": "山 西 潞 宝 集 团",
+        "province": "山 西 省",
+        "revenueWan": "2891556"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 454,
+      "screenshotY": 18780,
+      "ocr": {
+        "name": "佛 山 市 海 天 调 味 食 品 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "2887338"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 455,
+      "screenshotY": 18818,
+      "ocr": {
+        "name": "华 南 物 资 集 团 有 限 公 司",
+        "province": "重 庆 市",
+        "revenueWan": "2886050"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 456,
+      "screenshotY": 18855,
+      "ocr": {
+        "name": "公 元 塑 业 集 团 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2881m5"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 457,
+      "screenshotY": 18893,
+      "ocr": {
+        "name": "山 鹰 国 际 控 股 股 份 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "2877816"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 458,
+      "screenshotY": 18930,
+      "ocr": {
+        "name": "华 翔 集 团 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2874977"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 459,
+      "screenshotY": 18968,
+      "ocr": {
+        "name": "珠 海 万 达 商 业 管 理 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "2849257"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 460,
+      "screenshotY": 19006,
+      "ocr": {
+        "name": "东 吴 黄 金 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2844129"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 461,
+      "screenshotY": 19043,
+      "ocr": {
+        "name": "广 东 生 益 科 技 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "2843114"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 462,
+      "screenshotY": 19081,
+      "ocr": {
+        "name": "卫 华 集 团 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "2836826"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 463,
+      "screenshotY": 19118,
+      "ocr": {
+        "name": "南 京 新 华 海 科 技 产 业 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2833241"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 464,
+      "screenshotY": 19156,
+      "ocr": {
+        "name": "合 肥 维 天 运 通 信 息 科 技 股 份 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "2824244"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 465,
+      "screenshotY": 19194,
+      "ocr": {
+        "name": "永 兴 特 种 材 料 科 技 股 份 有 限 公 司",
+        "province": "浙 江 省",
+        "revenueWan": "2821030"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 466,
+      "screenshotY": 19231,
+      "ocr": {
+        "name": "山 西 安 泰 控 股 集 团 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "2794536"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 467,
+      "screenshotY": 19328,
+      "ocr": {
+        "name": "昆 山 联 滔 电 子 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2792 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 468,
+      "screenshotY": 19365,
+      "ocr": {
+        "name": "通 富 微 电 子 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2792142"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 469,
+      "screenshotY": 19403,
+      "ocr": {
+        "name": "诸 城 外 贸 有 限 责 任 公 司",
+        "province": "山 东 省",
+        "revenueWan": "2786 7"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 470,
+      "screenshotY": 19440,
+      "ocr": {
+        "name": "淮 海 控 股 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2783050"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 471,
+      "screenshotY": 19478,
+      "ocr": {
+        "name": "山 东 荣 信 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "2782511"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 472,
+      "screenshotY": 19516,
+      "ocr": {
+        "name": "山 西 锦 绣 大 象 农 牧 集 团 股 份 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "2776757"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 473,
+      "screenshotY": 19553,
+      "ocr": {
+        "name": "江 苏 盈 泰 供 应 链 集 团 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2774388"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 474,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 475,
+      "screenshotY": 19629,
+      "ocr": {
+        "name": "北 京 东 方 雨 虹 防 水 技 术 股 份 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "2757865"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 476,
+      "screenshotY": 19666,
+      "ocr": {
+        "name": "山 西 高 义 钢 铁 有 限 公 司",
+        "province": "山 西 省",
+        "revenueWan": "2756094"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 477,
+      "screenshotY": 19704,
+      "ocr": {
+        "name": "东 华 能 源 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "2752564"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 478,
+      "screenshotY": 19741,
+      "ocr": {
+        "name": "大 参 林 医 药 集 团 股 份 有 限 公 司",
+        "province": "广 东 省",
+        "revenueWan": "2750218"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 479,
+      "screenshotY": 19797,
+      "ocr": {
+        "name": "吉 利 百 矿 集 团 有 限 公 司",
+        "province": "自 治 区",
+        "revenueWan": "2738832"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 480,
+      "screenshotY": 19852,
+      "ocr": {
+        "name": "北 京 爱 奇 艺 科 技 有 限 公 司",
+        "province": "北 京 市",
+        "revenueWan": "2729130"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 481,
+      "screenshotY": 19890,
+      "ocr": {
+        "name": "科 大 讯 飞 股 份 有 限 公 司",
+        "province": "安 徽 省",
+        "revenueWan": "2710539"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 482,
+      "screenshotY": 19927,
+      "ocr": {
+        "name": "天 津 源 泰 德 润 钢 管 制 造 集 团 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "2700038"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 483,
+      "screenshotY": 19965,
+      "ocr": {
+        "name": "正 大 天 晴 药 业 集 团 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2682174"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 484,
+      "screenshotY": null,
+      "ocr": {
+        "name": "",
+        "province": "",
+        "revenueWan": ""
+      },
+      "checks": {
+        "rank": false,
+        "name": false,
+        "province": false,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 485,
+      "screenshotY": 20040,
+      "ocr": {
+        "name": "中 大 控 股 集 团 有 限 公 司",
+        "province": "江 西 省",
+        "revenueWan": "2646 ％ 1"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 486,
+      "screenshotY": 20078,
+      "ocr": {
+        "name": "利 群 集 团 股 份 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "2638559"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 487,
+      "screenshotY": 20115,
+      "ocr": {
+        "name": "瑞 源 控 股 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "2635505"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 488,
+      "screenshotY": 20153,
+      "ocr": {
+        "name": "中 国 万 向 控 股 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "2632514"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 489,
+      "screenshotY": 20191,
+      "ocr": {
+        "name": "江 苏 鼎 胜 新 能 源 材 料 股 份 有 限 公 司",
+        "province": "江 苏 省",
+        "revenueWan": "2630346"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 490,
+      "screenshotY": 20228,
+      "ocr": {
+        "name": "河 南 心 连 心 化 学 工 业 集 团 股 份 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "2627172"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 491,
+      "screenshotY": 20284,
+      "ocr": {
+        "name": "赤 峰 远 联 钢 铁 有 限 责 任 公 司",
+        "province": "",
+        "revenueWan": "2614086"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": false,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 492,
+      "screenshotY": 20339,
+      "ocr": {
+        "name": "上 海 胜 华 电 缆 科 技 集 团 有 限 公 司",
+        "province": "上 海 市",
+        "revenueWan": "2613056"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 493,
+      "screenshotY": 20377,
+      "ocr": {
+        "name": "名 创 优 品 （ 广 州 ） 有 限 责 任 公 司",
+        "province": "广 东 省",
+        "revenueWan": "2610 四 3"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": false
+      }
+    },
+    {
+      "rank": 494,
+      "screenshotY": 20414,
+      "ocr": {
+        "name": "河 北 天 柱 钢 铁 集 团 有 限 公 司",
+        "province": "河 北 省",
+        "revenueWan": "2607472"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 495,
+      "screenshotY": 20452,
+      "ocr": {
+        "name": "宝 业 湖 北 建 工 集 团 有 限 公 司",
+        "province": "湖 北 省",
+        "revenueWan": "2605617"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 496,
+      "screenshotY": 20490,
+      "ocr": {
+        "name": "龙 佰 集 团 股 份 有 限 公 司",
+        "province": "河 南 省",
+        "revenueWan": "2598754"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 497,
+      "screenshotY": 20527,
+      "ocr": {
+        "name": "山 东 科 达 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "2582013"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 498,
+      "screenshotY": 20565,
+      "ocr": {
+        "name": "天 津 市 宝 来 钢 业 有 限 公 司",
+        "province": "天 津 市",
+        "revenueWan": "2569705"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 499,
+      "screenshotY": 20602,
+      "ocr": {
+        "name": "华 侨 凤 凰 集 团 股 份 有 限 公 司",
+        "province": "四 川 省",
+        "revenueWan": "2567892"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    },
+    {
+      "rank": 500,
+      "screenshotY": 20640,
+      "ocr": {
+        "name": "玲 珑 集 团 有 限 公 司",
+        "province": "山 东 省",
+        "revenueWan": "2559930"
+      },
+      "checks": {
+        "rank": true,
+        "name": true,
+        "province": true,
+        "revenueWan": true
+      }
+    }
+  ]
+}
