@@ -552,6 +552,10 @@ test("2026 ranking API is authenticated, paginated and strictly read-only", asyn
 
   const search = await request(baseUrl, `${endpoint}?q=${encodeURIComponent("京东集团")}`, { headers: { Cookie: superAdmin.cookie } });
   assert.deepEqual((await search.json() as { items: Array<{ rank: number }> }).items.map((entry) => entry.rank), [1]);
+  const rankSearch = await request(baseUrl, `${endpoint}?q=${encodeURIComponent("第2名")}`, { headers: { Cookie: superAdmin.cookie } });
+  assert.deepEqual((await rankSearch.json() as { items: Array<{ rank: number }> }).items.map((entry) => entry.rank), [2]);
+  const numericRankSearch = await request(baseUrl, `${endpoint}?q=2`, { headers: { Cookie: superAdmin.cookie } });
+  assert.deepEqual((await numericRankSearch.json() as { items: Array<{ rank: number }> }).items.map((entry) => entry.rank), [2]);
   const pendingCity = await request(baseUrl, `${endpoint}?city=${encodeURIComponent("杭州市")}`, { headers: { Cookie: groupAdmin.cookie } });
   assert.equal(pendingCity.status, 409);
   assert.equal((await pendingCity.json() as { error: string }).error, "headquarters_not_verified");

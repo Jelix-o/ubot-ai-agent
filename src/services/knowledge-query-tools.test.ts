@@ -56,6 +56,16 @@ test("ranking tool returns a terminal, edition-scoped deterministic result", asy
     edition: 2025,
   }));
   assert.match(otherYear.finalMessages?.[0] ?? "", /仅收录2026|不能用这份榜单回答其他年份/);
+
+  const range = await runtime.execute(toolCall("query_private_enterprise_ranking", {
+    operation: "rank_range",
+    edition: 2026,
+    startRank: 10,
+    endRank: 20,
+  }));
+  assert.deepEqual(JSON.parse(range.content), { status: "terminal", messageCount: 1 });
+  assert.equal(range.finalMessages?.join("\n").match(/第\d+名 /g)?.length, 11);
+  assert.match(range.finalMessages?.[0] ?? "", /第10至20名/);
 });
 
 test("ranking tool rejects injected and unknown arguments instead of silently broadening a query", async () => {
@@ -78,9 +88,16 @@ test("ranking tool rejects injected and unknown arguments instead of silently br
     company: "阿里",
   }));
   assert.deepEqual(JSON.parse(incompatible.content), { status: "error", code: "invalid_ranking_query" });
+
+  const invalidRange = await runtime.execute(toolCall("query_private_enterprise_ranking", {
+    operation: "rank_range",
+    startRank: 20,
+    endRank: 10,
+  }));
+  assert.deepEqual(JSON.parse(invalidRange.content), { status: "error", code: "invalid_ranking_query" });
 });
 
-test("FAQ tool binds every read to the current group and exposes only matched entry content", async () => {
+test("FAQ tool binds every read to the current group and terminates a matched answer", async () => {
   const requestedGroups: string[] = [];
   const store = {
     async search(groupId: string, query: string) {
@@ -98,14 +115,10 @@ test("FAQ tool binds every read to the current group and exposes only matched en
   assert.ok(runtime);
 
   const result = await runtime.execute(toolCall("search_group_faq", { query: "报销" }));
-  const payload = JSON.parse(result.content) as {
-    status: string;
-    entries: Array<Record<string, unknown>>;
-  };
   assert.deepEqual(requestedGroups, ["current-group:报销"]);
-  assert.equal(payload.status, "found");
-  assert.equal(payload.entries[0]?.answer, "在周五前提交报销单。");
-  assert.equal("groupId" in (payload.entries[0] ?? {}), false);
+  assert.deepEqual(JSON.parse(result.content), { status: "terminal", messageCount: 1 });
+  assert.deepEqual(result.finalMessages, ["在周五前提交报销单。"]);
+  assert.equal(result.content.includes("在周五前提交报销单。"), false);
 
   const injectedGroup = await runtime.execute(toolCall("search_group_faq", {
     query: "报销",
@@ -113,6 +126,33 @@ test("FAQ tool binds every read to the current group and exposes only matched en
   }));
   assert.deepEqual(JSON.parse(injectedGroup.content), { status: "error", code: "invalid_faq_query" });
   assert.deepEqual(requestedGroups, ["current-group:报销"]);
+});
+
+test("FAQ tool terminates close matches with a deterministic clarification instead of combining answers", async () => {
+  const runtime = createKnowledgeToolRuntime({
+    groupId: "current-group",
+    knowledgeBaseStore: {
+      async search() {
+        return [
+          { entry: entry({ id: "faq-a", title: "报销流程", question: "如何报销？", answer: "报销答案。" }), score: 10 },
+          { entry: entry({ id: "faq-b", title: "差旅报销", question: "差旅费用如何报销？", answer: "差旅答案。" }), score: 9 },
+        ];
+      },
+      async listEnabledDirectory() {
+        assert.fail("matched FAQ queries must not fall back to the directory");
+      },
+    },
+  });
+  assert.ok(runtime);
+
+  const result = await runtime.execute(toolCall("search_group_faq", { query: "报销" }));
+
+  assert.deepEqual(JSON.parse(result.content), { status: "terminal", messageCount: 1 });
+  assert.match(result.finalMessages?.[0] ?? "", /多条接近内容/);
+  assert.match(result.finalMessages?.[0] ?? "", /报销流程/);
+  assert.match(result.finalMessages?.[0] ?? "", /差旅报销/);
+  assert.equal(result.finalMessages?.[0]?.includes("报销答案。") ?? false, false);
+  assert.equal(result.finalMessages?.[0]?.includes("差旅答案。") ?? false, false);
 });
 
 test("FAQ no-match returns a group-bound directory without leaking answers", async () => {
@@ -157,7 +197,7 @@ test("FAQ no-match returns a group-bound directory without leaking answers", asy
   assert.equal("groupId" in (payload.entries[0] ?? {}), false);
 });
 
-test("FAQ tool bounds oversized matched content before it reaches the model", async () => {
+test("FAQ tool keeps oversized matched answers out of the model tool payload", async () => {
   const runtime = createKnowledgeToolRuntime({
     groupId: "current-group",
     knowledgeBaseStore: {
@@ -174,7 +214,9 @@ test("FAQ tool bounds oversized matched content before it reaches the model", as
   assert.ok(runtime);
   const result = await runtime.execute(toolCall("search_group_faq", { query: "报销" }));
   assert.ok(result.content.length <= 6_000);
-  assert.equal(JSON.parse(result.content).status, "found");
+  assert.deepEqual(JSON.parse(result.content), { status: "terminal", messageCount: 1 });
+  assert.equal(result.content.includes("答".repeat(100)), false);
+  assert.equal(result.finalMessages?.[0]?.length, 1_200);
 });
 
 test("explicit group FAQ requests can force only the current-group FAQ tool", () => {

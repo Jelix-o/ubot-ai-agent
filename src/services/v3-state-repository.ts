@@ -239,7 +239,16 @@ export class V3StateRepository {
   saveGroups(input: GroupsConfigFile, now = Date.now()): void {
     const groups = (input.groups ?? []).map((group) => retireLegacyQqAdminFields(group));
     this.withImmediateTransaction(() => {
-      const knownIds = new Set(groups.map((group) => String(group.groupId).trim()).filter(Boolean));
+      // v3_groups is keyed by groupId, so duplicate records have always used
+      // last-write-wins semantics. Build the same final view before provisioning
+      // packs so an earlier enabled duplicate cannot create a pack for a final
+      // disabled configuration.
+      const groupsById = new Map<string, GroupBotConfig>();
+      for (const group of groups) {
+        const groupId = String(group.groupId).trim();
+        if (groupId) groupsById.set(groupId, group);
+      }
+      const knownIds = new Set(groupsById.keys());
       if (knownIds.size === 0) {
         this.sharedDb.db.exec("DELETE FROM v3_groups");
       } else {
@@ -251,10 +260,10 @@ export class V3StateRepository {
          VALUES (?, ?, ?)
          ON CONFLICT(group_id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
       );
-      for (const group of groups) {
-        const groupId = String(group.groupId).trim();
-        if (groupId) {
-          upsert.run(groupId, JSON.stringify(group), now);
+      for (const [groupId, group] of groupsById) {
+        upsert.run(groupId, JSON.stringify(group), now);
+        if (group.enabled !== false) {
+          this.ensureKnowledgePack(groupId, now);
         }
       }
       // QQ-number super-admins were a V1/V2 authorization mechanism. V3
@@ -275,13 +284,18 @@ export class V3StateRepository {
     const safeGroup = retireLegacyQqAdminFields(group);
     const groupId = String(safeGroup.groupId).trim();
     if (!groupId) throw new Error("invalid_v3_group_id");
-    this.sharedDb.db
-      .prepare(
-        `INSERT INTO v3_groups (group_id, config_json, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(group_id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
-      )
-      .run(groupId, JSON.stringify(safeGroup), now);
+    this.withImmediateTransaction(() => {
+      this.sharedDb.db
+        .prepare(
+          `INSERT INTO v3_groups (group_id, config_json, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(group_id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
+        )
+        .run(groupId, JSON.stringify(safeGroup), now);
+      if (safeGroup.enabled !== false) {
+        this.ensureKnowledgePack(groupId, now);
+      }
+    });
   }
 
   /**
@@ -659,6 +673,35 @@ export class V3StateRepository {
       )
       .run(normalizedGroupId, now, now);
     return this.getKnowledgePack(normalizedGroupId)!;
+  }
+
+  /**
+   * Repairs older V3 installations that have enabled groups without a pack.
+   * A disabled pack is an administrator opt-out and is deliberately retained.
+   */
+  ensureKnowledgePacksForEnabledGroups(now = Date.now()): { enabledGroups: number; created: number } {
+    return this.withImmediateTransaction(() => {
+      const rows = this.sharedDb.db.prepare(
+        "SELECT group_id, config_json FROM v3_groups ORDER BY group_id",
+      ).all() as Array<{ group_id: string; config_json: string }>;
+      const insert = this.sharedDb.db.prepare(
+        `INSERT INTO v3_knowledge_packs (group_id, enabled, created_at, updated_at)
+         VALUES (?, 1, ?, ?)
+         ON CONFLICT(group_id) DO NOTHING`,
+      );
+      let enabledGroups = 0;
+      let created = 0;
+      for (const row of rows) {
+        const group = parseJson<GroupBotConfig>(row.config_json);
+        if (!group || typeof group !== "object" || Array.isArray(group)) {
+          throw new Error("invalid_v3_group_config_for_knowledge_pack_provisioning");
+        }
+        if (group.enabled === false) continue;
+        enabledGroups += 1;
+        created += Number(insert.run(row.group_id, now, now).changes);
+      }
+      return { enabledGroups, created };
+    });
   }
 
   isKnowledgePackEnabled(groupId: string): boolean {

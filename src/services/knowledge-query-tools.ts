@@ -1,6 +1,6 @@
 import type { KnowledgeBaseEntry } from "../types.js";
 import type { AiToolCall, AiToolRuntime } from "./ai-service.js";
-import type { KnowledgeBaseStore } from "./knowledge-base-store.js";
+import type { KnowledgeBaseSearchHit, KnowledgeBaseStore } from "./knowledge-base-store.js";
 import {
   type PrivateEnterpriseToolOperation,
   type PrivateEnterpriseToolQuery,
@@ -14,6 +14,7 @@ const MAX_FAQ_DIRECTORY_ENTRIES = 50;
 const RANKING_OPERATIONS: readonly PrivateEnterpriseToolOperation[] = [
   "company_lookup",
   "rank_lookup",
+  "rank_range",
   "province_count",
   "province_list",
   "province_compare",
@@ -37,6 +38,8 @@ const privateEnterpriseRankingTool = {
       edition: { type: "integer", description: "榜单年份；省略时默认2026。明确询问其他年份时必须传入该年份。" },
       company: { type: "string", description: "企业名称或唯一简称，用于 company_lookup" },
       rank: { type: "integer", minimum: 1, maximum: 500, description: "用于 rank_lookup" },
+      startRank: { type: "integer", minimum: 1, maximum: 500, description: "用于 rank_range 的起始名次" },
+      endRank: { type: "integer", minimum: 1, maximum: 500, description: "用于 rank_range 的结束名次" },
       province: { type: "string", description: "省级地区，用于 province_count 或 province_list" },
       provinces: { type: "array", minItems: 2, maxItems: 8, items: { type: "string" }, description: "用于 province_compare" },
       city: { type: "string", description: "总部城市，用于 city_count 或 city_list" },
@@ -141,18 +144,21 @@ async function executeGroupFaqTool(
   try {
     const hits = await store.search(groupId, query, 3);
     if (hits.length > 0) {
-      return { content: serializeFaqData({ status: "found", entries: hits.map((hit) => hit.entry) }, true) };
+      const messages = terminalFaqMessages(hits);
+      return {
+        finalMessages: messages,
+        content: JSON.stringify({ status: "terminal", messageCount: messages.length }),
+      };
     }
     const directory = await store.listEnabledDirectory(groupId, MAX_FAQ_DIRECTORY_ENTRIES);
     return {
       finalMessages: [directory.length === 0
         ? "当前群没有可检索的已启用知识库内容，无法核验这项内容。"
         : "当前群知识库未找到可核验的相关内容，请换个关键词或联系管理员补充。"],
-      content: serializeFaqData({
-        status: "no_match",
+      content: serializeFaqDirectory({
         entries: directory,
         message: directory.length === 0 ? "当前群没有可检索的已启用FAQ。" : "未命中；可基于目录换关键词重试。",
-      }, false),
+      }),
     };
   } catch {
     return {
@@ -160,6 +166,30 @@ async function executeGroupFaqTool(
       content: JSON.stringify({ status: "unavailable", code: "group_faq_read_failed" }),
     };
   }
+}
+
+/**
+ * FAQ answers are administrator-authored facts.  Once a lookup found them,
+ * stop the model loop so it cannot paraphrase, combine, or invent policy.
+ * A close tie is deliberately surfaced as a deterministic clarification
+ * instead of selecting one of several potentially different rules.
+ */
+function terminalFaqMessages(hits: readonly KnowledgeBaseSearchHit[]): string[] {
+  const best = hits[0];
+  if (!best) return ["当前群知识库未找到可核验的相关内容，请换个关键词或联系管理员补充。"];
+
+  const runnerUp = hits[1];
+  if (!runnerUp || best.score >= runnerUp.score + 3) {
+    return [best.entry.answer];
+  }
+
+  const candidates = hits
+    .slice(0, 3)
+    .map((hit, index) => `${index + 1}. ${clip(hit.entry.title, 100)}：${clip(hit.entry.question, 300)}`)
+    .join("\n");
+  return [
+    `当前群知识库匹配到多条接近内容，暂不合并或猜测答案。请明确要问哪一条：\n${candidates}`,
+  ];
 }
 
 function normalizeRankingQuery(value: Record<string, unknown> | undefined): PrivateEnterpriseToolQuery | undefined {
@@ -180,6 +210,8 @@ function normalizeRankingQuery(value: Record<string, unknown> | undefined): Priv
   const province = text("province", 40);
   const city = text("city", 40);
   const rank = Number.isInteger(value?.rank) ? Number(value?.rank) : undefined;
+  const startRank = Number.isInteger(value?.startRank) ? Number(value?.startRank) : undefined;
+  const endRank = Number.isInteger(value?.endRank) ? Number(value?.endRank) : undefined;
   const limit = Number.isInteger(value?.limit) ? Number(value?.limit) : undefined;
   const provinces = Array.isArray(value?.provinces) && value.provinces.length >= 2 && value.provinces.length <= 8 &&
     value.provinces.every((item) => typeof item === "string" && item.trim().length > 0 && item.trim().length <= 40)
@@ -194,6 +226,11 @@ function normalizeRankingQuery(value: Record<string, unknown> | undefined): Priv
       return company ? { ...query, company } : undefined;
     case "rank_lookup":
       return rank !== undefined && rank >= 1 && rank <= 500 ? { ...query, rank } : undefined;
+    case "rank_range":
+      return startRank !== undefined && endRank !== undefined &&
+        startRank >= 1 && startRank <= 500 && endRank >= 1 && endRank <= 500 && startRank <= endRank
+        ? { ...query, startRank, endRank }
+        : undefined;
     case "province_count":
     case "province_list":
       return province ? { ...query, province } : undefined;
@@ -211,7 +248,7 @@ function normalizeRankingQuery(value: Record<string, unknown> | undefined): Priv
   }
 }
 
-const RANKING_ARGUMENT_KEYS = new Set(["operation", "edition", "company", "rank", "province", "provinces", "city", "limit"]);
+const RANKING_ARGUMENT_KEYS = new Set(["operation", "edition", "company", "rank", "startRank", "endRank", "province", "provinces", "city", "limit"]);
 const FAQ_ARGUMENT_KEYS = new Set(["query"]);
 
 function allowedKeysForRankingOperation(operation: PrivateEnterpriseToolOperation): ReadonlySet<string> {
@@ -221,6 +258,8 @@ function allowedKeysForRankingOperation(operation: PrivateEnterpriseToolOperatio
       return new Set([...common, "company"]);
     case "rank_lookup":
       return new Set([...common, "rank"]);
+    case "rank_range":
+      return new Set([...common, "startRank", "endRank"]);
     case "province_count":
     case "province_list":
       return new Set([...common, "province"]);
@@ -243,27 +282,25 @@ function hasOnlyKeys(value: Record<string, unknown> | undefined, allowed: Readon
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
-function serializeFaqData(
-  value: { status: "found" | "no_match"; entries: KnowledgeBaseEntry[]; message?: string },
-  includeAnswers: boolean,
+function serializeFaqDirectory(
+  value: { entries: KnowledgeBaseEntry[]; message?: string },
 ): string {
   const entries = value.entries.map((entry) => ({
     title: clip(entry.title, 100),
     question: clip(entry.question, 300),
     keywords: entry.keywords.slice(0, 30).map((keyword) => clip(keyword, 80)),
-    ...(includeAnswers ? { answer: clip(entry.answer, 1_200) } : {}),
   }));
-  const raw = JSON.stringify({ status: value.status, ...(value.message ? { message: value.message } : {}), entries });
+  const raw = JSON.stringify({ status: "no_match", ...(value.message ? { message: value.message } : {}), entries });
   if (raw.length <= MAX_FAQ_RESULT_CHARS) return raw;
 
   const message = "FAQ结果过长，已截断；请用更具体关键词重试。";
   const bounded: typeof entries = [];
   for (const entry of entries) {
-    const candidate = JSON.stringify({ status: value.status, message, entries: [...bounded, entry] });
+    const candidate = JSON.stringify({ status: "no_match", message, entries: [...bounded, entry] });
     if (candidate.length > MAX_FAQ_RESULT_CHARS) break;
     bounded.push(entry);
   }
-  return JSON.stringify({ status: value.status, message, entries: bounded });
+  return JSON.stringify({ status: "no_match", message, entries: bounded });
 }
 
 function parseObject(raw: string): Record<string, unknown> | undefined {

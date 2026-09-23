@@ -177,6 +177,7 @@ async function runExistingCutoverUpgrade() {
       }),
       htmlPreviewCapability: enableHtmlPreviewCapability(repository, now),
       imageGenerationCapability: enableImageGenerationCapability(repository, now),
+      knowledgePacks: repository.ensureKnowledgePacksForEnabledGroups(now),
     }));
     writeReport({
       mode: "existing-cutover-upgrade",
@@ -352,7 +353,7 @@ async function buildPreflightReport(sources) {
     dataDir,
     dbPath,
     migrationVersions,
-    expectedMigrationVersionsOnExecute: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    expectedMigrationVersionsOnExecute: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     outboxBlockingRows,
     huixianProfilePath,
     huixianProfileAvailable: existsSync(huixianProfilePath),

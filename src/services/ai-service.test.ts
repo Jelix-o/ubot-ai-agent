@@ -723,6 +723,68 @@ test("generateReply returns a terminal no-match FAQ result instead of allowing a
   assert.deepEqual(reply.knowledgeToolCalls, ["search_group_faq"]);
 });
 
+test("generateReply returns a terminal FAQ match instead of asking the model to rewrite it", async () => {
+  const runtime = createKnowledgeToolRuntime({
+    groupId: "67890",
+    forceGroupFaqTool: true,
+    knowledgeBaseStore: {
+      async search() {
+        return [{
+          entry: {
+            id: "faq-1",
+            groupId: "67890",
+            title: "报销规则",
+            question: "怎么报销？",
+            answer: "先贴发票，再找管理员登记。",
+            keywords: ["报销"],
+            enabled: true,
+            createdAt: "2026-09-01T00:00:00.000Z",
+            updatedAt: "2026-09-01T00:00:00.000Z",
+          },
+          score: 10,
+        }];
+      },
+      async listEnabledDirectory() {
+        assert.fail("a matched FAQ query must not fall back to the directory");
+      },
+    },
+  });
+  assert.ok(runtime);
+  let providerCalls = 0;
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create() {
+      providerCalls += 1;
+      if (providerCalls > 1) {
+        assert.fail("a terminal FAQ answer must not be sent back to the model for rewriting");
+      }
+      return {
+        model: "tool-model",
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "faq-match",
+              type: "function",
+              function: { name: "search_group_faq", arguments: '{"query":"怎么报销"}' },
+            }],
+          },
+        }],
+      };
+    },
+  } as never);
+
+  const reply = await service.generateReply({
+    skill,
+    history: [],
+    userInput: "群规里怎么报销？",
+    toolRuntime: runtime,
+  });
+
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(reply.messages, ["先贴发票，再找管理员登记。"]);
+  assert.deepEqual(reply.knowledgeToolCalls, ["search_group_faq"]);
+});
+
 test("generateReply retries a post-tool model request without re-executing its tool", async () => {
   const requests: Array<Record<string, unknown>> = [];
   let executions = 0;
