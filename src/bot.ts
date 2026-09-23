@@ -4,8 +4,10 @@ import { logError, logInfo, logWarn } from "./logger.js";
 import {
   getAiProviderFailureDetails,
   isRetryableAiProviderFailure,
+  KnowledgeToolUnavailableError,
   StaticHtmlOutputTruncatedError,
   type AiService,
+  type AiToolRuntime,
 } from "./services/ai-service.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -28,6 +30,7 @@ import type { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ImagePipelineError, type ImagePipeline } from "./services/image-pipeline.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { createKnowledgeToolRuntime } from "./services/knowledge-query-tools.js";
 import type { PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
@@ -2769,7 +2772,7 @@ export class BotApplication {
     const realtimeLookupStartedAt = Date.now();
     // 分级超时（计划 §2.4）：记忆检索 1.5s/2s、实时查询 8s/10s——超时跳过该层，
     // 不阻塞回复生成。
-    const [retrievedGroupMemories, knowledgeHits, realtimeLookup] = await Promise.all([
+    const [retrievedGroupMemories, realtimeLookup] = await Promise.all([
       this.isCapabilityEnabled("explicit_memory")
         ? withTimeout(
           this.groupMemoryStore?.listRelevantEnabled({
@@ -2785,26 +2788,6 @@ export class BotApplication {
           1_500,
         ).catch((error) => {
         logWarn("Memory retrieval timed out; skipping L1 layer.", {
-          groupId: groupConfig.groupId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-          return [];
-        })
-        : Promise.resolve([]),
-      this.isCapabilityEnabled("knowledge")
-        ? withTimeout(
-          this.knowledgeBaseStore?.search(
-          groupConfig.groupId,
-          [
-            normalizedUserInput,
-            messageContext.replyContext?.text ?? "",
-            ...messageContext.interactionTargets.flatMap((target) => target.names),
-          ].join(" "),
-          3,
-          ).then((hits) => hits.map((hit) => hit.entry)) ?? Promise.resolve([]),
-          1_500,
-        ).catch((error) => {
-        logWarn("Knowledge search timed out; skipping layer.", {
           groupId: groupConfig.groupId,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -2886,7 +2869,6 @@ export class BotApplication {
       manualIdentities: promptManualIdentities,
       ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
       ...(groupMemories.length > 0 ? { groupMemories } : {}),
-      ...(knowledgeHits.length > 0 ? { knowledgeHits } : {}),
       ...(messageContext.interactionTargets.length > 0
         ? { interactionTargets: messageContext.interactionTargets }
         : {}),
@@ -2900,6 +2882,16 @@ export class BotApplication {
       ...(ambientGroupContext.length > 0 ? { ambientGroupContext } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
+    const toolRuntime = this.isCapabilityEnabled("knowledge")
+      ? createKnowledgeToolRuntime({
+          groupId: groupConfig.groupId,
+          ranking: this.privateEnterpriseRanking,
+          knowledgeBaseStore: this.knowledgeBaseStore,
+          isKnowledgeEnabled: () => this.isCapabilityEnabled("knowledge"),
+          forceRankingTool: isLikelyPrivateEnterpriseRankingRequest(normalizedUserInput, history),
+          forceGroupFaqTool: isLikelyGroupFaqRequest(normalizedUserInput),
+        })
+      : undefined;
     const replyArgs = {
       skill,
       history,
@@ -2907,6 +2899,7 @@ export class BotApplication {
       images: resolvedImages,
       identityContext,
       ...(scenarioInstruction ? { scenarioInstruction } : {}),
+      ...(toolRuntime ? { toolRuntime } : {}),
     };
     const preparationMs = Date.now() - conversationStartedAt;
     const modelStartedAt = Date.now();
@@ -2918,16 +2911,19 @@ export class BotApplication {
         groupConfig.groupId,
         prefixMentionUserIds,
       );
-      const replyText = appendRealtimeLookupFooterToReply(
-        sanitizeMentionEcho(
-          reply.text,
-          buildSanitizeTargets(messageContext),
-          messageContext.plainTextMentionCandidates,
-        ),
-        skill,
-        realtimeLookup,
-        replyFormatBudget?.maxTotalChars,
-      );
+      const terminalMessages = reply.messages?.map((message) => message.trim()).filter(Boolean);
+      const replyText = terminalMessages?.length
+        ? terminalMessages.join("\n\n")
+        : appendRealtimeLookupFooterToReply(
+            sanitizeMentionEcho(
+              reply.text,
+              buildSanitizeTargets(messageContext),
+              messageContext.plainTextMentionCandidates,
+            ),
+            skill,
+            realtimeLookup,
+            replyFormatBudget?.maxTotalChars,
+          );
       const controlledMentionIdentities = selectManualIdentitiesForUserIds(
         promptManualIdentities,
         messageContext.interactionTargets
@@ -2936,6 +2932,7 @@ export class BotApplication {
           .filter((target): target is string => Boolean(target)),
       );
       const controlledMentionUserId =
+        !terminalMessages?.length &&
         options.allowControlledMention === true &&
         controlledMentionIdentities.length > 0 &&
         resolvedMentionUserIds.length === 0 &&
@@ -2973,7 +2970,9 @@ export class BotApplication {
         },
       ];
 
-      const outgoingMessages = formatReplyMessages(skill, replyText, replyFormatBudget);
+      const outgoingMessages = terminalMessages?.length
+        ? terminalMessages
+        : formatReplyMessages(skill, replyText, replyFormatBudget);
       if (outgoingMessages.length === 0) {
         throw new Error("Formatted AI reply was empty.");
       }
@@ -2996,9 +2995,6 @@ export class BotApplication {
         causalHistory: history.map((turn) => turn.content).join("\n"),
         explicitReference: messageContext.replyContext?.text ?? "",
         longTermMemory: groupMemories.map((memory) => memory.content).join("\n"),
-        knowledge: knowledgeHits
-          .map((entry) => `${entry.title}\n${entry.question}\n${entry.answer}`)
-          .join("\n"),
         atmosphere: atmosphere?.summary ?? "",
         recentGroupEvidence: formatRecentGroupEvidenceForMetrics(recentGroupEvidence),
         ambientGroupContext: formatRecentGroupEvidenceForMetrics(ambientGroupContext),
@@ -3032,6 +3028,7 @@ export class BotApplication {
         inputImageCount: resolvedImages.length,
         imageInspectionUsed: reply.imageInspectionUsed === true,
         reasoningEffort: reply.reasoningEffort,
+        knowledgeToolCalls: reply.knowledgeToolCalls ?? [],
         contextScope: conversationRoute ? "causal_branch" : "isolated",
         topicId: conversationRoute?.topicId,
         branchId: conversationRoute?.branchId,
@@ -3136,6 +3133,7 @@ export class BotApplication {
       images?: MessageImageInput[];
       identityContext?: AiIdentityContext;
       scenarioInstruction?: string;
+      toolRuntime?: AiToolRuntime;
       signal?: AbortSignal;
     },
   ): Promise<ReplyAiResult> {
@@ -5311,6 +5309,29 @@ function estimateTextTokens(text: string): number {
   return cjkCount + Math.ceil(alphanumericCount / 4) + Math.ceil(symbolCount / 2);
 }
 
+/**
+ * Direct regex routing handles the common ranking forms before an LLM call.
+ * This narrower detector protects the remaining conversational forms by
+ * requiring an actual native ranking lookup instead of a free-form guess.
+ */
+function isLikelyPrivateEnterpriseRankingRequest(
+  text: string,
+  history: Array<Pick<ConversationTurn, "role" | "content">>,
+): boolean {
+  const explicitScope = /(?:2026|民营(?:企业)?|民企|500强)/.test(text);
+  const rankingFact = /(?:排名|名次|排(?:第)?几|第几|第\s*\d+|上榜|入围|多少家|几家|哪些|哪几家|名单|分别是|哪个省|哪个地区|各省|省份|地区|最多|最少|比较|总部城市|总部所在)/.test(text);
+  if (explicitScope && rankingFact) return true;
+  const priorAnswer = history.at(-1);
+  return priorAnswer?.role === "assistant" && priorAnswer.content.includes("2026中国民营企业500强") &&
+    /(?:那个|哪个|哪|分别是哪些|有哪些|都有哪些|哪几家|名单|最多|最少|比较|多少家|几家|排名|名次|排(?:第)?几|第\s*\d+\s*(?:名|位)|谁)/.test(text);
+}
+
+/** Force a lookup only for clear group-rule / knowledge-base requests. */
+function isLikelyGroupFaqRequest(text: string): boolean {
+  if (/(?:2026|民营(?:企业)?|民企|500强)/.test(text)) return false;
+  return /(?:知识库|FAQ|群规|群规则|管理员(?:规定|要求|说过)?|制度|流程|报销|请假|打卡|会议(?:室|制度|规则)?|固定答案)/i.test(text);
+}
+
 function messageForAiFailure(error: unknown, failureKind: string): string {
   const message = error instanceof Error ? error.message : String(error);
   const errorName = error instanceof Error ? error.name : "";
@@ -5322,6 +5343,9 @@ function messageForAiFailure(error: unknown, failureKind: string): string {
   }
   if (errorName === "ReasoningEffortUnavailableError") {
     return "当前 GPT 上游不支持会仙要求的高推理模式，已停止本次回答，避免用低推理结果敷衍。";
+  }
+  if (error instanceof KnowledgeToolUnavailableError || errorName === "KnowledgeToolUnavailableError") {
+    return "当前回复模型暂不支持知识库查询，本次没有用未核验数据猜测回答；请稍后重试或联系管理员检查模型配置。";
   }
   if (/content was flagged|content policy|safety(?: |-)?(?:rule|filter)|cybersecurity risk/i.test(message)) {
     return "这条内容被上游安全规则拦截了，换一种更明确、非敏感的说法再试试。";

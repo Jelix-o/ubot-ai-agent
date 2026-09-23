@@ -10,7 +10,7 @@ import {
   type MemeLibraryRuntimeService,
   type MessageTransport,
 } from "./bot.js";
-import { StaticHtmlOutputTruncatedError } from "./services/ai-service.js";
+import { StaticHtmlOutputTruncatedError, type AiToolRuntime } from "./services/ai-service.js";
 import type { AdminOperationLogEntry } from "./services/admin-operation-log-service.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
@@ -485,6 +485,7 @@ class FakeAiService {
     images?: Array<{ url?: string; file?: string; summary?: string }>;
     identityContext?: AiIdentityContext;
     scenarioInstruction?: string;
+    toolRuntime?: AiToolRuntime;
   }> = [];
   controlledMentionCalls: Array<{
     skill: SkillDefinition;
@@ -512,6 +513,7 @@ class FakeAiService {
     images?: Array<{ url?: string; file?: string; summary?: string }>;
     identityContext?: AiIdentityContext;
     scenarioInstruction?: string;
+    toolRuntime?: AiToolRuntime;
   }): Promise<AiReply> {
     this.calls.push(args);
     return this.responder();
@@ -790,6 +792,12 @@ class FakeKnowledgeBaseStore {
     return this.entries
       .filter((entry) => entry.groupId === groupId && entry.enabled)
       .map((entry) => ({ entry, score: 10 }));
+  }
+
+  async listEnabledDirectory(groupId: string): Promise<KnowledgeBaseEntry[]> {
+    return this.entries
+      .filter((entry) => entry.groupId === groupId && entry.enabled)
+      .map((entry) => ({ ...entry, keywords: [...entry.keywords] }));
   }
 }
 
@@ -6669,7 +6677,7 @@ test("sends scheduled holiday countdown once tick condition is met", async () =>
   assert.equal(holidayCountdownService.messages[0]?.useAiQuip, false);
 });
 
-test("injects approved group memory and keyword knowledge into AI replies", async () => {
+test("passes approved group FAQ as a current-group lookup tool instead of embedding it in the prompt", async () => {
   const groupMemoryStore = new FakeGroupMemoryStore();
   groupMemoryStore.memories = [
     {
@@ -6710,8 +6718,21 @@ test("injects approved group memory and keyword knowledge into AI replies", asyn
   );
 
   assert.equal(aiService.calls[0]?.identityContext?.groupMemories?.[0]?.content, "Tester 喜欢简短回答。");
-  assert.equal(aiService.calls[0]?.identityContext?.knowledgeHits?.[0]?.answer, "先贴发票，再找管理员登记。");
-  assert.match(knowledgeBaseStore.queries[0]?.query ?? "", /我要报销/);
+  assert.equal("knowledgeHits" in (aiService.calls[0]?.identityContext ?? {}), false);
+  const runtime = aiService.calls[0]?.toolRuntime;
+  assert.ok(runtime);
+  assert.equal(runtime.forceToolName, "search_group_faq");
+  assert.deepEqual(runtime.tools.map((tool) => tool.name), ["search_group_faq"]);
+
+  const result = await runtime.execute({
+    id: "faq-call",
+    name: "search_group_faq",
+    arguments: '{"query":"我要报销"}',
+  });
+  const payload = JSON.parse(result.content) as { status: string; entries: Array<{ answer?: string }> };
+  assert.equal(payload.status, "found");
+  assert.equal(payload.entries[0]?.answer, "先贴发票，再找管理员登记。");
+  assert.deepEqual(knowledgeBaseStore.queries, [{ groupId: "67890", query: "我要报销" }]);
 });
 
 test("records a member memory only through #记忆 without calling the model", async () => {

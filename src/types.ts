@@ -286,7 +286,6 @@ export interface AiIdentityContext {
   manualIdentities?: GroupManualIdentity[];
   memberProfiles?: GroupMemberProfile[];
   groupMemories?: GroupMemory[];
-  knowledgeHits?: KnowledgeBaseEntry[];
   interactionTargets?: AiInteractionTarget[];
   replyContext?: AiReplyContext;
   realtimeLookup?: RealtimeLookupResult;
@@ -385,9 +384,15 @@ export interface AiReply {
   text: string;
   model: string;
   skillId: string;
+  /**
+   * Terminal tool output may contain intentionally pre-batched messages.  The
+   * transport sends these verbatim instead of asking a model to restyle facts.
+   */
+  messages?: string[];
   promptChars?: number;
   reasoningEffort?: ReasoningEffort;
   imageInspectionUsed?: boolean;
+  knowledgeToolCalls?: string[];
 }
 
 export interface ControlledMentionDecision {

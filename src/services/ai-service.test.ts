@@ -10,11 +10,15 @@ import {
   createCancellableTimeout,
   getAiProviderFailureDetails,
   isRetryableAiProviderFailure,
+  KnowledgeToolUnavailableError,
   MAX_STATIC_HTML_REQUEST_CHARS,
   STATIC_HTML_MAX_COMPLETION_TOKENS,
   STATIC_HTML_REQUEST_TIMEOUT_MS,
   StaticHtmlOutputTruncatedError,
+  type AiToolRuntime,
 } from "./ai-service.js";
+import { createKnowledgeToolRuntime } from "./knowledge-query-tools.js";
+import { loadPrivateEnterpriseRanking } from "./private-enterprise-ranking.js";
 
 test("AI provider failure classification permits only transient cross-model fallback", () => {
   assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("service unavailable"), { status: 503 })), true);
@@ -47,6 +51,29 @@ const skill: SkillDefinition = {
   temperature: 0.86,
   maxContextTurns: 12,
 };
+
+const testKnowledgeTool = {
+  name: "lookup_verified_fact",
+  description: "Looks up one verified fact.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      query: { type: "string" },
+    },
+  },
+};
+
+function testToolCall(id: string, argumentsText = '{"query":"test"}') {
+  return {
+    id,
+    type: "function" as const,
+    function: {
+      name: testKnowledgeTool.name,
+      arguments: argumentsText,
+    },
+  };
+}
 
 test("createCancellableTimeout aborts when its timer is the only active handle", async () => {
   const { controller, cleanup } = createCancellableTimeout(20);
@@ -327,7 +354,7 @@ test("buildSystemPrompt warns against phonetic name rewrites for configured iden
   assert.match(prompt, /不确定时宁可复用用户原话或身份表原字/);
 });
 
-test("buildSystemPrompt includes approved group memory and matched knowledge", () => {
+test("buildSystemPrompt includes approved group memory without prefetched FAQ answers", () => {
   const prompt = buildSystemPrompt(skill, {
     groupId: "67890",
     currentUserId: "20001",
@@ -363,26 +390,12 @@ test("buildSystemPrompt includes approved group memory and matched knowledge", (
         enabled: true,
       },
     ],
-    knowledgeHits: [
-      {
-        id: "faq-1",
-        groupId: "67890",
-        title: "报销规则",
-        question: "怎么报销发票",
-        answer: "先贴发票，再找管理员登记。",
-        keywords: ["报销", "发票"],
-        enabled: true,
-        createdAt: "2026-06-01T00:00:00.000Z",
-        updatedAt: "2026-06-01T00:00:00.000Z",
-      },
-    ],
   });
 
   assert.match(prompt, /Approved group memory/);
   assert.match(prompt, /Tester \/ QQ 20001 \/ 核心测试成员/);
   assert.match(prompt, /Tester 喜欢简短回答/);
-  assert.match(prompt, /Matched group knowledge/);
-  assert.match(prompt, /先贴发票/);
+  assert.doesNotMatch(prompt, /Matched group knowledge|先贴发票/);
 });
 
 test("buildSystemPrompt treats real-time lookup material as untrusted evidence", () => {
@@ -535,6 +548,351 @@ test("generateReply does not retry a streaming policy rejection", async () => {
 
   await assert.rejects(service.generateReply({ skill, history: [], userInput: "blocked input" }), /400 content policy/);
   assert.equal(calls, 1);
+});
+
+test("generateReply sends a forced native knowledge lookup with serialized OpenAI tool fields", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const executed: Array<{ id: string; name: string; arguments: string }> = [];
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    forceToolName: testKnowledgeTool.name,
+    async execute(call) {
+      executed.push(call);
+      return {
+        content: '{"status":"terminal"}',
+        finalMessages: ["2026中国民营企业500强：阿里巴巴集团排第1名。"],
+      };
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create(args: Record<string, unknown>) {
+      requests.push(args);
+      return {
+        model: "tool-model",
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [testToolCall("call-1", '{"query":"阿里"}')],
+          },
+        }],
+      };
+    },
+  } as never);
+
+  const reply = await service.generateReply({
+    skill,
+    history: [],
+    userInput: "阿里排第几名？",
+    toolRuntime,
+  });
+
+  assert.equal(reply.text, "2026中国民营企业500强：阿里巴巴集团排第1名。");
+  assert.deepEqual(reply.messages, ["2026中国民营企业500强：阿里巴巴集团排第1名。"]);
+  assert.deepEqual(reply.knowledgeToolCalls, [testKnowledgeTool.name]);
+  assert.deepEqual(executed, [{ id: "call-1", name: testKnowledgeTool.name, arguments: '{"query":"阿里"}' }]);
+  assert.equal(requests.length, 1);
+  const request = requests[0] ?? {};
+  assert.equal(request.stream, false);
+  assert.equal(request.parallel_tool_calls, false);
+  assert.deepEqual(request.tool_choice, {
+    type: "function",
+    function: { name: testKnowledgeTool.name },
+  });
+  assert.deepEqual(request.tools, [{ type: "function", function: testKnowledgeTool }]);
+});
+
+test("generateReply falls back to streaming when an ordinary gateway rejects native tool mode", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    async execute() {
+      assert.fail("an ordinary fallback must not execute a tool when tool mode is rejected");
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create(args: Record<string, unknown>) {
+      requests.push(args);
+      if (args.tools) {
+        throw new Error("non-streaming requests are not supported by this gateway");
+      }
+      return (async function* () {
+        yield {
+          model: "stream-model",
+          choices: [{ delta: { content: "普通对话仍可回复。" } }],
+        };
+      })();
+    },
+  } as never);
+
+  const reply = await service.generateReply({
+    skill,
+    history: [],
+    userInput: "普通聊天",
+    toolRuntime,
+  });
+
+  assert.equal(reply.text, "普通对话仍可回复。");
+  assert.equal(requests.length, 2);
+  assert.ok(requests[0]?.tools);
+  assert.equal(requests[0]?.stream, false);
+  assert.equal(requests[1]?.tools, undefined);
+  assert.equal(requests[1]?.stream, true);
+});
+
+test("generateReply executes the production ranking runtime and preserves every terminal list batch", async () => {
+  const runtime = createKnowledgeToolRuntime({
+    groupId: "67890",
+    ranking: loadPrivateEnterpriseRanking(),
+    forceRankingTool: true,
+  });
+  assert.ok(runtime);
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create() {
+      return {
+        model: "tool-model",
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "ranking-list",
+              type: "function",
+              function: {
+                name: "query_private_enterprise_ranking",
+                arguments: '{"operation":"province_list","edition":2026,"province":"浙江省"}',
+              },
+            }],
+          },
+        }],
+      };
+    },
+  } as never);
+
+  const reply = await service.generateReply({
+    skill,
+    history: [],
+    userInput: "列出浙江省2026民营企业500强名单",
+    toolRuntime: runtime,
+  });
+
+  assert.equal(reply.messages?.length, 6);
+  assert.match(reply.messages?.[0] ?? "", /浙江省共104家（按榜单省份，1\/6）/);
+  assert.match(reply.messages?.at(-1) ?? "", /浙江省共104家（按榜单省份，6\/6）/);
+  assert.equal(reply.messages?.join("\n").match(/第\d+名 /g)?.length, 104);
+  assert.deepEqual(reply.knowledgeToolCalls, ["query_private_enterprise_ranking"]);
+});
+
+test("generateReply returns a terminal no-match FAQ result instead of allowing a forced model guess", async () => {
+  const runtime = createKnowledgeToolRuntime({
+    groupId: "67890",
+    forceGroupFaqTool: true,
+    knowledgeBaseStore: {
+      async search() { return []; },
+      async listEnabledDirectory() { return []; },
+    },
+  });
+  assert.ok(runtime);
+  let providerCalls = 0;
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create() {
+      providerCalls += 1;
+      return {
+        model: "tool-model",
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "faq-no-match",
+              type: "function",
+              function: { name: "search_group_faq", arguments: '{"query":"不存在的制度"}' },
+            }],
+          },
+        }],
+      };
+    },
+  } as never);
+
+  const reply = await service.generateReply({
+    skill,
+    history: [],
+    userInput: "群规里不存在的制度是什么？",
+    toolRuntime: runtime,
+  });
+
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(reply.messages, ["当前群没有可检索的已启用知识库内容，无法核验这项内容。"]);
+  assert.deepEqual(reply.knowledgeToolCalls, ["search_group_faq"]);
+});
+
+test("generateReply retries a post-tool model request without re-executing its tool", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  let executions = 0;
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    async execute() {
+      executions += 1;
+      return { content: '{"status":"found","answer":"verified"}' };
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create(args: Record<string, unknown>) {
+      requests.push(args);
+      if (requests.length === 1) {
+        return {
+          model: "tool-model",
+          choices: [{ message: { content: null, tool_calls: [testToolCall("call-1")] } }],
+        };
+      }
+      if (requests.length === 2) {
+        throw new Error("reasoning_effort xhigh is not supported");
+      }
+      return {
+        model: "tool-model",
+        choices: [{ message: { content: "根据已核验资料，答案是 verified。" } }],
+      };
+    },
+  } as never, { reasoningEffort: "xhigh" });
+
+  const reply = await service.generateReply({
+    skill,
+    history: [],
+    userInput: "查一下已核验资料",
+    toolRuntime,
+  });
+
+  assert.equal(reply.text, "根据已核验资料，答案是 verified。");
+  assert.equal(reply.reasoningEffort, "high");
+  assert.equal(executions, 1);
+  assert.deepEqual(requests.map((request) => request.reasoning_effort), ["xhigh", "xhigh", "high"]);
+  const finalMessages = requests[2]?.messages as Array<{ role?: string }> | undefined;
+  assert.equal(finalMessages?.filter((message) => message.role === "tool").length, 1);
+});
+
+test("generateReply limits native knowledge execution to four tool calls", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  let executions = 0;
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    async execute() {
+      executions += 1;
+      return { content: '{"status":"found"}' };
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create(args: Record<string, unknown>) {
+      requests.push(args);
+      if (requests.length === 1) {
+        return {
+          choices: [{
+            message: {
+              content: null,
+              tool_calls: [testToolCall("call-1"), testToolCall("call-2"), testToolCall("call-3"), testToolCall("call-4")],
+            },
+          }],
+        };
+      }
+      return {
+        choices: [{ message: { content: null, tool_calls: [testToolCall("call-5")] } }],
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    service.generateReply({ skill, history: [], userInput: "继续查", toolRuntime }),
+    /knowledge_tool_call_limit_exceeded/,
+  );
+
+  assert.equal(executions, 4);
+  assert.equal(requests.length, 2);
+});
+
+test("generateReply rejects a third knowledge-tool round even when a gateway ignores tool_choice none", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  let executions = 0;
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    async execute() {
+      executions += 1;
+      return { content: '{"status":"found"}' };
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create(args: Record<string, unknown>) {
+      requests.push(args);
+      return {
+        choices: [{ message: { content: null, tool_calls: [testToolCall(`call-${requests.length}`)] } }],
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    service.generateReply({ skill, history: [], userInput: "继续查", toolRuntime }),
+    /knowledge_tool_call_limit_exceeded/,
+  );
+
+  assert.equal(executions, 2);
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2]?.tool_choice, "none");
+  assert.equal(requests[2]?.parallel_tool_calls, false);
+});
+
+test("generateReply fails closed when a gateway ignores a forced knowledge tool", async () => {
+  let providerCalls = 0;
+  let executions = 0;
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    forceToolName: testKnowledgeTool.name,
+    async execute() {
+      executions += 1;
+      return { content: '{"status":"found"}' };
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create() {
+      providerCalls += 1;
+      return {
+        choices: [{ message: { content: "我猜是第一名。" } }],
+      };
+    },
+  } as never);
+
+  await assert.rejects(
+    service.generateReply({ skill, history: [], userInput: "阿里排第几名？", toolRuntime }),
+    (error: unknown) => error instanceof KnowledgeToolUnavailableError,
+  );
+
+  assert.equal(providerCalls, 1);
+  assert.equal(executions, 0);
+});
+
+test("generateReply does not fall back to an ungrounded reply after a tool loop loses provider support", async () => {
+  let providerCalls = 0;
+  let executions = 0;
+  const toolRuntime: AiToolRuntime = {
+    tools: [testKnowledgeTool],
+    async execute() {
+      executions += 1;
+      return { content: '{"status":"found","answer":"verified"}' };
+    },
+  };
+  const service = new AiService("https://example.invalid/v1", "test-key", "test-model", {
+    async create() {
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        return {
+          choices: [{ message: { content: null, tool_calls: [testToolCall("call-1")] } }],
+        };
+      }
+      throw new Error("tools are not supported by this gateway");
+    },
+  } as never);
+
+  await assert.rejects(
+    service.generateReply({ skill, history: [], userInput: "查一下已核验资料", toolRuntime }),
+    (error: unknown) => error instanceof KnowledgeToolUnavailableError,
+  );
+
+  assert.equal(providerCalls, 2);
+  assert.equal(executions, 1);
 });
 
 test("generateStaticHtml returns raw strict-JSON output using a bounded non-streaming request", async () => {

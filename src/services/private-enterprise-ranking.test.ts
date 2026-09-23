@@ -27,15 +27,24 @@ test("ranking and province queries are deterministic and exhaustive", () => {
   const ranking = loadPrivateEnterpriseRanking();
   assert.match(ranking.answer("腾讯在2026中国民营企业500强排名第几？")?.messages[0] ?? "", /第6/);
   assert.match(ranking.answer("京东排名第几？")?.messages[0] ?? "", /第1/);
+  assert.match(ranking.answer("阿里排几名？")?.messages[0] ?? "", /阿里巴巴（中国）有限公司.*排名第2/);
   assert.match(ranking.answer("美团在民营企业500强排名多少？")?.messages[0] ?? "", /第19/);
   assert.match(ranking.answer("万向在民营企业500强排第几？")?.messages[0] ?? "", /多个可能的企业/);
   assert.match(ranking.answer("浙江省有多少家民营企业500强？")?.messages[0] ?? "", /104家/);
   assert.match(ranking.answer("黑龙江省有多少家民营企业500强？")?.messages[0] ?? "", /共0家/);
   assert.match(ranking.answer("新疆生产建设兵团有多少家民营企业500强？")?.messages[0] ?? "", /共2家/);
   assert.match(ranking.answer("2026中国民营企业500强第500名是谁？")?.messages[0] ?? "", /玲珑集团/);
+  assert.match(ranking.answer("第2名是谁？")?.messages[0] ?? "", /阿里巴巴（中国）有限公司/);
+  assert.match(ranking.answer("2026第2名是什么公司？")?.messages[0] ?? "", /阿里巴巴（中国）有限公司/);
+  assert.match(ranking.answer("第2位是什么？")?.messages[0] ?? "", /阿里巴巴（中国）有限公司/);
   assert.match(ranking.answer("2025中国民营企业500强京东排名多少？")?.messages[0] ?? "", /仅收录2026/);
   assert.match(ranking.answer("全国有多少家2026民营企业500强？")?.messages[0] ?? "", /共500家/);
   assert.equal(ranking.answer("今天浙江天气如何？"), undefined);
+
+  assert.match(
+    ranking.query({ operation: "national_count", edition: 2025 }).messages[0] ?? "",
+    /仅收录2026|不能用这份榜单回答其他年份/,
+  );
 
   const list = ranking.answer("浙江省有哪些民营企业500强？")?.messages ?? [];
   assert.equal(list.length, 6);
@@ -46,6 +55,30 @@ test("ranking and province queries are deterministic and exhaustive", () => {
     { role: "user", content: "浙江省有多少家民营企业500强？" },
     { role: "assistant", content: "2026中国民营企业500强：浙江省共104家。" },
   ])?.messages, list);
+  assert.match(ranking.answer("那个省最多？", [
+    { role: "user", content: "湖北省有多少家2026民营企业500强？" },
+    { role: "assistant", content: "2026中国民营企业500强：湖北省共12家（按榜单省份；2025年营收）。" },
+  ])?.messages[0] ?? "", /浙江省.*104家/);
+  assert.match(ranking.answer("哪个省最多？")?.messages[0] ?? "", /浙江省.*104家/);
+  const largestProvince = ranking.answer("那个省最多？", [
+    { role: "user", content: "湖北省有多少家2026民营企业500强？" },
+    { role: "assistant", content: "2026中国民营企业500强：湖北省共12家（按榜单省份；2025年营收）。" },
+  ])?.messages[0] ?? "";
+  const largestProvinceList = ranking.answer("分别是哪些？", [
+    { role: "user", content: "那个省最多？" },
+    { role: "assistant", content: largestProvince },
+  ])?.messages ?? [];
+  assert.equal(largestProvinceList.length, 6);
+  assert.match(largestProvinceList[0] ?? "", /浙江省共104家/);
+  assert.match(ranking.answer("第2名是谁？", [
+    { role: "user", content: "2026中国民营企业500强第1名是谁？" },
+    { role: "assistant", content: "2026中国民营企业500强第1名是京东集团。" },
+  ])?.messages[0] ?? "", /阿里巴巴（中国）有限公司/);
+  assert.match(ranking.answer("湖北省和湖南省哪个多？", [
+    { role: "user", content: "2026中国民营企业500强各省上榜情况" },
+    { role: "assistant", content: "2026中国民营企业500强：浙江省共104家。" },
+  ])?.messages[0] ?? "", /湖北省12家；湖南省10家。湖北省多2家/);
+  assert.match(ranking.answer("湖北省和湖南省哪个多？")?.messages[0] ?? "", /湖北省12家；湖南省10家。湖北省多2家/);
 });
 
 test("city counts fail closed until every headquarters has a dated source", () => {
