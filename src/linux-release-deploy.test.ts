@@ -20,6 +20,12 @@ const localPublisher = readFileSync(path.resolve("scripts", "publish-github-rele
 test("V3 Linux deployer verifies assets, migrates once, and atomically selects current", () => {
   assert.match(deployer, /sha256sum/);
   assert.match(deployer, /matching downloaded GitHub Release assets/);
+  assert.match(deployer, /releases\/\$release_id\/assets\?per_page=100/);
+  assert.match(deployer, /GitHub can briefly serve a release object with an empty embedded `assets`/);
+  assert.match(deployer, /GitHub Release asset list is invalid for the requested version/);
+  assert.match(deployer, /Number\.isSafeInteger\(release\.id\)/);
+  assert.match(deployer, /Array\.isArray\(assets\)/);
+  assert.match(deployer, /assets_path="\$\(mktemp\)"/);
   assert.match(deployer, /validate_archive_paths/);
   assert.match(deployer, /\[\[ "\$entry" == "\.\/" \]\]/);
   assert.match(deployer, /verify-release-source\.mjs" "\$STAGING_DIR"/);
