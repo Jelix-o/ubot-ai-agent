@@ -2915,7 +2915,7 @@ export class BotApplication {
           knowledgeBaseStore: this.knowledgeBaseStore,
           isKnowledgeEnabled: () => this.isCapabilityEnabled("knowledge"),
           forceRankingTool: isLikelyPrivateEnterpriseRankingRequest(normalizedUserInput, history),
-          forceGroupFaqTool: isLikelyGroupFaqRequest(normalizedUserInput),
+          forceGroupFaqTool: isLikelyGroupFaqRequest(normalizedUserInput, history),
         })
       : undefined;
     const replyArgs = {
@@ -5342,10 +5342,22 @@ function isLikelyPrivateEnterpriseRankingRequest(
   return classifyPrivateEnterpriseRankingRequest(text, history) !== "none";
 }
 
-/** Force a lookup only for clear group-rule / knowledge-base requests. */
-function isLikelyGroupFaqRequest(text: string): boolean {
-  if (/(?:2026|民营(?:企业)?|民企|500强)/.test(text)) return false;
-  return /(?:知识库|FAQ|群规|群规则|管理员(?:规定|要求|说过)?|制度|流程|报销|请假|打卡|会议(?:室|制度|规则)?|固定答案)/i.test(text);
+const EXPLICIT_GROUP_FAQ_REFERENCE = /(?:知识库|FAQ|群规|群规则|固定答案|管理员(?:的)?(?:规定|要求|说过))/iu;
+const GROUP_POLICY_REFERENCE = /(?:(?:群(?:里|内)?|知识库|FAQ|管理员).{0,24}(?:制度|流程|规则|规定)|(?:制度|流程|规则|规定).{0,24}(?:群(?:里|内)?|知识库|FAQ|管理员))/iu;
+const GROUP_OPERATIONAL_FAQ_REQUEST = /(?:(?:我(?:要|想)|怎么|如何|怎样|申请|办理|查询|问(?:一下|下)?|帮我|请问).{0,18}(?:报销|请假|打卡|会议室|会议(?:制度|规则))|(?:报销|请假|打卡|会议室|会议(?:制度|规则)).{0,18}(?:规则|制度|流程|规定|要求|怎么|如何|怎样|申请|办理|查询|吗|？|\?))/u;
+
+/** Force only an explicit current-group FAQ lookup; ranking questions stay on the verified dataset. */
+function isLikelyGroupFaqRequest(
+  text: string,
+  history: Array<Pick<ConversationTurn, "role" | "content">>,
+): boolean {
+  // The deterministic ranking preflight normally returns before this point.
+  // Repeat the shared classifier here so an unresolved ranking follow-up can
+  // never be redirected to a group FAQ just because it mentions a policy word.
+  if (isLikelyPrivateEnterpriseRankingRequest(text, history)) return false;
+  return EXPLICIT_GROUP_FAQ_REFERENCE.test(text) ||
+    GROUP_POLICY_REFERENCE.test(text) ||
+    GROUP_OPERATIONAL_FAQ_REQUEST.test(text);
 }
 
 function messageForAiFailure(error: unknown, failureKind: string): string {

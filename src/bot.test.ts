@@ -1179,6 +1179,64 @@ test("mentioned ranking questions use the shared verified dataset without callin
   ], 20002));
   assert.match(transport.sent[1]?.text ?? "", /总部城市尚未全部核验/);
   assert.equal(aiService.calls.length, 0);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "民营500强里浙江有几家？" } },
+  ], 20003));
+  assert.match(transport.sent[2]?.text ?? "", /浙江省共104家/);
+  assert.equal(aiService.calls.length, 0);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "中国民营500强排名第一是谁？" } },
+  ], 20004));
+  assert.match(transport.sent[3]?.text ?? "", /第1名是京东集团/);
+  assert.equal(aiService.calls.length, 0);
+});
+
+test("top-N and provincial ranking follow-ups stay deterministic without AI", async () => {
+  const { app, transport, aiService } = createApp({ privateEnterpriseRanking: loadPrivateEnterpriseRanking() });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "列出前十名" } },
+  ], 20011));
+  assert.equal((transport.sent[0]?.text.match(/第\d+名 /g) ?? []).length, 10);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "浙江省有多少家2026民营企业500强？" } },
+  ], 20012));
+  assert.match(transport.sent[1]?.text ?? "", /浙江省共104家/);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "按省份排名呢" } },
+  ], 20013));
+  assert.match(transport.sent[2]?.text ?? "", /1\. 浙江省104家；2\. 江苏省90家/);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "排名第二的省份呢" } },
+  ], 20014));
+  assert.match(transport.sent[3]?.text ?? "", /排名第2的是江苏省.*90家/);
+  assert.equal(aiService.calls.length, 0);
+});
+
+test("long deterministic province lists are delivered in rank-ordered batches without AI", async () => {
+  const { app, transport, aiService } = createApp({ privateEnterpriseRanking: loadPrivateEnterpriseRanking() });
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "浙江省有哪些2026民营企业500强？" } },
+  ]));
+
+  assert.equal(transport.sent.length, 6);
+  assert.match(transport.sent[0]?.text ?? "", /浙江省共104家.*1\/6/);
+  assert.match(transport.sent[0]?.text ?? "", /第7名 浙江荣盛控股集团有限公司/);
+  assert.match(transport.sent[5]?.text ?? "", /6\/6/);
+  assert.match(transport.sent[5]?.text ?? "", /第474名 人本集团有限公司/);
+  assert.equal(aiService.calls.length, 0);
 });
 
 test("named ranking requests bypass vision and never fall back to AI", async () => {
@@ -6798,6 +6856,67 @@ test("passes approved group FAQ as a current-group lookup tool instead of embedd
   assert.deepEqual(JSON.parse(result.content), { status: "terminal", messageCount: 1 });
   assert.deepEqual(result.finalMessages, ["先贴发票，再找管理员登记。"]);
   assert.deepEqual(knowledgeBaseStore.queries, [{ groupId: "67890", query: "我要报销" }]);
+});
+
+test("forces explicit group FAQ requests with bare 2026 or 500强 without intercepting ranking or ordinary chat", async () => {
+  const knowledgeBaseStore = new FakeKnowledgeBaseStore();
+  knowledgeBaseStore.entries = [
+    {
+      id: "faq-ranking-event",
+      groupId: "67890",
+      title: "2026年500强活动流程",
+      question: "500强活动流程是什么",
+      answer: "活动安排以群公告为准。",
+      keywords: ["2026", "500强", "活动流程"],
+      enabled: true,
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    },
+  ];
+  const { app, transport, aiService } = createApp({
+    knowledgeBaseStore,
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "群FAQ里2026年500强活动流程是什么？" } },
+  ]));
+
+  const faqRuntime = aiService.calls[0]?.toolRuntime;
+  assert.ok(faqRuntime);
+  assert.equal(faqRuntime.forceToolName, "search_group_faq");
+  const faqResult = await faqRuntime.execute({
+    id: "faq-2026-500-call",
+    name: "search_group_faq",
+    arguments: '{"query":"群FAQ里2026年500强活动流程是什么？"}',
+  });
+  assert.deepEqual(faqResult.finalMessages, ["活动安排以群公告为准。"]);
+  assert.deepEqual(knowledgeBaseStore.queries, [{
+    groupId: "67890",
+    query: "群FAQ里2026年500强活动流程是什么？",
+  }]);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "2026中国民营企业500强浙江省有多少家？" } },
+  ], 20002));
+  assert.match(transport.sent.at(-1)?.text ?? "", /浙江省共104家/);
+  assert.equal(aiService.calls.length, 1);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "2026年杭州天气怎么样？" } },
+  ], 20003));
+  assert.equal(aiService.calls.length, 2);
+  assert.equal(aiService.calls[1]?.toolRuntime?.forceToolName, undefined);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "这个流程怎么走？" } },
+  ], 20004));
+  assert.equal(aiService.calls.length, 3);
+  assert.equal(aiService.calls[2]?.toolRuntime?.forceToolName, undefined);
 });
 
 test("records a member memory only through #记忆 without calling the model", async () => {
