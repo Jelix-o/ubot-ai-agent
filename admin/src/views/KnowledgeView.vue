@@ -16,7 +16,14 @@ interface RankingEntry {
   name: string;
   province: string;
   revenueWan: number;
-  headquarters?: { city: string; sourceUrl: string; asOf: string };
+  headquarters?: {
+    city: string;
+    evidenceId: string;
+    sourceUrl: string;
+    sourcePublisher: string;
+    retrievedOn: string;
+    asOf: string;
+  };
 }
 interface RankingMetadata {
   edition: number;
@@ -25,8 +32,16 @@ interface RankingMetadata {
   rankingSource: string;
   screenshotSha256: string;
   rowsSha256: string;
+  transcriptionRowsSha256?: string;
+  screenshotCheckedRanks?: number[];
+  screenshotCorrections?: number[];
   cityCoverage: number;
   cityReady: boolean;
+  headquartersResearchStatus?: "in_progress" | "complete";
+  headquartersFrozenAt?: string;
+  headquartersResearchRowsSha256?: string;
+  headquartersSourceManifestSha256?: string;
+  headquartersEvidenceArchiveSha256?: string;
   provinces: string[];
 }
 const rankingItems = shallowRef<RankingEntry[]>([]);
@@ -46,6 +61,22 @@ const importText = shallowRef("");
 const importLoading = shallowRef(false);
 const importCandidates = shallowRef<Array<{ title: string; question: string; answer: string; keywords: string[]; enabled?: boolean }>>([]);
 const readonly = computed(() => app.readonly);
+const verifiedHeadquartersAvailable = computed(() => {
+  const metadata = rankingMetadata.value;
+  return metadata?.cityReady === true && metadata.headquartersResearchStatus === "complete";
+});
+
+function checksumPreview(value?: string): string {
+  return value ? `${value.slice(0, 12)}...` : "未提供";
+}
+
+function headquartersResearchLabel(metadata: RankingMetadata): string {
+  if (metadata.headquartersResearchStatus === "complete") {
+    return metadata.cityReady ? "已完成，可查询" : "已完成，完整性校验未通过，未开放";
+  }
+  if (metadata.headquartersResearchStatus === "in_progress") return "进行中，暂不开放精确统计";
+  return "状态未声明，未开放精确统计";
+}
 const form = reactive({
   title: "",
   question: "",
@@ -418,11 +449,53 @@ watch(() => route.query.tab, (tab) => {
       <span class="tag">只读数据</span>
     </div>
     <div v-if="rankingMetadata" class="ranking-provenance">
-      <span>发布：{{ rankingMetadata.publishedOn }}</span>
-      <span>总部城市：{{ rankingMetadata.cityCoverage }}/500 已核验{{ rankingMetadata.cityReady ? '，可查询' : '，暂不开放精确统计' }}</span>
+      <span>榜单发布：{{ rankingMetadata.publishedOn }}</span>
+      <span>总部城市：{{ rankingMetadata.cityCoverage }}/500 已核验</span>
+      <span class="tag" :class="{ danger: !verifiedHeadquartersAvailable }">总部研究：{{ headquartersResearchLabel(rankingMetadata) }}</span>
       <a :href="rankingMetadata.rankingSource" target="_blank" rel="noopener noreferrer">核对榜单来源</a>
-      <span :title="rankingMetadata.screenshotSha256">截图校验：{{ rankingMetadata.screenshotSha256.slice(0, 12) }}…</span>
+      <span :title="rankingMetadata.screenshotSha256">截图校验：{{ checksumPreview(rankingMetadata.screenshotSha256) }}</span>
     </div>
+    <details v-if="rankingMetadata" class="ranking-audit">
+      <summary>核验与溯源</summary>
+      <dl class="ranking-audit-list">
+        <div>
+          <dt>榜单行校验</dt>
+          <dd>{{ rankingMetadata.screenshotCheckedRanks?.length ? `${rankingMetadata.screenshotCheckedRanks.length}/500 行` : "未提供" }}</dd>
+        </div>
+        <div v-if="rankingMetadata.screenshotCorrections">
+          <dt>转写修正</dt>
+          <dd>{{ rankingMetadata.screenshotCorrections.length }} 处</dd>
+        </div>
+        <div v-if="rankingMetadata.headquartersFrozenAt">
+          <dt>总部口径冻结</dt>
+          <dd>{{ rankingMetadata.headquartersFrozenAt }}</dd>
+        </div>
+        <div v-if="rankingMetadata.screenshotSha256">
+          <dt>截图 SHA-256</dt>
+          <dd class="checksum"><code>{{ rankingMetadata.screenshotSha256 }}</code></dd>
+        </div>
+        <div v-if="rankingMetadata.rowsSha256">
+          <dt>榜单行 SHA-256</dt>
+          <dd class="checksum"><code>{{ rankingMetadata.rowsSha256 }}</code></dd>
+        </div>
+        <div v-if="rankingMetadata.transcriptionRowsSha256">
+          <dt>转写行 SHA-256</dt>
+          <dd class="checksum"><code>{{ rankingMetadata.transcriptionRowsSha256 }}</code></dd>
+        </div>
+        <div v-if="rankingMetadata.headquartersResearchRowsSha256">
+          <dt>总部研究 SHA-256</dt>
+          <dd class="checksum"><code>{{ rankingMetadata.headquartersResearchRowsSha256 }}</code></dd>
+        </div>
+        <div v-if="rankingMetadata.headquartersSourceManifestSha256">
+          <dt>总部证据清单 SHA-256</dt>
+          <dd class="checksum"><code>{{ rankingMetadata.headquartersSourceManifestSha256 }}</code></dd>
+        </div>
+        <div v-if="rankingMetadata.headquartersEvidenceArchiveSha256">
+          <dt>总部证据归档 SHA-256</dt>
+          <dd class="checksum"><code>{{ rankingMetadata.headquartersEvidenceArchiveSha256 }}</code></dd>
+        </div>
+      </dl>
+    </details>
     <div class="ranking-toolbar">
       <label>企业或名次<input v-model="rankingQuery" class="input" type="search" placeholder="搜索企业名称或名次" @change="applyRankingFilters" /></label>
       <label>榜单省份<select v-model="rankingProvince" class="select" @change="applyRankingFilters">
@@ -434,14 +507,22 @@ watch(() => route.query.tab, (tab) => {
     </div>
     <div v-if="rankingLoading && !rankingMetadata" class="empty">正在加载榜单...</div>
     <div v-else-if="!rankingItems.length" class="empty">没有匹配的企业。</div>
-    <div v-else class="ranking-table" :class="{ 'with-city': rankingMetadata?.cityReady }">
-      <div class="ranking-row ranking-head"><span>名次</span><span>企业名称</span><span>榜单省份</span><span>营收（万元）</span><span v-if="rankingMetadata?.cityReady">总部城市</span></div>
+    <div v-else class="ranking-table" :class="{ 'with-city': verifiedHeadquartersAvailable }">
+      <div class="ranking-row ranking-head"><span>名次</span><span>企业名称</span><span>榜单省份</span><span>营收（万元）</span><span v-if="verifiedHeadquartersAvailable">总部城市与证据</span></div>
       <div v-for="entry in rankingItems" :key="entry.rank" class="ranking-row">
         <span class="ranking-number">{{ entry.rank }}</span>
         <strong>{{ entry.name }}</strong>
         <span>{{ entry.province }}</span>
         <span class="ranking-revenue">{{ entry.revenueWan.toLocaleString('zh-CN') }}</span>
-        <a v-if="rankingMetadata?.cityReady && entry.headquarters" :href="entry.headquarters.sourceUrl" target="_blank" rel="noopener noreferrer" :title="`核验截至 ${entry.headquarters.asOf}`">{{ entry.headquarters.city }}</a>
+        <div v-if="verifiedHeadquartersAvailable && entry.headquarters" class="headquarters-cell">
+          <a
+            :href="entry.headquarters.sourceUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            :title="`总部口径截至 ${entry.headquarters.asOf}；证据编号 ${entry.headquarters.evidenceId}`"
+          >{{ entry.headquarters.city }}</a>
+          <span>{{ entry.headquarters.sourcePublisher }} · 取证 {{ entry.headquarters.retrievedOn }}</span>
+        </div>
       </div>
     </div>
     <div class="pager">
@@ -459,15 +540,26 @@ watch(() => route.query.tab, (tab) => {
 .knowledge-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .ranking-provenance { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 16px; color: var(--muted); font-size: 12.5px; }
 .ranking-provenance a, .ranking-row a { color: var(--accent-strong); }
+.ranking-audit { margin: -4px 0 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
+.ranking-audit summary { min-height: 38px; display: flex; align-items: center; padding: 0 12px; color: var(--text-strong); font-size: 12.5px; font-weight: 650; cursor: pointer; }
+.ranking-audit summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.ranking-audit-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 16px; margin: 0; padding: 0 12px 12px; }
+.ranking-audit-list > div { min-width: 0; }
+.ranking-audit-list dt { color: var(--muted); font-size: 12px; }
+.ranking-audit-list dd { margin: 3px 0 0; color: var(--text-strong); font-size: 12.5px; overflow-wrap: anywhere; }
+.ranking-audit-list .checksum { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.ranking-audit-list code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .ranking-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, 210px) 120px auto; align-items: end; gap: 10px; margin-bottom: 14px; }
 .ranking-toolbar label { display: grid; gap: 5px; color: var(--muted); font-size: 12.5px; font-weight: 650; }
 .ranking-toolbar .ghost-btn { min-height: 38px; }
 .ranking-table { border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
 .ranking-row { display: grid; grid-template-columns: 72px minmax(260px, 1fr) minmax(110px, 0.4fr) minmax(140px, 0.4fr); align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; }
-.ranking-row.with-city, .ranking-table.with-city .ranking-row { grid-template-columns: 72px minmax(230px, 1fr) minmax(100px, 0.35fr) minmax(130px, 0.4fr) minmax(110px, 0.35fr); }
+.ranking-row.with-city, .ranking-table.with-city .ranking-row { grid-template-columns: 72px minmax(230px, 1fr) minmax(100px, 0.35fr) minmax(130px, 0.4fr) minmax(170px, 0.55fr); }
 .ranking-head { border-top: 0; background: var(--surface-soft); color: var(--muted); font-weight: 650; }
 .ranking-number, .ranking-revenue { font-variant-numeric: tabular-nums; }
 .ranking-row strong { min-width: 0; overflow-wrap: anywhere; color: var(--text-strong); font-weight: 650; }
+.headquarters-cell { display: grid; gap: 3px; min-width: 0; }
+.headquarters-cell span { color: var(--muted); font-size: 11.5px; line-height: 1.35; overflow-wrap: anywhere; }
 .knowledge-toolbar {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) 150px auto;

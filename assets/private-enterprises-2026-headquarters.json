@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "edition": 2026,
+  "rankingRowsSha256": "bbe2ef2c1aa564e63b798e0d51ee8c776b447fee4c1fb7db8e1e9b6167445e08",
+  "frozenAt": "2026-09-22",
+  "status": "in_progress",
+  "researchRowsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "sourceManifestSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "evidenceArchiveSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "entries": []
+}

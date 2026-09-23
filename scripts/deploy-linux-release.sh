@@ -572,6 +572,46 @@ validate_archive_paths() {
   done < <(tar -tzf "$BUNDLE")
 }
 
+# Validate the exact compiled release, including a completed headquarters
+# ledger against the persistent public reviewer key, before stopping writers.
+# The verifier reads only the two public verification settings; it never
+# sources or prints the rest of the production dotenv file.
+prepare_release_bundle_preflight() {
+  local bundle_version
+  mkdir -p "$STAGING_DIR"
+  tar -xzf "$BUNDLE" -C "$STAGING_DIR"
+  for required in \
+    package.json package-lock.json dist/index.js assets/huixian-profile.json assets/private-enterprises-2026.json \
+    assets/private-enterprises-2026-audit.json assets/private-enterprises-2026-review.md \
+    assets/private-enterprises-2026-headquarters.json assets/private-enterprises-2026-headquarters-evidence.json \
+    assets/private-enterprises-2026-headquarters-review.md \
+    scripts/deploy-linux-release.sh scripts/migrate-v3-state.mjs scripts/normalize-dotenv-bom.mjs \
+    scripts/configure-v3-network.mjs scripts/verify-release-source.mjs \
+    deploy/systemd/ubot-ingress.service.template deploy/systemd/ubot-worker.service.template \
+    deploy/systemd/ubot-admin.service.template deploy/systemd/ubot.target.template \
+    deploy/systemd/ubot-maintenance.service.template deploy/systemd/ubot-maintenance.timer.template \
+    deploy/nginx/preview.9958.uk.conf deploy/nginx/ubot-preview-static.conf; do
+    if [[ ! -e "$STAGING_DIR/$required" ]]; then
+      echo "Release bundle is missing a required V3 path: $required" >&2
+      exit 2
+    fi
+  done
+
+  node "$STAGING_DIR/scripts/verify-release-source.mjs" "$STAGING_DIR" \
+    --headquarters-review-env "$PERSISTENT_ENV"
+
+  bundle_version="$(node -p "require(process.argv[1]).version" "$STAGING_DIR/package.json")"
+  if [[ "$bundle_version" != "$VERSION" ]]; then
+    echo "Bundle version does not match the requested version." >&2
+    exit 2
+  fi
+
+  (
+    cd "$STAGING_DIR"
+    npm ci --omit=dev --ignore-scripts
+  )
+}
+
 is_active() {
   [[ "$(systemctl is-active "$1" 2>/dev/null || true)" == "active" ]]
 }
@@ -825,6 +865,7 @@ fi
 # V3 maintenance release it only applies additive SQLite migrations. The
 # network configurator then uses atomic replacement for dotenv and NapCat JSON.
 preflight_cutover_write_access
+prepare_release_bundle_preflight
 
 if [[ -L "$CURRENT_LINK" ]]; then
   old_current_target="$(readlink "$CURRENT_LINK")"
@@ -887,36 +928,6 @@ try {
 NODE
   chmod 600 "$BACKUP_DIR/bot-shared.db"
 fi
-
-mkdir -p "$STAGING_DIR"
-tar -xzf "$BUNDLE" -C "$STAGING_DIR"
-for required in \
-  package.json package-lock.json dist/index.js assets/huixian-profile.json assets/private-enterprises-2026.json \
-  assets/private-enterprises-2026-audit.json assets/private-enterprises-2026-review.md \
-  scripts/deploy-linux-release.sh scripts/migrate-v3-state.mjs scripts/normalize-dotenv-bom.mjs \
-  scripts/configure-v3-network.mjs \
-  deploy/systemd/ubot-ingress.service.template deploy/systemd/ubot-worker.service.template \
-  deploy/systemd/ubot-admin.service.template deploy/systemd/ubot.target.template \
-  deploy/systemd/ubot-maintenance.service.template deploy/systemd/ubot-maintenance.timer.template \
-  deploy/nginx/preview.9958.uk.conf deploy/nginx/ubot-preview-static.conf; do
-  if [[ ! -e "$STAGING_DIR/$required" ]]; then
-    echo "Release bundle is missing a required V3 path: $required" >&2
-    exit 2
-  fi
-done
-
-node "$STAGING_DIR/scripts/verify-release-source.mjs" "$STAGING_DIR"
-
-bundle_version="$(node -p "require(process.argv[1]).version" "$STAGING_DIR/package.json")"
-if [[ "$bundle_version" != "$VERSION" ]]; then
-  echo "Bundle version does not match the requested version." >&2
-  exit 2
-fi
-
-(
-  cd "$STAGING_DIR"
-  npm ci --omit=dev --ignore-scripts
-)
 
 # Parse, but never source or print, secrets from the persistent dotenv file.
 node - "$PERSISTENT_ENV" <<'NODE'

@@ -91,6 +91,9 @@ $itemsToCopy = @(
   "assets/private-enterprises-2026.json",
   "assets/private-enterprises-2026-audit.json",
   "assets/private-enterprises-2026-review.md",
+  "assets/private-enterprises-2026-headquarters.json",
+  "assets/private-enterprises-2026-headquarters-evidence.json",
+  "assets/private-enterprises-2026-headquarters-review.md",
   "assets/blacklisted-at-meme.jpg"
 )
 

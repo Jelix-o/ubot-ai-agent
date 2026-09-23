@@ -9,6 +9,13 @@ on:
 permissions:
   contents: write
 
+# These are public verification inputs, not signing secrets. Configure them as
+# repository Actions variables before publishing a completed headquarters
+# ledger; the matching Ed25519 private key stays offline.
+env:
+  UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY }}
+  UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID }}
+
 jobs:
   verify:
     name: Verify (${{ matrix.os }})
