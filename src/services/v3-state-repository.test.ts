@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { GroupMemory, ScheduledReminderTask, SkillDefinition, SystemSettings } from "../types.js";
+import type { GroupBotConfig, GroupMemory, ScheduledReminderTask, SkillDefinition, SystemSettings } from "../types.js";
 import { SharedDb } from "../shared/sqlite.js";
 import { GroupMemoryStore } from "./group-memory-store.js";
 import { KnowledgeBaseStore } from "./knowledge-base-store.js";
@@ -63,6 +63,17 @@ function huixianProfile(overrides: Partial<SkillDefinition> = {}): SkillDefiniti
     temperature: 0.8,
     maxContextTurns: 24,
     ...overrides,
+  };
+}
+
+function groupConfig(groupId: string, enabled = true): GroupBotConfig {
+  return {
+    groupId,
+    enabled,
+    currentSkillId: "huixian",
+    allowedSkillIds: ["huixian"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
   };
 }
 
@@ -380,6 +391,64 @@ test("knowledge packs are durable group policy boundaries for SQLite knowledge",
       updatedAt: "2026-08-22T00:00:00.000Z",
     });
     assert.equal(repository.getKnowledgePack("10001")?.enabled, false, "entry writes must not re-enable a disabled pack");
+  });
+});
+
+test("enabled groups receive missing knowledge packs without undoing an administrator opt-out", async () => {
+  await withRepository((repository, db) => {
+    const now = Date.parse("2026-09-23T00:00:00.000Z");
+    repository.saveGroups({
+      groups: [groupConfig("10001"), groupConfig("10002", false)],
+    }, now);
+    assert.equal(repository.getKnowledgePack("10001")?.enabled, true);
+    assert.equal(repository.getKnowledgePack("10002"), undefined);
+
+    db.db.prepare("DELETE FROM v3_knowledge_packs WHERE group_id = ?").run("10001");
+    assert.deepEqual(repository.ensureKnowledgePacksForEnabledGroups(now + 1), {
+      enabledGroups: 1,
+      created: 1,
+    });
+    assert.equal(repository.getKnowledgePack("10001")?.enabled, true);
+
+    repository.saveKnowledgePack({
+      groupId: "10001",
+      enabled: false,
+      createdAt: new Date(now).toISOString(),
+      updatedAt: new Date(now + 2).toISOString(),
+    });
+    assert.deepEqual(repository.ensureKnowledgePacksForEnabledGroups(now + 3), {
+      enabledGroups: 1,
+      created: 0,
+    });
+    assert.equal(repository.getKnowledgePack("10001")?.enabled, false);
+
+    repository.saveGroups({ groups: [groupConfig("10001"), groupConfig("10002", false)] }, now + 4);
+    assert.equal(repository.getKnowledgePack("10001")?.enabled, false);
+
+    repository.saveGroups({ groups: [groupConfig("10001"), groupConfig("10002"), groupConfig("10003")] }, now + 5);
+    assert.equal(repository.getKnowledgePack("10002")?.enabled, true);
+    assert.equal(repository.getKnowledgePack("10003")?.enabled, true);
+
+    repository.saveGroups({ groups: [groupConfig("10004"), groupConfig("10004", false)] }, now + 6);
+    assert.equal(repository.getGroup("10004")?.enabled, false);
+    assert.equal(repository.getKnowledgePack("10004"), undefined);
+  });
+});
+
+test("knowledge-pack provisioning rolls back when a stored group config is not an object", async () => {
+  await withRepository((repository, db) => {
+    repository.saveGroups({ groups: [groupConfig("10001")] });
+    db.db.prepare("DELETE FROM v3_knowledge_packs WHERE group_id = ?").run("10001");
+    db.db.prepare(
+      "INSERT INTO v3_groups (group_id, config_json, updated_at) VALUES ('malformed', '[]', ?)",
+    ).run(Date.now());
+
+    assert.throws(
+      () => repository.ensureKnowledgePacksForEnabledGroups(),
+      /invalid_v3_group_config_for_knowledge_pack_provisioning/,
+    );
+    assert.equal(repository.getKnowledgePack("10001"), undefined);
+    assert.equal(repository.getKnowledgePack("malformed"), undefined);
   });
 });
 

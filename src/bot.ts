@@ -31,7 +31,10 @@ import { ImagePipelineError, type ImagePipeline } from "./services/image-pipelin
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { createKnowledgeToolRuntime } from "./services/knowledge-query-tools.js";
-import type { PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
+import {
+  classifyPrivateEnterpriseRankingRequest,
+  type PrivateEnterpriseRanking,
+} from "./services/private-enterprise-ranking.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
@@ -2512,6 +2515,49 @@ export class BotApplication {
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
+    // Read the causal branch before the vision gate. A ranking follow-up such
+    // as "分别是哪些" needs the immediately preceding verified answer, and an
+    // incidental image must not turn that deterministic query into a vision
+    // request. The same history is reused below for ordinary model replies.
+    let causalHistory: ConversationContextTurn[] = [];
+    if (conversationRoute && this.conversationContextRepository) {
+      try {
+        causalHistory = this.conversationContextRepository.getCausalTurnsBeforeTurn(
+          conversationRoute.branchId,
+          conversationRoute.turnId,
+        );
+      } catch (error) {
+        logWarn("Conversation history read failed closed; using current message only.", {
+          topicId: conversationRoute.topicId,
+          branchId: conversationRoute.branchId,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
+      }
+    }
+    const rankingHistory = causalHistory.map((turn) => ({ role: turn.role, content: turn.content }));
+    // A deterministic Top 500 request is fully answered from the verified
+    // local dataset. Handle it before the vision gate so an incidental
+    // attachment cannot make a verified fact query fall back to a model.
+    const namedRankingRequest = this.privateEnterpriseRanking &&
+      classifyPrivateEnterpriseRankingRequest(normalizedUserInput) === "explicit";
+    const preflightRankingAnswer = this.privateEnterpriseRanking?.answer(normalizedUserInput, rankingHistory);
+    if (namedRankingRequest || preflightRankingAnswer) {
+      if (!this.isCapabilityEnabled("knowledge")) {
+        await this.rejectCapability(groupConfig.groupId, "knowledge");
+        return;
+      }
+      const messages = preflightRankingAnswer?.messages ?? [
+        "2026中国民营企业500强知识库暂不能解析这个问法；请明确企业名称、名次、省级地区或名单需求。",
+      ];
+      const receipts = await this.sendTextMessages(
+        groupConfig.groupId,
+        messages,
+        prefixMentionUserIds,
+        conversationRoute,
+      );
+      await this.persistAssistantContext(conversationRoute, messages.join("\n\n"), receipts);
+      return;
+    }
     const imageInputCount = images.length + (messageContext.replyContext?.images?.length ?? 0);
     if (imageInputCount > 0 && groupConfig.visionEnabled !== true) {
       const disabledText = "本群未开启图片理解，请联系群管理员在后台开启后再发送图片。";
@@ -2554,27 +2600,9 @@ export class BotApplication {
       ...groupConfig,
       manualIdentities: promptManualIdentities,
     };
-    // Fail closed: routed production messages read only their causal branch. The
-    // legacy JSON store remains a compatibility path until the cutover command
-    // clears it, but is never used when a route was supplied.
-    let causalHistory: ConversationContextTurn[] = [];
-    if (conversationRoute && this.conversationContextRepository) {
-      try {
-        // Resolve the current parent from SQLite at execution time. The worker
-        // may have inserted an earlier assistant turn after this route object
-        // was queued, and the persisted causal chain is authoritative.
-        causalHistory = this.conversationContextRepository.getCausalTurnsBeforeTurn(
-          conversationRoute.branchId,
-          conversationRoute.turnId,
-        );
-      } catch (error) {
-        logWarn("Conversation history read failed closed; using current message only.", {
-          topicId: conversationRoute.topicId,
-          branchId: conversationRoute.branchId,
-          errorType: error instanceof Error ? error.name : typeof error,
-        });
-      }
-    }
+    // Fail closed: routed production messages read only their causal branch.
+    // The branch was loaded above so a deterministic knowledge answer could
+    // bypass the vision gate, and is reused here for model context.
     const history = causalHistory
       .map((turn): ConversationTurn => ({
         groupId: groupConfig.groupId,
@@ -2585,9 +2613,7 @@ export class BotApplication {
         ...(turn.userId ? { userId: turn.userId } : {}),
         timestamp: new Date(turn.createdAt).toISOString(),
       }));
-    const rankingAnswer = images.length === 0 && (messageContext.replyContext?.images?.length ?? 0) === 0
-      ? this.privateEnterpriseRanking?.answer(normalizedUserInput, history)
-      : undefined;
+    const rankingAnswer = this.privateEnterpriseRanking?.answer(normalizedUserInput, history);
     if (rankingAnswer) {
       if (!this.isCapabilityEnabled("knowledge")) {
         await this.rejectCapability(groupConfig.groupId, "knowledge");
@@ -5309,21 +5335,11 @@ function estimateTextTokens(text: string): number {
   return cjkCount + Math.ceil(alphanumericCount / 4) + Math.ceil(symbolCount / 2);
 }
 
-/**
- * Direct regex routing handles the common ranking forms before an LLM call.
- * This narrower detector protects the remaining conversational forms by
- * requiring an actual native ranking lookup instead of a free-form guess.
- */
 function isLikelyPrivateEnterpriseRankingRequest(
   text: string,
   history: Array<Pick<ConversationTurn, "role" | "content">>,
 ): boolean {
-  const explicitScope = /(?:2026|民营(?:企业)?|民企|500强)/.test(text);
-  const rankingFact = /(?:排名|名次|排(?:第)?几|第几|第\s*\d+|上榜|入围|多少家|几家|哪些|哪几家|名单|分别是|哪个省|哪个地区|各省|省份|地区|最多|最少|比较|总部城市|总部所在)/.test(text);
-  if (explicitScope && rankingFact) return true;
-  const priorAnswer = history.at(-1);
-  return priorAnswer?.role === "assistant" && priorAnswer.content.includes("2026中国民营企业500强") &&
-    /(?:那个|哪个|哪|分别是哪些|有哪些|都有哪些|哪几家|名单|最多|最少|比较|多少家|几家|排名|名次|排(?:第)?几|第\s*\d+\s*(?:名|位)|谁)/.test(text);
+  return classifyPrivateEnterpriseRankingRequest(text, history) !== "none";
 }
 
 /** Force a lookup only for clear group-rule / knowledge-base requests. */

@@ -1181,6 +1181,72 @@ test("mentioned ranking questions use the shared verified dataset without callin
   assert.equal(aiService.calls.length, 0);
 });
 
+test("named ranking requests bypass vision and never fall back to AI", async () => {
+  const { app, transport, aiService } = createApp({ privateEnterpriseRanking: loadPrivateEnterpriseRanking() });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "2025中国民营企业500强第2名是谁？" } },
+  ], 20001, 67890, 301));
+  assert.match(transport.sent[0]?.text ?? "", /仅收录2026|不能用这份榜单回答其他年份/);
+  assert.equal(aiService.calls.length, 0);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "2026中国民营企业500强前10名有哪些？" } },
+    { type: "image", data: { url: "https://example.test/incidental.png", file: "incidental.png" } },
+  ], 20001, 67890, 302));
+  assert.match(transport.sent[1]?.text ?? "", /第1名 京东集团/);
+  assert.match(transport.sent[1]?.text ?? "", /第10名 山东魏桥创业集团/);
+  assert.equal(aiService.calls.length, 0);
+});
+
+test("ranking follow-ups with incidental images bypass the vision gate", async () => {
+  const route: ConversationRoute = {
+    sourceRowId: 302,
+    sourceMessageId: "ranking-followup",
+    topicId: "ranking-topic",
+    branchId: "ranking-branch",
+    routeReason: "same-user-similar",
+    turnId: 9,
+  };
+  const { app, transport, aiService } = createApp({
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
+    conversationContextRepository: {
+      getCausalTurnsBeforeTurn: () => [{
+        groupId: "67890",
+        role: "assistant",
+        content: "2026中国民营企业500强：湖北省共12家（按榜单省份；2025年营收）。",
+        timestamp: "2026-09-23T00:00:00.000Z",
+      }],
+      appendAssistantTurn: (() => ({ id: 10 })) as never,
+    },
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "那个省最多？" } },
+    { type: "image", data: { url: "https://example.test/incidental-followup.png", file: "incidental-followup.png" } },
+  ], 20001, 67890, 304), undefined, route);
+
+  assert.match(transport.sent[0]?.text ?? "", /浙江省.*104家/);
+  assert.equal(transport.sent.map((message) => message.text).join("\n").includes("本群未开启图片理解"), false);
+  assert.equal(aiService.calls.length, 0);
+});
+
+test("ordinary questions that merely mention 2026 remain normal chat", async () => {
+  const { app, transport, aiService } = createApp({ privateEnterpriseRanking: loadPrivateEnterpriseRanking() });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "2026年天气怎么样？" } },
+  ], 20001, 67890, 303));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.toolRuntime?.forceToolName, undefined);
+  assert.equal(transport.sent[0]?.text, "AI reply");
+});
+
 test("#网页 routes an explicit page request to the durable publisher instead of normal chat", async () => {
   const calls: Array<{ request?: string; id?: string }> = [];
   const publisher = {
@@ -6729,9 +6795,8 @@ test("passes approved group FAQ as a current-group lookup tool instead of embedd
     name: "search_group_faq",
     arguments: '{"query":"我要报销"}',
   });
-  const payload = JSON.parse(result.content) as { status: string; entries: Array<{ answer?: string }> };
-  assert.equal(payload.status, "found");
-  assert.equal(payload.entries[0]?.answer, "先贴发票，再找管理员登记。");
+  assert.deepEqual(JSON.parse(result.content), { status: "terminal", messageCount: 1 });
+  assert.deepEqual(result.finalMessages, ["先贴发票，再找管理员登记。"]);
   assert.deepEqual(knowledgeBaseStore.queries, [{ groupId: "67890", query: "我要报销" }]);
 });
 

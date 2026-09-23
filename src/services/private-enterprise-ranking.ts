@@ -30,6 +30,7 @@ export interface PrivateEnterpriseRankingData {
 
 export interface RankingPageArgs {
   query?: string;
+  rank?: number;
   province?: string;
   city?: string;
   page: number;
@@ -47,6 +48,7 @@ export interface RankingAnswer {
 export type PrivateEnterpriseToolOperation =
   | "company_lookup"
   | "rank_lookup"
+  | "rank_range"
   | "province_count"
   | "province_list"
   | "province_compare"
@@ -63,6 +65,8 @@ export interface PrivateEnterpriseToolQuery {
   edition?: number;
   company?: string;
   rank?: number;
+  startRank?: number;
+  endRank?: number;
   province?: string;
   provinces?: string[];
   city?: string;
@@ -74,6 +78,31 @@ const EDITION = "2026中国民营企业500强";
 const LIST_BATCH_SIZE = 20;
 const MUNICIPALITIES = new Set(["北京市", "天津市", "上海市", "重庆市"]);
 const REGIONS_WITHOUT_ENTRIES = ["黑龙江省", "甘肃省", "青海省", "西藏自治区"];
+const EXPLICIT_RANKING_SCOPE = /(?:20\d{2}年?)?(?:中国)?(?:民营企业|民企)500强(?:榜单)?/u;
+const SHORT_EDITION_RANKING_SCOPE = /20\d{2}年?(?:第\s*\d{1,3}\s*(?:名|位)|(?:前|top)\s*(?:\d+|[一二两三四五六七八九十]))/iu;
+const NON_TARGET_RANKING_SCOPE = /(?:世界|财富|福布斯|胡润|中国企业)500强|电影榜单/u;
+const CONTEXTUAL_RANKING_FACT = /(?:企业|公司|集团|排名|名次|排(?:第)?几|第\s*\d+|前\s*(?:\d+|[一二两三四五六七八九十])|top\s*\d*|上榜|入围|多少家|几家|哪些|哪几家|名单|分别|省|地区|总部|榜单|营收|收入|怎样|怎么样|情况|表现)/iu;
+
+export type PrivateEnterpriseRankingRequestScope = "none" | "explicit" | "contextual";
+
+/**
+ * Separates unmistakable Top 500 fact requests from ordinary conversation.
+ * An explicit named ranking is always handled locally, while a short
+ * follow-up is local only immediately after an authoritative ranking reply.
+ */
+export function classifyPrivateEnterpriseRankingRequest(
+  text: string,
+  history: ReadonlyArray<{ role: string; content: string }> = [],
+): PrivateEnterpriseRankingRequestScope {
+  const normalized = compactRankingText(text);
+  if (isNonTargetRankingScope(normalized)) return "none";
+  if (EXPLICIT_RANKING_SCOPE.test(normalized) || SHORT_EDITION_RANKING_SCOPE.test(normalized)) return "explicit";
+  const previous = history.at(-1);
+  return previous?.role === "assistant" && previous.content.includes(EDITION) &&
+    CONTEXTUAL_RANKING_FACT.test(normalized)
+    ? "contextual"
+    : "none";
+}
 
 export function loadPrivateEnterpriseRanking(): PrivateEnterpriseRanking {
   const assetUrl = new URL("../../assets/private-enterprises-2026.json", import.meta.url);
@@ -97,11 +126,14 @@ export class PrivateEnterpriseRanking {
   }
 
   listPage(args: RankingPageArgs) {
-    const query = normalize(args.query ?? "");
+    const queryRank = parseRankingRankFilter(args.query ?? "");
+    const rank = normalizeRankingRank(args.rank) ?? queryRank;
+    const query = queryRank === undefined ? normalize(args.query ?? "") : "";
     const province = this.provinces.find((item) => normalize(item) === normalize(args.province ?? ""));
     const city = normalize(args.city ?? "");
     const matched = this.data.entries.filter((entry) =>
-      (!query || normalize(`${entry.rank} ${entry.name} ${entry.province}`).includes(query)) &&
+      (rank === undefined || entry.rank === rank) &&
+      (!query || normalize(`${entry.name} ${entry.province}`).includes(query)) &&
       (!args.province || entry.province === province) &&
       (!city || (this.cityReady && normalize(entry.headquarters?.city ?? "") === city))
     );
@@ -138,6 +170,8 @@ export class PrivateEnterpriseRanking {
         return this.answerCompany(input.company ?? "");
       case "rank_lookup":
         return this.answerRank(input.rank);
+      case "rank_range":
+        return this.answerRankRange(input.startRank, input.endRank);
       case "province_count":
         return this.answerProvince(input.province, false);
       case "province_list":
@@ -162,28 +196,42 @@ export class PrivateEnterpriseRanking {
   }
 
   answer(text: string, history: Array<{ role: string; content: string }> = []): RankingAnswer | undefined {
-    const years = [...text.matchAll(/20\d{2}/g)].map((match) => Number(match[0]));
-    if (years.some((year) => year !== 2026)) {
-      return /民营|民企|500强/.test(text) && /排名|名次|第几|多少家|几家|哪些|名单|分别是|最多|最少|比较|哪个省|哪个地区/.test(text)
-        ? { messages: ["目前知识库仅收录2026中国民营企业500强，不能用这份榜单回答其他年份的名次或地区统计。"] }
-        : undefined;
-    }
-
-    const scope = /民营|民企|500强|2026/.test(text);
-    const rankIntent = /排名|名次|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|第\s*\d+\s*(?:名|位)/.test(text);
-    const listIntent = /哪些|哪几家|分别是|名单|有谁|都有哪些/.test(text);
-    const countIntent = /多少家|几家|上榜|入围/.test(text);
+    const requestScope = classifyPrivateEnterpriseRankingRequest(text, history);
     const previousAssistantContent = history.at(-1)?.role === "assistant"
       ? history.at(-1)?.content ?? ""
       : "";
     const rankingContextActive = previousAssistantContent.includes(EDITION);
+    if (isNonTargetRankingScope(compactRankingText(text))) return undefined;
+
+    const rankRange = parseRankRange(text);
+    const topRankLimit = parseTopRankLimit(text);
+    const rankIntent = /排名|名次|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|第\s*\d+\s*(?:名|位)/.test(text);
+    const listIntent = /哪些|哪几家|分别是|名单|有谁|都有哪些/.test(text);
+    const countIntent = /多少家|几家|上榜|入围/.test(text);
+    const rankingReferenceIntent = /民营|民企|500强|榜单|排名|名次|上榜|入围/.test(text);
+    const companyStatusIntent = /怎样|怎么样|情况|表现/.test(text) && (rankingContextActive || /榜单|排名|名次/.test(text));
+    const companyExistenceIntent = /上榜|入围|有无|有没有|是否/.test(text);
+    const potentialCompanyInquiry = rankIntent || companyStatusIntent || companyExistenceIntent || rankingReferenceIntent;
+    const companyMatches = potentialCompanyInquiry ? this.matchEnterprises(text) : [];
+    const companyRankRequestShape = rankIntent && looksLikeCompanyRankRequest(text);
+    const extremeIntent = /(?:哪个|哪|那个|什么)(?:省|地区)(?:[^？?。]{0,12})?(?:最多|最少)|(?:最多|最少)(?:的|是)?(?:哪个|哪|什么)(?:省|地区)|(?:各省|省份|地区).*(?:最多|最少)/.test(text);
+    const revenueBasisIntent = /(?:2025年?)?(?:营业)?收入|营收.*(?:年份|年度|2025)|(?:按|以|用)2025年?(?:营收|营业收入|收入)/.test(text);
+    const namedEdition = extractNamedRankingEdition(text);
+    const fallbackEdition = namedEdition === undefined && (requestScope !== "none" || companyMatches.length > 0 || rankingContextActive || companyRankRequestShape)
+      ? extractFallbackRankingEdition(text)
+      : undefined;
+    const requestedEdition = namedEdition ?? fallbackEdition;
+    if (requestedEdition !== undefined && requestedEdition !== 2026) {
+      return { messages: ["目前知识库仅收录2026中国民营企业500强，不能用这份榜单回答其他年份的名次或地区统计。"] };
+    }
+
+    const hasNamedScope = requestScope !== "none";
     const prior = rankingContextActive
       ? [...history].reverse().find((turn) => turn.role === "user")?.content
       : undefined;
-    const extremeIntent = /(?:哪个|哪|那个|什么)(?:省|地区)(?:[^？?。]{0,12})?(?:最多|最少)|(?:最多|最少)(?:的|是)?(?:哪个|哪|什么)(?:省|地区)|(?:各省|省份|地区).*(?:最多|最少)/.test(text);
-    const followup = Boolean(!scope && (
+    const followup = Boolean(requestScope === "contextual" && (
       /^(?:分别是哪些|有哪些|都有哪些|哪几家|名单)(?:[？?。])?$/.test(text.trim()) ||
-      (rankingContextActive && extremeIntent)
+      extremeIntent
     ));
     const question = followup && prior ? prior : text;
     let provinceMatches = this.matchProvinces(question);
@@ -195,29 +243,31 @@ export class PrivateEnterpriseRanking {
     }
     const exactRank = text.match(/第\s*(\d{1,3})\s*(?:名|位)/);
     const rankLookupIntent = Boolean(exactRank && /谁|哪家|什么(?:公司|企业)?|是哪(?:家|个)?/.test(text));
-    const companyMatches = rankIntent ? this.matchEnterprises(text) : [];
     const compareIntent = provinceMatches.length > 1 && /(?:哪个|哪(?:个)?|谁|比较|多(?:一些|一点|几家)?|少(?:一些|一点|几家)?)/.test(text);
-    if (!scope && !followup && !(provinceMatches.length > 0 && (rankIntent || countIntent || listIntent)) &&
-        !(rankIntent && (companyMatches.length > 0 || rankingContextActive || rankLookupIntent)) && !extremeIntent &&
-        !compareIntent) {
-      return undefined;
-    }
-    if (!rankIntent && !listIntent && !countIntent && !followup && !extremeIntent && !compareIntent) return undefined;
+    const companyLookupRequest = (rankIntent || companyStatusIntent || companyExistenceIntent) &&
+      (companyMatches.length > 0 || companyRankRequestShape);
+    const hasRoutingSignal = hasNamedScope || companyLookupRequest;
+    if (!hasRoutingSignal) return undefined;
 
+    if (revenueBasisIntent && hasNamedScope) {
+      return { messages: [`${EDITION}按2025年营收排序。`] };
+    }
+    if (rankRange) return this.answerRankRange(rankRange.startRank, rankRange.endRank);
+    if (topRankLimit !== undefined) return this.answerRankRange(1, topRankLimit);
     if (extremeIntent) {
       return this.answerProvinceExtreme(/最少/.test(text) ? "min" : "max");
     }
 
-    if (rankIntent || (countIntent && /有无|有没有|是否|哪家|公司|企业/.test(text) && !/多少家|几家/.test(text))) {
+    if (rankIntent || companyStatusIntent || companyExistenceIntent ||
+        (countIntent && /有无|有没有|是否|哪家|公司|企业/.test(text) && !/多少家|几家/.test(text))) {
       if (exactRank && rankLookupIntent) {
         return this.answerRank(Number(exactRank[1]));
       }
-      const candidates = companyMatches;
-      if (candidates.length > 1) {
-        return { messages: [`找到多个可能的企业：${candidates.slice(0, 5).map((item) => item.name).join("、")}。请使用榜单中的完整名称。`] };
+      if (companyMatches.length > 1) {
+        return { messages: [`找到多个可能的企业：${companyMatches.slice(0, 5).map((item) => item.name).join("、")}。请使用榜单中的完整名称。`] };
       }
-      if (candidates.length === 1) {
-        const entry = candidates[0]!;
+      if (companyMatches.length === 1) {
+        const entry = companyMatches[0]!;
         return { messages: [`${entry.name}在${EDITION}中排名第${entry.rank}，榜单省份为${entry.province}（按2025年营收排序）。`] };
       }
       if (provinceMatches.length === 0 && !/多少家|几家/.test(text)) {
@@ -226,9 +276,7 @@ export class PrivateEnterpriseRanking {
     }
 
     if (provinceMatches.length > 1) {
-      if (compareIntent) {
-        return this.answerProvinceComparison(provinceMatches);
-      }
+      if (compareIntent) return this.answerProvinceComparison(provinceMatches);
       return { messages: ["请一次指定一个省级地区，以便给出准确的家数和名单。"] };
     }
     const province = provinceMatches[0];
@@ -250,7 +298,7 @@ export class PrivateEnterpriseRanking {
     if (countIntent || listIntent || followup) {
       return { messages: [this.cityReady ? "请指定一个省份或地级市。" : `请指定榜单中的省级地区。${CITY_PENDING}`] };
     }
-    return undefined;
+    return { messages: ["这份知识库可查询企业名次、指定名次、省级地区家数或名单。请明确企业名称、名次或省级地区。"] };
   }
 
   private matchProvinces(text: string): string[] {
@@ -281,6 +329,23 @@ export class PrivateEnterpriseRanking {
     }
     const entry = this.data.entries[rank! - 1]!;
     return { messages: [`${EDITION}第${entry.rank}名是${entry.name}（榜单省份：${entry.province}）。`] };
+  }
+
+  private answerRankRange(startRank: number | undefined, endRank: number | undefined): RankingAnswer {
+    if (!Number.isInteger(startRank) || !Number.isInteger(endRank) ||
+        startRank! < 1 || endRank! > 500 || startRank! > endRank!) {
+      return { messages: ["榜单名次范围应在1至500之间，且起始名次不能大于结束名次。"] };
+    }
+    const entries = this.data.entries.slice(startRank! - 1, endRank!);
+    const prefix = `${EDITION}第${startRank}至${endRank}名（按2025年营收排序）`;
+    const count = Math.ceil(entries.length / LIST_BATCH_SIZE);
+    return {
+      messages: Array.from({ length: count }, (_, index) => {
+        const lines = entries.slice(index * LIST_BATCH_SIZE, (index + 1) * LIST_BATCH_SIZE)
+          .map((entry) => `第${entry.rank}名 ${entry.name}`);
+        return `${prefix}（${index + 1}/${count}）：\n${lines.join("\n")}`;
+      }),
+    };
   }
 
   private answerProvince(value: string | undefined, includeNames: boolean): RankingAnswer {
@@ -352,7 +417,10 @@ export class PrivateEnterpriseRanking {
     const normalized = normalize(text);
     const exact = this.data.entries.filter((entry) => normalized.includes(normalize(entry.name)));
     if (exact.length) return exact;
-    const candidate = normalize(text.replace(/20\d{2}年?|中国|全国|民营企业|民企|500强|排名|名次|排(?:第)?几(?:名|位)?|排第几|第几名|第几位|多少名|排多少|位列|在|的|是|多少|几|第|名|请问|帮我|查一下|告诉我|上榜|入围|了吗|吗|呢|公司|企业|[？?！!。，、\s]/g, ""));
+    // Remove a complete "在 2026 榜单里" phrase before generic fillers.
+    // Never remove a bare "里": it is part of aliases such as "阿里".
+    const inquiry = text.replace(/(?:在)?(?:20\d{2}年?)?(?:(?:中国)?(?:民营企业|民企)500强)?榜单(?:里|中)?/giu, "");
+    const candidate = normalize(inquiry.replace(/20\d{2}年?|中国|全国|民营企业|民企|500强|排名|名次|排(?:第)?几(?:名|位)?|排第几|第几名|第几位|多少名|排多少|位列|在|的|是|多少|几|第|名|前|top|怎样|怎么样|情况|表现|请问|帮我|查一下|告诉我|上榜|入围|了吗|吗|呢|公司|企业|[？?！!。，、\s]/gi, ""));
     if (candidate.length < 2) return [];
     return this.data.entries.filter((entry) => {
       const name = normalize(entry.name);
@@ -378,7 +446,11 @@ export class PrivateEnterpriseRanking {
       return /省.{2,8}市/.test(text);
     }
     if (/哪个|哪些地区|各省|请指定/.test(text)) return false;
-    return /多少家|几家|哪些|哪几家|名单|分别是/.test(text);
+    // Without a province we only fail closed for something that looks like a
+    // named city subject (for example "杭州有多少家"). A generic list request
+    // such as "500强有哪些" should ask for a province, not claim it is a city.
+    const citySubject = compactRankingText(text).match(/([\u4e00-\u9fa5]{2,4})(?:市)?(?:有多少|有几家|有哪些|有哪几家|共(?:有)?|多少家|几家|哪些)/u)?.[1];
+    return Boolean(citySubject && !/(?:民营|民企|企业|公司|榜单|全国|各省|地区|哪家|哪些|强)/.test(citySubject));
   }
 
   private formatRegion(region: string, entries: RankedEnterprise[], includeNames: boolean, basis: "province" | "city" = "province"): RankingAnswer {
@@ -399,6 +471,83 @@ export class PrivateEnterpriseRanking {
 
 function normalize(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
+}
+
+function compactRankingText(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/gu, "").trim();
+}
+
+function isNonTargetRankingScope(normalizedText: string): boolean {
+  return NON_TARGET_RANKING_SCOPE.test(normalizedText) && !EXPLICIT_RANKING_SCOPE.test(normalizedText);
+}
+
+/** Reads only the year attached to the named private-enterprise ranking. */
+function extractNamedRankingEdition(text: string): number | undefined {
+  const match = compactRankingText(text).match(/(20\d{2})年?(?:中国)?(?:民营企业|民企)500强/u);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * A short company or contextual follow-up can put the requested edition next
+ * to the fact, without repeating the full ranking name. Revenue-year wording
+ * is deliberately excluded: 2025 is the revenue basis for this 2026 edition.
+ */
+function extractFallbackRankingEdition(text: string): number | undefined {
+  if (/(?:营收|营业收入|收入|财年)/u.test(text)) return undefined;
+  const match = compactRankingText(text).match(/20\d{2}/u);
+  return match ? Number(match[0]) : undefined;
+}
+
+function normalizeRankingRank(value: number | undefined): number | undefined {
+  return Number.isInteger(value) && value! >= 1 && value! <= 500 ? value : undefined;
+}
+
+/** A list-page query of `2` or `第2名` is an exact rank filter, not text search. */
+function parseRankingRankFilter(value: string): number | undefined {
+  const match = compactRankingText(value).match(/^(?:第)?(\d{1,3})(?:名|位)?$/u);
+  return match ? normalizeRankingRank(Number(match[1])) : undefined;
+}
+
+function parseRankRange(text: string): { startRank: number; endRank: number } | undefined {
+  const normalized = compactRankingText(text);
+  const match = normalized.match(/第?(\d{1,3})(?:名|位)?(?:到|至|-|—|~|～)第?(\d{1,3})(?:名|位)?/u);
+  return match ? { startRank: Number(match[1]), endRank: Number(match[2]) } : undefined;
+}
+
+function parseTopRankLimit(text: string): number | undefined {
+  const normalized = compactRankingText(text).toLowerCase();
+  const arabic = normalized.match(/(?:前|top)(\d{1,3})(?:名|位|家|强|企业|公司)?/u);
+  if (arabic) return Number(arabic[1]);
+  const chinese = normalized.match(/前([一二两三四五六七八九十])(?:名|位|家|强|企业|公司)?/u);
+  if (!chinese) return undefined;
+  const values: Record<string, number> = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
+  };
+  return values[chinese[1]!]!;
+}
+
+/**
+ * Avoid passing an unrecognized company-ranking request to a general model.
+ * The stripped candidate excludes ordinary pronouns and needs at least two
+ * characters, so plain questions such as "你排第几" remain ordinary chat.
+ */
+function looksLikeCompanyRankRequest(text: string): boolean {
+  if (!/排名|名次|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列/u.test(text)) return false;
+  const candidate = compactRankingText(text.replace(
+    /20\d{2}年?|中国|全国|民营企业|民企|500强|榜单|排名|名次|排(?:第)?几(?:名|位)?|排第几|第几名|第几位|多少名|排多少|位列|在|的|是|多少|几|第|名|前|top|请问|帮我|查一下|告诉我|上榜|入围|了吗|吗|呢|公司|企业|你|我|他|她|它|[？?！!。，、\s]/giu,
+    "",
+  ));
+  return candidate.length >= 2 && candidate.length <= 80;
 }
 
 function validateRanking(data: PrivateEnterpriseRankingData): void {
