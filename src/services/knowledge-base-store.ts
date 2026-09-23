@@ -202,6 +202,24 @@ export class KnowledgeBaseStore {
       .map((hit) => ({ entry: cloneEntry(hit.entry), score: hit.score }));
   }
 
+  /**
+   * Model-facing fallback directory.  Unlike list(), it observes V3 pack
+   * state and therefore cannot reveal entries from a disabled group pack.
+   */
+  async listEnabledDirectory(groupId: string, limit = 50): Promise<KnowledgeBaseEntry[]> {
+    const normalizedGroupId = String(groupId ?? "").trim();
+    if (!normalizedGroupId || (this.v3State && !this.v3State.isKnowledgePackEnabled(normalizedGroupId))) {
+      return [];
+    }
+    const safeLimit = Math.min(50, Math.max(1, Math.trunc(limit) || 50));
+    const data = await this.readData();
+    return data.entries
+      .filter((entry) => entry.groupId === normalizedGroupId && entry.enabled)
+      .sort(compareEntriesNewestFirst)
+      .slice(0, safeLimit)
+      .map(cloneEntry);
+  }
+
   private async readData(): Promise<KnowledgeBaseFile> {
     if (this.v3State) {
       return { entries: this.v3State.listKnowledge().map(cloneEntry) };
