@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# Public inputs only. A completed headquarters ledger is rejected unless its
+# offline reviewer signature verifies against these repository variables.
+env:
+  UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY }}
+  UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID }}
+
 jobs:
   test:
     name: Test (${{ matrix.os }})

@@ -1,11 +1,273 @@
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, sign as signPayload } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import test from "node:test";
 
 import {
   classifyPrivateEnterpriseRankingRequest,
+  headquartersResearchApprovalPayload,
+  headquartersResearchCompletionLedgerSha256,
   loadPrivateEnterpriseRanking,
   PrivateEnterpriseRanking,
 } from "./private-enterprise-ranking.js";
+import type {
+  HeadquartersEvidenceArchive,
+  HeadquartersResearchApproval,
+  HeadquartersResearchData,
+  HeadquartersResearchVerificationOptions,
+  PrivateEnterpriseRankingData,
+} from "./private-enterprise-ranking.js";
+
+type ResearchStatus = "in_progress" | "complete";
+
+function sha256(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function rankingRowSha256(entry: PrivateEnterpriseRankingData["entries"][number]): string {
+  return sha256({
+    rank: entry.rank,
+    name: entry.name,
+    province: entry.province,
+    revenueWan: entry.revenueWan,
+  });
+}
+
+type SecureHeadquartersFixture = {
+  research: HeadquartersResearchData;
+  evidenceArchive: HeadquartersEvidenceArchive;
+  verificationOptions: HeadquartersResearchVerificationOptions;
+  privateKey: KeyObject;
+};
+
+function archiveContentSha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function canonicalSecureResearchRows(research: HeadquartersResearchData) {
+  return research.entries.map((entry) => ({
+    rank: entry.rank,
+    enterpriseName: entry.enterpriseName,
+    rankingRowSha256: entry.rankingRowSha256,
+    entityMatch: entry.entityMatch,
+    headquarters: {
+      province: entry.headquarters.province,
+      city: entry.headquarters.city,
+      administrativeLevel: entry.headquarters.administrativeLevel,
+      asOf: entry.headquarters.asOf,
+      evidence: entry.headquarters.evidence.map((evidence) => ({
+        evidenceId: evidence.evidenceId,
+        authority: evidence.authority,
+        publisher: evidence.publisher,
+        sourceUrl: evidence.sourceUrl,
+        sourcePublishedOn: evidence.sourcePublishedOn,
+        claimAsOf: evidence.claimAsOf,
+        retrievedOn: evidence.retrievedOn,
+        capturedContentSha256: evidence.capturedContentSha256,
+        sourceSubject: evidence.sourceSubject,
+        claimText: evidence.claimText,
+      })),
+    },
+  }));
+}
+
+function secureSourceManifest(research: HeadquartersResearchData) {
+  return research.entries.flatMap((entry) => entry.headquarters.evidence.map((evidence) => ({
+    rank: entry.rank,
+    enterpriseName: entry.enterpriseName,
+    rankingRowSha256: entry.rankingRowSha256,
+    evidenceId: evidence.evidenceId,
+    authority: evidence.authority,
+    publisher: evidence.publisher,
+    sourceUrl: evidence.sourceUrl,
+    sourcePublishedOn: evidence.sourcePublishedOn,
+    claimAsOf: evidence.claimAsOf,
+    retrievedOn: evidence.retrievedOn,
+    capturedContentSha256: evidence.capturedContentSha256,
+    sourceSubject: evidence.sourceSubject,
+    claimText: evidence.claimText,
+  })));
+}
+
+function sealSecureResearch(fixture: SecureHeadquartersFixture): SecureHeadquartersFixture {
+  fixture.evidenceArchive.entriesSha256 = sha256(fixture.evidenceArchive.entries);
+  fixture.research.researchRowsSha256 = sha256(canonicalSecureResearchRows(fixture.research));
+  fixture.research.sourceManifestSha256 = sha256(secureSourceManifest(fixture.research));
+  fixture.research.evidenceArchiveSha256 = fixture.evidenceArchive.entriesSha256;
+  return fixture;
+}
+
+function approveSecureResearch(
+  fixture: SecureHeadquartersFixture,
+  reviewedAt = fixture.research.frozenAt,
+): SecureHeadquartersFixture {
+  const approval: HeadquartersResearchApproval = {
+    reviewProtocol: 1,
+    reviewerId: "test-headquarters-reviewer",
+    reviewedAt,
+    scope: "2026_private_enterprise_top_500_headquarters",
+    ledgerSha256: headquartersResearchCompletionLedgerSha256(fixture.research),
+    evidenceArchiveSha256: fixture.evidenceArchive.entriesSha256,
+    publicKeyId: "test-headquarters-review-key-2026",
+    signature: "",
+  };
+  fixture.research.completionApproval = {
+    ...approval,
+    signature: signPayload(
+      null,
+      Buffer.from(JSON.stringify(headquartersResearchApprovalPayload(fixture.research, approval))),
+      fixture.privateKey,
+    ).toString("base64"),
+  };
+  return fixture;
+}
+
+function resealAndApproveSecureResearch(fixture: SecureHeadquartersFixture): SecureHeadquartersFixture {
+  fixture.research.completionApproval = undefined;
+  sealSecureResearch(fixture);
+  return fixture.research.status === "complete" ? approveSecureResearch(fixture) : fixture;
+}
+
+function capturedContentForEvidence(
+  evidence: HeadquartersResearchData["entries"][number]["headquarters"]["evidence"][number],
+): string {
+  return [
+    "evidenceId: " + evidence.evidenceId,
+    "sourceUrl: " + evidence.sourceUrl,
+    "sourceSubject: " + evidence.sourceSubject,
+    "claim: " + evidence.claimText,
+  ].join("\\n");
+}
+
+function syncArchiveCapture(fixture: SecureHeadquartersFixture, rank: number): void {
+  const evidence = fixture.research.entries[rank - 1]!.headquarters.evidence[0]!;
+  const archived = fixture.evidenceArchive.entries.find((entry) => entry.evidenceId === evidence.evidenceId);
+  assert.ok(archived, "fixture archive record must exist");
+  const capturedContent = capturedContentForEvidence(evidence);
+  const capturedHash = archiveContentSha256(capturedContent);
+  archived.capturedContent = capturedContent;
+  archived.capturedContentSha256 = capturedHash;
+  evidence.capturedContentSha256 = capturedHash;
+}
+
+function reuseEvidenceIdForTwoEntries(fixture: SecureHeadquartersFixture): void {
+  const first = fixture.research.entries[0]!;
+  const second = fixture.research.entries[1]!;
+  const evidenceId = "hq-2026-shared";
+  const sourceSubject = first.enterpriseName + "和" + second.enterpriseName;
+  const claimText = sourceSubject + "的可核验资料明确其总部位于深圳市。";
+  const sharedEvidence = {
+    evidenceId,
+    authority: "enterprise" as const,
+    publisher: "联合企业官方资料",
+    sourceUrl: "https://www.gov.cn/zhengce/headquarters-2026/shared",
+    sourcePublishedOn: "2026-09-01",
+    claimAsOf: "2026-09-01",
+    retrievedOn: fixture.research.frozenAt,
+    capturedContentSha256: "",
+    sourceSubject,
+    claimText,
+  };
+  const capturedContent = capturedContentForEvidence(sharedEvidence);
+  sharedEvidence.capturedContentSha256 = archiveContentSha256(capturedContent);
+
+  for (const entry of [first, second]) {
+    entry.entityMatch = entry.enterpriseName + "与" + sourceSubject + "来源主体一致";
+    entry.headquarters.province = "广东省";
+    entry.headquarters.city = "深圳市";
+    entry.headquarters.administrativeLevel = "prefecture";
+    entry.headquarters.asOf = "2026-09-01";
+    entry.headquarters.evidence = [structuredClone(sharedEvidence)];
+  }
+  fixture.evidenceArchive.entries = fixture.evidenceArchive.entries
+    .filter((entry) => entry.evidenceId !== "hq-2026-001" && entry.evidenceId !== "hq-2026-002");
+  fixture.evidenceArchive.entries.push({
+    evidenceId,
+    capturedContentSha256: sharedEvidence.capturedContentSha256,
+    capturedContent,
+  });
+  resealAndApproveSecureResearch(fixture);
+}
+
+function makeSecureResearch(
+  data: PrivateEnterpriseRankingData,
+  status: ResearchStatus,
+  count: number,
+): SecureHeadquartersFixture {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const evidenceArchive: HeadquartersEvidenceArchive = {
+    schemaVersion: 1,
+    edition: 2026,
+    entriesSha256: "",
+    entries: [],
+  };
+  const research: HeadquartersResearchData = {
+    schemaVersion: 1,
+    edition: 2026,
+    rankingRowsSha256: data.rowsSha256,
+    frozenAt: data.publishedOn,
+    status,
+    researchRowsSha256: "",
+    sourceManifestSha256: "",
+    evidenceArchiveSha256: "",
+    entries: data.entries.slice(0, count).map((entry) => {
+      // This deliberate cross-province record verifies that headquarters and
+      // published-ranking province remain independent fields.
+      const isCrossProvince = entry.rank === 1;
+      const city = isCrossProvince ? "深圳市" : "杭州市";
+      const evidenceId = "hq-2026-" + String(entry.rank).padStart(3, "0");
+      const sourceUrl = "https://www.gov.cn/zhengce/headquarters-2026/" + entry.rank;
+      const claimText = entry.name + "的可核验资料明确其总部位于" + city + "。";
+      const capturedContent = [
+        "evidenceId: " + evidenceId,
+        "sourceUrl: " + sourceUrl,
+        "sourceSubject: " + entry.name,
+        "claim: " + claimText,
+      ].join("\\n");
+      const capturedHash = archiveContentSha256(capturedContent);
+      evidenceArchive.entries.push({
+        evidenceId,
+        capturedContentSha256: capturedHash,
+        capturedContent,
+      });
+      return {
+        rank: entry.rank,
+        enterpriseName: entry.name,
+        rankingRowSha256: rankingRowSha256(entry),
+        entityMatch: entry.name + "与可核验来源主体一致",
+        headquarters: {
+          province: isCrossProvince ? "广东省" : "浙江省",
+          city,
+          administrativeLevel: "prefecture",
+          asOf: "2026-09-01",
+          evidence: [{
+            evidenceId,
+            authority: entry.rank % 2 === 0 ? "government" : "enterprise",
+            publisher: entry.rank % 2 === 0 ? "测试市人民政府" : entry.name + "官方网站",
+            sourceUrl,
+            sourcePublishedOn: "2026-09-01",
+            claimAsOf: "2026-09-01",
+            retrievedOn: data.publishedOn,
+            capturedContentSha256: capturedHash,
+            sourceSubject: entry.name,
+            claimText,
+          }],
+        },
+      };
+    }),
+  };
+  const fixture: SecureHeadquartersFixture = {
+    research,
+    evidenceArchive,
+    verificationOptions: {
+      approvalPublicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+      approvalPublicKeyId: "test-headquarters-review-key-2026",
+    },
+    privateKey,
+  };
+  sealSecureResearch(fixture);
+  return status === "complete" ? approveSecureResearch(fixture) : fixture;
+}
 
 test("the published asset has 500 ordered, checksum-verified rows", () => {
   const ranking = loadPrivateEnterpriseRanking();
@@ -192,7 +454,7 @@ test("ranking scope is explicit or tied to the immediately preceding verified an
   ]), "explicit");
 });
 
-test("city counts fail closed until every headquarters has a dated source", () => {
+test("city counts fail closed until the independent headquarters sidecar is complete and auditable", () => {
   const ranking = loadPrivateEnterpriseRanking();
   assert.match(ranking.answer("杭州有多少家2026民营企业500强？")?.messages[0] ?? "", /尚未全部核验/);
   assert.match(ranking.answer("浙江省杭州市有哪些民营企业500强？")?.messages[0] ?? "", /暂不能给出/);
@@ -204,17 +466,231 @@ test("city counts fail closed until every headquarters has a dated source", () =
   assert.match(ranking.answer("按榜单省份，北京市有多少家2026民营企业500强？")?.messages[0] ?? "", /24家/);
   assert.match(ranking.answer("北京总部城市有多少家2026民营企业500强？")?.messages[0] ?? "", /尚未全部核验/);
 
-  const partial = structuredClone(ranking.data);
-  partial.entries[0]!.headquarters = { city: "深圳市", sourceUrl: "https://example.com/jd", asOf: "2026-09-22" };
-  assert.equal(new PrivateEnterpriseRanking(partial).cityReady, false);
-  const complete = structuredClone(ranking.data);
-  complete.entries.forEach((entry) => {
-    entry.headquarters = { city: entry.rank === 1 ? "深圳市" : "杭州市", sourceUrl: "https://example.com/evidence", asOf: "2026-09-22" };
-  });
-  const verified = new PrivateEnterpriseRanking(complete);
+  const partialFixture = makeSecureResearch(ranking.data, "in_progress", 1);
+  const partial = new PrivateEnterpriseRanking(
+    ranking.data,
+    partialFixture.research,
+    partialFixture.evidenceArchive,
+    partialFixture.verificationOptions,
+  );
+  assert.equal(partial.cityReady, false);
+  assert.match(partial.answer("深圳市有多少家2026民营企业500强？")?.messages[0] ?? "", /尚未全部核验/);
+  // Partial evidence is strictly internal research progress. It must never be
+  // projected into a general admin list, even for a direct rank lookup.
+  const partialPage = partial.listPage({ rank: 1, page: 1, pageSize: 20 });
+  assert.equal(partialPage.items[0]?.headquarters, undefined);
+  assert.equal(partial.listPage({ city: "深圳市", page: 1, pageSize: 20 }).pagination.total, 0);
+
+  const completeFixture = makeSecureResearch(ranking.data, "complete", 500);
+  const verified = new PrivateEnterpriseRanking(
+    ranking.data,
+    completeFixture.research,
+    completeFixture.evidenceArchive,
+    completeFixture.verificationOptions,
+  );
   assert.equal(verified.cityReady, true);
+  assert.equal(verified.cityCoverage, 500);
+  assert.equal(verified.data.entries[0]?.province, "北京市");
+  assert.equal(verified.data.entries[0]?.headquarters?.city, "深圳市");
   assert.match(verified.answer("深圳市有多少家2026民营企业500强？")?.messages[0] ?? "", /1家/);
   assert.match(verified.answer("深圳市有哪些2026民营企业500强？")?.messages[0] ?? "", /按榜单发布时核验的总部城市/);
   assert.equal(verified.listPage({ city: "深圳市", page: 1, pageSize: 20 }).pagination.total, 1);
   assert.equal(verified.listPage({ province: "北京市", page: 1, pageSize: 20 }).pagination.total, 24);
+
+  const missingApproval = makeSecureResearch(ranking.data, "complete", 500);
+  missingApproval.research.completionApproval = undefined;
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      missingApproval.research,
+      missingApproval.evidenceArchive,
+      missingApproval.verificationOptions,
+    ),
+    /headquarters.*approval|approval.*headquarters/i,
+  );
+
+  const badSignature = makeSecureResearch(ranking.data, "complete", 500);
+  badSignature.research.completionApproval!.signature = "not-a-valid-ed25519-signature";
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      badSignature.research,
+      badSignature.evidenceArchive,
+      badSignature.verificationOptions,
+    ),
+    /headquarters.*approval|approval.*headquarters|signature/i,
+  );
+
+  const wrongKey = makeSecureResearch(ranking.data, "complete", 500);
+  const { publicKey: unrelatedPublicKey } = generateKeyPairSync("ed25519");
+  wrongKey.verificationOptions = {
+    ...wrongKey.verificationOptions,
+    approvalPublicKey: unrelatedPublicKey.export({ format: "der", type: "spki" }).toString("base64"),
+  };
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      wrongKey.research,
+      wrongKey.evidenceArchive,
+      wrongKey.verificationOptions,
+    ),
+    /headquarters.*approval|approval.*headquarters|signature/i,
+  );
+
+  const archiveMismatch = makeSecureResearch(ranking.data, "complete", 500);
+  archiveMismatch.evidenceArchive.entries[0]!.capturedContent += " tampered";
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      archiveMismatch.research,
+      archiveMismatch.evidenceArchive,
+      archiveMismatch.verificationOptions,
+    ),
+    /headquarters.*(?:archive|evidence)|(?:archive|evidence).*headquarters/i,
+  );
+
+  const incompleteComplete = makeSecureResearch(ranking.data, "complete", 499);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      incompleteComplete.research,
+      incompleteComplete.evidenceArchive,
+      incompleteComplete.verificationOptions,
+    ),
+    /headquarters.*(?:incomplete|research)|(?:incomplete|research).*headquarters/i,
+  );
+
+  const futureEvidence = makeSecureResearch(ranking.data, "complete", 500);
+  futureEvidence.research.entries[0]!.headquarters.evidence[0]!.claimAsOf = "2026-09-23";
+  resealAndApproveSecureResearch(futureEvidence);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      futureEvidence.research,
+      futureEvidence.evidenceArchive,
+      futureEvidence.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const backdatedApproval = makeSecureResearch(ranking.data, "complete", 500);
+  backdatedApproval.research.completionApproval = undefined;
+  sealSecureResearch(backdatedApproval);
+  approveSecureResearch(backdatedApproval, "2026-08-31");
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      backdatedApproval.research,
+      backdatedApproval.evidenceArchive,
+      backdatedApproval.verificationOptions,
+    ),
+    /headquarters.*approval|approval.*headquarters/i,
+  );
+
+  const reviewBeforeLatestRetrieval = makeSecureResearch(ranking.data, "complete", 500);
+  reviewBeforeLatestRetrieval.research.entries[0]!.headquarters.evidence[0]!.retrievedOn = "2026-09-23";
+  resealAndApproveSecureResearch(reviewBeforeLatestRetrieval);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      reviewBeforeLatestRetrieval.research,
+      reviewBeforeLatestRetrieval.evidenceArchive,
+      reviewBeforeLatestRetrieval.verificationOptions,
+    ),
+    /headquarters.*approval|approval.*headquarters/i,
+  );
+
+  const placeholderUrl = makeSecureResearch(ranking.data, "complete", 500);
+  placeholderUrl.research.entries[0]!.headquarters.evidence[0]!.sourceUrl = "https://example.com/not-evidence";
+  syncArchiveCapture(placeholderUrl, 1);
+  resealAndApproveSecureResearch(placeholderUrl);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      placeholderUrl.research,
+      placeholderUrl.evidenceArchive,
+      placeholderUrl.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+});
+
+test("a completed headquarters ledger projects the evidence matching its frozen headquarters date", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const fixture = makeSecureResearch(ranking.data, "complete", 500);
+  const firstEntry = fixture.research.entries[0]!;
+  const earlierEvidence = firstEntry.headquarters.evidence[0]!;
+  earlierEvidence.claimAsOf = "2026-08-31";
+  syncArchiveCapture(fixture, 1);
+
+  const matchingEvidence = {
+    evidenceId: "hq-2026-001-current",
+    authority: "government" as const,
+    publisher: "京东集团总部核验资料",
+    sourceUrl: "https://www.gov.cn/zhengce/headquarters-2026/1-current",
+    sourcePublishedOn: "2026-09-01",
+    claimAsOf: firstEntry.headquarters.asOf,
+    retrievedOn: ranking.data.publishedOn,
+    capturedContentSha256: "",
+    sourceSubject: firstEntry.enterpriseName,
+    claimText: firstEntry.enterpriseName + "的可核验资料明确其总部位于" + firstEntry.headquarters.city + "。",
+  };
+  const capturedContent = capturedContentForEvidence(matchingEvidence);
+  matchingEvidence.capturedContentSha256 = archiveContentSha256(capturedContent);
+  firstEntry.headquarters.evidence.push(matchingEvidence);
+  fixture.evidenceArchive.entries.push({
+    evidenceId: matchingEvidence.evidenceId,
+    capturedContentSha256: matchingEvidence.capturedContentSha256,
+    capturedContent,
+  });
+  fixture.evidenceArchive.entries.sort((left, right) => left.evidenceId < right.evidenceId ? -1 :
+    left.evidenceId > right.evidenceId ? 1 : 0);
+  resealAndApproveSecureResearch(fixture);
+
+  const verified = new PrivateEnterpriseRanking(
+    ranking.data,
+    fixture.research,
+    fixture.evidenceArchive,
+    fixture.verificationOptions,
+  );
+  const headquarters = verified.data.entries[0]?.headquarters;
+  assert.equal(earlierEvidence.claimAsOf < firstEntry.headquarters.asOf, true);
+  assert.equal(headquarters?.evidenceId, matchingEvidence.evidenceId);
+  assert.equal(headquarters?.sourceUrl, matchingEvidence.sourceUrl);
+  assert.equal(headquarters?.sourcePublisher, matchingEvidence.publisher);
+  assert.equal(headquarters?.retrievedOn, matchingEvidence.retrievedOn);
+});
+
+test("a completed headquarters ledger rejects a resealed private source IP literal", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const fixture = makeSecureResearch(ranking.data, "complete", 500);
+  fixture.research.entries[0]!.headquarters.evidence[0]!.sourceUrl = "https://10.0.0.1/headquarters/1";
+  syncArchiveCapture(fixture, 1);
+  resealAndApproveSecureResearch(fixture);
+
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      fixture.research,
+      fixture.evidenceArchive,
+      fixture.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+});
+
+test("a completed headquarters ledger rejects a reused evidence ID", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const fixture = makeSecureResearch(ranking.data, "complete", 500);
+  reuseEvidenceIdForTwoEntries(fixture);
+
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      fixture.research,
+      fixture.evidenceArchive,
+      fixture.verificationOptions,
+    ),
+    /headquarters.*evidence.*reference|evidence.*reference.*headquarters/i,
+  );
 });

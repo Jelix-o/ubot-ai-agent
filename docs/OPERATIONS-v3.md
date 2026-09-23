@@ -18,6 +18,24 @@ Production uses `/opt/ai-project-releases/current` as an atomic symbolic link to
 
 The persistent `.env` must contain a non-empty `UBOT_STATE_ENCRYPTION_KEY`, encoded as 64 hexadecimal characters or base64url for exactly 32 bytes. V3 derives separate state and rollback-archive keys with HKDF; `ADMIN_SESSION_SECRET` and `ADMIN_TOTP_ENCRYPTION_KEY` are retired names. Generate and store the master key in the approved secret manager; do not put it in GitHub Actions, a release bundle, command history, or support tickets.
 
+The 2026 private-enterprise ranking can always answer enterprise and province
+questions from its checksum-verified primary dataset. Headquarters-city answers
+remain disabled while the separate research ledger is `in_progress`. Before
+changing that ledger to `complete`, retain the full 500-entry evidence archive,
+have an independent reviewer validate it, and inject the reviewer's base64 SPKI
+Ed25519 public key plus matching key ID through
+`UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY` and
+`UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID`. Keep the matching
+private key offline. A missing or invalid completion signature must fail the
+release/startup validation rather than expose partial or self-asserted city
+data. Before a completed ledger is packaged, set those same two *public*
+values as GitHub Actions repository variables with the identical names, and
+export them in the local shell used for `npm run package:all`; they are needed
+only to validate the completed signature. The Linux deployer reads only those
+two values from the persistent `.env` and verifies the compiled release before
+it stops any writer. Never put the signing private key in Actions, `.env`, a
+release bundle, or command history.
+
 The Linux systemd `EnvironmentFile` must not begin with a UTF-8 BOM. Starting
 with V3.0.5, the deployer detects this Windows-editor artifact before stopping
 writers, stores an exclusive byte-for-byte copy in the restricted release

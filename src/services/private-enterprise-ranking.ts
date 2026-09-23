@@ -1,16 +1,110 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 
 export interface RankedEnterprise {
   rank: number;
   name: string;
   province: string;
   revenueWan: number;
-  headquarters?: {
+  /**
+   * A derived projection of the independently reviewed headquarters sidecar.
+   * It is never accepted from the primary ranking asset.
+   */
+  headquarters?: VerifiedHeadquarters;
+}
+
+export interface VerifiedHeadquarters {
+  province: string;
+  city: string;
+  administrativeLevel: "municipality" | "prefecture";
+  evidenceId: string;
+  sourceUrl: string;
+  sourcePublisher: string;
+  retrievedOn: string;
+  asOf: string;
+}
+
+export interface HeadquartersEvidence {
+  evidenceId: string;
+  authority: "enterprise" | "government";
+  publisher: string;
+  sourceUrl: string;
+  sourcePublishedOn: string;
+  claimAsOf: string;
+  retrievedOn: string;
+  /** SHA-256 of the immutable local captured-content record. */
+  capturedContentSha256: string;
+  /** Entity name explicitly present in the cited source. */
+  sourceSubject: string;
+  claimText: string;
+}
+
+export interface HeadquartersEvidenceArchiveEntry {
+  evidenceId: string;
+  capturedContentSha256: string;
+  /** A dated, minimal source capture containing the headquarters claim. */
+  capturedContent: string;
+}
+
+export interface HeadquartersEvidenceArchive {
+  schemaVersion: 1;
+  edition: 2026;
+  entriesSha256: string;
+  entries: HeadquartersEvidenceArchiveEntry[];
+}
+
+export interface HeadquartersResearchApproval {
+  reviewProtocol: 1;
+  reviewerId: string;
+  reviewedAt: string;
+  scope: "2026_private_enterprise_top_500_headquarters";
+  ledgerSha256: string;
+  evidenceArchiveSha256: string;
+  publicKeyId: string;
+  /** Ed25519 signature over the canonical completion payload. */
+  signature: string;
+}
+
+export interface HeadquartersResearchVerificationOptions {
+  /** Base64 SPKI DER Ed25519 public key. Production reads the pinned env key. */
+  approvalPublicKey?: string;
+  /** Must match the key identifier in a completed research approval. */
+  approvalPublicKeyId?: string;
+}
+
+export interface HeadquartersResearchEntry {
+  rank: number;
+  enterpriseName: string;
+  /** SHA-256 of the immutable primary ranking row. */
+  rankingRowSha256: string;
+  /** Explains a group/subsidiary name mismatch where one exists. */
+  entityMatch: string;
+  headquarters: {
+    province: string;
     city: string;
-    sourceUrl: string;
+    administrativeLevel: "municipality" | "prefecture";
     asOf: string;
+    evidence: HeadquartersEvidence[];
   };
+}
+
+/**
+ * Versioned evidence ledger for headquarters-city research.  This stays
+ * separate from the published ranking because the ranking itself only gives
+ * a provincial field.
+ */
+export interface HeadquartersResearchData {
+  schemaVersion: 1;
+  edition: 2026;
+  rankingRowsSha256: string;
+  frozenAt: string;
+  status: "in_progress" | "complete";
+  researchRowsSha256: string;
+  sourceManifestSha256: string;
+  evidenceArchiveSha256: string;
+  completionApproval?: HeadquartersResearchApproval;
+  entries: HeadquartersResearchEntry[];
 }
 
 export interface PrivateEnterpriseRankingData {
@@ -119,24 +213,61 @@ export function classifyPrivateEnterpriseRankingRequest(
     : "none";
 }
 
-export function loadPrivateEnterpriseRanking(): PrivateEnterpriseRanking {
-  const assetUrl = new URL("../../assets/private-enterprises-2026.json", import.meta.url);
-  return new PrivateEnterpriseRanking(JSON.parse(readFileSync(assetUrl, "utf8")) as PrivateEnterpriseRankingData);
+export function loadPrivateEnterpriseRanking(
+  verificationOptions: HeadquartersResearchVerificationOptions = {
+    approvalPublicKey: process.env.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY?.trim() || undefined,
+    approvalPublicKeyId: process.env.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID?.trim() || undefined,
+  },
+): PrivateEnterpriseRanking {
+  const rankingAssetUrl = new URL("../../assets/private-enterprises-2026.json", import.meta.url);
+  const headquartersAssetUrl = new URL("../../assets/private-enterprises-2026-headquarters.json", import.meta.url);
+  const evidenceArchiveUrl = new URL("../../assets/private-enterprises-2026-headquarters-evidence.json", import.meta.url);
+  return new PrivateEnterpriseRanking(
+    JSON.parse(readFileSync(rankingAssetUrl, "utf8")) as PrivateEnterpriseRankingData,
+    JSON.parse(readFileSync(headquartersAssetUrl, "utf8")) as HeadquartersResearchData,
+    JSON.parse(readFileSync(evidenceArchiveUrl, "utf8")) as HeadquartersEvidenceArchive,
+    verificationOptions,
+  );
 }
 
 export class PrivateEnterpriseRanking {
   readonly data: PrivateEnterpriseRankingData;
   readonly cityCoverage: number;
   readonly cityReady: boolean;
+  readonly headquartersResearchStatus: HeadquartersResearchData["status"];
+  readonly headquartersFrozenAt: string;
+  readonly headquartersResearchRowsSha256: string;
+  readonly headquartersSourceManifestSha256: string;
+  readonly headquartersEvidenceArchiveSha256: string;
   private readonly provinces: string[];
   private readonly regions: string[];
 
-  constructor(data: PrivateEnterpriseRankingData) {
+  constructor(
+    data: PrivateEnterpriseRankingData,
+    research = emptyHeadquartersResearch(data),
+    evidenceArchive = emptyHeadquartersEvidenceArchive(),
+    verificationOptions: HeadquartersResearchVerificationOptions = {},
+  ) {
     validateRanking(data);
-    this.data = data;
-    this.cityCoverage = data.entries.filter((entry) => entry.headquarters).length;
-    this.cityReady = this.cityCoverage === 500;
-    this.provinces = [...new Set(data.entries.map((entry) => entry.province))];
+    const validatedResearch = validateHeadquartersResearch(data, research, evidenceArchive, verificationOptions);
+    this.cityCoverage = validatedResearch.coverage;
+    this.cityReady = research.status === "complete" && this.cityCoverage === 500;
+    this.headquartersResearchStatus = research.status;
+    this.headquartersFrozenAt = research.frozenAt;
+    this.headquartersResearchRowsSha256 = research.researchRowsSha256;
+    this.headquartersSourceManifestSha256 = research.sourceManifestSha256;
+    this.headquartersEvidenceArchiveSha256 = research.evidenceArchiveSha256;
+    this.data = {
+      ...data,
+      // Do not project partial research into the public ranking object. This
+      // protects both bot answers and the read-only admin list from exposing
+      // unreviewed headquarters records.
+      entries: data.entries.map((entry) => {
+        const headquarters = this.cityReady ? validatedResearch.headquartersByRank.get(entry.rank) : undefined;
+        return headquarters ? { ...entry, headquarters } : { ...entry };
+      }),
+    };
+    this.provinces = [...new Set(this.data.entries.map((entry) => entry.province))];
     this.regions = [...this.provinces, ...REGIONS_WITHOUT_ENTRIES];
   }
 
@@ -156,7 +287,9 @@ export class PrivateEnterpriseRanking {
     const totalPages = Math.max(1, Math.ceil(matched.length / pageSize));
     const page = Math.min(totalPages, Math.max(1, Math.trunc(args.page) || 1));
     return {
-      items: matched.slice((page - 1) * pageSize, page * pageSize),
+      items: matched.slice((page - 1) * pageSize, page * pageSize).map((entry) =>
+        this.cityReady ? entry : withoutHeadquarters(entry),
+      ),
       pagination: { page, pageSize, total: matched.length, totalPages },
       metadata: {
         edition: this.data.edition,
@@ -170,6 +303,11 @@ export class PrivateEnterpriseRanking {
         screenshotCorrections: this.data.screenshotCorrections,
         cityCoverage: this.cityCoverage,
         cityReady: this.cityReady,
+        headquartersResearchStatus: this.headquartersResearchStatus,
+        headquartersFrozenAt: this.headquartersFrozenAt,
+        headquartersResearchRowsSha256: this.headquartersResearchRowsSha256,
+        headquartersSourceManifestSha256: this.headquartersSourceManifestSha256,
+        headquartersEvidenceArchiveSha256: this.headquartersEvidenceArchiveSha256,
         provinces: this.provinces,
       },
     };
@@ -687,6 +825,7 @@ function validateRanking(data: PrivateEnterpriseRankingData): void {
   if (data.edition !== 2026 || data.revenueYear !== 2025 || data.entries?.length !== 500 ||
       !/^https:\/\//.test(data.rankingSource) || !/^[a-f0-9]{64}$/.test(data.screenshotSha256) ||
       !/^[a-f0-9]{64}$/.test(data.transcriptionRowsSha256) ||
+      !/^[a-f0-9]{64}$/.test(data.rowsSha256) || !isIsoDate(data.publishedOn) ||
       data.screenshotCheckedRanks?.length !== 500 ||
       data.screenshotCheckedRanks.some((rank, index) => rank !== index + 1)) {
     throw new Error("invalid_private_enterprise_ranking_metadata");
@@ -698,13 +837,404 @@ function validateRanking(data: PrivateEnterpriseRankingData): void {
       throw new Error(`invalid_private_enterprise_ranking_row:${index + 1}`);
     }
     names.add(entry.name);
-    if (entry.headquarters && (!entry.headquarters.city?.trim() ||
-        !/^https:\/\//.test(entry.headquarters.sourceUrl) ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(entry.headquarters.asOf))) {
-      throw new Error(`invalid_private_enterprise_headquarters:${index + 1}`);
-    }
+    // Headquarters are intentionally not accepted inline: they are evidence
+    // records with a separate lifecycle and must be checksum-bound below.
+    if (entry.headquarters !== undefined) throw new Error(`invalid_private_enterprise_headquarters_inline_data:${index + 1}`);
   }
   const canonical = data.entries.map(({ rank, name, province, revenueWan }) => ({ rank, name, province, revenueWan }));
-  const hash = createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  const hash = checksum(canonical);
   if (hash !== data.rowsSha256) throw new Error("private_enterprise_ranking_checksum_mismatch");
+}
+
+interface ValidatedHeadquartersResearch {
+  coverage: number;
+  headquartersByRank: Map<number, VerifiedHeadquarters>;
+}
+
+function emptyHeadquartersResearch(data: PrivateEnterpriseRankingData): HeadquartersResearchData {
+  const emptyChecksum = checksum([]);
+  return {
+    schemaVersion: 1,
+    edition: 2026,
+    rankingRowsSha256: data.rowsSha256,
+    frozenAt: data.publishedOn,
+    status: "in_progress",
+    researchRowsSha256: emptyChecksum,
+    sourceManifestSha256: emptyChecksum,
+    evidenceArchiveSha256: emptyChecksum,
+    entries: [],
+  };
+}
+
+function emptyHeadquartersEvidenceArchive(): HeadquartersEvidenceArchive {
+  return {
+    schemaVersion: 1,
+    edition: 2026,
+    entriesSha256: checksum([]),
+    entries: [],
+  };
+}
+
+/**
+ * Validates a research ledger before it can affect any city response. The
+ * completion path needs both locally captured evidence and a signature from a
+ * deployment-pinned reviewer key. This avoids treating self-consistent JSON
+ * as independently verified source material.
+ */
+function validateHeadquartersResearch(
+  data: PrivateEnterpriseRankingData,
+  research: HeadquartersResearchData,
+  evidenceArchive: HeadquartersEvidenceArchive,
+  verificationOptions: HeadquartersResearchVerificationOptions,
+): ValidatedHeadquartersResearch {
+  if (research.schemaVersion !== 1 || research.edition !== data.edition ||
+      research.rankingRowsSha256 !== data.rowsSha256 ||
+      (research.status !== "in_progress" && research.status !== "complete") ||
+      !isIsoDate(research.frozenAt) || research.frozenAt !== data.publishedOn ||
+      !Array.isArray(research.entries) || research.entries.length > data.entries.length ||
+      !isSha256(research.researchRowsSha256) || !isSha256(research.sourceManifestSha256) ||
+      !isSha256(research.evidenceArchiveSha256) ||
+      (research.status === "in_progress" && research.completionApproval !== undefined)) {
+    throw new Error("invalid_private_enterprise_headquarters_research_metadata");
+  }
+
+  const archiveById = validateHeadquartersEvidenceArchive(data, evidenceArchive);
+  if (research.evidenceArchiveSha256 !== evidenceArchive.entriesSha256) {
+    throw new Error("invalid_private_enterprise_headquarters_research_archive_checksum");
+  }
+  const canonicalRows = research.entries.map(canonicalHeadquartersResearchEntry);
+  if (checksum(canonicalRows) !== research.researchRowsSha256 ||
+      checksum(researchSourceManifest(research.entries)) !== research.sourceManifestSha256) {
+    throw new Error("invalid_private_enterprise_headquarters_research_checksum");
+  }
+
+  const headquartersByRank = new Map<number, VerifiedHeadquarters>();
+  const referencedEvidenceIds = new Set<string>();
+  let previousRank = 0;
+  for (const [index, entry] of research.entries.entries()) {
+    const primary = data.entries[entry.rank - 1];
+    if (!Number.isInteger(entry.rank) || entry.rank < 1 || entry.rank > data.entries.length ||
+        entry.rank <= previousRank || !primary || entry.enterpriseName !== primary.name ||
+        entry.rankingRowSha256 !== rankingRowChecksum(primary) || !entry.entityMatch?.trim()) {
+      throw new Error(`invalid_private_enterprise_headquarters_research_entry:${index + 1}`);
+    }
+    previousRank = entry.rank;
+
+    const headquarters = entry.headquarters;
+    if (!headquarters || !isCanonicalProvince(headquarters.province) ||
+        !isCanonicalHeadquartersCity(headquarters.city, headquarters.administrativeLevel) ||
+        !isIsoDate(headquarters.asOf) || headquarters.asOf > research.frozenAt ||
+        !Array.isArray(headquarters.evidence) || headquarters.evidence.length === 0) {
+      throw new Error(`invalid_private_enterprise_headquarters_research_entry:${index + 1}`);
+    }
+
+    let supportingEvidence: HeadquartersEvidence | undefined;
+    for (const evidence of headquarters.evidence) {
+      if (!isValidHeadquartersEvidence(entry, headquarters, evidence, research.frozenAt, archiveById)) {
+        throw new Error(`invalid_private_enterprise_headquarters_research_evidence:${index + 1}`);
+      }
+      // One captured record can support only one ledger claim. Reusing it
+      // would make a superficially complete archive less auditable.
+      if (referencedEvidenceIds.has(evidence.evidenceId)) {
+        throw new Error(`invalid_private_enterprise_headquarters_research_evidence_reference:${index + 1}`);
+      }
+      referencedEvidenceIds.add(evidence.evidenceId);
+      if (evidence.claimAsOf === headquarters.asOf && !supportingEvidence) {
+        supportingEvidence = evidence;
+      }
+    }
+    if (!supportingEvidence) {
+      throw new Error(`invalid_private_enterprise_headquarters_research_evidence:${index + 1}`);
+    }
+
+    headquartersByRank.set(entry.rank, {
+      province: headquarters.province,
+      city: headquarters.city,
+      administrativeLevel: headquarters.administrativeLevel,
+      evidenceId: supportingEvidence.evidenceId,
+      sourceUrl: supportingEvidence.sourceUrl,
+      sourcePublisher: supportingEvidence.publisher,
+      retrievedOn: supportingEvidence.retrievedOn,
+      asOf: headquarters.asOf,
+    });
+  }
+
+  if (referencedEvidenceIds.size !== archiveById.size ||
+      [...archiveById.keys()].some((evidenceId) => !referencedEvidenceIds.has(evidenceId))) {
+    throw new Error("invalid_private_enterprise_headquarters_research_archive_references");
+  }
+  if (research.status === "complete" && headquartersByRank.size !== data.entries.length) {
+    throw new Error("invalid_private_enterprise_headquarters_research_incomplete");
+  }
+  if (research.status === "complete") {
+    validateHeadquartersResearchApproval(research, verificationOptions);
+  }
+  return { coverage: headquartersByRank.size, headquartersByRank };
+}
+
+function validateHeadquartersEvidenceArchive(
+  data: PrivateEnterpriseRankingData,
+  archive: HeadquartersEvidenceArchive,
+): Map<string, HeadquartersEvidenceArchiveEntry> {
+  if (archive.schemaVersion !== 1 || archive.edition !== data.edition ||
+      !Array.isArray(archive.entries) || !isSha256(archive.entriesSha256) ||
+      checksum(archive.entries.map(canonicalHeadquartersEvidenceArchiveEntry)) !== archive.entriesSha256) {
+    throw new Error("invalid_private_enterprise_headquarters_evidence_archive");
+  }
+  const byId = new Map<string, HeadquartersEvidenceArchiveEntry>();
+  let previousId = "";
+  for (const [index, entry] of archive.entries.entries()) {
+    if (!isEvidenceId(entry.evidenceId) || entry.evidenceId <= previousId ||
+        !isSha256(entry.capturedContentSha256) || typeof entry.capturedContent !== "string" ||
+        entry.capturedContent.trim().length < 16 || Buffer.byteLength(entry.capturedContent, "utf8") > 24_000 ||
+        capturedContentChecksum(entry.capturedContent) !== entry.capturedContentSha256) {
+      throw new Error(`invalid_private_enterprise_headquarters_evidence_archive_entry:${index + 1}`);
+    }
+    previousId = entry.evidenceId;
+    byId.set(entry.evidenceId, entry);
+  }
+  return byId;
+}
+
+export function headquartersResearchCompletionLedgerSha256(
+  research: Pick<HeadquartersResearchData,
+    "schemaVersion" | "edition" | "rankingRowsSha256" | "frozenAt" | "status" |
+    "researchRowsSha256" | "sourceManifestSha256" | "evidenceArchiveSha256">,
+): string {
+  return checksum({
+    schemaVersion: research.schemaVersion,
+    edition: research.edition,
+    rankingRowsSha256: research.rankingRowsSha256,
+    frozenAt: research.frozenAt,
+    status: research.status,
+    researchRowsSha256: research.researchRowsSha256,
+    sourceManifestSha256: research.sourceManifestSha256,
+    evidenceArchiveSha256: research.evidenceArchiveSha256,
+  });
+}
+
+export function headquartersResearchApprovalPayload(
+  research: Pick<HeadquartersResearchData,
+    "edition" | "rankingRowsSha256" | "frozenAt" | "researchRowsSha256" |
+    "sourceManifestSha256" | "evidenceArchiveSha256">,
+  approval: Pick<HeadquartersResearchApproval,
+    "reviewProtocol" | "reviewerId" | "reviewedAt" | "scope" | "ledgerSha256" |
+    "evidenceArchiveSha256" | "publicKeyId">,
+) {
+  return {
+    reviewProtocol: approval.reviewProtocol,
+    reviewerId: approval.reviewerId,
+    reviewedAt: approval.reviewedAt,
+    scope: approval.scope,
+    edition: research.edition,
+    rankingRowsSha256: research.rankingRowsSha256,
+    frozenAt: research.frozenAt,
+    researchRowsSha256: research.researchRowsSha256,
+    sourceManifestSha256: research.sourceManifestSha256,
+    evidenceArchiveSha256: research.evidenceArchiveSha256,
+    ledgerSha256: approval.ledgerSha256,
+    publicKeyId: approval.publicKeyId,
+  };
+}
+
+function validateHeadquartersResearchApproval(
+  research: HeadquartersResearchData,
+  verificationOptions: HeadquartersResearchVerificationOptions,
+): void {
+  const approval = research.completionApproval;
+  const publicKey = verificationOptions.approvalPublicKey?.trim();
+  const publicKeyId = verificationOptions.approvalPublicKeyId?.trim();
+  const latestEvidenceRetrievedOn = research.entries.reduce((latest, entry) =>
+    entry.headquarters.evidence.reduce(
+      (current, evidence) => evidence.retrievedOn > current ? evidence.retrievedOn : current,
+      latest,
+    ), research.frozenAt);
+  if (!approval || approval.reviewProtocol !== 1 || !approval.reviewerId?.trim() ||
+      !isIsoDate(approval.reviewedAt) || approval.reviewedAt < research.frozenAt ||
+      approval.reviewedAt < latestEvidenceRetrievedOn ||
+      approval.scope !== "2026_private_enterprise_top_500_headquarters" ||
+      approval.ledgerSha256 !== headquartersResearchCompletionLedgerSha256(research) ||
+      approval.evidenceArchiveSha256 !== research.evidenceArchiveSha256 ||
+      !isPublicKeyId(approval.publicKeyId) || !publicKey || !publicKeyId ||
+      approval.publicKeyId !== publicKeyId) {
+    throw new Error("invalid_private_enterprise_headquarters_research_approval");
+  }
+  const keyBytes = decodeBase64(publicKey);
+  const signature = decodeBase64(approval.signature);
+  if (!keyBytes || !signature || signature.length !== 64) {
+    throw new Error("invalid_private_enterprise_headquarters_research_approval");
+  }
+  try {
+    const key = createPublicKey({ key: keyBytes, format: "der", type: "spki" });
+    const payload = Buffer.from(JSON.stringify(headquartersResearchApprovalPayload(research, approval)), "utf8");
+    if (key.asymmetricKeyType !== "ed25519" || !verifySignature(null, payload, key, signature)) {
+      throw new Error("signature_invalid");
+    }
+  } catch {
+    throw new Error("invalid_private_enterprise_headquarters_research_approval");
+  }
+}
+
+function canonicalHeadquartersResearchEntry(entry: HeadquartersResearchEntry) {
+  return {
+    rank: entry.rank,
+    enterpriseName: entry.enterpriseName,
+    rankingRowSha256: entry.rankingRowSha256,
+    entityMatch: entry.entityMatch,
+    headquarters: {
+      province: entry.headquarters?.province,
+      city: entry.headquarters?.city,
+      administrativeLevel: entry.headquarters?.administrativeLevel,
+      asOf: entry.headquarters?.asOf,
+      evidence: entry.headquarters?.evidence?.map((evidence) => ({
+        evidenceId: evidence.evidenceId,
+        authority: evidence.authority,
+        publisher: evidence.publisher,
+        sourceUrl: evidence.sourceUrl,
+        sourcePublishedOn: evidence.sourcePublishedOn,
+        claimAsOf: evidence.claimAsOf,
+        retrievedOn: evidence.retrievedOn,
+        capturedContentSha256: evidence.capturedContentSha256,
+        sourceSubject: evidence.sourceSubject,
+        claimText: evidence.claimText,
+      })),
+    },
+  };
+}
+
+function researchSourceManifest(entries: HeadquartersResearchEntry[]) {
+  return entries.flatMap((entry) => entry.headquarters?.evidence?.map((evidence) => ({
+    rank: entry.rank,
+    enterpriseName: entry.enterpriseName,
+    rankingRowSha256: entry.rankingRowSha256,
+    evidenceId: evidence.evidenceId,
+    authority: evidence.authority,
+    publisher: evidence.publisher,
+    sourceUrl: evidence.sourceUrl,
+    sourcePublishedOn: evidence.sourcePublishedOn,
+    claimAsOf: evidence.claimAsOf,
+    retrievedOn: evidence.retrievedOn,
+    capturedContentSha256: evidence.capturedContentSha256,
+    sourceSubject: evidence.sourceSubject,
+    claimText: evidence.claimText,
+  })) ?? []);
+}
+
+function canonicalHeadquartersEvidenceArchiveEntry(entry: HeadquartersEvidenceArchiveEntry) {
+  return {
+    evidenceId: entry.evidenceId,
+    capturedContentSha256: entry.capturedContentSha256,
+    capturedContent: entry.capturedContent,
+  };
+}
+
+function rankingRowChecksum(entry: Pick<RankedEnterprise, "rank" | "name" | "province" | "revenueWan">): string {
+  return checksum({
+    rank: entry.rank,
+    name: entry.name,
+    province: entry.province,
+    revenueWan: entry.revenueWan,
+  });
+}
+
+function withoutHeadquarters(entry: RankedEnterprise): RankedEnterprise {
+  const { headquarters: _headquarters, ...rankingEntry } = entry;
+  return rankingEntry;
+}
+
+function isValidHeadquartersEvidence(
+  entry: HeadquartersResearchEntry,
+  headquarters: HeadquartersResearchEntry["headquarters"],
+  evidence: HeadquartersEvidence,
+  frozenAt: string,
+  archiveById: ReadonlyMap<string, HeadquartersEvidenceArchiveEntry>,
+): boolean {
+  const archived = archiveById.get(evidence.evidenceId);
+  const normalizedClaim = normalize(evidence.claimText ?? "");
+  const normalizedSubject = normalize(evidence.sourceSubject ?? "");
+  const normalizedEntityMatch = normalize(entry.entityMatch ?? "");
+  return isEvidenceId(evidence.evidenceId) &&
+    (evidence.authority === "enterprise" || evidence.authority === "government") &&
+    Boolean(evidence.publisher?.trim()) && isEvidenceUrl(evidence.sourceUrl) &&
+    isIsoDate(evidence.sourcePublishedOn) && isIsoDate(evidence.claimAsOf) &&
+    isIsoDate(evidence.retrievedOn) && evidence.sourcePublishedOn <= frozenAt &&
+    evidence.claimAsOf <= frozenAt && evidence.claimAsOf <= evidence.sourcePublishedOn &&
+    evidence.retrievedOn >= evidence.sourcePublishedOn && isSha256(evidence.capturedContentSha256) &&
+    normalizedSubject.length >= 2 && normalizedClaim.length >= 8 &&
+    normalizedClaim.includes(normalize(headquarters.city)) && /总部|总公司/u.test(evidence.claimText) &&
+    normalizedClaim.includes(normalizedSubject) && normalizedEntityMatch.includes(normalize(entry.enterpriseName)) &&
+    normalizedEntityMatch.includes(normalizedSubject) && Boolean(archived) &&
+    archived!.capturedContentSha256 === evidence.capturedContentSha256 &&
+    normalize(archived!.capturedContent).includes(normalizedSubject) &&
+    normalize(archived!.capturedContent).includes(normalizedClaim);
+}
+
+function isEvidenceId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9._-]{2,127}$/u.test(value);
+}
+
+function isPublicKeyId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u.test(value);
+}
+
+function capturedContentChecksum(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function decodeBase64(value: unknown): Buffer | undefined {
+  if (typeof value !== "string" || value.length < 4 || value.length > 16_384) return undefined;
+  const normalized = value.replace(/-/gu, "+").replace(/_/gu, "/");
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized)) return undefined;
+  const decoded = Buffer.from(normalized, "base64");
+  return decoded.length ? decoded : undefined;
+}
+
+function isCanonicalProvince(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[\u4e00-\u9fff]{2,12}(?:省|市|自治区|特别行政区)|新疆生产建设兵团)$/u.test(value);
+}
+
+function isCanonicalHeadquartersCity(
+  value: unknown,
+  administrativeLevel: unknown,
+): value is string {
+  if (typeof value !== "string" ||
+      (administrativeLevel !== "municipality" && administrativeLevel !== "prefecture")) return false;
+  if (administrativeLevel === "municipality") return MUNICIPALITIES.has(value);
+  return !MUNICIPALITIES.has(value) && /^[\u4e00-\u9fff]{2,12}(?:市|自治州|地区|盟|特别行政区)$/u.test(value);
+}
+
+function isEvidenceUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/gu, "").replace(/\.$/u, "");
+    return url.protocol === "https:" && !url.username && !url.password && Boolean(hostname) &&
+      (!url.port || url.port === "443") && isIP(hostname) === 0 && !isReservedEvidenceHostname(hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isReservedEvidenceHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname.endsWith(".localhost") ||
+    hostname === "example.com" || hostname.endsWith(".example.com") ||
+    hostname === "example.net" || hostname.endsWith(".example.net") ||
+    hostname === "example.org" || hostname.endsWith(".example.org") ||
+    ["test", "invalid", "local", "internal", "home"].includes(hostname) ||
+    hostname.endsWith(".test") || hostname.endsWith(".invalid") ||
+    hostname.endsWith(".local") || hostname.endsWith(".internal") || hostname.endsWith(".home");
+}
+
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function checksum(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
