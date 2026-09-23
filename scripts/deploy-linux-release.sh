@@ -502,45 +502,78 @@ verify_checksum() {
 }
 
 verify_github_release_provenance() {
-  local metadata_path official_manifest_path manifest_url asset_name official_line supplied_line official_hash supplied_hash
+  local metadata_path assets_path official_manifest_path release_id manifest_url asset_name official_line supplied_line official_hash supplied_hash
   asset_name="$(basename "$BUNDLE")"
   metadata_path="$(mktemp)"
+  assets_path="$(mktemp)"
   official_manifest_path="$(mktemp)"
   if ! curl --fail --silent --show-error --location \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/$GITHUB_RELEASE_REPOSITORY/releases/tags/v$VERSION" \
     -o "$metadata_path"; then
-    rm -f "$metadata_path" "$official_manifest_path"
+    rm -f "$metadata_path" "$assets_path" "$official_manifest_path"
     echo "Could not retrieve the matching GitHub Release metadata." >&2
     exit 2
   fi
-  if ! manifest_url="$(node - "$metadata_path" "$VERSION" "$asset_name" <<'NODE'
+  # GitHub can briefly serve a release object with an empty embedded `assets`
+  # array after Actions uploads files. Resolve the verified release ID first,
+  # then read the release-owned asset collection directly instead of accepting
+  # a stale or separately supplied download URL.
+  if ! release_id="$(node - "$metadata_path" "$VERSION" <<'NODE'
 const fs = require("node:fs");
-const [metadataPath, version, archiveName] = process.argv.slice(2);
+const [metadataPath, version] = process.argv.slice(2);
 const release = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
 if (release.tag_name !== `v${version}` || release.draft === true || release.prerelease === true) {
   throw new Error("GitHub Release is not the matching published final release.");
 }
-const checksumName = `${archiveName}.sha256`;
-const asset = Array.isArray(release.assets) ? release.assets.find((entry) => entry?.name === checksumName) : undefined;
-if (!asset?.browser_download_url || typeof asset.browser_download_url !== "string") {
-  throw new Error(`GitHub Release is missing ${checksumName}.`);
+if (!Number.isSafeInteger(release.id) || release.id <= 0) {
+  throw new Error("GitHub Release has an invalid release ID.");
 }
-process.stdout.write(asset.browser_download_url);
+process.stdout.write(String(release.id));
 NODE
   )"; then
-    rm -f "$metadata_path" "$official_manifest_path"
+    rm -f "$metadata_path" "$assets_path" "$official_manifest_path"
     echo "GitHub Release metadata is invalid for the requested version." >&2
     exit 2
   fi
+  if ! curl --fail --silent --show-error --location \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$GITHUB_RELEASE_REPOSITORY/releases/$release_id/assets?per_page=100" \
+    -o "$assets_path"; then
+    rm -f "$metadata_path" "$assets_path" "$official_manifest_path"
+    echo "Could not retrieve the matching GitHub Release asset list." >&2
+    exit 2
+  fi
+  if ! manifest_url="$(node - "$metadata_path" "$assets_path" "$VERSION" "$asset_name" "$GITHUB_RELEASE_REPOSITORY" <<'NODE'
+const fs = require("node:fs");
+const [metadataPath, assetsPath, version, archiveName, repository] = process.argv.slice(2);
+const release = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+const assets = JSON.parse(fs.readFileSync(assetsPath, "utf8"));
+if (release.tag_name !== `v${version}` || release.draft === true || release.prerelease === true ||
+    !Array.isArray(assets)) {
+  throw new Error("GitHub Release metadata or asset list is invalid.");
+}
+const checksumName = `${archiveName}.sha256`;
+const asset = assets.find((entry) => entry?.name === checksumName);
+const expectedUrl = `https://github.com/${repository}/releases/download/v${version}/${checksumName}`;
+if (asset?.state !== "uploaded" || asset?.browser_download_url !== expectedUrl) {
+  throw new Error(`GitHub Release is missing ${checksumName}.`);
+}
+process.stdout.write(expectedUrl);
+NODE
+  )"; then
+    rm -f "$metadata_path" "$assets_path" "$official_manifest_path"
+    echo "GitHub Release asset list is invalid for the requested version." >&2
+    exit 2
+  fi
   if ! curl --fail --silent --show-error --location "$manifest_url" -o "$official_manifest_path"; then
-    rm -f "$metadata_path" "$official_manifest_path"
+    rm -f "$metadata_path" "$assets_path" "$official_manifest_path"
     echo "Could not download the GitHub Release SHA-256 manifest." >&2
     exit 2
   fi
   official_line="$(tr -d '\r' < "$official_manifest_path" | awk -v asset="$asset_name" '$2 == asset || $2 == ("*" asset) { print; exit }')"
   supplied_line="$(tr -d '\r' < "$CHECKSUM_FILE" | awk -v asset="$asset_name" '$2 == asset || $2 == ("*" asset) { print; exit }')"
-  rm -f "$metadata_path" "$official_manifest_path"
+  rm -f "$metadata_path" "$assets_path" "$official_manifest_path"
   if [[ ! "$official_line" =~ ^[a-fA-F0-9]{64}[[:space:]]+\*?$asset_name$ ]] ||
      [[ ! "$supplied_line" =~ ^[a-fA-F0-9]{64}[[:space:]]+\*?$asset_name$ ]]; then
     echo "GitHub Release or supplied SHA-256 manifest is invalid." >&2
