@@ -60,7 +60,14 @@ const formVisible = shallowRef(false);
 const importText = shallowRef("");
 const importLoading = shallowRef(false);
 const importCandidates = shallowRef<Array<{ title: string; question: string; answer: string; keywords: string[]; enabled?: boolean }>>([]);
+const rankingCommand = shallowRef("#民营企业排名");
+const groupFaqCommand = shallowRef("#群知识库");
+const bindingsLoading = shallowRef(false);
+const loadedBindingGroupId = shallowRef("");
+const bindingError = shallowRef("");
+const savingBinding = shallowRef<"ranking" | "faq" | "">("");
 const readonly = computed(() => app.readonly);
+const canManageRankingBinding = computed(() => app.role === "super_admin" && !readonly.value);
 const verifiedHeadquartersAvailable = computed(() => {
   const metadata = rankingMetadata.value;
   return metadata?.cityReady === true && metadata.headquartersResearchStatus === "complete";
@@ -172,6 +179,50 @@ async function loadRanking(): Promise<void> {
     app.showToast((error as Error).message, "error");
   } finally {
     rankingLoading.value = false;
+  }
+}
+
+async function loadBindings(): Promise<void> {
+  const requestedGroupId = app.groupId;
+  loadedBindingGroupId.value = "";
+  if (!requestedGroupId) return;
+  bindingsLoading.value = true;
+  bindingError.value = "";
+  try {
+    const data = await api<{ rankingCommand: string; groupFaqCommand: string }>(
+      `/api/knowledge/bindings${queryString({ groupId: requestedGroupId })}`,
+    );
+    if (app.groupId !== requestedGroupId) return;
+    rankingCommand.value = data.rankingCommand;
+    groupFaqCommand.value = data.groupFaqCommand;
+    loadedBindingGroupId.value = requestedGroupId;
+  } catch (error) {
+    if (app.groupId === requestedGroupId) bindingError.value = (error as Error).message;
+  } finally {
+    if (app.groupId === requestedGroupId) bindingsLoading.value = false;
+  }
+}
+
+async function saveBinding(source: "private_enterprise_ranking" | "group_faq"): Promise<void> {
+  if (readonly.value || loadedBindingGroupId.value !== app.groupId || !app.groupId ||
+      (source === "private_enterprise_ranking" && !canManageRankingBinding.value)) return;
+  const requestedGroupId = app.groupId;
+  const kind = source === "private_enterprise_ranking" ? "ranking" : "faq";
+  savingBinding.value = kind;
+  bindingError.value = "";
+  try {
+    const command = source === "private_enterprise_ranking" ? rankingCommand.value : groupFaqCommand.value;
+    const saved = await api<{ command: string }>("/api/knowledge/bindings", {
+      method: "PUT",
+      body: JSON.stringify({ source, groupId: requestedGroupId, command }),
+    });
+    if (source === "private_enterprise_ranking") rankingCommand.value = saved.command;
+    else if (app.groupId === requestedGroupId) groupFaqCommand.value = saved.command;
+    app.showToast("知识源命令已保存");
+  } catch (error) {
+    if (app.groupId === requestedGroupId) bindingError.value = (error as Error).message;
+  } finally {
+    savingBinding.value = "";
   }
 }
 
@@ -302,6 +353,7 @@ async function applyImport(): Promise<void> {
 }
 
 function onRefresh(): void {
+  void loadBindings();
   if (activeTab.value === "ranking") void loadRanking();
   else void load().catch((error) => app.showToast(error.message, "error"));
 }
@@ -309,6 +361,7 @@ function onRefresh(): void {
 onMounted(() => {
   const q = typeof route.query.q === "string" ? route.query.q : "";
   if (q) query.value = q;
+  void loadBindings();
   if (activeTab.value === "ranking") void loadRanking();
   else void load();
 });
@@ -332,11 +385,35 @@ watch(() => route.query.tab, (tab) => {
     <button type="button" :aria-current="activeTab === 'faq' ? 'page' : undefined" :class="{ active: activeTab === 'faq' }" @click="selectTab('faq')">群内 FAQ</button>
     <button type="button" :aria-current="activeTab === 'ranking' ? 'page' : undefined" :class="{ active: activeTab === 'ranking' }" @click="selectTab('ranking')">2026 民营企业 500 强</button>
   </nav>
+  <section class="binding-settings" aria-label="知识源命令">
+    <p class="binding-help">使用命令加问题选择知识源。当前群 FAQ 绑定整个知识包；榜单命令由超级管理员管理。同一人在本群 10 分钟内可继续追问，追问仍须 @ 或回复机器人。</p>
+    <label>
+      榜单命令
+      <input v-model="rankingCommand" class="input" maxlength="32" :readonly="!canManageRankingBinding" :disabled="bindingsLoading || savingBinding !== ''" />
+    </label>
+    <button
+      class="ghost-btn"
+      type="button"
+      :disabled="!canManageRankingBinding || bindingsLoading || !loadedBindingGroupId || savingBinding !== ''"
+      @click="saveBinding('private_enterprise_ranking')"
+    >{{ savingBinding === "ranking" ? "保存中..." : "保存榜单命令" }}</button>
+    <label>
+      群 FAQ 命令
+      <input v-model="groupFaqCommand" class="input" maxlength="32" :readonly="readonly" :disabled="bindingsLoading || savingBinding !== ''" />
+    </label>
+    <button
+      class="ghost-btn"
+      type="button"
+      :disabled="readonly || bindingsLoading || !loadedBindingGroupId || savingBinding !== ''"
+      @click="saveBinding('group_faq')"
+    >{{ savingBinding === "faq" ? "保存中..." : "保存群 FAQ 命令" }}</button>
+    <p v-if="bindingError" class="binding-error" role="alert">{{ bindingError }}</p>
+  </section>
   <section v-if="activeTab === 'faq'" class="panel">
     <div class="section-head">
       <div>
         <h2>知识库（FAQ）<span class="tag">{{ pagination.total }}</span></h2>
-        <p>管理常见问题与标准答案，机器人会优先参考知识库内容回复。</p>
+        <p>管理本群常见问题与标准答案。使用 {{ groupFaqCommand }} 加问题查询，普通聊天不会自动检索。</p>
       </div>
       <button class="btn" type="button" :disabled="readonly" @click="startCreate">新建 FAQ</button>
     </div>
@@ -538,6 +615,11 @@ watch(() => route.query.tab, (tab) => {
 .knowledge-tabs button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 0 14px; font: inherit; cursor: pointer; }
 .knowledge-tabs button.active { border-bottom-color: var(--accent); color: var(--text-strong); font-weight: 650; }
 .knowledge-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.binding-settings { display: grid; grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr) auto; align-items: end; gap: 10px; margin-bottom: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.binding-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 12.5px; font-weight: 650; }
+.binding-settings .ghost-btn, .binding-settings .input { min-height: 44px; }
+.binding-help, .binding-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted); }
+.binding-error { color: var(--danger); }
 .ranking-provenance { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 16px; color: var(--muted); font-size: 12.5px; }
 .ranking-provenance a, .ranking-row a { color: var(--accent-strong); }
 .ranking-audit { margin: -4px 0 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
@@ -787,6 +869,7 @@ watch(() => route.query.tab, (tab) => {
   .ranking-row, .ranking-table.with-city .ranking-row { grid-template-columns: 54px minmax(0, 1fr); gap: 5px 12px; }
   .ranking-row > :nth-child(n + 3) { grid-column: 2; }
   .ranking-head { display: none; }
+  .binding-settings { grid-template-columns: minmax(180px, 1fr) auto; }
   .knowledge-toolbar,
   .form-grid,
   .empty-state,
@@ -799,5 +882,8 @@ watch(() => route.query.tab, (tab) => {
     display: none;
   }
 }
-@media (max-width: 600px) { .ranking-toolbar { grid-template-columns: 1fr; } }
+@media (max-width: 600px) {
+  .ranking-toolbar,
+  .binding-settings { grid-template-columns: 1fr; }
+}
 </style>

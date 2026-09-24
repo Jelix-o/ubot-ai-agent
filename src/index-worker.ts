@@ -31,6 +31,7 @@ import { AdminOperationLogService } from "./services/admin-operation-log-service
 import { LiveChatService } from "./services/live-chat-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
 import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
@@ -705,6 +706,7 @@ async function buildBotApp(
     memeLibraryService,
     imageGenerationService,
     loadPrivateEnterpriseRanking(),
+    new KnowledgeSourceBindingStore(v3State),
   );
   return { botApp, groupConfigService };
 }

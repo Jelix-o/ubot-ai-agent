@@ -19,6 +19,10 @@ import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { HtmlPreviewError, type HtmlPreviewMetadata, type HtmlPreviewProcessResult } from "./services/html-preview-service.js";
 import { loadPrivateEnterpriseRanking, type PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
+import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
+import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { V3StateRepository } from "./services/v3-state-repository.js";
+import { SharedDb } from "./shared/sqlite.js";
 import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
@@ -1024,6 +1028,7 @@ function createApp(options?: {
   memeLibraryService?: FakeMemeLibraryService;
   imageGenerationService?: ImageGenerationRuntime;
   privateEnterpriseRanking?: PrivateEnterpriseRanking;
+  knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1131,6 +1136,7 @@ function createApp(options?: {
     options?.memeLibraryService,
     options?.imageGenerationService,
     options?.privateEnterpriseRanking,
+    options?.knowledgeSourceBindingStore,
   );
 
   return {
@@ -1182,14 +1188,14 @@ test("mentioned ranking questions use the shared verified dataset without callin
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
-    { type: "text", data: { text: "民营500强里浙江有几家？" } },
+    { type: "text", data: { text: "民营企业排名里浙江有几家？" } },
   ], 20003));
   assert.match(transport.sent[2]?.text ?? "", /浙江省共104家/);
   assert.equal(aiService.calls.length, 0);
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
-    { type: "text", data: { text: "中国民营500强排名第一是谁？" } },
+    { type: "text", data: { text: "中国民营企业500强排名第一是谁？" } },
   ], 20004));
   assert.match(transport.sent[3]?.text ?? "", /第1名是京东集团/);
   assert.equal(aiService.calls.length, 0);
@@ -1200,7 +1206,7 @@ test("top-N and provincial ranking follow-ups stay deterministic without AI", as
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
-    { type: "text", data: { text: "列出前十名" } },
+    { type: "text", data: { text: "#民营企业排名 列出前十名" } },
   ], 20011));
   assert.equal((transport.sent[0]?.text.match(/第\d+名 /g) ?? []).length, 10);
 
@@ -1213,13 +1219,13 @@ test("top-N and provincial ranking follow-ups stay deterministic without AI", as
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
     { type: "text", data: { text: "按省份排名呢" } },
-  ], 20013));
+  ], 20012));
   assert.match(transport.sent[2]?.text ?? "", /1\. 浙江省104家；2\. 江苏省90家/);
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
     { type: "text", data: { text: "排名第二的省份呢" } },
-  ], 20014));
+  ], 20012));
   assert.match(transport.sent[3]?.text ?? "", /排名第2的是江苏省.*90家/);
   assert.equal(aiService.calls.length, 0);
 });
@@ -1281,6 +1287,8 @@ test("ranking follow-ups with incidental images bypass the vision gate", async (
     },
   });
 
+  await app.handleGroupMessage(createEvent("#民营企业排名 湖北省有多少家", 20001, 67890, 303));
+  transport.sent.length = 0;
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
     { type: "text", data: { text: "那个省最多？" } },
@@ -1347,6 +1355,13 @@ test("ordinary questions after a ranking reply call the model without exposing t
     "南京的本科院校有哪些？",
     "金山办公是什么公司？",
     "武汉的本科院校有多少个，前十的分别是？",
+    "前十名",
+    "第2名是谁",
+    "浙江有几家",
+    "民营企业排名",
+    "民营企业排名这句话是什么意思",
+    "群知识库怎么设计",
+    "群知识库是什么",
   ].entries()) {
     await app.handleGroupMessage(createEvent([
       { type: "at", data: { qq: "12345" } },
@@ -1354,12 +1369,148 @@ test("ordinary questions after a ranking reply call the model without exposing t
     ], 20001, 67890, 310 + index), undefined, { ...route, turnId: route.turnId + index });
   }
 
-  assert.equal(aiService.calls.length, 3);
-  assert.deepEqual(transport.sent.map((message) => message.text), ["AI reply", "AI reply", "AI reply"]);
+  assert.equal(aiService.calls.length, 10);
+  assert.deepEqual(transport.sent.map((message) => message.text), Array(10).fill("AI reply"));
   for (const call of aiService.calls) {
     assert.equal(call.toolRuntime?.forceToolName, undefined);
     assert.equal(call.toolRuntime, undefined);
   }
+});
+
+test("runtime reloads saved source commands and FAQ queries obey SQLite group/pack boundaries", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "ubot-source-runtime-"));
+  const db = new SharedDb(path.join(dir, "shared.db"));
+  try {
+    const repository = new V3StateRepository(db);
+    const bindings = new KnowledgeSourceBindingStore(repository);
+    const faq = new KnowledgeBaseStore(path.join(dir, "unused.json"), repository);
+    await faq.create({ groupId: "67890", title: "报销", question: "怎么报销", answer: "本群提交发票。", keywords: ["报销"] });
+    await faq.create({ groupId: "67891", title: "秘密", question: "秘密规则", answer: "其他群专属信息", keywords: ["秘密"] });
+    const { app, transport, aiService } = createApp({
+      knowledgeSourceBindingStore: bindings, knowledgeBaseStore: faq as never,
+      privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
+    });
+    bindings.save({ source: "group_faq", groupId: "67890", command: "#本群资料" });
+    bindings.save({ source: "private_enterprise_ranking", groupId: "", command: "#企业榜" });
+    await app.handleGroupMessage(createEvent("#本群资料 报销"));
+    assert.equal(transport.sent.at(-1)?.text, "本群提交发票。");
+    await app.handleGroupMessage(createEvent("#本群资料 秘密"));
+    assert.match(transport.sent.at(-1)?.text ?? "", /未找到/);
+    await app.handleGroupMessage(createEvent("#企业榜 阿里排几名"));
+    assert.match(transport.sent.at(-1)?.text ?? "", /阿里巴巴.*排名第2/);
+    const pack = repository.getKnowledgePack("67890")!;
+    repository.saveKnowledgePack({ ...pack, enabled: false });
+    await app.handleGroupMessage(createEvent("#本群资料 报销"));
+    assert.match(transport.sent.at(-1)?.text ?? "", /未找到/);
+    assert.equal(aiService.calls.length, 0);
+  } finally {
+    db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("knowledge commands isolate sources, preserve status access and do not fall back", async () => {
+  const { app, transport, aiService, knowledgeBaseStore } = createApp({ privateEnterpriseRanking: loadPrivateEnterpriseRanking() });
+  await app.handleGroupMessage(createEvent("#民营企业排名 阿里排几名"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /阿里巴巴.*排名第2/);
+  assert.deepEqual(knowledgeBaseStore.queries, []);
+  await app.handleGroupMessage(createEvent("#民营企业排名 万向排几名"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /多个可能/);
+  await app.handleGroupMessage(createEvent("#民营企业排名 字节跳动排几名"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /没有在/);
+  await app.handleGroupMessage(createEvent("#民营企业排名 南京的本科院校有哪些"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /可查询企业名次/);
+  assert.deepEqual(knowledgeBaseStore.queries, []);
+  await app.handleGroupMessage(createEvent("#群知识库 阿里在2026中国民营企业500强排几名"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /当前群知识库未找到/);
+  assert.equal(knowledgeBaseStore.queries.length, 1);
+  await app.handleGroupMessage(createEvent("#知识库", 99999));
+  assert.match(transport.sent.at(-1)?.text ?? "", /知识库状态/);
+  await app.handleGroupMessage(createEvent("#知识库", 20001));
+  assert.match(transport.sent.at(-1)?.text ?? "", /没有查看/);
+  assert.equal(aiService.calls.length, 0);
+});
+
+test("knowledge continuation expires and is scoped to the initiating user, group and current topic", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const groups = ["67890", "67891"].map((groupId) => ({
+    groupId, currentSkillId: "assistant", allowedSkillIds: ["assistant"], switcherUserIds: [], liveChatUserIds: [],
+    participationMode: "mentions_only" as const,
+  }));
+  const { app, transport, aiService, knowledgeBaseStore } = createApp({
+    groupConfigService: new FakeGroupConfigService(groups), privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
+  });
+  let id = 400;
+  const ask = async (text: string, userId = 20001, groupId = 67890, mention = true) => {
+    await app.handleGroupMessage(createEvent([
+      ...(mention ? [{ type: "at" as const, data: { qq: "12345" } }] : []),
+      { type: "text", data: { text } },
+    ], userId, groupId, ++id));
+    return transport.sent.at(-1)?.text ?? "";
+  };
+  await ask("#民营企业排名 湖南有几家", 20001, 67890, false);
+  assert.equal(await ask("分别是哪些", 20002), "AI reply");
+  assert.equal(await ask("分别是哪些", 20001, 67891), "AI reply");
+  assert.match(await ask("分别是哪些"), /湖南省共10家.*1\/1/);
+  assert.match(await ask("阿里排几名"), /阿里巴巴.*排名第2/);
+  await ask("金山办公是什么公司");
+  assert.equal(await ask("前十名"), "AI reply");
+
+  await ask("#民营企业排名 浙江有几家");
+  await ask("南京本科院校有哪些", 20001, 67890, false);
+  assert.equal(await ask("分别是哪些"), "AI reply", "a passive new topic clears the chain");
+
+  await ask("#民营企业排名 浙江有几家");
+  now += 10 * 60 * 1000;
+  assert.equal(await ask("分别是哪些"), "AI reply");
+
+  await ask("#民营企业排名 湖南有几家");
+  await ask("#群知识库 报销");
+  assert.equal(await ask("前十名"), "AI reply", "source switching clears ranking context");
+  await ask("#群知识库 报销");
+  await ask("再详细点");
+  assert.match(knowledgeBaseStore.queries.at(-1)?.query ?? "", /报销.*再详细点/);
+  await ask("#民营企业排名 湖南有几家");
+  const faqCalls = knowledgeBaseStore.queries.length;
+  assert.equal(await ask("再详细点"), "AI reply", "switching back does not revive FAQ context");
+  assert.equal(knowledgeBaseStore.queries.length, faqCalls);
+  for (const call of aiService.calls) assert.equal(call.toolRuntime, undefined);
+});
+
+test("knowledge followups retain mention/reply requirements and cannot quote another chain", async () => {
+  const route: ConversationRoute = {
+    sourceRowId: 500, sourceMessageId: "500", topicId: "k", branchId: "k",
+    routeReason: "new-topic", turnId: 1,
+  };
+  const { app, transport, aiService } = createApp({
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
+    conversationContextRepository: {
+      getCausalTurnsBeforeTurn: () => [],
+      appendAssistantTurn: (() => ({ id: 2 })) as never,
+    },
+  });
+  const start = () => app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "民营企业排名 湖南有多少家" } },
+  ], 20001, 67890, 500), undefined, route);
+  await start();
+  const count = transport.sent.length;
+  await app.handleGroupMessage(createEvent("分别是哪些", 20001, 67890, 501));
+  assert.equal(transport.sent.length, count, "a source session does not authorize an unmentioned message");
+  await start();
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "bot-k" } },
+    { type: "text", data: { text: "分别是哪些" } },
+  ], 20001, 67890, 502), undefined, { ...route, turnId: 3 }, { allowReplyWithoutMention: true });
+  assert.match(transport.sent.at(-1)?.text ?? "", /湖南省共10家/);
+  await start();
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "other-bot" } },
+    { type: "text", data: { text: "分别是哪些" } },
+  ], 20001, 67890, 503), undefined, { ...route, branchId: "other", turnId: 4 }, { allowReplyWithoutMention: true });
+  assert.equal(transport.sent.at(-1)?.text, "AI reply");
+  assert.equal(aiService.calls.length, 1);
 });
 
 test("#网页 routes an explicit page request to the durable publisher instead of normal chat", async () => {
@@ -6858,7 +7009,7 @@ test("sends scheduled holiday countdown once tick condition is met", async () =>
   assert.equal(holidayCountdownService.messages[0]?.useAiQuip, false);
 });
 
-test("passes approved group FAQ as a current-group lookup tool instead of embedding it in the prompt", async () => {
+test("only an explicit FAQ source retrieves current-group answers; ordinary policy questions have no tools", async () => {
   const groupMemoryStore = new FakeGroupMemoryStore();
   groupMemoryStore.memories = [
     {
@@ -6889,7 +7040,7 @@ test("passes approved group FAQ as a current-group lookup tool instead of embedd
       updatedAt: "2026-06-01T00:00:00.000Z",
     },
   ];
-  const { app, aiService } = createApp({ groupMemoryStore, knowledgeBaseStore });
+  const { app, aiService, transport } = createApp({ groupMemoryStore, knowledgeBaseStore });
 
   await app.handleGroupMessage(
     createEvent([
@@ -6901,17 +7052,11 @@ test("passes approved group FAQ as a current-group lookup tool instead of embedd
   assert.equal(aiService.calls[0]?.identityContext?.groupMemories?.[0]?.content, "Tester 喜欢简短回答。");
   assert.equal("knowledgeHits" in (aiService.calls[0]?.identityContext ?? {}), false);
   const runtime = aiService.calls[0]?.toolRuntime;
-  assert.ok(runtime);
-  assert.equal(runtime.forceToolName, "search_group_faq");
-  assert.deepEqual(runtime.tools.map((tool) => tool.name), ["search_group_faq"]);
-
-  const result = await runtime.execute({
-    id: "faq-call",
-    name: "search_group_faq",
-    arguments: '{"query":"我要报销"}',
-  });
-  assert.deepEqual(JSON.parse(result.content), { status: "terminal", messageCount: 1 });
-  assert.deepEqual(result.finalMessages, ["先贴发票，再找管理员登记。"]);
+  assert.equal(runtime, undefined);
+  assert.deepEqual(knowledgeBaseStore.queries, []);
+  await app.handleGroupMessage(createEvent("#群知识库 我要报销"));
+  assert.equal(transport.sent.at(-1)?.text, "先贴发票，再找管理员登记。");
+  assert.equal(aiService.calls.length, 1);
   assert.deepEqual(knowledgeBaseStore.queries, [{ groupId: "67890", query: "我要报销" }]);
 });
 
@@ -6940,18 +7085,11 @@ test("forces explicit group FAQ requests with bare 2026 or 500强 without interc
     { type: "text", data: { text: "群FAQ里2026年500强活动流程是什么？" } },
   ]));
 
-  const faqRuntime = aiService.calls[0]?.toolRuntime;
-  assert.ok(faqRuntime);
-  assert.equal(faqRuntime.forceToolName, "search_group_faq");
-  const faqResult = await faqRuntime.execute({
-    id: "faq-2026-500-call",
-    name: "search_group_faq",
-    arguments: '{"query":"群FAQ里2026年500强活动流程是什么？"}',
-  });
-  assert.deepEqual(faqResult.finalMessages, ["活动安排以群公告为准。"]);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.at(-1)?.text, "活动安排以群公告为准。");
   assert.deepEqual(knowledgeBaseStore.queries, [{
     groupId: "67890",
-    query: "群FAQ里2026年500强活动流程是什么？",
+    query: "2026年500强活动流程是什么",
   }]);
 
   await app.handleGroupMessage(createEvent([
@@ -6959,21 +7097,21 @@ test("forces explicit group FAQ requests with bare 2026 or 500强 without interc
     { type: "text", data: { text: "2026中国民营企业500强浙江省有多少家？" } },
   ], 20002));
   assert.match(transport.sent.at(-1)?.text ?? "", /浙江省共104家/);
-  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls.length, 0);
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
     { type: "text", data: { text: "2026年杭州天气怎么样？" } },
   ], 20003));
-  assert.equal(aiService.calls.length, 2);
-  assert.equal(aiService.calls[1]?.toolRuntime?.forceToolName, undefined);
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(aiService.calls[0]?.toolRuntime, undefined);
 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } },
     { type: "text", data: { text: "这个流程怎么走？" } },
   ], 20004));
-  assert.equal(aiService.calls.length, 3);
-  assert.equal(aiService.calls[2]?.toolRuntime?.forceToolName, undefined);
+  assert.equal(aiService.calls.length, 2);
+  assert.equal(aiService.calls[1]?.toolRuntime, undefined);
 });
 
 test("records a member memory only through #记忆 without calling the model", async () => {

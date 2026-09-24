@@ -36,6 +36,13 @@ import {
 } from "./services/group-memory-deduplicate-service.js";
 import type { GroupMemoryStore } from "./services/group-memory-store.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import {
+  KnowledgeSourceBindingStore,
+  knowledgeCommandConflict,
+  normalizeKnowledgeSourceCommand,
+  systemKnowledgeCommandConflict,
+  type KnowledgeSourceId,
+} from "./services/knowledge-source-binding-store.js";
 import type { PrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import type { MemorySemanticJudgeInput, MemorySemanticJudgeResult } from "./services/ai-service.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
@@ -59,6 +66,7 @@ interface AdminHttpServerOptions {
   groupConfigService: GroupConfigService;
   groupMemoryStore: GroupMemoryStore;
   knowledgeBaseStore: KnowledgeBaseStore;
+  knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
   privateEnterpriseRanking?: PrivateEnterpriseRanking;
   scheduledReminderService?: ScheduledReminderService;
   characterProfileService?: CharacterProfileService;
@@ -921,6 +929,11 @@ export class AdminHttpServer {
 
     if (pathname.startsWith("/api/memory-candidates")) {
       this.sendJson(res, { error: "memory_candidates_retired" }, 410);
+      return;
+    }
+
+    if (pathname === "/api/knowledge/bindings") {
+      await this.handleKnowledgeSourceBindings(req, res, url, session);
       return;
     }
 
@@ -2048,6 +2061,15 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "retired_system_setting" }, 410);
         return;
       }
+      if (body.commands !== undefined && this.options.knowledgeSourceBindingStore) {
+        const current = await this.options.systemSettingsStore.get();
+        const commands = normalizeCommandConfigList(body.commands, current.commands);
+        if (systemKnowledgeCommandConflict(commands, this.options.knowledgeSourceBindingStore)) {
+          this.sendJson(res, { error: "knowledge_command_conflict" }, 409);
+          return;
+        }
+        body.commands = commands;
+      }
       try {
         this.sendJson(res, await this.options.systemSettingsStore.update(body as Partial<SystemSettings>));
       } catch (error) {
@@ -2411,6 +2433,10 @@ export class AdminHttpServer {
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
       const commands = normalizeCommandConfigList(body.commands ?? body, settings.commands);
+      if (this.options.knowledgeSourceBindingStore && systemKnowledgeCommandConflict(commands, this.options.knowledgeSourceBindingStore)) {
+        this.sendJson(res, { error: "knowledge_command_conflict" }, 409);
+        return;
+      }
       const next = await this.options.systemSettingsStore.update({ commands });
       this.sendJson(res, { commands: next.commands });
       return;
@@ -2711,6 +2737,108 @@ export class AdminHttpServer {
 
   private async findMemory(id: string): Promise<GroupMemory | undefined> {
     return this.options.groupMemoryStore.get(id);
+  }
+
+  private async handleKnowledgeSourceBindings(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    session: AdminSession,
+  ): Promise<void> {
+    const store = this.options.knowledgeSourceBindingStore;
+    if (!store?.writable) {
+      this.sendJson(res, { error: "knowledge_source_bindings_unavailable" }, 503);
+      return;
+    }
+
+    if (req.method === "GET") {
+      const groupId = url.searchParams.get("groupId")?.trim() ?? "";
+      if (!groupId) {
+        this.sendJson(res, { error: "group_id_required" }, 400);
+        return;
+      }
+      if (!(await this.canAccessGroup(session, groupId))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      this.sendJson(res, {
+        rankingCommand: store.get("private_enterprise_ranking"),
+        groupFaqCommand: store.get("group_faq", groupId),
+      });
+      return;
+    }
+
+    if (req.method !== "PUT") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const source = body.source === "private_enterprise_ranking" || body.source === "group_faq"
+      ? body.source as KnowledgeSourceId
+      : undefined;
+    if (!source) {
+      this.sendJson(res, { error: "invalid_knowledge_source" }, 400);
+      return;
+    }
+
+    let groupId = "";
+    if (source === "private_enterprise_ranking") {
+      if (!this.requireSuperAdmin(session, res)) return;
+    } else {
+      groupId = optionalString(body.groupId) ?? "";
+      if (!groupId) {
+        this.sendJson(res, { error: "group_id_required" }, 400);
+        return;
+      }
+      if (!(await this.canAccessGroup(session, groupId))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+    }
+
+    const command = normalizeKnowledgeSourceCommand(body.command);
+    if (!command) {
+      this.sendJson(res, { error: "invalid_knowledge_source_command" }, 400);
+      return;
+    }
+    const commands = this.options.systemSettingsStore
+      ? (await this.options.systemSettingsStore.get()).commands
+      : [];
+    const bindings = store.list();
+    const conflict = knowledgeCommandConflict(
+      command,
+      { source, groupId },
+      bindings,
+      commands,
+      store.get("private_enterprise_ranking"),
+    );
+    if (conflict) {
+      this.sendJson(res, { error: "knowledge_command_conflict", message: conflict }, 409);
+      return;
+    }
+
+    const binding = store.save({
+      source,
+      groupId,
+      command,
+      updatedAt: new Date().toISOString(),
+      updatedBy: session.userId ?? session.username,
+    });
+    const operationGroupId = source === "group_faq" ? groupId : "system";
+    await this.options.adminOperationLogService.record({
+      groupId: operationGroupId,
+      operatorUserId: session.userId ?? session.username,
+      action: "knowledge_source_binding_update",
+      target: source,
+      detail: command,
+    });
+    this.sendJson(res, {
+      source: binding.source,
+      groupId: binding.groupId,
+      command: binding.command,
+      updatedAt: binding.updatedAt,
+    });
   }
 
   private async handleKnowledge(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {

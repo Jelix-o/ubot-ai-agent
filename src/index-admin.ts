@@ -6,6 +6,7 @@ import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
 import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
@@ -100,6 +101,7 @@ export async function main(): Promise<void> {
     groupConfigService,
     groupMemoryStore,
     knowledgeBaseStore,
+    knowledgeSourceBindingStore: new KnowledgeSourceBindingStore(v3State),
     privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     scheduledReminderService,
     characterProfileService,

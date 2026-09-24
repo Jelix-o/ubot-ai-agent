@@ -51,6 +51,16 @@ export interface V3DailyReportOutput {
   sentAt: string;
 }
 
+export type KnowledgeSourceId = "private_enterprise_ranking" | "group_faq";
+
+export interface KnowledgeSourceBinding {
+  source: KnowledgeSourceId;
+  groupId: string;
+  command: string;
+  updatedAt: string;
+  updatedBy?: string;
+}
+
 /**
  * A release-owned profile change is deliberately distinct from an admin edit.
  * The marker lets a deployment make a one-time corrective revision without
@@ -105,6 +115,14 @@ interface V3KnowledgePackRow {
   enabled: number;
   created_at: number;
   updated_at: number;
+}
+
+interface V3KnowledgeSourceBindingRow {
+  source: KnowledgeSourceId;
+  group_id: string;
+  command: string;
+  updated_at: number;
+  updated_by: string;
 }
 
 interface V3DailyMessageRow {
@@ -706,6 +724,38 @@ export class V3StateRepository {
 
   isKnowledgePackEnabled(groupId: string): boolean {
     return this.getKnowledgePack(groupId)?.enabled === true;
+  }
+
+  getKnowledgeSourceBinding(source: KnowledgeSourceId, groupId = ""): KnowledgeSourceBinding | undefined {
+    const scopedGroupId = source === "group_faq" ? groupId.trim() : "";
+    const row = this.sharedDb.db.prepare(
+      `SELECT source, group_id, command, updated_at, updated_by
+         FROM v3_knowledge_source_bindings WHERE source = ? AND group_id = ?`,
+    ).get(source, scopedGroupId) as V3KnowledgeSourceBindingRow | undefined;
+    return row ? knowledgeSourceBindingFromRow(row) : undefined;
+  }
+
+  listKnowledgeSourceBindings(): KnowledgeSourceBinding[] {
+    return (this.sharedDb.db.prepare(
+      `SELECT source, group_id, command, updated_at, updated_by
+         FROM v3_knowledge_source_bindings ORDER BY source, group_id`,
+    ).all() as unknown as V3KnowledgeSourceBindingRow[]).map(knowledgeSourceBindingFromRow);
+  }
+
+  saveKnowledgeSourceBinding(binding: KnowledgeSourceBinding): KnowledgeSourceBinding {
+    const groupId = binding.source === "group_faq" ? binding.groupId.trim() : "";
+    const command = binding.command.trim();
+    if (!command || (binding.source === "group_faq" && !groupId)) {
+      throw new Error("invalid_v3_knowledge_source_binding");
+    }
+    const updatedAt = toMs(binding.updatedAt);
+    this.sharedDb.db.prepare(
+      `INSERT INTO v3_knowledge_source_bindings (source, group_id, command, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(source, group_id) DO UPDATE SET
+         command = excluded.command, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    ).run(binding.source, groupId, command, updatedAt, binding.updatedBy?.trim() ?? "");
+    return this.getKnowledgeSourceBinding(binding.source, groupId)!;
   }
 
   listKnowledge(groupId?: string): KnowledgeBaseEntry[] {
@@ -1387,5 +1437,15 @@ function knowledgePackFromRow(row: V3KnowledgePackRow): KnowledgePack {
     enabled: row.enabled !== 0,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
+  };
+}
+
+function knowledgeSourceBindingFromRow(row: V3KnowledgeSourceBindingRow): KnowledgeSourceBinding {
+  return {
+    source: row.source,
+    groupId: row.group_id,
+    command: row.command,
+    updatedAt: new Date(row.updated_at).toISOString(),
+    ...(row.updated_by ? { updatedBy: row.updated_by } : {}),
   };
 }
