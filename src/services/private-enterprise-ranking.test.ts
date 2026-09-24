@@ -497,6 +497,8 @@ test("ranking context does not capture ordinary questions after a ranking reply"
   // normal model can answer instead of inventing a Top 500 response.
   for (const ordinaryQuestion of [
     "南京的本科院校有哪些？",
+    "武汉的本科院校有多少个，前十的分别是？",
+    "2026中国民营企业500强中，武汉的本科院校有多少个，前十的分别是？",
     "哪个省本科院校最多？",
     "北京市和上海市哪个大学多？",
     "金山办公是什么公司？",
@@ -532,6 +534,7 @@ test("ranking context does not capture ordinary questions after a ranking reply"
 test("city counts fail closed until the independent headquarters sidecar is complete and auditable", () => {
   const ranking = loadPrivateEnterpriseRanking();
   assert.match(ranking.answer("杭州有多少家2026民营企业500强？")?.messages[0] ?? "", /尚未全部核验/);
+  assert.match(ranking.answer("2026中国民营企业500强里，杭州有多少家？")?.messages[0] ?? "", /尚未全部核验/);
   assert.match(ranking.answer("浙江省杭州市有哪些民营企业500强？")?.messages[0] ?? "", /暂不能给出/);
   assert.match(ranking.answer("浙江省杭州有多少家民营企业500强？")?.messages[0] ?? "", /尚未全部核验/);
   assert.match(ranking.answer("浙江杭州有多少家民营企业500强？")?.messages[0] ?? "", /尚未全部核验/);

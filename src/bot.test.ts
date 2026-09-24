@@ -1343,15 +1343,19 @@ test("ordinary questions after a ranking reply call the model without exposing t
     },
   });
 
-  for (const [index, question] of ["南京的本科院校有哪些？", "金山办公是什么公司？"].entries()) {
+  for (const [index, question] of [
+    "南京的本科院校有哪些？",
+    "金山办公是什么公司？",
+    "武汉的本科院校有多少个，前十的分别是？",
+  ].entries()) {
     await app.handleGroupMessage(createEvent([
       { type: "at", data: { qq: "12345" } },
       { type: "text", data: { text: question } },
     ], 20001, 67890, 310 + index), undefined, { ...route, turnId: route.turnId + index });
   }
 
-  assert.equal(aiService.calls.length, 2);
-  assert.deepEqual(transport.sent.map((message) => message.text), ["AI reply", "AI reply"]);
+  assert.equal(aiService.calls.length, 3);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["AI reply", "AI reply", "AI reply"]);
   for (const call of aiService.calls) {
     assert.equal(call.toolRuntime?.forceToolName, undefined);
     assert.equal(call.toolRuntime, undefined);

@@ -232,6 +232,7 @@ const BARE_PROVINCE_LEADERBOARD_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)
 const BARE_PROVINCE_EXTREME_REQUEST = /^(?=.*(?:上榜|家数|榜单|(?:500|五百)强))(?:(?:(?:哪个|哪(?:一)?个|什么)(?:省份?|地区)(?:上榜)?(?:最多|最少))|(?:(?:上榜|榜单)?(?:最多|最少)(?:的?是)?(?:哪个|哪(?:一)?个|什么)(?:省份?|地区))|(?:(?:各省|省份|地区)(?:上榜)?(?:最多|最少)))(?:呢|吗)?[？?。！!]*$/iu;
 const BARE_PROVINCE_COMPARISON_REQUEST = /^(?=.*(?:省|自治区|北京市|天津市|上海市|重庆市))(?=.*(?:和|与|跟|、|,|，))(?=.*(?:上榜|家数|榜单|(?:500|五百)强)).*(?:哪个|谁)(?:多|少)(?:几家)?(?:[？?。！!])?$/u;
 const NON_TARGET_RANKING_SCOPE = /(?:世界|财富|福布斯|胡润|中国企业)500强|电影榜单|(?:大学|高校|院校|学校|本科|招生|专业|医院|医疗|医生|患者|考试|赛季|联赛|游戏|歌曲|电视剧)/u;
+const NON_TARGET_FACT_REQUEST = /(?:多少(?:家|个|所)?|几(?:家|个|所)|前\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)|分别|有哪些|哪几|名单|列(?:一下|出))/u;
 // Only complete, compact follow-ups may inherit an immediately preceding
 // ranking answer. In particular, do not treat ordinary words such as
 // "公司" or "哪些" as a ranking signal: that would steal normal chat from
@@ -713,10 +714,14 @@ export class PrivateEnterpriseRanking {
       return /省.{2,8}市/.test(text);
     }
     if (/哪个|哪些地区|各省|请指定/.test(text)) return false;
-    // Without a province we only fail closed for something that looks like a
-    // named city subject (for example "杭州有多少家"). A generic list request
-    // such as "500强有哪些" should ask for a province, not claim it is a city.
-    const citySubject = compactRankingText(text).match(/([\u4e00-\u9fa5]{2,4})(?:市)?(?:有多少|有几家|有哪些|有哪几家|共(?:有)?|多少家|几家|哪些)/u)?.[1];
+    // Only read a city from the start of the utterance (or immediately after
+    // an explicit ranking prefix). Searching the entire sentence can mistake
+    // a non-city noun such as "院校" for the subject in "院校有多少个".
+    const citySubjectText = compactRankingText(text)
+      .replace(/^(?:(?:请问|麻烦|请|帮我(?:查一下|查下)?|问下|问一下))/u, "")
+      .replace(/^(?:(?:20\d{2}年?)?(?:中国)?(?:民营企业|民企|民营)(?:500|五百)强(?:榜单)?(?:里|中|的)?)/u, "")
+      .replace(/^[？?，,。！!、:：]+/u, "");
+    const citySubject = citySubjectText.match(/^([\u4e00-\u9fa5]{2,4})(?:市)?(?:有多少|有几家|有哪些|有哪几家|共(?:有)?|多少家|几家|哪些)/u)?.[1];
     return Boolean(citySubject && !/(?:民营|民企|企业|公司|榜单|全国|各省|地区|哪家|哪些|强)/.test(citySubject));
   }
 
@@ -763,7 +768,8 @@ function isBareNationalCountRequest(text: string): boolean {
 }
 
 function isNonTargetRankingScope(normalizedText: string): boolean {
-  return NON_TARGET_RANKING_SCOPE.test(normalizedText) && !EXPLICIT_RANKING_SCOPE.test(normalizedText);
+  if (!NON_TARGET_RANKING_SCOPE.test(normalizedText)) return false;
+  return !EXPLICIT_RANKING_SCOPE.test(normalizedText) || NON_TARGET_FACT_REQUEST.test(normalizedText);
 }
 
 /** Reads only the year attached to the named private-enterprise ranking. */
