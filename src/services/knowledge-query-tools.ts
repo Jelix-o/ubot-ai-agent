@@ -174,7 +174,7 @@ async function executeGroupFaqTool(
  * A close tie is deliberately surfaced as a deterministic clarification
  * instead of selecting one of several potentially different rules.
  */
-function terminalFaqMessages(hits: readonly KnowledgeBaseSearchHit[]): string[] {
+export function terminalFaqMessages(hits: readonly KnowledgeBaseSearchHit[]): string[] {
   const best = hits[0];
   if (!best) return ["当前群知识库未找到可核验的相关内容，请换个关键词或联系管理员补充。"];
 

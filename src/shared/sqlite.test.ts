@@ -204,6 +204,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 13, name: "retire-admin-mfa" },
       { version: 14, name: "persist-platform-sender-role" },
       { version: 15, name: "retire-voice-state" },
+      { version: 16, name: "add-knowledge-source-command-bindings" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -221,7 +222,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
     "reopening must not apply or record the same migration twice",
   );
   second.close();

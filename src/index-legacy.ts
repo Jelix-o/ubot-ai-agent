@@ -22,6 +22,7 @@ import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import { HolidayCountdownStore } from "./services/holiday-countdown-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
 import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
@@ -168,6 +169,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     undefined,
     undefined,
     loadPrivateEnterpriseRanking(),
+    new KnowledgeSourceBindingStore(v3State),
   );
 
   const adminHttpServer = config.adminHttpEnabled
@@ -185,6 +187,7 @@ async function startLegacyBot(): Promise<BotApplication> {
         app,
         napcatRuntime,
         sharedDb,
+        new KnowledgeSourceBindingStore(v3State),
       )
     : undefined;
 
@@ -320,6 +323,7 @@ function createAdminHttpServer(
   app: BotApplication,
   napcatRuntime: NapCatRuntime,
   sharedDb: ReturnType<typeof openSharedDb>,
+  knowledgeSourceBindingStore: KnowledgeSourceBindingStore,
 ): AdminHttpServer {
   if (!config.stateEncryptionKey) {
     throw new Error("UBOT_STATE_ENCRYPTION_KEY is required when ADMIN_HTTP_ENABLED=true.");
@@ -335,6 +339,7 @@ function createAdminHttpServer(
     groupConfigService,
     groupMemoryStore,
     knowledgeBaseStore,
+    knowledgeSourceBindingStore,
     privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     scheduledReminderService,
     characterProfileService,

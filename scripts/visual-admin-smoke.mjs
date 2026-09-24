@@ -10,6 +10,7 @@ import { CharacterProfileService } from "../dist/services/character-profile-serv
 import { GroupConfigService } from "../dist/services/group-config-service.js";
 import { GroupMemoryStore } from "../dist/services/group-memory-store.js";
 import { KnowledgeBaseStore } from "../dist/services/knowledge-base-store.js";
+import { KnowledgeSourceBindingStore } from "../dist/services/knowledge-source-binding-store.js";
 import { MemeLibraryService } from "../dist/services/meme-library-service.js";
 import { loadPrivateEnterpriseRanking } from "../dist/services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "../dist/services/system-settings-store.js";
@@ -94,6 +95,7 @@ try {
     groupConfigService,
     groupMemoryStore: memoryStore,
     knowledgeBaseStore,
+    knowledgeSourceBindingStore: new KnowledgeSourceBindingStore(v3State),
     privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     characterProfileService,
     systemSettingsStore: settingsStore,
@@ -135,6 +137,16 @@ try {
   if (overview.stats.memoryCount !== 1) throw new Error(`Unexpected V3 memory count: ${JSON.stringify(overview.stats)}`);
 
   const ranking = await getJson(baseUrl, "/api/knowledge/rankings/2026?pageSize=1", cookie);
+  const sourceBindings = await getJson(baseUrl, `/api/knowledge/bindings?groupId=${GROUP_ID}`, cookie);
+  if (sourceBindings.rankingCommand !== "#民营企业排名" || sourceBindings.groupFaqCommand !== "#群知识库") {
+    throw new Error("Knowledge source defaults are incorrect.");
+  }
+  const bindingSave = await requestJson(baseUrl, "/api/knowledge/bindings", "PUT", {
+    source: "group_faq", groupId: GROUP_ID, command: "#发布规范",
+  }, { Cookie: cookie, "X-CSRF-Token": csrf });
+  if (!bindingSave.response.ok || (await getJson(baseUrl, `/api/knowledge/bindings?groupId=${GROUP_ID}`, cookie)).groupFaqCommand !== "#发布规范") {
+    throw new Error("Knowledge source binding save/reload failed.");
+  }
   if (ranking.pagination?.total !== 500 || ranking.items?.[0]?.name !== "京东集团" || ranking.metadata?.cityReady !== false) {
     throw new Error(`2026 ranking is unavailable: ${JSON.stringify(ranking)}`);
   }

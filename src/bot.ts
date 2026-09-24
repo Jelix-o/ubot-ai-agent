@@ -30,7 +30,11 @@ import type { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ImagePipelineError, type ImagePipeline } from "./services/image-pipeline.js";
 import type { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import type { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
-import { createKnowledgeToolRuntime } from "./services/knowledge-query-tools.js";
+import { terminalFaqMessages } from "./services/knowledge-query-tools.js";
+import {
+  KnowledgeSourceBindingStore,
+  type KnowledgeSourceId,
+} from "./services/knowledge-source-binding-store.js";
 import {
   classifyPrivateEnterpriseRankingRequest,
   type PrivateEnterpriseRanking,
@@ -130,6 +134,7 @@ const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
 const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 10 * 60 * 1_000;
 const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 30;
+const KNOWLEDGE_CONTINUATION_WINDOW_MS = 10 * 60 * 1_000;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 const SEND_FAILURE_ALERT_THRESHOLD = 3;
@@ -196,6 +201,14 @@ interface RuntimeCommandMatch {
   rewrittenText: string;
   matchedPrefix: string;
   suffix: string;
+}
+
+interface KnowledgeContinuationSession {
+  source: KnowledgeSourceId;
+  query: string;
+  reply: string;
+  updatedAt: number;
+  branchId?: string;
 }
 
 interface ReplyAiRoute {
@@ -373,6 +386,8 @@ export class BotApplication {
   private readonly explicitMemoryService?: ExplicitMemoryService;
   private backgroundLlmGate?: BackgroundLlmGate;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
+  private readonly knowledgeContinuationSessions = new Map<string, KnowledgeContinuationSession>();
+  private readonly knowledgeLatestMessages = new Map<string, string>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
     memoryAlertActive: false,
@@ -432,6 +447,7 @@ export class BotApplication {
     /** Text-to-image generation is V3-only and absent in compatibility embeddings. */
     private readonly imageGenerationService?: ImageGenerationRuntime,
     private readonly privateEnterpriseRanking?: PrivateEnterpriseRanking,
+    private readonly knowledgeSourceBindingStore = new KnowledgeSourceBindingStore(),
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -544,6 +560,35 @@ export class BotApplication {
     const parsedMessage = parseGroupMessage(event.message, this.botQq);
     const commandText = extractCommandText(event.message);
     const runtimeCommands = await this.getRuntimeCommands();
+    const knowledgeSessionKey = knowledgeContinuationKey(groupId, userId);
+    this.knowledgeLatestMessages.delete(knowledgeSessionKey);
+    this.knowledgeLatestMessages.set(knowledgeSessionKey, String(event.message_id));
+    for (const [key, session] of this.knowledgeContinuationSessions) {
+      if (Date.now() - session.updatedAt >= KNOWLEDGE_CONTINUATION_WINDOW_MS) this.knowledgeContinuationSessions.delete(key);
+    }
+    if (this.knowledgeLatestMessages.size > 2_000) {
+      const oldestKey = this.knowledgeLatestMessages.keys().next().value!;
+      this.knowledgeLatestMessages.delete(oldestKey);
+      this.knowledgeContinuationSessions.delete(oldestKey);
+    }
+    const rankingSourceCommand = this.knowledgeSourceBindingStore.get("private_enterprise_ranking");
+    const groupFaqSourceCommand = this.knowledgeSourceBindingStore.get("group_faq", groupId);
+    const rankingSourceCommandMatch = matchCommandPrefix(commandText, [rankingSourceCommand], rankingSourceCommand);
+    const groupFaqSourceCommandMatch = matchCommandPrefix(commandText, [groupFaqSourceCommand], groupFaqSourceCommand);
+    const previousKnowledgeSession = this.knowledgeContinuationSessions.get(knowledgeSessionKey);
+    const incomingText = parsedMessage.text.trim();
+    const explicitKnowledgeSource = classifyPrivateEnterpriseRankingRequest(incomingText) === "explicit" ||
+      isExplicitGroupFaqLookup(incomingText);
+    const triggeredReply = parsedMessage.hasAtBot || options.allowReplyWithoutMention === true;
+    const canContinueKnowledge = Boolean(previousKnowledgeSession &&
+      Date.now() - previousKnowledgeSession.updatedAt < KNOWLEDGE_CONTINUATION_WINDOW_MS &&
+      triggeredReply && !commandText.trim().startsWith("#") &&
+      (!parsedMessage.replyMessageId || Boolean(previousKnowledgeSession.branchId &&
+        previousKnowledgeSession.branchId === conversationRoute?.branchId)) &&
+      isKnowledgeContinuation(previousKnowledgeSession, incomingText));
+    if (rankingSourceCommandMatch || groupFaqSourceCommandMatch || explicitKnowledgeSource || !canContinueKnowledge) {
+      this.knowledgeContinuationSessions.delete(knowledgeSessionKey);
+    }
 
     const blacklistCommand = matchRuntimeCommand(commandText, runtimeCommands, "blacklist");
     if (blacklistCommand) {
@@ -621,6 +666,20 @@ export class BotApplication {
         return;
       }
       await this.handleKnowledgeStatusCommand(groupConfig, event);
+      return;
+    }
+
+    const selectedKnowledgeCommand = rankingSourceCommandMatch
+      ? { source: "private_enterprise_ranking" as const, query: rankingSourceCommandMatch.suffix }
+      : groupFaqSourceCommandMatch
+        ? { source: "group_faq" as const, query: groupFaqSourceCommandMatch.suffix }
+        : undefined;
+    if (selectedKnowledgeCommand) {
+      if (!this.isCapabilityEnabled("knowledge")) {
+        await this.rejectCapability(groupId, "knowledge");
+        return;
+      }
+      await this.handleSelectedKnowledgeCommand(groupConfig, event, selectedKnowledgeCommand.source, selectedKnowledgeCommand.query);
       return;
     }
 
@@ -2515,6 +2574,44 @@ export class BotApplication {
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
     const normalizedUserInput = userInput.trim() || "[图片消息]";
+    const knowledgeSessionKey = knowledgeContinuationKey(groupConfig.groupId, userId);
+    let knowledgeSession = this.knowledgeContinuationSessions.get(knowledgeSessionKey);
+    if (knowledgeSession && (
+      Date.now() - knowledgeSession.updatedAt >= KNOWLEDGE_CONTINUATION_WINDOW_MS ||
+      !isKnowledgeContinuation(knowledgeSession, normalizedUserInput)
+    )) {
+      this.knowledgeContinuationSessions.delete(knowledgeSessionKey);
+      knowledgeSession = undefined;
+    }
+
+    const explicitFaqRequest = isExplicitGroupFaqLookup(normalizedUserInput);
+    const faqFollowup = knowledgeSession?.source === "group_faq" &&
+      isGroupFaqContinuation(normalizedUserInput);
+    if (explicitFaqRequest || faqFollowup) {
+      if (!this.isCapabilityEnabled("knowledge")) {
+        await this.rejectCapability(groupConfig.groupId, "knowledge");
+        return;
+      }
+      const searchQuery = explicitFaqRequest
+        ? stripGroupFaqSource(normalizedUserInput)
+        : getGroupFaqContinuationQuery(knowledgeSession!, normalizedUserInput);
+      const messages = await this.answerCurrentGroupFaq(groupConfig.groupId, searchQuery);
+      const receipts = await this.sendTextMessages(
+        groupConfig.groupId,
+        messages,
+        prefixMentionUserIds,
+        conversationRoute,
+      );
+      await this.persistAssistantContext(conversationRoute, messages.join("\n\n"), receipts);
+      this.rememberKnowledgeSession(knowledgeSessionKey, {
+        source: "group_faq",
+        query: explicitFaqRequest ? searchQuery : knowledgeSession!.query,
+        reply: messages.join("\n\n"),
+        updatedAt: Date.now(),
+        branchId: conversationRoute?.branchId,
+      }, messageContext.sourceMessageId);
+      return;
+    }
     // Read the causal branch before the vision gate. A ranking follow-up such
     // as "分别是哪些" needs the immediately preceding verified answer, and an
     // incidental image must not turn that deterministic query into a vision
@@ -2534,12 +2631,20 @@ export class BotApplication {
         });
       }
     }
-    const rankingHistory = causalHistory.map((turn) => ({ role: turn.role, content: turn.content }));
+    const rankingContinuation = knowledgeSession?.source === "private_enterprise_ranking"
+      ? knowledgeSession
+      : undefined;
+    const rankingHistory = rankingContinuation
+      ? [
+        { role: "user", content: rankingContinuation.query },
+        { role: "assistant", content: rankingContinuation.reply },
+      ]
+      : [];
     // A deterministic Top 500 request is fully answered from the verified
     // local dataset. Handle it before the vision gate so an incidental
     // attachment cannot make a verified fact query fall back to a model.
-    const namedRankingRequest = this.privateEnterpriseRanking &&
-      classifyPrivateEnterpriseRankingRequest(normalizedUserInput) === "explicit";
+    const rankingRequestScope = classifyPrivateEnterpriseRankingRequest(normalizedUserInput, rankingHistory);
+    const namedRankingRequest = rankingRequestScope !== "none";
     const preflightRankingAnswer = this.privateEnterpriseRanking?.answer(normalizedUserInput, rankingHistory);
     if (namedRankingRequest || preflightRankingAnswer) {
       if (!this.isCapabilityEnabled("knowledge")) {
@@ -2556,8 +2661,18 @@ export class BotApplication {
         conversationRoute,
       );
       await this.persistAssistantContext(conversationRoute, messages.join("\n\n"), receipts);
+      this.rememberKnowledgeSession(knowledgeSessionKey, {
+        source: "private_enterprise_ranking",
+        query: rankingRequestScope === "contextual" && rankingContinuation
+          ? rankingContinuation.query
+          : normalizedUserInput,
+        reply: messages.join("\n\n"),
+        updatedAt: Date.now(),
+        branchId: conversationRoute?.branchId,
+      }, messageContext.sourceMessageId);
       return;
     }
+
     const imageInputCount = images.length + (messageContext.replyContext?.images?.length ?? 0);
     if (imageInputCount > 0 && groupConfig.visionEnabled !== true) {
       const disabledText = "本群未开启图片理解，请联系群管理员在后台开启后再发送图片。";
@@ -2613,21 +2728,6 @@ export class BotApplication {
         ...(turn.userId ? { userId: turn.userId } : {}),
         timestamp: new Date(turn.createdAt).toISOString(),
       }));
-    const rankingAnswer = this.privateEnterpriseRanking?.answer(normalizedUserInput, history);
-    if (rankingAnswer) {
-      if (!this.isCapabilityEnabled("knowledge")) {
-        await this.rejectCapability(groupConfig.groupId, "knowledge");
-        return;
-      }
-      const receipts = await this.sendTextMessages(
-        groupConfig.groupId,
-        rankingAnswer.messages,
-        prefixMentionUserIds,
-        conversationRoute,
-      );
-      await this.persistAssistantContext(conversationRoute, rankingAnswer.messages.join("\n\n"), receipts);
-      return;
-    }
     const evaluationTargetUserIds = collectEvaluationTargetUserIds(
       messageContext.interactionTargets,
       this.botQq,
@@ -2908,27 +3008,6 @@ export class BotApplication {
       ...(ambientGroupContext.length > 0 ? { ambientGroupContext } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
-    // The ranking tool is deliberately absent from ordinary model chat. Tool
-    // calling models may otherwise select a plausible-looking global query
-    // for an unrelated question (for example, a city university query).
-    const rankingToolEligible = Boolean(this.privateEnterpriseRanking) &&
-      isLikelyPrivateEnterpriseRankingRequest(normalizedUserInput, history);
-    const groupFaqToolEligible = Boolean(this.knowledgeBaseStore) &&
-      isLikelyGroupFaqRequest(normalizedUserInput, history);
-    // General chat should be a normal model completion. Attach only the
-    // verified source that the current request explicitly needs; exposing a
-    // broad tool catalog lets a model turn an unrelated question into a
-    // terminal knowledge-base response.
-    const toolRuntime = this.isCapabilityEnabled("knowledge") && (rankingToolEligible || groupFaqToolEligible)
-      ? createKnowledgeToolRuntime({
-          groupId: groupConfig.groupId,
-          ranking: rankingToolEligible ? this.privateEnterpriseRanking : undefined,
-          knowledgeBaseStore: groupFaqToolEligible ? this.knowledgeBaseStore : undefined,
-          isKnowledgeEnabled: () => this.isCapabilityEnabled("knowledge"),
-          forceRankingTool: rankingToolEligible,
-          forceGroupFaqTool: groupFaqToolEligible,
-        })
-      : undefined;
     const replyArgs = {
       skill,
       history,
@@ -2936,7 +3015,6 @@ export class BotApplication {
       images: resolvedImages,
       identityContext,
       ...(scenarioInstruction ? { scenarioInstruction } : {}),
-      ...(toolRuntime ? { toolRuntime } : {}),
     };
     const preparationMs = Date.now() - conversationStartedAt;
     const modelStartedAt = Date.now();
@@ -3467,10 +3545,70 @@ export class BotApplication {
       [
         `知识库状态：群 ${groupId}`,
         `FAQ：${enabledCount}/${entries.length} 条启用`,
-        `检索方式：关键词 Top 3`,
+        `群 FAQ：${this.knowledgeSourceBindingStore.get("group_faq", groupId)} <问题>`,
+        `民营企业榜单：${this.knowledgeSourceBindingStore.get("private_enterprise_ranking")} <问题>`,
         `后台：${this.adminPublicBaseUrl ?? "未配置"}`,
       ].join("\n"),
     );
+  }
+
+  private async handleSelectedKnowledgeCommand(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    source: KnowledgeSourceId,
+    query: string,
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
+      const command = this.knowledgeSourceBindingStore.get(source, groupId);
+      await this.sendText(groupId, `用法：${command} <查询内容>`);
+      return;
+    }
+
+    let messages: string[];
+    if (source === "private_enterprise_ranking") {
+      messages = this.privateEnterpriseRanking?.answerInSelectedSource(trimmedQuery)?.messages ?? [
+        "2026中国民营企业500强知识库暂不能解析这个问法；可查询企业名次、榜单名次、省级地区家数或名单。",
+      ];
+    } else {
+      messages = await this.answerCurrentGroupFaq(groupId, trimmedQuery);
+    }
+
+    const sourceRowId = this.conversationContextRepository?.getSourceRowId?.(groupId, String(event.message_id));
+    const route = sourceRowId !== undefined ? this.conversationContextRouter?.resolve({
+      groupId, userId: String(event.user_id), sourceRowId,
+      sourceMessageId: String(event.message_id), text: trimmedQuery,
+    }) : undefined;
+    const receipts = await this.sendTextMessages(groupId, messages, [], route);
+    await this.persistAssistantContext(route, messages.join("\n\n"), receipts);
+    this.rememberKnowledgeSession(knowledgeContinuationKey(groupId, String(event.user_id)), {
+      source,
+      query: trimmedQuery,
+      reply: messages.join("\n\n"),
+      updatedAt: Date.now(),
+      branchId: route?.branchId,
+    }, String(event.message_id));
+  }
+
+  private rememberKnowledgeSession(key: string, session: KnowledgeContinuationSession, sourceMessageId?: string): void {
+    // A delayed lookup/list must not revive a source after a newer topic or source switch.
+    if (sourceMessageId && this.knowledgeLatestMessages.get(key) === sourceMessageId) {
+      this.knowledgeContinuationSessions.set(key, session);
+    }
+  }
+
+  private async answerCurrentGroupFaq(groupId: string, query: string): Promise<string[]> {
+    if (!this.knowledgeBaseStore) return ["当前群知识库暂时不可用，无法核验这项内容。"];
+    if (!query.trim() || query.length > 400) return ["群 FAQ 只查询当前群已启用的标准问答，请提供 1 至 400 字的问题或关键词。"];
+    try {
+      const hits = await this.knowledgeBaseStore.search(groupId, query, 3);
+      return hits.length > 0
+        ? terminalFaqMessages(hits)
+        : ["当前群知识库未找到可核验的相关内容，请换个关键词或联系群管理员补充。"];
+    } catch {
+      return ["当前群知识库暂时不可用，无法核验这项内容。"];
+    }
   }
 
   private async recordDailyReportMessage(
@@ -3914,11 +4052,19 @@ export class BotApplication {
   }
 
   private async clearUserConversationContext(groupId: string, userId: string): Promise<void> {
+    this.knowledgeContinuationSessions.delete(knowledgeContinuationKey(groupId, userId));
+    this.knowledgeLatestMessages.delete(knowledgeContinuationKey(groupId, userId));
     this.conversationContextRepository?.clearUser(groupId, userId);
     await this.conversationStore.clearUser(groupId, userId);
   }
 
   private async clearGroupConversationContext(groupId: string): Promise<void> {
+    for (const key of this.knowledgeLatestMessages.keys()) {
+      if (key.startsWith(`${groupId}\u0000`)) {
+        this.knowledgeLatestMessages.delete(key);
+        this.knowledgeContinuationSessions.delete(key);
+      }
+    }
     this.conversationContextRepository?.clearGroup(groupId);
     await this.conversationStore.clearGroup(groupId);
   }
@@ -5346,29 +5492,43 @@ function estimateTextTokens(text: string): number {
   return cjkCount + Math.ceil(alphanumericCount / 4) + Math.ceil(symbolCount / 2);
 }
 
-function isLikelyPrivateEnterpriseRankingRequest(
-  text: string,
-  history: Array<Pick<ConversationTurn, "role" | "content">>,
-): boolean {
-  return classifyPrivateEnterpriseRankingRequest(text, history) !== "none";
+const GROUP_FAQ_SOURCE_NAME = /(?:(?:本群|当前群|群内|群里)(?:的)?(?:群)?(?:知识库|FAQ)|群(?:知识库|FAQ))/iu;
+const GROUP_FAQ_FACT_INTENT = /(?:报销|请假|打卡|会议室|会议(?:制度|规则)|流程|规定|规则|制度|要求|怎么|如何|怎样|什么|哪(?:里|些|个)?|多少|几(?:家|个|条)?|查询|申请|办理|能否|是否|吗[？?。！!]*$|[？?])/u;
+const GROUP_FAQ_CONCEPT_DISCUSSION = /(?:是什么意思|指什么|怎么设计|如何设计|如何工作|怎么工作的|有什么功能)/u;
+
+function isExplicitGroupFaqLookup(text: string): boolean {
+  return GROUP_FAQ_SOURCE_NAME.test(text) &&
+    GROUP_FAQ_FACT_INTENT.test(text) &&
+    !GROUP_FAQ_CONCEPT_DISCUSSION.test(text) &&
+    !/命令|关键词|绑定|这句话|翻译/u.test(text) &&
+    !/^(?:是什么|怎么查|怎么用|如何使用|有什么作用|有哪些功能)[？?。！!]*$/u.test(stripGroupFaqSource(text));
 }
 
-const EXPLICIT_GROUP_FAQ_REFERENCE = /(?:知识库|FAQ|群规|群规则|固定答案|管理员(?:的)?(?:规定|要求|说过))/iu;
-const GROUP_POLICY_REFERENCE = /(?:(?:群(?:里|内)?|知识库|FAQ|管理员).{0,24}(?:制度|流程|规则|规定)|(?:制度|流程|规则|规定).{0,24}(?:群(?:里|内)?|知识库|FAQ|管理员))/iu;
-const GROUP_OPERATIONAL_FAQ_REQUEST = /(?:(?:我(?:要|想)|怎么|如何|怎样|申请|办理|查询|问(?:一下|下)?|帮我|请问).{0,18}(?:报销|请假|打卡|会议室|会议(?:制度|规则))|(?:报销|请假|打卡|会议室|会议(?:制度|规则)).{0,18}(?:规则|制度|流程|规定|要求|怎么|如何|怎样|申请|办理|查询|吗|？|\?))/u;
+function stripGroupFaqSource(text: string): string {
+  return text
+    .replace(/(?:在)?(?:(?:本群|当前群|群内|群里)(?:的)?(?:群)?(?:知识库|FAQ)|群(?:知识库|FAQ))(?:里|中|内)?/giu, " ")
+    .replace(/^[\s，,。！!？?:：]+|[\s，,。！!？?:：]+$/gu, "")
+    .trim();
+}
 
-/** Force only an explicit current-group FAQ lookup; ranking questions stay on the verified dataset. */
-function isLikelyGroupFaqRequest(
-  text: string,
-  history: Array<Pick<ConversationTurn, "role" | "content">>,
-): boolean {
-  // The deterministic ranking preflight normally returns before this point.
-  // Repeat the shared classifier here so an unresolved ranking follow-up can
-  // never be redirected to a group FAQ just because it mentions a policy word.
-  if (isLikelyPrivateEnterpriseRankingRequest(text, history)) return false;
-  return EXPLICIT_GROUP_FAQ_REFERENCE.test(text) ||
-    GROUP_POLICY_REFERENCE.test(text) ||
-    GROUP_OPERATIONAL_FAQ_REQUEST.test(text);
+function isGroupFaqContinuation(text: string): boolean {
+  return /^(?:还有吗|还有哪些|还有呢|具体呢|再详细(?:点|说说|讲讲)?|展开说说|继续|为什么|然后呢|这个呢)[？?。！!]*$/u.test(text.normalize("NFKC").trim());
+}
+
+function getGroupFaqContinuationQuery(session: KnowledgeContinuationSession, text: string): string {
+  return `${session.query} ${text}`.trim();
+}
+
+function isKnowledgeContinuation(session: KnowledgeContinuationSession, text: string): boolean {
+  if (session.source === "group_faq") return isGroupFaqContinuation(text);
+  return classifyPrivateEnterpriseRankingRequest(text, [
+    { role: "user", content: session.query },
+    { role: "assistant", content: session.reply },
+  ]) === "contextual";
+}
+
+function knowledgeContinuationKey(groupId: string, userId: string): string {
+  return `${groupId}\u0000${userId}`;
 }
 
 function messageForAiFailure(error: unknown, failureKind: string): string {

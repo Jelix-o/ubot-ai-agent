@@ -215,19 +215,12 @@ const AUTONOMOUS_PREFECTURE_SHORT_ALIASES = new Map<string, string>([
   ["伊犁哈萨克自治州", "伊犁州"],
 ]);
 const REGIONS_WITHOUT_ENTRIES = ["黑龙江省", "甘肃省", "青海省", "西藏自治区"];
-// "民营500强" is the common abbreviated form in group chat.  It still names
-// this specific ranking, unlike a bare "民营", so it belongs on the
-// deterministic path as well.
-const EXPLICIT_RANKING_SCOPE = /(?:20\d{2}年?)?(?:中国)?(?:民营企业|民企|民营)(?:500|五百)强(?:榜单)?/u;
-// The product defaults an unqualified Top-N request to this 2026 dataset.
-// Keep this deliberately narrow so ordinary chat about an unnamed company or
-// media list does not get captured.
+const EXPLICIT_RANKING_SCOPE = /(?:20\d{2}年?)?(?:中国)?民营企业(?:(?:500|五百)强(?:榜单)?|排名)/u;
+// These compact operations may continue an already selected source only.
 const BARE_TOP_N_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?(?:列出|列一下|列举|展示|看一下|发我|告诉我)?\s*)?(?:20\d{2}年?)?(?:前|top)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位|家|强)?(?:有哪些|是什么|名单|企业|公司|都有谁|分别是哪些|分别是谁)?[？?。！!]*$/iu;
 const BARE_RANK_RANGE_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?(?:列出|列一下|列举|展示|看一下|发我|告诉我)?\s*)?(?:20\d{2}年?)?第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?(?:到|至|-|—|~|～)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?(?:有哪些|是什么|名单|企业|公司|都有谁|分别是哪些|分别是谁)?[？?。！!]*$/iu;
 const BARE_RANK_LOOKUP_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)?(?:20\d{2}年?)?(?:(?:第|排名|名次|位列)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)?(?:是谁|是哪(?:家|个)?|是什么(?:公司|企业)?|有谁)?|(?:谁|哪家|什么(?:公司|企业)?).{0,6}?(?:排名|名次|位列)(?:第)?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)?)[？?。！!]*$/iu;
-// Province ordering is a sufficiently specific dataset operation to default
-// to the 2026 edition even when it follows no prior turn. This prevents the
-// model from inferring a province leaderboard or ordinal from a single row.
+// Province ordering alone never selects a knowledge source.
 const BARE_PROVINCE_LEADERBOARD_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)?(?:20\d{2}年?)?(?:(?:按(?:榜单)?(?:省份|省级地区)|(?:省份|省级地区|各省|各地区))(?:上榜(?:家数|数量)?|(?:排名|排行|排序)|上榜情况|分别有多少家|有多少家|有几家)|(?:排名|排行|排序)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区))(?:呢|吗)?[？?。！!]*$/iu;
 const BARE_PROVINCE_EXTREME_REQUEST = /^(?=.*(?:上榜|家数|榜单|(?:500|五百)强))(?:(?:(?:哪个|哪(?:一)?个|什么)(?:省份?|地区)(?:上榜)?(?:最多|最少))|(?:(?:上榜|榜单)?(?:最多|最少)(?:的?是)?(?:哪个|哪(?:一)?个|什么)(?:省份?|地区))|(?:(?:各省|省份|地区)(?:上榜)?(?:最多|最少)))(?:呢|吗)?[？?。！!]*$/iu;
 const BARE_PROVINCE_COMPARISON_REQUEST = /^(?=.*(?:省|自治区|北京市|天津市|上海市|重庆市))(?=.*(?:和|与|跟|、|,|，))(?=.*(?:上榜|家数|榜单|(?:500|五百)强)).*(?:哪个|谁)(?:多|少)(?:几家)?(?:[？?。！!])?$/u;
@@ -237,28 +230,26 @@ const NON_TARGET_FACT_REQUEST = /(?:多少(?:家|个|所)?|几(?:家|个|所)|�
 // ranking answer. In particular, do not treat ordinary words such as
 // "公司" or "哪些" as a ranking signal: that would steal normal chat from
 // the model after any Top 500 reply.
-const CONTEXTUAL_LIST_FOLLOWUP = /^(?:分别是哪些|具体有哪些|其中有哪些|有哪些(?:公司|企业)?|都有哪些|哪几家|都有谁|有谁|那些(?:呢)?|哪些(?:呢)?|名单|把名单发我|列(?:一下|出)?)(?:[？?。！!])?$/u;
+const CONTEXTUAL_LIST_FOLLOWUP = /^(?:分别是哪些|具体有哪些|其中有哪些|有哪些(?:公司|企业)?|都有哪些|哪几家|都有谁|有谁|那些(?:呢)?|哪些(?:呢)?|名单|把名单发我|列(?:一下|出)?|(?:前|top)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位|家)?)(?:[？?。！!])?$/iu;
 const CONTEXTUAL_COUNT_FOLLOWUP = /^(?:有多少家|有几家|多少家|几家)(?:[？?。！!])?$/u;
 const CONTEXTUAL_PROVINCE_EXTREME_FOLLOWUP = /^(?:(?:哪个|哪(?:一)?个|那个|什么)(?:省份?|地区)(?:上榜)?(?:最多|最少)|(?:最多|最少)(?:的?是)?(?:哪个|哪(?:一)?个|什么)(?:省份?|地区)|(?:各省|省份|地区)(?:上榜)?(?:最多|最少))(?:[？?。！!])?$/u;
 const CONTEXTUAL_PROVINCE_COMPARISON_FOLLOWUP = /^(?=.*(?:省|自治区|北京市|天津市|上海市|重庆市))(?=.*(?:和|与|跟|、|,|，))(?=.*(?:上榜|家数|榜单|(?:500|五百)强)).*(?:哪个|谁)(?:多|少)(?:几家)?(?:[？?。！!])?$/u;
+const CONTEXTUAL_PROVINCE_RANK_FOLLOWUP = /^(?:按(?:榜单)?(?:省份|省级地区)(?:排|排个)?名(?:呢)?|排名第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)(?:呢)?)[？?。！!]*$/u;
 
 export type PrivateEnterpriseRankingRequestScope = "none" | "explicit" | "contextual";
 
 /**
  * Separates unmistakable Top 500 fact requests from ordinary conversation.
- * An explicit named ranking is always handled locally, while a short
- * follow-up is local only immediately after an authoritative ranking reply.
+ * A named ranking plus factual intent is local. The caller supplies history
+ * only from an eligible source session; generic conversation history is not authority.
  */
 export function classifyPrivateEnterpriseRankingRequest(
   text: string,
   history: ReadonlyArray<{ role: string; content: string }> = [],
 ): PrivateEnterpriseRankingRequestScope {
   const normalized = compactRankingText(text);
+  if (EXPLICIT_RANKING_SCOPE.test(normalized) && hasNamedRankingFactIntent(normalized)) return "explicit";
   if (isNonTargetRankingScope(normalized)) return "none";
-  if (EXPLICIT_RANKING_SCOPE.test(normalized) ||
-      BARE_TOP_N_REQUEST.test(normalized) || BARE_RANK_RANGE_REQUEST.test(normalized) ||
-      BARE_RANK_LOOKUP_REQUEST.test(normalized) || BARE_PROVINCE_LEADERBOARD_REQUEST.test(normalized) ||
-      BARE_PROVINCE_EXTREME_REQUEST.test(normalized) || BARE_PROVINCE_COMPARISON_REQUEST.test(normalized)) return "explicit";
   const previous = history.at(-1);
   return previous?.role === "assistant" && previous.content.includes(EDITION) &&
     isContextualRankingFollowup(normalized)
@@ -270,7 +261,18 @@ function isContextualRankingFollowup(normalizedText: string): boolean {
   return CONTEXTUAL_LIST_FOLLOWUP.test(normalizedText) ||
     CONTEXTUAL_COUNT_FOLLOWUP.test(normalizedText) ||
     CONTEXTUAL_PROVINCE_EXTREME_FOLLOWUP.test(normalizedText) ||
-    CONTEXTUAL_PROVINCE_COMPARISON_FOLLOWUP.test(normalizedText);
+    CONTEXTUAL_PROVINCE_COMPARISON_FOLLOWUP.test(normalizedText) ||
+    CONTEXTUAL_PROVINCE_RANK_FOLLOWUP.test(normalizedText) ||
+    BARE_TOP_N_REQUEST.test(normalizedText) || BARE_RANK_RANGE_REQUEST.test(normalizedText) ||
+    BARE_RANK_LOOKUP_REQUEST.test(normalizedText) || BARE_PROVINCE_LEADERBOARD_REQUEST.test(normalizedText) ||
+    BARE_PROVINCE_EXTREME_REQUEST.test(normalizedText) || BARE_PROVINCE_COMPARISON_REQUEST.test(normalizedText) ||
+    /^(?:那|那么)?[\p{L}\p{N}（）()]{2,45}(?:排(?:第)?几(?:名|位)|排名第几|是否上榜|有多少家|有几家)(?:呢)?[？?。！!]*$/u.test(normalizedText);
+}
+
+function hasNamedRankingFactIntent(normalizedText: string): boolean {
+  if (/(?:命令|关键词|这几个字|这个名称|这个名字|这句话|如何设计|怎么设计|如何实现|怎么实现|触发|绑定|改名|翻译|什么意思|怎么定义|如何理解|为什么叫)/u.test(normalizedText)) return false;
+  const question = normalizedText.replace(EXPLICIT_RANKING_SCOPE, "");
+  return /前(?:\d|[〇零一二两三四五六七八九十百])|第(?:\d|[〇零一二两三四五六七八九十百])|多少|几家|哪家|哪些|哪个|有谁|是谁|分别|名单|列出|列一下|各省|各地区|省份.*(?:排名|排序)|排(?:第)?几|排名|名次|上榜|入围|营收|营业收入|榜首/u.test(question);
 }
 
 export function loadPrivateEnterpriseRanking(
@@ -409,12 +411,29 @@ export class PrivateEnterpriseRanking {
   }
 
   answer(text: string, history: Array<{ role: string; content: string }> = []): RankingAnswer | undefined {
-    const requestScope = classifyPrivateEnterpriseRankingRequest(text, history);
+    return this.answerInScope(text, history, false);
+  }
+
+  answerInSelectedSource(text: string, history: Array<{ role: string; content: string }> = []): RankingAnswer | undefined {
+    return this.answerInScope(text, history, true);
+  }
+
+  private answerInScope(
+    text: string,
+    history: Array<{ role: string; content: string }> = [],
+    selectedSource: boolean,
+  ): RankingAnswer | undefined {
+    const classifiedScope = classifyPrivateEnterpriseRankingRequest(text, history);
+    const requestScope = selectedSource && classifiedScope === "none" ? "explicit" : classifiedScope;
     const previousAssistantContent = history.at(-1)?.role === "assistant"
       ? history.at(-1)?.content ?? ""
       : "";
     const rankingContextActive = previousAssistantContent.includes(EDITION);
     if (isNonTargetRankingScope(compactRankingText(text))) return undefined;
+    if (requestScope === "none") return undefined;
+
+    const namedEdition = extractNamedRankingEdition(text);
+    text = text.replace(EXPLICIT_RANKING_SCOPE, " ").trim();
 
     const rankRangeTokens = findRankRangeTokens(text);
     const rankRange = parseRankRange(text);
@@ -432,21 +451,15 @@ export class PrivateEnterpriseRanking {
     const companyExistenceIntent = /上榜|入围|进榜|进入(?:榜单|500强)?|有上榜|有无|有没有|是否/.test(text);
     const potentialCompanyInquiry = rankIntent || companyStatusIntent || companyExistenceIntent || rankingReferenceIntent;
     const companyMatches = potentialCompanyInquiry ? this.matchEnterprises(text) : [];
-    const companyRankRequestShape = rankIntent && looksLikeCompanyRankRequest(text);
-    const companyExistenceRequestShape = companyExistenceIntent && looksLikeCompanyExistenceRequest(text);
     const extremeIntent = /(?:哪个|哪(?:一)?个|那个|什么)(?:省|地区)(?:[^？?。]{0,12})?(?:最多|最少)|(?:最多|最少)(?:的?是)?(?:哪个|哪(?:一)?个|什么)(?:省|地区)|(?:各省|省份|地区).*(?:最多|最少)|(?:哪个|哪(?:一)?个)(?:省|地区).*(?:排第?[一二两三四五六七八九十\d]+|第一)/.test(text);
     const provinceRankingIntent = /(?:按(?:榜单)?(?:省份|省级地区)|(?:省份|省级地区|各省|各地区).{0,8}(?:排名|排行|排序|上榜(?:数量|家数)?|上榜情况)|(?:排名|排行|排序).{0,8}(?:省份|省级地区|各省|各地区)|(?:排名|排行|排序)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|(?:各省|各省份|每(?:个)?省|各地区).*(?:多少家|几家|上榜(?:数量|家数)?|数量|家数|分别))/.test(text);
     const revenueBasisIntent = /(?:2025年?)?(?:营业)?收入|营收.*(?:年份|年度|2025)|(?:按|以|用)2025年?(?:营收|营业收入|收入)/.test(text);
-    const namedEdition = extractNamedRankingEdition(text);
-    const fallbackEdition = namedEdition === undefined && (requestScope !== "none" || companyMatches.length > 0 || companyRankRequestShape || companyExistenceRequestShape)
-      ? extractFallbackRankingEdition(text)
-      : undefined;
+    const fallbackEdition = namedEdition === undefined ? extractFallbackRankingEdition(text) : undefined;
     const requestedEdition = namedEdition ?? fallbackEdition;
     if (requestedEdition !== undefined && requestedEdition !== 2026) {
       return { messages: ["目前知识库仅收录2026中国民营企业500强，不能用这份榜单回答其他年份的名次或地区统计。"] };
     }
 
-    const hasNamedScope = requestScope !== "none";
     const prior = requestScope === "contextual" && rankingContextActive
       ? [...history].reverse().find((turn) => turn.role === "user")?.content
       : undefined;
@@ -460,8 +473,9 @@ export class PrivateEnterpriseRanking {
     // A follow-up such as "分别是哪些" after "哪个省最多" has no province
     // in the user's preceding text. The immediately preceding deterministic
     // answer is the authoritative context for recovering that province.
-    if (contextualFollowup && provinceMatches.length === 0 && rankingContextActive) {
-      provinceMatches = this.matchProvinces(previousAssistantContent);
+    if (contextualFollowup && rankingContextActive) {
+      const previousProvinces = this.matchProvinces(previousAssistantContent);
+      if (previousProvinces.length === 1) provinceMatches = previousProvinces;
     }
     const exactRank = parseExactRank(text);
     const exactRankToken = findExactRankToken(text);
@@ -473,25 +487,13 @@ export class PrivateEnterpriseRanking {
     const rankLookupIntent = exactRank !== undefined && /谁|哪家|什么(?:公司|企业)?|是哪(?:家|个)?/.test(text);
     const provinceRank = parseProvinceRank(text);
     const compareIntent = provinceMatches.length > 1 && /(?:哪个|哪(?:个)?|谁|比较|多(?:一些|一点|几家)?|少(?:一些|一点|几家)?)/.test(text);
-    // A bare province or national count defaults only when the whole turn is
-    // the compact dataset shorthand (for example "浙江有几家"). A province
-    // plus unrelated subject words such as "医院" or "上市公司" belongs to
-    // ordinary model chat.
-    const provinceFactRequest = provinceMatches.length === 1 && (countIntent || listIntent) &&
-      (hasNamedScope || isBareProvinceFactRequest(text, provinceMatches[0]!));
-    const nationalCountRequest = provinceMatches.length === 0 && /全国|总共|总计/.test(text) && countIntent &&
-      (hasNamedScope || isBareNationalCountRequest(text));
-    const companyLookupRequest = (rankIntent || companyStatusIntent || companyExistenceIntent) &&
-      (companyMatches.length > 0 || companyExistenceRequestShape ||
-        (hasNamedScope && companyRankRequestShape));
-    const hasRoutingSignal = hasNamedScope || companyLookupRequest || provinceFactRequest || nationalCountRequest;
-    if (!hasRoutingSignal) return undefined;
+    const nationalCountRequest = provinceMatches.length === 0 && /全国|总共|总计/.test(text) && countIntent;
 
     if (invalidRankExpression) {
       return { messages: ["榜单名次范围应在1至500之间。"] };
     }
 
-    if (revenueBasisIntent && hasNamedScope) {
+    if (revenueBasisIntent) {
       return { messages: [`${EDITION}按2025年营收排序。`] };
     }
     if (rankRange) return this.answerRankRange(rankRange.startRank, rankRange.endRank);
@@ -545,6 +547,7 @@ export class PrivateEnterpriseRanking {
     if (countIntent || listIntent || contextualFollowup) {
       return { messages: [this.cityReady ? "请指定一个省份或地级市。" : `请指定榜单中的省级地区。${CITY_PENDING}`] };
     }
+    if (this.matchEnterprises(text).length > 0) return this.answerCompany(text);
     return { messages: ["这份知识库可查询企业名次、指定名次、省级地区家数或名单。请明确企业名称、名次或省级地区。"] };
   }
 
@@ -749,23 +752,6 @@ function compactRankingText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/gu, "").trim();
 }
 
-function isBareProvinceFactRequest(text: string, province: string): boolean {
-  const normalized = compactRankingText(text);
-  const provinceForms = [province, province.replace(/壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区|省|市$/u, "")]
-    .filter(Boolean)
-    .sort((left, right) => right.length - left.length);
-  return provinceForms.some((form) => {
-    const escaped = escapeRegex(form);
-    return new RegExp(
-      `^${escaped}(?:(?:有)?上榜(?:企业)?(?:有)?(?:多少家|几家)|(?:有)?(?:多少家|几家)|(?:上榜|榜单)(?:家数|数量)|(?:有哪些|名单))[？?。！!]*$`,
-      "u",
-    ).test(normalized);
-  });
-}
-
-function isBareNationalCountRequest(text: string): boolean {
-  return /^(?:全国|总共|总计)(?:有)?(?:多少家|几家)[？?。！!]*$/u.test(compactRankingText(text));
-}
 
 function isNonTargetRankingScope(normalizedText: string): boolean {
   if (!NON_TARGET_RANKING_SCOPE.test(normalizedText)) return false;
@@ -774,7 +760,7 @@ function isNonTargetRankingScope(normalizedText: string): boolean {
 
 /** Reads only the year attached to the named private-enterprise ranking. */
 function extractNamedRankingEdition(text: string): number | undefined {
-  const match = compactRankingText(text).match(/(20\d{2})年?(?:中国)?(?:民营企业|民企|民营)(?:500|五百)强/u);
+  const match = compactRankingText(text).match(/(20\d{2})年?(?:中国)?民营企业(?:(?:500|五百)强|排名)/u);
   return match ? Number(match[1]) : undefined;
 }
 
@@ -884,33 +870,6 @@ function findTopRankToken(text: string): string | undefined {
   return match?.[1];
 }
 
-/**
- * Avoid passing an unrecognized company-ranking request to a general model.
- * The stripped candidate excludes ordinary pronouns and needs at least two
- * characters, so plain questions such as "你排第几" remain ordinary chat.
- */
-function looksLikeCompanyRankRequest(text: string): boolean {
-  if (/电影|电视剧|歌曲|游戏|比赛|球队|演员/u.test(text)) return false;
-  if (!/排名|名次|排行|排在|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|位居|名列|位于第/u.test(text)) return false;
-  const candidate = compactRankingText(text.replace(
-    /20\d{2}年?|中国|全国|民营企业|民企|民营|(?:500|五百)强|榜单|排名|名次|排行|排在|排(?:第)?几(?:名|位)?|排第几|第几名|第几位|多少名|排多少|位列|位居|名列|位于第|在|的|是否|有无|有没有|有上榜|上榜|入围|进榜|进入(?:榜单|500强)?|是|多少|几|第|名|前|top|请问|帮我|查一下|告诉我|了吗|吗|呢|公司|企业|你|我|他|她|它|[？?！!。，、\s]/giu,
-    "",
-  ));
-  return candidate.length >= 2 && candidate.length <= 80;
-}
-
-/** Keeps a clear company "is it listed" question on the verified dataset,
- * including the deterministic no-result case, without capturing media or
- * other non-enterprise rankings. */
-function looksLikeCompanyExistenceRequest(text: string): boolean {
-  if (!/上榜|入围|进榜|进入(?:榜单|500强)?|有上榜|有无|有没有|是否/u.test(text) ||
-      /电影|电视剧|歌曲|游戏|比赛|球队|演员/u.test(text)) return false;
-  const candidate = compactRankingText(text.replace(
-    /20\d{2}年?|中国|全国|民营企业|民企|民营|(?:500|五百)强|榜单(?:里|中)?|上榜了吗|上榜|入围|进榜|进入(?:榜单|500强)?|有上榜|是否|有无|有没有|在|的|是|请问|帮我|查一下|告诉我|了吗|吗|呢|公司|企业|你|我|他|她|它|[？?！!。，、\s]/giu,
-    "",
-  ));
-  return candidate.length >= 2 && candidate.length <= 80;
-}
 
 function validateRanking(data: PrivateEnterpriseRankingData): void {
   if (data.edition !== 2026 || data.revenueYear !== 2025 || data.entries?.length !== 500 ||

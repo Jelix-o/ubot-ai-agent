@@ -469,6 +469,9 @@ export function friendlyApiError(code: string): string {
     too_many_login_attempts: "尝试次数过多，请稍后再试。",
     csrf_required: "登录状态已失效，请重新登录。",
     forbidden: "当前账号无权执行该操作。",
+    invalid_knowledge_source_command: "命令须以半角 # 开头，后接 1 至 31 个文字、数字、下划线或连字符，不可含空格。",
+    knowledge_command_conflict: "该命令与知识源或系统命令重叠，请更换一个独立的命令。",
+    knowledge_source_bindings_unavailable: "当前运行版本暂不支持编辑知识源命令。",
     voice_feature_retired: "语音功能已下线，该配置不再可用。",
     legacy_qq_admin_retired: "群内 #管理员 管理已下线，请在后台账号中维护权限。",
   } as Record<string, string>)[code] || code;

@@ -12,6 +12,7 @@ import { CharacterProfileService } from "./services/character-profile-service.js
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
+import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
 import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
@@ -175,6 +176,7 @@ async function startFixture(
     groupConfigService,
     groupMemoryStore: memories,
     knowledgeBaseStore: knowledge,
+    knowledgeSourceBindingStore: new KnowledgeSourceBindingStore(repository),
     privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     characterProfileService,
     systemSettingsStore: settings,
@@ -445,6 +447,50 @@ test("password change requires recent reauth, enforces min length 12, and revoke
 
   const newPassword = await login(baseUrl, "admin", "next-secret-password-12");
   assert.equal(newPassword.session.username, "admin");
+});
+
+test("knowledge binding APIs enforce role, group scope, conflict validation and reload", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const root = await login(baseUrl);
+  const headers = (auth: Auth) => ({ Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" });
+  const put = (auth: Auth, body: unknown) => request(baseUrl, "/api/knowledge/bindings", {
+    method: "PUT", headers: headers(auth), body: JSON.stringify(body),
+  });
+  const get = (auth: Auth, groupId: string) => request(baseUrl, "/api/knowledge/bindings?groupId=" + groupId, { headers: headers(auth) });
+  const defaults = await get(root, "67890");
+  assert.deepEqual(await defaults.json(), { rankingCommand: "#民营企业排名", groupFaqCommand: "#群知识库" });
+  const invite = await request(baseUrl, "/api/admin-accounts/invites", {
+    method: "POST", headers: headers(root),
+    body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
+  });
+  assert.equal(invite.status, 201);
+  const member = await acceptInviteAsAdmin(baseUrl, (await invite.json() as { token: string }).token, "knowledge-editor");
+  assert.equal((await get(member, "100200")).status, 403);
+  assert.equal((await put(member, { source: "group_faq", groupId: "100200", command: "#私有" })).status, 403);
+  assert.equal((await put(member, { source: "private_enterprise_ranking", command: "#榜单" })).status, 403);
+  assert.equal((await put(member, { source: "group_faq", groupId: "67890", command: "#本群资料" })).status, 200);
+  assert.equal((await put(member, { source: "group_faq", groupId: "67890", command: "#本群资料" })).status, 200);
+  assert.equal((await (await get(root, "67890")).json()).groupFaqCommand, "#本群资料");
+  assert.equal((await (await get(root, "100200")).json()).groupFaqCommand, "#群知识库");
+
+  assert.equal((await put(root, { source: "private_enterprise_ranking", command: "#本群资料" })).status, 409);
+  assert.equal((await put(root, { source: "private_enterprise_ranking", command: "#企业榜" })).status, 200);
+  assert.equal((await (await get(member, "67890")).json()).rankingCommand, "#企业榜");
+  for (const command of ["#知识库", "#知识库查询", "#知识", "#企业榜"]) {
+    assert.equal((await put(member, { source: "group_faq", groupId: "67890", command })).status, 409, command);
+  }
+  for (const command of ["榜单", "#", "#a b", "#a!"]) {
+    assert.equal((await put(member, { source: "group_faq", groupId: "67890", command })).status, 400, command);
+  }
+  assert.equal((await request(baseUrl, "/api/knowledge/bindings", {
+    method: "PUT", headers: { Cookie: root.cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "private_enterprise_ranking", command: "#新榜" }),
+  })).status, 403, "CSRF remains enforced");
+  const commands = await (await request(baseUrl, "/api/commands", { headers: headers(root) })).json() as { commands: Array<{ primary: string }> };
+  commands.commands[0]!.primary = "#企业榜";
+  assert.equal((await request(baseUrl, "/api/commands", {
+    method: "PUT", headers: headers(root), body: JSON.stringify(commands),
+  })).status, 409, "system commands cannot take knowledge bindings");
 });
 
 test("group administrators are limited to authorized groups and operational features", async (t) => {

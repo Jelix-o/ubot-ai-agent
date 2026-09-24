@@ -909,6 +909,24 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "retire-voice-state",
     apply: retireVoiceState,
   },
+  {
+    version: 16,
+    name: "add-knowledge-source-command-bindings",
+    apply: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS v3_knowledge_source_bindings (
+        source TEXT NOT NULL CHECK (source IN ('private_enterprise_ranking', 'group_faq')),
+        group_id TEXT NOT NULL DEFAULT '',
+        command TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_by TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (source, group_id),
+        CHECK (
+          (source = 'private_enterprise_ranking' AND group_id = '') OR
+          (source = 'group_faq' AND length(trim(group_id)) > 0)
+        )
+      );
+    `),
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
