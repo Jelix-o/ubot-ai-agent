@@ -2908,14 +2908,25 @@ export class BotApplication {
       ...(ambientGroupContext.length > 0 ? { ambientGroupContext } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
-    const toolRuntime = this.isCapabilityEnabled("knowledge")
+    // The ranking tool is deliberately absent from ordinary model chat. Tool
+    // calling models may otherwise select a plausible-looking global query
+    // for an unrelated question (for example, a city university query).
+    const rankingToolEligible = Boolean(this.privateEnterpriseRanking) &&
+      isLikelyPrivateEnterpriseRankingRequest(normalizedUserInput, history);
+    const groupFaqToolEligible = Boolean(this.knowledgeBaseStore) &&
+      isLikelyGroupFaqRequest(normalizedUserInput, history);
+    // General chat should be a normal model completion. Attach only the
+    // verified source that the current request explicitly needs; exposing a
+    // broad tool catalog lets a model turn an unrelated question into a
+    // terminal knowledge-base response.
+    const toolRuntime = this.isCapabilityEnabled("knowledge") && (rankingToolEligible || groupFaqToolEligible)
       ? createKnowledgeToolRuntime({
           groupId: groupConfig.groupId,
-          ranking: this.privateEnterpriseRanking,
-          knowledgeBaseStore: this.knowledgeBaseStore,
+          ranking: rankingToolEligible ? this.privateEnterpriseRanking : undefined,
+          knowledgeBaseStore: groupFaqToolEligible ? this.knowledgeBaseStore : undefined,
           isKnowledgeEnabled: () => this.isCapabilityEnabled("knowledge"),
-          forceRankingTool: isLikelyPrivateEnterpriseRankingRequest(normalizedUserInput, history),
-          forceGroupFaqTool: isLikelyGroupFaqRequest(normalizedUserInput, history),
+          forceRankingTool: rankingToolEligible,
+          forceGroupFaqTool: groupFaqToolEligible,
         })
       : undefined;
     const replyArgs = {

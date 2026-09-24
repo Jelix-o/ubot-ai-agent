@@ -24,6 +24,11 @@ NUL
 # 本地部署辅助文件（不进入仓库）
 .deploy-*.tar.gz
 .mimocode/
+
+# Offline headquarters-city research captures and candidate manifests are never
+# release assets or shared runtime state. Keep only the directory marker.
+research/private/*
+!research/private/.gitkeep
 deploy/*
 !deploy/nginx/
 !deploy/nginx/bot.9958.uk.conf

@@ -21,12 +21,37 @@ claim dates must not be later than the frozen date. A registration address, a
 company-name inference, or an undated commercial-directory entry is not
 headquarters evidence.
 
+The evidence selected to freeze each headquarters city is the record whose
+`claimAsOf` equals the ledger's `headquarters.asOf`. Both that claim date and
+its source publication date must fall within the 365 calendar days ending on
+the frozen date (inclusive). Retrieval after the frozen date does not make an
+older source current. Older material may only be retained as historical
+corroboration with a different `claimAsOf`; it cannot establish the frozen
+headquarters record.
+
+The city stored in the ledger is canonical (for example, `杭州市`), but source
+quotes and captures retain their source-faithful wording (for example,
+`杭州`). Runtime comparison recognizes only safe suffix forms such as `市`
+removal and retains the exact quote in the checksum-bound capture. The single
+quoted claim (or one original table row) must itself bind the exact
+`sourceSubject`, an explicit headquarters predicate, and that city in one
+clause. A nearby city mention cannot be borrowed from a later comma-separated
+clause.
+
+When the ranked enterprise name and `sourceSubject` differ, the evidence must
+include an `entityRelationText` quotation from the source. It must name both
+entities, appear verbatim in the local capture, and explicitly establish that
+they are the same entity through a name-continuity form such as `简称`, `即`,
+`原名`, `更名`, `曾用名`, or `变更为`. A `旗下`, `子公司`, `控股`, or `品牌`
+relationship does not establish a common headquarters and is rejected. A
+free-form reviewer `entityMatch` note is not relation evidence.
+
 `authority` and `publisher` are reviewer attestations rather than facts the
 runtime can prove from a URL. Before signing, the independent reviewer must
 verify that the cited HTTPS DNS domain is controlled by the stated enterprise
 or government publisher, that the local capture faithfully reflects the cited
-page, and that the source subject is the ranked enterprise (or the documented
-group/subsidiary relationship). IP-literal, local, reserved, and placeholder
+  page, and that the source subject is the ranked enterprise (or the documented
+  same-entity name-continuity relationship). IP-literal, local, reserved, and placeholder
 URLs are rejected by the runtime; a URL alone is never sufficient evidence.
 
 The application validates the canonical research-row hash, a flattened evidence
