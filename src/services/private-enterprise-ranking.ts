@@ -38,6 +38,12 @@ export interface HeadquartersEvidence {
   /** Entity name explicitly present in the cited source. */
   sourceSubject: string;
   claimText: string;
+  /**
+   * Verbatim source text that establishes the relationship to the ranked
+   * enterprise when `sourceSubject` uses a different legal or group name.
+   * It is deliberately source evidence, not a reviewer-authored mapping.
+   */
+  entityRelationText?: string;
 }
 
 export interface HeadquartersEvidenceArchiveEntry {
@@ -78,7 +84,7 @@ export interface HeadquartersResearchEntry {
   enterpriseName: string;
   /** SHA-256 of the immutable primary ranking row. */
   rankingRowSha256: string;
-  /** Explains a group/subsidiary name mismatch where one exists. */
+  /** Documents an exact-entity or source-cited name-continuity match. */
   entityMatch: string;
   headquarters: {
     province: string;
@@ -170,25 +176,70 @@ export interface PrivateEnterpriseToolQuery {
 const CITY_PENDING = "2026中国民营企业500强榜单只公布省份。500家企业的总部城市尚未全部核验，暂不能给出地级市的准确家数或名单。";
 const EDITION = "2026中国民营企业500强";
 const LIST_BATCH_SIZE = 20;
+// A headquarters answer is frozen for the ranking publication date. A source
+// used as that frozen-date claim may be no more than one calendar year old.
+// Historical corroboration may remain in the ledger, but cannot be selected
+// as the record projected to city answers.
+const HEADQUARTERS_SUPPORT_MAX_AGE_DAYS = 365;
 const MUNICIPALITIES = new Set(["北京市", "天津市", "上海市", "重庆市"]);
+// These are fixed, unambiguous official-to-common autonomous-prefecture forms.
+// Do not derive an alias by chopping off ethnic descriptors: doing so would
+// silently turn an arbitrary city string into a looser geographic claim.
+const AUTONOMOUS_PREFECTURE_SHORT_ALIASES = new Map<string, string>([
+  ["延边朝鲜族自治州", "延边州"],
+  ["恩施土家族苗族自治州", "恩施州"],
+  ["湘西土家族苗族自治州", "湘西州"],
+  ["黔东南苗族侗族自治州", "黔东南州"],
+  ["黔南布依族苗族自治州", "黔南州"],
+  ["黔西南布依族苗族自治州", "黔西南州"],
+  ["阿坝藏族羌族自治州", "阿坝州"],
+  ["甘孜藏族自治州", "甘孜州"],
+  ["凉山彝族自治州", "凉山州"],
+  ["楚雄彝族自治州", "楚雄州"],
+  ["红河哈尼族彝族自治州", "红河州"],
+  ["文山壮族苗族自治州", "文山州"],
+  ["西双版纳傣族自治州", "西双版纳州"],
+  ["大理白族自治州", "大理州"],
+  ["德宏傣族景颇族自治州", "德宏州"],
+  ["怒江傈僳族自治州", "怒江州"],
+  ["迪庆藏族自治州", "迪庆州"],
+  ["临夏回族自治州", "临夏州"],
+  ["甘南藏族自治州", "甘南州"],
+  ["海北藏族自治州", "海北州"],
+  ["黄南藏族自治州", "黄南州"],
+  ["海南藏族自治州", "海南州"],
+  ["果洛藏族自治州", "果洛州"],
+  ["玉树藏族自治州", "玉树州"],
+  ["海西蒙古族藏族自治州", "海西州"],
+  ["昌吉回族自治州", "昌吉州"],
+  ["伊犁哈萨克自治州", "伊犁州"],
+]);
 const REGIONS_WITHOUT_ENTRIES = ["黑龙江省", "甘肃省", "青海省", "西藏自治区"];
 // "民营500强" is the common abbreviated form in group chat.  It still names
 // this specific ranking, unlike a bare "民营", so it belongs on the
 // deterministic path as well.
 const EXPLICIT_RANKING_SCOPE = /(?:20\d{2}年?)?(?:中国)?(?:民营企业|民企|民营)(?:500|五百)强(?:榜单)?/u;
-const SHORT_EDITION_RANKING_SCOPE = /20\d{2}年?(?:第\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)|(?:前|top)\s*(?:\d+|[〇零一二两三四五六七八九十百]+))/iu;
 // The product defaults an unqualified Top-N request to this 2026 dataset.
 // Keep this deliberately narrow so ordinary chat about an unnamed company or
 // media list does not get captured.
-const BARE_TOP_N_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?(?:列出|列一下|列举|展示|看一下|发我|告诉我)?\s*)?(?:前|top)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位|家|强)?(?:有哪些|是什么|名单|企业|公司|都有谁|分别是哪些|分别是谁)?[？?。！!]*$/iu;
-const BARE_RANK_RANGE_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?(?:列出|列一下|列举|展示|看一下|发我|告诉我)?\s*)?第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?(?:到|至|-|—|~|～)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?(?:有哪些|是什么|名单|企业|公司|都有谁|分别是哪些|分别是谁)?[？?。！!]*$/iu;
-const BARE_RANK_LOOKUP_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)?(?:(?:第|排名|名次|位列)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)?(?:是谁|是哪(?:家|个)?|是什么(?:公司|企业)?|有谁)?|(?:谁|哪家|什么(?:公司|企业)?).{0,6}?(?:排名|名次|位列)(?:第)?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)?)[？?。！!]*$/iu;
+const BARE_TOP_N_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?(?:列出|列一下|列举|展示|看一下|发我|告诉我)?\s*)?(?:20\d{2}年?)?(?:前|top)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位|家|强)?(?:有哪些|是什么|名单|企业|公司|都有谁|分别是哪些|分别是谁)?[？?。！!]*$/iu;
+const BARE_RANK_RANGE_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?(?:列出|列一下|列举|展示|看一下|发我|告诉我)?\s*)?(?:20\d{2}年?)?第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?(?:到|至|-|—|~|～)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?(?:有哪些|是什么|名单|企业|公司|都有谁|分别是哪些|分别是谁)?[？?。！!]*$/iu;
+const BARE_RANK_LOOKUP_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)?(?:20\d{2}年?)?(?:(?:第|排名|名次|位列)\s*(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)?(?:是谁|是哪(?:家|个)?|是什么(?:公司|企业)?|有谁)?|(?:谁|哪家|什么(?:公司|企业)?).{0,6}?(?:排名|名次|位列)(?:第)?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)\s*(?:名|位)?)[？?。！!]*$/iu;
 // Province ordering is a sufficiently specific dataset operation to default
 // to the 2026 edition even when it follows no prior turn. This prevents the
 // model from inferring a province leaderboard or ordinal from a single row.
-const BARE_PROVINCE_LEADERBOARD_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)?(?:(?:按(?:榜单)?(?:省份|省级地区)|(?:省份|省级地区|各省|各地区))(?:上榜(?:家数|数量)?|(?:排名|排行|排序)|上榜情况|分别有多少家|有多少家|有几家)|(?:排名|排行|排序)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区))(?:呢|吗)?[？?。！!]*$/iu;
-const NON_TARGET_RANKING_SCOPE = /(?:世界|财富|福布斯|胡润|中国企业)500强|电影榜单/u;
-const CONTEXTUAL_RANKING_FACT = /(?:企业|公司|集团|排名|名次|排(?:第)?几|第\s*\d+|前\s*(?:\d+|[〇零一二两三四五六七八九十百]+)|top\s*\d*|上榜|入围|多少家|几家|哪些|哪几家|名单|分别|列(?:一下|出)?|都有谁|有谁|那些|具体|省|地区|总部|榜单|营收|收入|怎样|怎么样|情况|表现)/iu;
+const BARE_PROVINCE_LEADERBOARD_REQUEST = /^(?:(?:请|帮我|给我|麻烦)?\s*)?(?:20\d{2}年?)?(?:(?:按(?:榜单)?(?:省份|省级地区)|(?:省份|省级地区|各省|各地区))(?:上榜(?:家数|数量)?|(?:排名|排行|排序)|上榜情况|分别有多少家|有多少家|有几家)|(?:排名|排行|排序)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区))(?:呢|吗)?[？?。！!]*$/iu;
+const BARE_PROVINCE_EXTREME_REQUEST = /^(?=.*(?:上榜|家数|榜单|(?:500|五百)强))(?:(?:(?:哪个|哪(?:一)?个|什么)(?:省份?|地区)(?:上榜)?(?:最多|最少))|(?:(?:上榜|榜单)?(?:最多|最少)(?:的?是)?(?:哪个|哪(?:一)?个|什么)(?:省份?|地区))|(?:(?:各省|省份|地区)(?:上榜)?(?:最多|最少)))(?:呢|吗)?[？?。！!]*$/iu;
+const BARE_PROVINCE_COMPARISON_REQUEST = /^(?=.*(?:省|自治区|北京市|天津市|上海市|重庆市))(?=.*(?:和|与|跟|、|,|，))(?=.*(?:上榜|家数|榜单|(?:500|五百)强)).*(?:哪个|谁)(?:多|少)(?:几家)?(?:[？?。！!])?$/u;
+const NON_TARGET_RANKING_SCOPE = /(?:世界|财富|福布斯|胡润|中国企业)500强|电影榜单|(?:大学|高校|院校|学校|本科|招生|专业|医院|医疗|医生|患者|考试|赛季|联赛|游戏|歌曲|电视剧)/u;
+// Only complete, compact follow-ups may inherit an immediately preceding
+// ranking answer. In particular, do not treat ordinary words such as
+// "公司" or "哪些" as a ranking signal: that would steal normal chat from
+// the model after any Top 500 reply.
+const CONTEXTUAL_LIST_FOLLOWUP = /^(?:分别是哪些|具体有哪些|其中有哪些|有哪些(?:公司|企业)?|都有哪些|哪几家|都有谁|有谁|那些(?:呢)?|哪些(?:呢)?|名单|把名单发我|列(?:一下|出)?)(?:[？?。！!])?$/u;
+const CONTEXTUAL_COUNT_FOLLOWUP = /^(?:有多少家|有几家|多少家|几家)(?:[？?。！!])?$/u;
+const CONTEXTUAL_PROVINCE_EXTREME_FOLLOWUP = /^(?:(?:哪个|哪(?:一)?个|那个|什么)(?:省份?|地区)(?:上榜)?(?:最多|最少)|(?:最多|最少)(?:的?是)?(?:哪个|哪(?:一)?个|什么)(?:省份?|地区)|(?:各省|省份|地区)(?:上榜)?(?:最多|最少))(?:[？?。！!])?$/u;
+const CONTEXTUAL_PROVINCE_COMPARISON_FOLLOWUP = /^(?=.*(?:省|自治区|北京市|天津市|上海市|重庆市))(?=.*(?:和|与|跟|、|,|，))(?=.*(?:上榜|家数|榜单|(?:500|五百)强)).*(?:哪个|谁)(?:多|少)(?:几家)?(?:[？?。！!])?$/u;
 
 export type PrivateEnterpriseRankingRequestScope = "none" | "explicit" | "contextual";
 
@@ -203,14 +254,22 @@ export function classifyPrivateEnterpriseRankingRequest(
 ): PrivateEnterpriseRankingRequestScope {
   const normalized = compactRankingText(text);
   if (isNonTargetRankingScope(normalized)) return "none";
-  if (EXPLICIT_RANKING_SCOPE.test(normalized) || SHORT_EDITION_RANKING_SCOPE.test(normalized) ||
+  if (EXPLICIT_RANKING_SCOPE.test(normalized) ||
       BARE_TOP_N_REQUEST.test(normalized) || BARE_RANK_RANGE_REQUEST.test(normalized) ||
-      BARE_RANK_LOOKUP_REQUEST.test(normalized) || BARE_PROVINCE_LEADERBOARD_REQUEST.test(normalized)) return "explicit";
+      BARE_RANK_LOOKUP_REQUEST.test(normalized) || BARE_PROVINCE_LEADERBOARD_REQUEST.test(normalized) ||
+      BARE_PROVINCE_EXTREME_REQUEST.test(normalized) || BARE_PROVINCE_COMPARISON_REQUEST.test(normalized)) return "explicit";
   const previous = history.at(-1);
   return previous?.role === "assistant" && previous.content.includes(EDITION) &&
-    CONTEXTUAL_RANKING_FACT.test(normalized)
+    isContextualRankingFollowup(normalized)
     ? "contextual"
     : "none";
+}
+
+function isContextualRankingFollowup(normalizedText: string): boolean {
+  return CONTEXTUAL_LIST_FOLLOWUP.test(normalizedText) ||
+    CONTEXTUAL_COUNT_FOLLOWUP.test(normalizedText) ||
+    CONTEXTUAL_PROVINCE_EXTREME_FOLLOWUP.test(normalizedText) ||
+    CONTEXTUAL_PROVINCE_COMPARISON_FOLLOWUP.test(normalizedText);
 }
 
 export function loadPrivateEnterpriseRanking(
@@ -360,11 +419,15 @@ export class PrivateEnterpriseRanking {
     const rankRange = parseRankRange(text);
     const topRankToken = findTopRankToken(text);
     const topRankLimit = parseTopRankLimit(text);
-    const rankIntent = /排名|名次|排行|排在|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|位居|名列|位于|榜首/.test(text);
+    const rankIntent = /排名|名次|排行|排在|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|位居|名列|位于第|榜首/.test(text);
     const listIntent = /哪些|哪几家|分别是|名单|有谁|都有哪些|列(?:一下|出)?/.test(text);
     const countIntent = /多少家|几家|上榜|入围/.test(text);
     const rankingReferenceIntent = /民营|民企|500强|榜单|排名|名次|上榜|入围/.test(text);
-    const companyStatusIntent = /怎样|怎么样|情况|表现/.test(text) && (rankingContextActive || /榜单|排名|名次/.test(text));
+    // A generic "这家公司怎么样" remains ordinary conversation, even when
+    // the prior assistant turn happened to be a ranking answer. Only an
+    // explicit ranking reference may turn a company-status wording into a
+    // deterministic Top 500 lookup.
+    const companyStatusIntent = /怎样|怎么样|情况|表现/.test(text) && /榜单|排名|名次/.test(text);
     const companyExistenceIntent = /上榜|入围|进榜|进入(?:榜单|500强)?|有上榜|有无|有没有|是否/.test(text);
     const potentialCompanyInquiry = rankIntent || companyStatusIntent || companyExistenceIntent || rankingReferenceIntent;
     const companyMatches = potentialCompanyInquiry ? this.matchEnterprises(text) : [];
@@ -374,7 +437,7 @@ export class PrivateEnterpriseRanking {
     const provinceRankingIntent = /(?:按(?:榜单)?(?:省份|省级地区)|(?:省份|省级地区|各省|各地区).{0,8}(?:排名|排行|排序|上榜(?:数量|家数)?|上榜情况)|(?:排名|排行|排序).{0,8}(?:省份|省级地区|各省|各地区)|(?:排名|排行|排序)第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|第?(?:\d{1,3}|[〇零一二两三四五六七八九十百]+)(?:名|位)?的?(?:省份|省|地区)|(?:各省|各省份|每(?:个)?省|各地区).*(?:多少家|几家|上榜(?:数量|家数)?|数量|家数|分别))/.test(text);
     const revenueBasisIntent = /(?:2025年?)?(?:营业)?收入|营收.*(?:年份|年度|2025)|(?:按|以|用)2025年?(?:营收|营业收入|收入)/.test(text);
     const namedEdition = extractNamedRankingEdition(text);
-    const fallbackEdition = namedEdition === undefined && (requestScope !== "none" || companyMatches.length > 0 || rankingContextActive || companyRankRequestShape || companyExistenceRequestShape)
+    const fallbackEdition = namedEdition === undefined && (requestScope !== "none" || companyMatches.length > 0 || companyRankRequestShape || companyExistenceRequestShape)
       ? extractFallbackRankingEdition(text)
       : undefined;
     const requestedEdition = namedEdition ?? fallbackEdition;
@@ -383,13 +446,12 @@ export class PrivateEnterpriseRanking {
     }
 
     const hasNamedScope = requestScope !== "none";
-    const prior = rankingContextActive
+    const prior = requestScope === "contextual" && rankingContextActive
       ? [...history].reverse().find((turn) => turn.role === "user")?.content
       : undefined;
-    const listFollowup = Boolean(requestScope === "contextual" &&
-      /^(?:分别是哪些|具体有哪些|其中有哪些|有哪些(?:公司)?|都有哪些|哪几家|都有谁|有谁|那些(?:呢)?|名单|把名单发我|列(?:一下|出)?)(?:[？?。！!])?$/.test(text.trim()));
-    const countFollowup = Boolean(requestScope === "contextual" &&
-      /^(?:有多少家|有几家|多少家|几家)(?:[？?。！!])?$/.test(text.trim()));
+    const compactText = compactRankingText(text);
+    const listFollowup = Boolean(requestScope === "contextual" && CONTEXTUAL_LIST_FOLLOWUP.test(compactText));
+    const countFollowup = Boolean(requestScope === "contextual" && CONTEXTUAL_COUNT_FOLLOWUP.test(compactText));
     const contextualFollowup = listFollowup || countFollowup ||
       Boolean(requestScope === "contextual" && extremeIntent);
     const question = contextualFollowup && prior ? prior : text;
@@ -410,13 +472,17 @@ export class PrivateEnterpriseRanking {
     const rankLookupIntent = exactRank !== undefined && /谁|哪家|什么(?:公司|企业)?|是哪(?:家|个)?/.test(text);
     const provinceRank = parseProvinceRank(text);
     const compareIntent = provinceMatches.length > 1 && /(?:哪个|哪(?:个)?|谁|比较|多(?:一些|一点|几家)?|少(?:一些|一点|几家)?)/.test(text);
-    // A named province plus a count/list operation is specific enough to use
-    // the sole stored edition by default. This handles concise questions such
-    // as "浙江有几家" without asking the language model to infer a result.
-    const provinceFactRequest = provinceMatches.length === 1 && (countIntent || listIntent);
-    const nationalCountRequest = provinceMatches.length === 0 && /全国|总共|总计/.test(text) && countIntent;
+    // A bare province or national count defaults only when the whole turn is
+    // the compact dataset shorthand (for example "浙江有几家"). A province
+    // plus unrelated subject words such as "医院" or "上市公司" belongs to
+    // ordinary model chat.
+    const provinceFactRequest = provinceMatches.length === 1 && (countIntent || listIntent) &&
+      (hasNamedScope || isBareProvinceFactRequest(text, provinceMatches[0]!));
+    const nationalCountRequest = provinceMatches.length === 0 && /全国|总共|总计/.test(text) && countIntent &&
+      (hasNamedScope || isBareNationalCountRequest(text));
     const companyLookupRequest = (rankIntent || companyStatusIntent || companyExistenceIntent) &&
-      (companyMatches.length > 0 || companyRankRequestShape || companyExistenceRequestShape);
+      (companyMatches.length > 0 || companyExistenceRequestShape ||
+        (hasNamedScope && companyRankRequestShape));
     const hasRoutingSignal = hasNamedScope || companyLookupRequest || provinceFactRequest || nationalCountRequest;
     if (!hasRoutingSignal) return undefined;
 
@@ -585,8 +651,9 @@ export class PrivateEnterpriseRanking {
     const count = counts[rank - 1];
     if (count === undefined) return { messages: ["省级地区排名应在现有榜单名次范围内。"] };
     const provinces = rows.filter((row) => row.count === count).map((row) => row.province);
+    const countPhrase = provinces.length === 1 ? `共${count}家` : `各${count}家`;
     return {
-      messages: [`${EDITION}按上榜家数计，省级地区排名第${rank}的是${provinces.join("、")}，各${count}家（按榜单省份；2025年营收）。`],
+      messages: [`${EDITION}按上榜家数计，省级地区排名第${rank}的是${provinces.join("、")}，${countPhrase}（按榜单省份；2025年营收）。`],
     };
   }
 
@@ -675,6 +742,24 @@ function normalize(value: string): string {
 
 function compactRankingText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/gu, "").trim();
+}
+
+function isBareProvinceFactRequest(text: string, province: string): boolean {
+  const normalized = compactRankingText(text);
+  const provinceForms = [province, province.replace(/壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区|省|市$/u, "")]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  return provinceForms.some((form) => {
+    const escaped = escapeRegex(form);
+    return new RegExp(
+      `^${escaped}(?:(?:有)?上榜(?:企业)?(?:有)?(?:多少家|几家)|(?:有)?(?:多少家|几家)|(?:上榜|榜单)(?:家数|数量)|(?:有哪些|名单))[？?。！!]*$`,
+      "u",
+    ).test(normalized);
+  });
+}
+
+function isBareNationalCountRequest(text: string): boolean {
+  return /^(?:全国|总共|总计)(?:有)?(?:多少家|几家)[？?。！!]*$/u.test(compactRankingText(text));
 }
 
 function isNonTargetRankingScope(normalizedText: string): boolean {
@@ -800,9 +885,9 @@ function findTopRankToken(text: string): string | undefined {
  */
 function looksLikeCompanyRankRequest(text: string): boolean {
   if (/电影|电视剧|歌曲|游戏|比赛|球队|演员/u.test(text)) return false;
-  if (!/排名|名次|排行|排在|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|位居|名列|位于/u.test(text)) return false;
+  if (!/排名|名次|排行|排在|排(?:第)?几(?:名|位)?|第几(?:名|位)?|多少名|排多少|位列|位居|名列|位于第/u.test(text)) return false;
   const candidate = compactRankingText(text.replace(
-    /20\d{2}年?|中国|全国|民营企业|民企|民营|(?:500|五百)强|榜单|排名|名次|排行|排在|排(?:第)?几(?:名|位)?|排第几|第几名|第几位|多少名|排多少|位列|位居|名列|位于|在|的|是否|有无|有没有|有上榜|上榜|入围|进榜|进入(?:榜单|500强)?|是|多少|几|第|名|前|top|请问|帮我|查一下|告诉我|了吗|吗|呢|公司|企业|你|我|他|她|它|[？?！!。，、\s]/giu,
+    /20\d{2}年?|中国|全国|民营企业|民企|民营|(?:500|五百)强|榜单|排名|名次|排行|排在|排(?:第)?几(?:名|位)?|排第几|第几名|第几位|多少名|排多少|位列|位居|名列|位于第|在|的|是否|有无|有没有|有上榜|上榜|入围|进榜|进入(?:榜单|500强)?|是|多少|几|第|名|前|top|请问|帮我|查一下|告诉我|了吗|吗|呢|公司|企业|你|我|他|她|它|[？?！!。，、\s]/giu,
     "",
   ));
   return candidate.length >= 2 && candidate.length <= 80;
@@ -1097,6 +1182,7 @@ function canonicalHeadquartersResearchEntry(entry: HeadquartersResearchEntry) {
         capturedContentSha256: evidence.capturedContentSha256,
         sourceSubject: evidence.sourceSubject,
         claimText: evidence.claimText,
+        entityRelationText: evidence.entityRelationText,
       })),
     },
   };
@@ -1117,6 +1203,7 @@ function researchSourceManifest(entries: HeadquartersResearchEntry[]) {
     capturedContentSha256: evidence.capturedContentSha256,
     sourceSubject: evidence.sourceSubject,
     claimText: evidence.claimText,
+    entityRelationText: evidence.entityRelationText,
   })) ?? []);
 }
 
@@ -1152,7 +1239,27 @@ function isValidHeadquartersEvidence(
   const archived = archiveById.get(evidence.evidenceId);
   const normalizedClaim = normalize(evidence.claimText ?? "");
   const normalizedSubject = normalize(evidence.sourceSubject ?? "");
+  const normalizedEnterprise = normalize(entry.enterpriseName ?? "");
   const normalizedEntityMatch = normalize(entry.entityMatch ?? "");
+  const sourceSubjectIsExactEnterprise = normalizedSubject === normalizedEnterprise;
+  const entityMatchIsDocumented = sourceSubjectIsExactEnterprise
+    ? normalizedEntityMatch.includes(normalizedEnterprise)
+    : hasIndependentEntityMentions(normalizedEntityMatch, normalizedEnterprise, normalizedSubject);
+  const entityRelationIsSourced = sourceSubjectIsExactEnterprise || (
+    sourceCitedSameEntityNameContinuity(
+      evidence.entityRelationText,
+      entry.enterpriseName,
+      evidence.sourceSubject,
+    )
+  );
+  const claimBindsSubjectToHeadquartersCity = sourceClaimBindsSubjectToHeadquartersCity(
+    evidence.claimText,
+    evidence.sourceSubject,
+    headquarters.city,
+  );
+  const supportsFrozenHeadquartersDate = evidence.claimAsOf !== headquarters.asOf ||
+    isWithinHeadquartersSupportWindow(evidence.sourcePublishedOn, frozenAt) &&
+    isWithinHeadquartersSupportWindow(evidence.claimAsOf, frozenAt);
   return isEvidenceId(evidence.evidenceId) &&
     (evidence.authority === "enterprise" || evidence.authority === "government") &&
     Boolean(evidence.publisher?.trim()) && isEvidenceUrl(evidence.sourceUrl) &&
@@ -1161,12 +1268,159 @@ function isValidHeadquartersEvidence(
     evidence.claimAsOf <= frozenAt && evidence.claimAsOf <= evidence.sourcePublishedOn &&
     evidence.retrievedOn >= evidence.sourcePublishedOn && isSha256(evidence.capturedContentSha256) &&
     normalizedSubject.length >= 2 && normalizedClaim.length >= 8 &&
-    normalizedClaim.includes(normalize(headquarters.city)) && /总部|总公司/u.test(evidence.claimText) &&
-    normalizedClaim.includes(normalizedSubject) && normalizedEntityMatch.includes(normalize(entry.enterpriseName)) &&
-    normalizedEntityMatch.includes(normalizedSubject) && Boolean(archived) &&
+    claimBindsSubjectToHeadquartersCity &&
+    entityMatchIsDocumented &&
+    entityRelationIsSourced &&
+    supportsFrozenHeadquartersDate && Boolean(archived) &&
     archived!.capturedContentSha256 === evidence.capturedContentSha256 &&
-    normalize(archived!.capturedContent).includes(normalizedSubject) &&
-    normalize(archived!.capturedContent).includes(normalizedClaim);
+    archived!.capturedContent.includes(evidence.sourceSubject) &&
+    archived!.capturedContent.includes(evidence.claimText) &&
+    (sourceSubjectIsExactEnterprise || archived!.capturedContent.includes(evidence.entityRelationText ?? ""));
+}
+
+/**
+ * Verify a self-contained source quotation or source table row. The exact
+ * source subject, an explicit headquarters predicate, and the canonical city
+ * (or a narrowly allowed source-faithful form) must appear in one clause.
+ * Splitting on Chinese commas is intentional: a city mentioned after a comma
+ * cannot be borrowed to turn a different headquarters location into evidence.
+ */
+function sourceClaimBindsSubjectToHeadquartersCity(
+  claimText: string,
+  sourceSubject: string,
+  canonicalCity: string,
+): boolean {
+  if (typeof claimText !== "string" || typeof sourceSubject !== "string" || typeof canonicalCity !== "string") {
+    return false;
+  }
+  const subject = compactSourceQuoteText(sourceSubject);
+  if (!subject) return false;
+  const cityForms = headquartersCitySourceForms(canonicalCity)
+    .map(compactSourceQuoteText)
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  if (cityForms.length === 0) return false;
+
+  const canonicalCityForm = compactSourceQuoteText(canonicalCity);
+  const cityPattern = cityForms.map((cityForm) =>
+    `${escapeRegex(cityForm)}${cityForm === canonicalCityForm ? "" : "(?=$|[^\\u4e00-\\u9fff])"}`,
+  ).join("|");
+  // The subject must begin as its own token. Without this boundary, a short
+  // source subject could be borrowed from the tail of another Chinese or
+  // Latin-named entity (for example `京东` from `北京京东`).
+  const subjectPattern = `(?<![\\p{L}\\p{N}])${escapeRegex(subject)}`;
+  const headquartersLabel = "(?:总部所在地|总部地址|总部|总公司)";
+  const headquartersLocationVerb = "(?:位于|坐落于|坐落在|设于|设在|在|为|是|[:：])";
+  const administrativePrefix = "(?:(?:中国|中华人民共和国)?[\\u4e00-\\u9fff]{2,12}(?:省|自治区|特别行政区))?";
+  const naturalClause = new RegExp(
+    `${subjectPattern}(?:的)?${headquartersLabel}${headquartersLocationVerb}${administrativePrefix}(?:${cityPattern})`,
+    "u",
+  );
+  // A source table row may use explicit labels and a column separator instead
+  // of prose, but must still carry all three fields in that one quoted row.
+  const tableRow = new RegExp(
+    `${subjectPattern}(?:[:：|])+${headquartersLabel}(?:[:：|]|为|是)+(?:${cityPattern})`,
+    "u",
+  );
+  return splitSourceQuoteClauses(claimText).some((clause) => {
+    const compactClause = compactSourceQuoteText(clause);
+    return naturalClause.test(compactClause) || tableRow.test(compactClause);
+  });
+}
+
+function headquartersCitySourceForms(city: string): string[] {
+  const forms = new Set([city]);
+  if (city.endsWith("市")) {
+    forms.add(city.slice(0, -1));
+  }
+  const autonomousPrefectureAlias = AUTONOMOUS_PREFECTURE_SHORT_ALIASES.get(city);
+  if (autonomousPrefectureAlias) forms.add(autonomousPrefectureAlias);
+  return [...forms];
+}
+
+function splitSourceQuoteClauses(value: string): string[] {
+  return value.normalize("NFKC").split(/[，,。！？!?；;\r\n]/u);
+}
+
+function compactSourceQuoteText(value: string): string {
+  return value.normalize("NFKC").replace(/[\s\u3000]/gu, "");
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
+}
+
+function sourceCitedSameEntityNameContinuity(
+  relationText: unknown,
+  enterpriseName: string,
+  sourceSubject: string,
+): boolean {
+  if (typeof relationText !== "string") return false;
+  if (typeof enterpriseName !== "string" || typeof sourceSubject !== "string") return false;
+  const enterprise = compactSourceQuoteText(enterpriseName);
+  const subject = compactSourceQuoteText(sourceSubject);
+  if (!enterprise || !subject || enterprise === subject) return false;
+  const compactRelation = compactSourceQuoteText(relationText);
+  // A short name can occur inside a longer legal name. Require a separate
+  // occurrence in the quoted relationship before the continuity grammar can
+  // bind it, rather than accepting a prefix/suffix of the other entity.
+  if (!hasIndependentEntityMentions(compactRelation, enterprise, subject)) return false;
+
+  // This is intentionally narrower than an ownership mapping. Each accepted
+  // form says that the two names are the same entity across a rename or a
+  // documented alias. A subsidiary, holding-company, or brand relationship
+  // never proves that two entities share a headquarters.
+  const nameContinuityMarker = "(?:以下简称|简称(?:为)?|又称|亦称|即(?:为)?|原名(?:为)?|原称(?:为)?|曾用名(?:称)?(?:为)?|更名为|变更为)";
+  const relationGap = "(?:[\\s\\u3000，,、:：()（）\"“”'‘’]|的){0,8}";
+  const identityVerb = "(?:是|为|系)";
+  const directNameContinuity = (left: string, right: string) => [
+    // `left` must also begin as an independent token. The following grammar
+    // already constrains its right side to a continuity relation.
+    // In `X原名为Y`, Y terminates the relation. Do not let a short source
+    // name match only the leading part of a longer legal name such as
+    // `京东` inside `京东集团`.
+    new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(left)}${relationGap}(?:的|已|曾|现)?${nameContinuityMarker}${relationGap}${escapeRegex(right)}(?=$|[^\\u4e00-\\u9fff])`, "u"),
+    new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegex(left)}${relationGap}${identityVerb}${relationGap}${escapeRegex(right)}${relationGap}(?:的)?${nameContinuityMarker}`, "u"),
+  ];
+  return directNameContinuity(enterprise, subject).some((pattern) => pattern.test(compactRelation)) ||
+    directNameContinuity(subject, enterprise).some((pattern) => pattern.test(compactRelation));
+}
+
+function hasIndependentEntityMentions(
+  normalizedText: string,
+  normalizedEnterprise: string,
+  normalizedSubject: string,
+): boolean {
+  if (!normalizedEnterprise || !normalizedSubject) return false;
+  if (!normalizedEnterprise.includes(normalizedSubject) && !normalizedSubject.includes(normalizedEnterprise)) {
+    return normalizedText.includes(normalizedEnterprise) && normalizedText.includes(normalizedSubject);
+  }
+
+  const [longer, shorter] = normalizedEnterprise.length >= normalizedSubject.length
+    ? [normalizedEnterprise, normalizedSubject]
+    : [normalizedSubject, normalizedEnterprise];
+  const longerPositions = allStringPositions(normalizedText, longer);
+  return longerPositions.length > 0 && allStringPositions(normalizedText, shorter).some((position) =>
+    !longerPositions.some((longerPosition) =>
+      position >= longerPosition && position + shorter.length <= longerPosition + longer.length));
+}
+
+function allStringPositions(value: string, needle: string): number[] {
+  if (!needle) return [];
+  const positions: number[] = [];
+  let position = value.indexOf(needle);
+  while (position >= 0) {
+    positions.push(position);
+    position = value.indexOf(needle, position + 1);
+  }
+  return positions;
+}
+
+function isWithinHeadquartersSupportWindow(value: string, frozenAt: string): boolean {
+  if (!isIsoDate(value) || !isIsoDate(frozenAt) || value > frozenAt) return false;
+  const cutoff = new Date(`${frozenAt}T00:00:00.000Z`);
+  cutoff.setUTCDate(cutoff.getUTCDate() - HEADQUARTERS_SUPPORT_MAX_AGE_DAYS);
+  return value >= cutoff.toISOString().slice(0, 10);
 }
 
 function isEvidenceId(value: unknown): value is string {
@@ -1217,6 +1471,7 @@ function isEvidenceUrl(value: unknown): value is string {
 
 function isReservedEvidenceHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname.endsWith(".localhost") ||
+    hostname === "example" || hostname.endsWith(".example") ||
     hostname === "example.com" || hostname.endsWith(".example.com") ||
     hostname === "example.net" || hostname.endsWith(".example.net") ||
     hostname === "example.org" || hostname.endsWith(".example.org") ||

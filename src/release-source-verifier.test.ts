@@ -144,7 +144,7 @@ function makeCompleteHeadquartersFixture(data: PrivateEnterpriseRankingData) {
   for (const entry of data.entries) {
     const evidenceId = `hq-2026-${String(entry.rank).padStart(3, "0")}`;
     const sourceUrl = `https://www.gov.cn/zhengce/headquarters-2026/${entry.rank}`;
-    const claimText = `${entry.name}的可核验资料明确其总部位于深圳市。`;
+    const claimText = `${entry.name}总部位于深圳市。`;
     const capturedContent = [
       `evidenceId: ${evidenceId}`,
       `sourceUrl: ${sourceUrl}`,

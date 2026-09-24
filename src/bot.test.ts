@@ -1302,7 +1302,60 @@ test("ordinary questions that merely mention 2026 remain normal chat", async () 
 
   assert.equal(aiService.calls.length, 1);
   assert.equal(aiService.calls[0]?.toolRuntime?.forceToolName, undefined);
+  assert.equal(aiService.calls[0]?.toolRuntime, undefined);
   assert.equal(transport.sent[0]?.text, "AI reply");
+});
+
+test("ordinary questions after a ranking reply call the model without exposing the ranking tool", async () => {
+  const route: ConversationRoute = {
+    sourceRowId: 303,
+    sourceMessageId: "ordinary-after-ranking",
+    topicId: "ranking-topic",
+    branchId: "ranking-branch",
+    routeReason: "same-user-similar",
+    turnId: 10,
+  };
+  const rankingHistory = [
+    {
+      id: 1,
+      topicId: "ranking-topic",
+      branchId: "ranking-branch",
+      groupId: "67890",
+      role: "user" as const,
+      content: "浙江省有多少家2026民营企业500强？",
+      createdAt: Date.parse("2026-09-23T00:00:00.000Z"),
+    },
+    {
+      id: 2,
+      topicId: "ranking-topic",
+      branchId: "ranking-branch",
+      groupId: "67890",
+      role: "assistant" as const,
+      content: "2026中国民营企业500强：浙江省共104家（按榜单省份；2025年营收）。",
+      createdAt: Date.parse("2026-09-23T00:00:01.000Z"),
+    },
+  ];
+  const { app, transport, aiService } = createApp({
+    privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
+    conversationContextRepository: {
+      getCausalTurnsBeforeTurn: () => rankingHistory as never,
+      appendAssistantTurn: (() => ({ id: 11 })) as never,
+    },
+  });
+
+  for (const [index, question] of ["南京的本科院校有哪些？", "金山办公是什么公司？"].entries()) {
+    await app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: question } },
+    ], 20001, 67890, 310 + index), undefined, { ...route, turnId: route.turnId + index });
+  }
+
+  assert.equal(aiService.calls.length, 2);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["AI reply", "AI reply"]);
+  for (const call of aiService.calls) {
+    assert.equal(call.toolRuntime?.forceToolName, undefined);
+    assert.equal(call.toolRuntime, undefined);
+  }
 });
 
 test("#网页 routes an explicit page request to the durable publisher instead of normal chat", async () => {

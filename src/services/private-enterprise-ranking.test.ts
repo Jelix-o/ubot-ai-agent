@@ -66,6 +66,7 @@ function canonicalSecureResearchRows(research: HeadquartersResearchData) {
         capturedContentSha256: evidence.capturedContentSha256,
         sourceSubject: evidence.sourceSubject,
         claimText: evidence.claimText,
+        entityRelationText: evidence.entityRelationText,
       })),
     },
   }));
@@ -86,6 +87,7 @@ function secureSourceManifest(research: HeadquartersResearchData) {
     capturedContentSha256: evidence.capturedContentSha256,
     sourceSubject: evidence.sourceSubject,
     claimText: evidence.claimText,
+    entityRelationText: evidence.entityRelationText,
   })));
 }
 
@@ -136,6 +138,7 @@ function capturedContentForEvidence(
     "sourceUrl: " + evidence.sourceUrl,
     "sourceSubject: " + evidence.sourceSubject,
     "claim: " + evidence.claimText,
+    ...(evidence.entityRelationText ? ["entityRelation: " + evidence.entityRelationText] : []),
   ].join("\\n");
 }
 
@@ -150,13 +153,21 @@ function syncArchiveCapture(fixture: SecureHeadquartersFixture, rank: number): v
   evidence.capturedContentSha256 = capturedHash;
 }
 
+function setMismatchedSourceSubject(fixture: SecureHeadquartersFixture): void {
+  const entry = fixture.research.entries[0]!;
+  const evidence = entry.headquarters.evidence[0]!;
+  const sourceSubject = "京东集团控股有限公司";
+  entry.entityMatch = `${entry.enterpriseName}原名为${sourceSubject}`;
+  evidence.sourceSubject = sourceSubject;
+  evidence.claimText = `${sourceSubject}总部位于${entry.headquarters.city}。`;
+  evidence.entityRelationText = `${entry.enterpriseName}原名为${sourceSubject}。`;
+}
+
 function reuseEvidenceIdForTwoEntries(fixture: SecureHeadquartersFixture): void {
   const first = fixture.research.entries[0]!;
   const second = fixture.research.entries[1]!;
   const evidenceId = "hq-2026-shared";
-  const sourceSubject = first.enterpriseName + "和" + second.enterpriseName;
-  const claimText = sourceSubject + "的可核验资料明确其总部位于深圳市。";
-  const sharedEvidence = {
+  const firstEvidence = {
     evidenceId,
     authority: "enterprise" as const,
     publisher: "联合企业官方资料",
@@ -165,25 +176,35 @@ function reuseEvidenceIdForTwoEntries(fixture: SecureHeadquartersFixture): void 
     claimAsOf: "2026-09-01",
     retrievedOn: fixture.research.frozenAt,
     capturedContentSha256: "",
-    sourceSubject,
-    claimText,
+    sourceSubject: first.enterpriseName,
+    claimText: `${first.enterpriseName}总部位于深圳市。`,
   };
-  const capturedContent = capturedContentForEvidence(sharedEvidence);
-  sharedEvidence.capturedContentSha256 = archiveContentSha256(capturedContent);
+  const secondEvidence = {
+    ...firstEvidence,
+    sourceSubject: second.enterpriseName,
+    claimText: `${second.enterpriseName}总部位于深圳市。`,
+  };
+  const capturedContent = [
+    capturedContentForEvidence(firstEvidence),
+    capturedContentForEvidence(secondEvidence),
+  ].join("\n");
+  const capturedContentSha256 = archiveContentSha256(capturedContent);
+  firstEvidence.capturedContentSha256 = capturedContentSha256;
+  secondEvidence.capturedContentSha256 = capturedContentSha256;
 
-  for (const entry of [first, second]) {
-    entry.entityMatch = entry.enterpriseName + "与" + sourceSubject + "来源主体一致";
+  for (const [entry, evidence] of [[first, firstEvidence], [second, secondEvidence]] as const) {
+    entry.entityMatch = entry.enterpriseName + "与来源主体一致";
     entry.headquarters.province = "广东省";
     entry.headquarters.city = "深圳市";
     entry.headquarters.administrativeLevel = "prefecture";
     entry.headquarters.asOf = "2026-09-01";
-    entry.headquarters.evidence = [structuredClone(sharedEvidence)];
+    entry.headquarters.evidence = [structuredClone(evidence)];
   }
   fixture.evidenceArchive.entries = fixture.evidenceArchive.entries
     .filter((entry) => entry.evidenceId !== "hq-2026-001" && entry.evidenceId !== "hq-2026-002");
   fixture.evidenceArchive.entries.push({
     evidenceId,
-    capturedContentSha256: sharedEvidence.capturedContentSha256,
+    capturedContentSha256,
     capturedContent,
   });
   resealAndApproveSecureResearch(fixture);
@@ -217,7 +238,7 @@ function makeSecureResearch(
       const city = isCrossProvince ? "深圳市" : "杭州市";
       const evidenceId = "hq-2026-" + String(entry.rank).padStart(3, "0");
       const sourceUrl = "https://www.gov.cn/zhengce/headquarters-2026/" + entry.rank;
-      const claimText = entry.name + "的可核验资料明确其总部位于" + city + "。";
+      const claimText = entry.name + "总部位于" + city + "。";
       const capturedContent = [
         "evidenceId: " + evidenceId,
         "sourceUrl: " + sourceUrl,
@@ -308,6 +329,8 @@ test("ranking and province queries are deterministic and exhaustive", () => {
   assert.match(ranking.answer("万向在民营企业500强排第几？")?.messages[0] ?? "", /多个可能的企业/);
   assert.match(ranking.answer("浙江省有多少家民营企业500强？")?.messages[0] ?? "", /104家/);
   assert.match(ranking.answer("浙江有几家")?.messages[0] ?? "", /浙江省共104家/);
+  assert.match(ranking.answer("浙江上榜多少家")?.messages[0] ?? "", /浙江省共104家/);
+  assert.match(ranking.answer("浙江省上榜家数")?.messages[0] ?? "", /浙江省共104家/);
   assert.equal((ranking.answer("浙江有哪些")?.messages ?? []).length, 6);
   assert.match(ranking.answer("全国有多少家")?.messages[0] ?? "", /共500家/);
   assert.match(ranking.answer("黑龙江省有多少家民营企业500强？")?.messages[0] ?? "", /共0家/);
@@ -388,11 +411,14 @@ test("ranking and province queries are deterministic and exhaustive", () => {
   ])?.messages[0] ?? "", /1\. 浙江省104家；2\. 江苏省90家/);
   assert.match(ranking.answer("排名第二的省份呢", [
     { role: "assistant", content: "2026中国民营企业500强：浙江省共104家。" },
-  ])?.messages[0] ?? "", /排名第2的是江苏省.*90家/);
+  ])?.messages[0] ?? "", /排名第2的是江苏省，共90家/);
   assert.match(ranking.answer("按省份排序")?.messages[0] ?? "", /1\. 浙江省104家；2\. 江苏省90家/);
   assert.match(ranking.answer("各省上榜家数")?.messages[0] ?? "", /1\. 浙江省104家；2\. 江苏省90家/);
-  assert.match(ranking.answer("排名第二的省")?.messages[0] ?? "", /排名第2的是江苏省.*90家/);
+  assert.match(ranking.answer("哪个省上榜最多？")?.messages[0] ?? "", /浙江省.*104家/);
+  assert.match(ranking.answer("湖北省和湖南省上榜家数哪个多？")?.messages[0] ?? "", /湖北省12家；湖南省10家。湖北省多2家/);
+  assert.match(ranking.answer("排名第二的省")?.messages[0] ?? "", /排名第2的是江苏省，共90家/);
   assert.match(ranking.answer("第二名省份")?.messages[0] ?? "", /排名第2的是江苏省.*90家/);
+  assert.match(ranking.answer("排名第10的省份")?.messages[0] ?? "", /排名第10的是安徽省、湖北省，各12家/);
   const contextualCount = ranking.answer("有几家？", [
     { role: "user", content: "浙江省有多少家2026民营企业500强？" },
     { role: "assistant", content: "2026中国民营企业500强：浙江省共104家。" },
@@ -421,7 +447,7 @@ test("ranking and province queries are deterministic and exhaustive", () => {
     { role: "user", content: "2026中国民营企业500强第1名是谁？" },
     { role: "assistant", content: "2026中国民营企业500强第1名是京东集团。" },
   ])?.messages[0] ?? "", /阿里巴巴（中国）有限公司/);
-  assert.match(ranking.answer("湖北省和湖南省哪个多？", [
+  assert.match(ranking.answer("湖北省和湖南省上榜家数哪个多？", [
     { role: "user", content: "2026中国民营企业500强各省上榜情况" },
     { role: "assistant", content: "2026中国民营企业500强：浙江省共104家。" },
   ])?.messages[0] ?? "", /湖北省12家；湖南省10家。湖北省多2家/);
@@ -438,6 +464,8 @@ test("ranking scope is explicit or tied to the immediately preceding verified an
   assert.equal(classifyPrivateEnterpriseRankingRequest("第2名是谁"), "explicit");
   assert.equal(classifyPrivateEnterpriseRankingRequest("按省份排序"), "explicit");
   assert.equal(classifyPrivateEnterpriseRankingRequest("各省上榜家数"), "explicit");
+  assert.equal(classifyPrivateEnterpriseRankingRequest("哪个省上榜最多"), "explicit");
+  assert.equal(classifyPrivateEnterpriseRankingRequest("湖北省和湖南省上榜家数哪个多"), "explicit");
   assert.equal(classifyPrivateEnterpriseRankingRequest("排名第二的省"), "explicit");
   assert.equal(classifyPrivateEnterpriseRankingRequest("民营500强里浙江有几家"), "explicit");
   assert.equal(classifyPrivateEnterpriseRankingRequest("民营企业五百强里浙江有几家"), "explicit");
@@ -452,6 +480,53 @@ test("ranking scope is explicit or tied to the immediately preceding verified an
   assert.equal(classifyPrivateEnterpriseRankingRequest("按省份排名呢", [
     { role: "assistant", content: "2026中国民营企业500强：浙江省共104家。" },
   ]), "explicit");
+});
+
+test("ranking context does not capture ordinary questions after a ranking reply", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const history = [
+    { role: "user", content: "浙江省有多少家2026民营企业500强？" },
+    { role: "assistant", content: "2026中国民营企业500强：浙江省共104家（按榜单省份；2025年营收）。" },
+  ];
+
+  // Keep compact, explicit continuations on the deterministic ranking path.
+  assert.equal(classifyPrivateEnterpriseRankingRequest("分别是哪些？", history), "contextual");
+  assert.equal(ranking.answer("分别是哪些？", history)?.messages.length, 6);
+
+  // These are ordinary questions. The ranking service must decline them so the
+  // normal model can answer instead of inventing a Top 500 response.
+  for (const ordinaryQuestion of [
+    "南京的本科院校有哪些？",
+    "哪个省本科院校最多？",
+    "北京市和上海市哪个大学多？",
+    "金山办公是什么公司？",
+    // A year and ordinal describe many ordinary rankings; they do not name
+    // this Top 500 dataset.
+    "2026年第一名大学是谁？",
+    "2026年前十名大学有哪些？",
+    // Province words plus count/list wording are likewise normal chat until
+    // the user supplies a Top 500 scope.
+    "江苏省有哪些大学？",
+    "浙江省有多少家医院？",
+    // An unknown organisation's rank or location must not become a Top 500
+    // no-result merely because it resembles a company lookup.
+    "清华大学排几名？",
+    "南京大学位于哪里？",
+    // Even after a ranking turn, a generic enterprise comparison needs an
+    // explicit listing/count qualifier before it can inherit that context.
+    "江苏省和安徽省企业哪个多？",
+  ]) {
+    assert.equal(classifyPrivateEnterpriseRankingRequest(ordinaryQuestion, history), "none");
+    assert.equal(ranking.answer(ordinaryQuestion, history), undefined);
+  }
+
+  // Keep the corresponding, explicitly scoped ranking operations local.
+  assert.equal(classifyPrivateEnterpriseRankingRequest("2026中国民营企业500强第1名是谁？", history), "explicit");
+  assert.match(ranking.answer("2026中国民营企业500强第1名是谁？", history)?.messages[0] ?? "", /第1名是京东集团/);
+  assert.equal(classifyPrivateEnterpriseRankingRequest("江苏省有哪些2026民营企业500强？", history), "explicit");
+  assert.match(ranking.answer("江苏省有哪些2026民营企业500强？", history)?.messages[0] ?? "", /江苏省共90家/);
+  assert.equal(classifyPrivateEnterpriseRankingRequest("江苏省和安徽省上榜家数哪个多？", history), "explicit");
+  assert.match(ranking.answer("江苏省和安徽省上榜家数哪个多？", history)?.messages[0] ?? "", /江苏省90家；安徽省12家/);
 });
 
 test("city counts fail closed until the independent headquarters sidecar is complete and auditable", () => {
@@ -615,6 +690,348 @@ test("city counts fail closed until the independent headquarters sidecar is comp
   );
 });
 
+test("headquarters evidence accepts source-faithful canonical city suffix aliases without changing the quote", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const municipalAlias = makeSecureResearch(ranking.data, "in_progress", 1);
+  const municipalEvidence = municipalAlias.research.entries[0]!.headquarters.evidence[0]!;
+  municipalAlias.research.entries[0]!.headquarters.city = "杭州市";
+  municipalAlias.research.entries[0]!.headquarters.province = "浙江省";
+  municipalEvidence.claimText = `${municipalEvidence.sourceSubject}总部位于杭州。`;
+  syncArchiveCapture(municipalAlias, 1);
+  resealAndApproveSecureResearch(municipalAlias);
+  assert.doesNotThrow(() => new PrivateEnterpriseRanking(
+    ranking.data,
+    municipalAlias.research,
+    municipalAlias.evidenceArchive,
+    municipalAlias.verificationOptions,
+ ));
+  assert.match(municipalEvidence.claimText, /杭州。$/);
+  assert.doesNotMatch(municipalEvidence.claimText, /杭州市/u);
+  const municipalCapture = municipalAlias.evidenceArchive.entries[0]!.capturedContent;
+  assert.match(municipalCapture, /杭州。$/);
+  assert.doesNotMatch(municipalCapture, /杭州市/u);
+
+  const autonomousPrefectureAlias = makeSecureResearch(ranking.data, "in_progress", 1);
+  const autonomousEntry = autonomousPrefectureAlias.research.entries[0]!;
+  const autonomousEvidence = autonomousEntry.headquarters.evidence[0]!;
+  autonomousEntry.headquarters.province = "四川省";
+  autonomousEntry.headquarters.city = "阿坝藏族羌族自治州";
+  autonomousEvidence.claimText = `${autonomousEvidence.sourceSubject}总部位于阿坝州。`;
+  syncArchiveCapture(autonomousPrefectureAlias, 1);
+  resealAndApproveSecureResearch(autonomousPrefectureAlias);
+  assert.doesNotThrow(() => new PrivateEnterpriseRanking(
+    ranking.data,
+    autonomousPrefectureAlias.research,
+    autonomousPrefectureAlias.evidenceArchive,
+    autonomousPrefectureAlias.verificationOptions,
+  ));
+  assert.match(autonomousPrefectureAlias.evidenceArchive.entries[0]!.capturedContent, /阿坝州。$/);
+
+  const canonicalCityWithDistrict = makeSecureResearch(ranking.data, "in_progress", 1);
+  const districtEntry = canonicalCityWithDistrict.research.entries[0]!;
+  const districtEvidence = districtEntry.headquarters.evidence[0]!;
+  districtEntry.headquarters.city = "杭州市";
+  districtEntry.headquarters.province = "浙江省";
+  districtEvidence.claimText = `${districtEvidence.sourceSubject}总部位于杭州市西湖区。`;
+  syncArchiveCapture(canonicalCityWithDistrict, 1);
+  resealAndApproveSecureResearch(canonicalCityWithDistrict);
+  assert.doesNotThrow(() => new PrivateEnterpriseRanking(
+    ranking.data,
+    canonicalCityWithDistrict.research,
+    canonicalCityWithDistrict.evidenceArchive,
+    canonicalCityWithDistrict.verificationOptions,
+  ));
+
+  const cityPrefixOnly = makeSecureResearch(ranking.data, "in_progress", 1);
+  const prefixEvidence = cityPrefixOnly.research.entries[0]!.headquarters.evidence[0]!;
+  cityPrefixOnly.research.entries[0]!.headquarters.city = "杭州市";
+  cityPrefixOnly.research.entries[0]!.headquarters.province = "浙江省";
+  prefixEvidence.claimText = `${prefixEvidence.sourceSubject}总部位于杭州湾。`;
+  syncArchiveCapture(cityPrefixOnly, 1);
+  resealAndApproveSecureResearch(cityPrefixOnly);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      cityPrefixOnly.research,
+      cityPrefixOnly.evidenceArchive,
+      cityPrefixOnly.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+});
+
+test("headquarters evidence requires one source clause to bind the exact subject, headquarters predicate, and city", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const differentHeadquartersCity = makeSecureResearch(ranking.data, "in_progress", 1);
+  const evidence = differentHeadquartersCity.research.entries[0]!.headquarters.evidence[0]!;
+  differentHeadquartersCity.research.entries[0]!.headquarters.city = "杭州市";
+  differentHeadquartersCity.research.entries[0]!.headquarters.province = "浙江省";
+  evidence.claimText = `${evidence.sourceSubject}总部位于南京市，杭州市设有分公司。`;
+  syncArchiveCapture(differentHeadquartersCity, 1);
+  resealAndApproveSecureResearch(differentHeadquartersCity);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      differentHeadquartersCity.research,
+      differentHeadquartersCity.evidenceArchive,
+      differentHeadquartersCity.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const separatedSubject = makeSecureResearch(ranking.data, "in_progress", 1);
+  const separatedEvidence = separatedSubject.research.entries[0]!.headquarters.evidence[0]!;
+  separatedSubject.research.entries[0]!.headquarters.city = "杭州市";
+  separatedSubject.research.entries[0]!.headquarters.province = "浙江省";
+  separatedEvidence.claimText = `${separatedEvidence.sourceSubject}发布公告，总部位于杭州市。`;
+  syncArchiveCapture(separatedSubject, 1);
+  resealAndApproveSecureResearch(separatedSubject);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      separatedSubject.research,
+      separatedSubject.evidenceArchive,
+      separatedSubject.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+});
+
+test("headquarters evidence only uses a source published within 365 days for the frozen claim", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  const boundary = makeSecureResearch(ranking.data, "in_progress", 1);
+  const boundaryEntry = boundary.research.entries[0]!;
+  const boundaryEvidence = boundaryEntry.headquarters.evidence[0]!;
+  boundaryEntry.headquarters.asOf = "2025-09-22";
+  boundaryEvidence.sourcePublishedOn = "2025-09-22";
+  boundaryEvidence.claimAsOf = "2025-09-22";
+  syncArchiveCapture(boundary, 1);
+  resealAndApproveSecureResearch(boundary);
+  assert.doesNotThrow(() => new PrivateEnterpriseRanking(
+    ranking.data,
+    boundary.research,
+    boundary.evidenceArchive,
+    boundary.verificationOptions,
+ ));
+
+  const stale = makeSecureResearch(ranking.data, "in_progress", 1);
+  const staleEntry = stale.research.entries[0]!;
+  const staleEvidence = staleEntry.headquarters.evidence[0]!;
+  staleEntry.headquarters.asOf = "2025-09-21";
+  staleEvidence.sourcePublishedOn = "2025-09-21";
+  staleEvidence.claimAsOf = "2025-09-21";
+  syncArchiveCapture(stale, 1);
+  resealAndApproveSecureResearch(stale);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      stale.research,
+      stale.evidenceArchive,
+      stale.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const weakEntityMatch = makeSecureResearch(ranking.data, "in_progress", 1);
+  weakEntityMatch.research.entries[0]!.entityMatch = "审核人员认为来源主体一致。";
+  syncArchiveCapture(weakEntityMatch, 1);
+  resealAndApproveSecureResearch(weakEntityMatch);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      weakEntityMatch.research,
+      weakEntityMatch.evidenceArchive,
+      weakEntityMatch.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+});
+
+test("mismatched headquarters source subjects need captured relationship evidence", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+
+  const validRelation = makeSecureResearch(ranking.data, "in_progress", 1);
+  setMismatchedSourceSubject(validRelation);
+  syncArchiveCapture(validRelation, 1);
+  resealAndApproveSecureResearch(validRelation);
+  assert.doesNotThrow(() => new PrivateEnterpriseRanking(
+    ranking.data,
+    validRelation.research,
+    validRelation.evidenceArchive,
+    validRelation.verificationOptions,
+ ));
+
+  const missingRelation = makeSecureResearch(ranking.data, "in_progress", 1);
+  setMismatchedSourceSubject(missingRelation);
+  missingRelation.research.entries[0]!.headquarters.evidence[0]!.entityRelationText = undefined;
+  syncArchiveCapture(missingRelation, 1);
+  resealAndApproveSecureResearch(missingRelation);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      missingRelation.research,
+      missingRelation.evidenceArchive,
+      missingRelation.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const weakRelation = makeSecureResearch(ranking.data, "in_progress", 1);
+  setMismatchedSourceSubject(weakRelation);
+  weakRelation.research.entries[0]!.headquarters.evidence[0]!.entityRelationText =
+    "京东集团与京东集团控股有限公司存在业务关系。";
+  syncArchiveCapture(weakRelation, 1);
+  resealAndApproveSecureResearch(weakRelation);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      weakRelation.research,
+      weakRelation.evidenceArchive,
+      weakRelation.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const captureTamper = makeSecureResearch(ranking.data, "in_progress", 1);
+  setMismatchedSourceSubject(captureTamper);
+  syncArchiveCapture(captureTamper, 1);
+  captureTamper.research.entries[0]!.headquarters.evidence[0]!.entityRelationText =
+    "京东集团旗下子公司京东集团控股有限公司（篡改后的关系说明）。";
+  resealAndApproveSecureResearch(captureTamper);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      captureTamper.research,
+      captureTamper.evidenceArchive,
+      captureTamper.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const ownershipRelation = makeSecureResearch(ranking.data, "in_progress", 1);
+  const ownershipEntry = ownershipRelation.research.entries[0]!;
+  const ownershipEvidence = ownershipEntry.headquarters.evidence[0]!;
+  const ownershipSubject = "京东集团控股有限公司";
+  ownershipEntry.entityMatch = `${ownershipEntry.enterpriseName}旗下子公司${ownershipSubject}。`;
+  ownershipEvidence.sourceSubject = ownershipSubject;
+  ownershipEvidence.claimText = `${ownershipSubject}总部位于${ownershipEntry.headquarters.city}。`;
+  ownershipEvidence.entityRelationText = `${ownershipEntry.enterpriseName}旗下子公司${ownershipSubject}。`;
+  syncArchiveCapture(ownershipRelation, 1);
+  resealAndApproveSecureResearch(ownershipRelation);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      ownershipRelation.research,
+      ownershipRelation.evidenceArchive,
+      ownershipRelation.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const unrelatedMarker = makeSecureResearch(ranking.data, "in_progress", 1);
+  const unrelatedEntry = unrelatedMarker.research.entries[0]!;
+  const unrelatedEvidence = unrelatedEntry.headquarters.evidence[0]!;
+  const unrelatedSubject = "京东集团控股有限公司";
+  unrelatedEntry.entityMatch = `${unrelatedEntry.enterpriseName}与${unrelatedSubject}合作。`;
+  unrelatedEvidence.sourceSubject = unrelatedSubject;
+  unrelatedEvidence.claimText = `${unrelatedSubject}总部位于${unrelatedEntry.headquarters.city}。`;
+  unrelatedEvidence.entityRelationText = `${unrelatedEntry.enterpriseName}与${unrelatedSubject}合作，即将发布新产品。`;
+  syncArchiveCapture(unrelatedMarker, 1);
+  resealAndApproveSecureResearch(unrelatedMarker);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      unrelatedMarker.research,
+      unrelatedMarker.evidenceArchive,
+      unrelatedMarker.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const namePrefixOnly = makeSecureResearch(ranking.data, "in_progress", 1);
+  const prefixEntry = namePrefixOnly.research.entries[0]!;
+  const prefixEvidence = prefixEntry.headquarters.evidence[0]!;
+  // The source subject is mentioned independently in entityMatch, but its
+  // only appearance in the quoted relation is the prefix of 京东集团.
+  prefixEntry.entityMatch = `${prefixEntry.enterpriseName}与京东合作。`;
+  prefixEvidence.sourceSubject = "京东";
+  prefixEvidence.claimText = `京东总部位于${prefixEntry.headquarters.city}。`;
+  prefixEvidence.entityRelationText = `${prefixEntry.enterpriseName}原名为${prefixEntry.enterpriseName}。`;
+  syncArchiveCapture(namePrefixOnly, 1);
+  resealAndApproveSecureResearch(namePrefixOnly);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      namePrefixOnly.research,
+      namePrefixOnly.evidenceArchive,
+      namePrefixOnly.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const namePrefixInSameClause = makeSecureResearch(ranking.data, "in_progress", 1);
+  const sameClauseEntry = namePrefixInSameClause.research.entries[0]!;
+  const sameClauseEvidence = sameClauseEntry.headquarters.evidence[0]!;
+  sameClauseEntry.entityMatch = `${sameClauseEntry.enterpriseName}与京东合作。`;
+  sameClauseEvidence.sourceSubject = "京东";
+  sameClauseEvidence.claimText = `京东总部位于${sameClauseEntry.headquarters.city}。`;
+  // The independent short-name mention is deliberately unrelated. The
+  // following relation must not borrow `京东` from inside the final 京东集团.
+  sameClauseEvidence.entityRelationText =
+    `${sameClauseEntry.enterpriseName}与京东合作且${sameClauseEntry.enterpriseName}原名为${sameClauseEntry.enterpriseName}。`;
+  syncArchiveCapture(namePrefixInSameClause, 1);
+  resealAndApproveSecureResearch(namePrefixInSameClause);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      namePrefixInSameClause.research,
+      namePrefixInSameClause.evidenceArchive,
+      namePrefixInSameClause.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const leftEntitySuffix = makeSecureResearch(ranking.data, "in_progress", 1);
+  const leftEntry = leftEntitySuffix.research.entries[0]!;
+  const leftEvidence = leftEntry.headquarters.evidence[0]!;
+  leftEntry.entityMatch = `${leftEntry.enterpriseName}与甲公司合作。`;
+  leftEvidence.sourceSubject = "甲公司";
+  leftEvidence.claimText = `甲公司总部位于${leftEntry.headquarters.city}。`;
+  // The actual rename belongs to 北京京东集团, not the ranked 京东集团.
+  leftEvidence.entityRelationText = `北京${leftEntry.enterpriseName}原名为甲公司；${leftEntry.enterpriseName}与甲公司合作。`;
+  syncArchiveCapture(leftEntitySuffix, 1);
+  resealAndApproveSecureResearch(leftEntitySuffix);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      leftEntitySuffix.research,
+      leftEntitySuffix.evidenceArchive,
+      leftEntitySuffix.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+
+  const claimSubjectSuffix = makeSecureResearch(ranking.data, "in_progress", 1);
+  const claimEntry = claimSubjectSuffix.research.entries[0]!;
+  const claimEvidence = claimEntry.headquarters.evidence[0]!;
+  claimEntry.entityMatch = `${claimEntry.enterpriseName}原名为京东。`;
+  claimEvidence.sourceSubject = "京东";
+  // The city claim belongs to 北京京东, not the exact source subject 京东.
+  claimEvidence.claimText = `北京京东总部位于${claimEntry.headquarters.city}。`;
+  claimEvidence.entityRelationText = `${claimEntry.enterpriseName}原名为京东。`;
+  syncArchiveCapture(claimSubjectSuffix, 1);
+  resealAndApproveSecureResearch(claimSubjectSuffix);
+  assert.throws(
+    () => new PrivateEnterpriseRanking(
+      ranking.data,
+      claimSubjectSuffix.research,
+      claimSubjectSuffix.evidenceArchive,
+      claimSubjectSuffix.verificationOptions,
+    ),
+    /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+  );
+});
+
 test("a completed headquarters ledger projects the evidence matching its frozen headquarters date", () => {
   const ranking = loadPrivateEnterpriseRanking();
   const fixture = makeSecureResearch(ranking.data, "complete", 500);
@@ -633,7 +1050,7 @@ test("a completed headquarters ledger projects the evidence matching its frozen 
     retrievedOn: ranking.data.publishedOn,
     capturedContentSha256: "",
     sourceSubject: firstEntry.enterpriseName,
-    claimText: firstEntry.enterpriseName + "的可核验资料明确其总部位于" + firstEntry.headquarters.city + "。",
+    claimText: firstEntry.enterpriseName + "总部位于" + firstEntry.headquarters.city + "。",
   };
   const capturedContent = capturedContentForEvidence(matchingEvidence);
   matchingEvidence.capturedContentSha256 = archiveContentSha256(capturedContent);
@@ -677,6 +1094,25 @@ test("a completed headquarters ledger rejects a resealed private source IP liter
     ),
     /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
   );
+});
+
+test("a completed headquarters ledger rejects example placeholder hostnames", () => {
+  const ranking = loadPrivateEnterpriseRanking();
+  for (const hostname of ["example", "publisher.example", "example.com"]) {
+    const fixture = makeSecureResearch(ranking.data, "complete", 500);
+    fixture.research.entries[0]!.headquarters.evidence[0]!.sourceUrl = `https://${hostname}/headquarters/1`;
+    syncArchiveCapture(fixture, 1);
+    resealAndApproveSecureResearch(fixture);
+    assert.throws(
+      () => new PrivateEnterpriseRanking(
+        ranking.data,
+        fixture.research,
+        fixture.evidenceArchive,
+        fixture.verificationOptions,
+      ),
+      /headquarters.*(?:evidence|research)|(?:evidence|research).*headquarters/i,
+    );
+  }
 });
 
 test("a completed headquarters ledger rejects a reused evidence ID", () => {
