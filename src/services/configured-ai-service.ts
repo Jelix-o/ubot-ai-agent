@@ -1,3 +1,4 @@
+import { withModelOperation } from "./model-telemetry.js";
 import { logWarn } from "../logger.js";
 import type { SystemModelConfig, SystemModelPurpose } from "../types.js";
 import type { AiService } from "./ai-service.js";
@@ -22,7 +23,7 @@ export type RuntimeAiService = Pick<
 
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
-  "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "capabilities" | "supportsVision" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
+  "id" | "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "capabilities" | "supportsVision" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
 >, policyCapabilities?: Parameters<typeof resolveProviderCapabilities>[1]) => RuntimeAiService;
 
 /** Raised instead of silently falling back when the persistent policy denies provider chat. */
@@ -43,6 +44,7 @@ export class ConfiguredModelUnavailableError extends Error {
 }
 
 export class ConfiguredAiService implements RuntimeAiService {
+  private readonly modelIds = new WeakMap<object, string>();
   private cachedService?: {
     key: string;
     service: RuntimeAiService;
@@ -78,11 +80,13 @@ export class ConfiguredAiService implements RuntimeAiService {
   ) {}
 
   async checkHealth(options?: Parameters<AiService["checkHealth"]>[0]): ReturnType<AiService["checkHealth"]> {
-    return (await this.resolveService()).checkHealth(options);
+    const service = await this.resolveService();
+    return withModelOperation("probe", undefined, () => service.checkHealth(options), this.modelIds.get(service));
   }
 
   async generateReply(args: Parameters<AiService["generateReply"]>[0]): ReturnType<AiService["generateReply"]> {
-    return (await this.resolveService()).generateReply(args);
+    const service = await this.resolveService();
+    return withModelOperation("reply", undefined, () => service.generateReply(args), this.modelIds.get(service));
   }
 
   async generateStaticHtml(
@@ -90,7 +94,8 @@ export class ConfiguredAiService implements RuntimeAiService {
   ): ReturnType<AiService["generateStaticHtml"]> {
     // Static previews intentionally use the same selected reply model as the
     // group conversation. They are not a summary or custom-model workload.
-    return (await this.resolveService("reply")).generateStaticHtml(args);
+    const service = await this.resolveService("reply");
+    return withModelOperation("html", undefined, () => service.generateStaticHtml(args), this.modelIds.get(service));
   }
 
   async evaluateReplyDesire(
@@ -99,37 +104,43 @@ export class ConfiguredAiService implements RuntimeAiService {
     bufferedMessages: Parameters<AiService["evaluateReplyDesire"]>[2],
     signal?: AbortSignal,
   ): ReturnType<AiService["evaluateReplyDesire"]> {
-    return (await this.resolveService()).evaluateReplyDesire(skill, history, bufferedMessages, signal);
+    const service = await this.resolveService();
+    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal), this.modelIds.get(service));
   }
 
   async evaluateControlledMention(
     args: Parameters<AiService["evaluateControlledMention"]>[0],
   ): ReturnType<AiService["evaluateControlledMention"]> {
-    return (await this.resolveService()).evaluateControlledMention(args);
+    const service = await this.resolveService();
+    return withModelOperation("background", undefined, () => service.evaluateControlledMention(args), this.modelIds.get(service));
   }
 
   async generateDailyReportInsights(
     args: Parameters<AiService["generateDailyReportInsights"]>[0],
   ): ReturnType<AiService["generateDailyReportInsights"]> {
-    return (await this.resolveService("summary")).generateDailyReportInsights(args);
+    const service = await this.resolveService("summary");
+    return withModelOperation("background", undefined, () => service.generateDailyReportInsights(args), this.modelIds.get(service));
   }
 
   async generateBroadcastQuip(
     context: Parameters<AiService["generateBroadcastQuip"]>[0],
   ): ReturnType<AiService["generateBroadcastQuip"]> {
-    return (await this.resolveService("summary")).generateBroadcastQuip(context);
+    const service = await this.resolveService("summary");
+    return withModelOperation("background", undefined, () => service.generateBroadcastQuip(context), this.modelIds.get(service));
   }
 
   async generateScheduledReminderText(
     args: Parameters<AiService["generateScheduledReminderText"]>[0],
   ): ReturnType<AiService["generateScheduledReminderText"]> {
-    return (await this.resolveService("summary")).generateScheduledReminderText(args);
+    const service = await this.resolveService("summary");
+    return withModelOperation("background", undefined, () => service.generateScheduledReminderText(args), this.modelIds.get(service));
   }
 
   async generateChatPeriodSummary(
     input: Parameters<AiService["generateChatPeriodSummary"]>[0],
   ): ReturnType<AiService["generateChatPeriodSummary"]> {
-    return (await this.resolveService("summary")).generateChatPeriodSummary(input);
+    const service = await this.resolveService("summary");
+    return withModelOperation("background", undefined, () => service.generateChatPeriodSummary(input), this.modelIds.get(service));
   }
 
   private async resolveService(preferredPurpose?: SystemModelPurpose): Promise<RuntimeAiService> {
@@ -165,6 +176,7 @@ export class ConfiguredAiService implements RuntimeAiService {
 
     try {
       const service = this.factory(model, policyCapabilities);
+      this.modelIds.set(service, model.id);
       this.cachedService = { key, service };
       return service;
     } catch (error) {

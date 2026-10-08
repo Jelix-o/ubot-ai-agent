@@ -3,6 +3,7 @@ import { logWarn } from "../logger.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
+import { assertRevision, type MutationGuard } from "./state-mutation.js";
 
 const HUIXIAN_PERSONA_ID = "huixian";
 
@@ -86,10 +87,24 @@ export class GroupConfigService {
     return group ? normalizeGroupConfig(group) : undefined;
   }
 
-  async updateGroupConfig(groupId: string, input: GroupConfigUpdateInput): Promise<GroupBotConfig> {
+  async updateGroupConfig(groupId: string, input: GroupConfigUpdateInput, guard?: MutationGuard): Promise<GroupBotConfig> {
     if (this.v3State && "switcherUserIds" in input) {
       this.v3State.requireCutover();
       throw new GroupConfigValidationError("legacy_qq_admin_retired");
+    }
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return this.v3State.runAtomically(() => {
+        const existing = this.v3State!.getGroup(groupId);
+        if (!existing) throw new Error(`Group ${groupId} is not configured.`);
+        const current = normalizeGroupConfig(existing);
+        assertRevision(current, guard);
+        const next = normalizeGroupConfigPatch(current, input);
+        this.v3State!.saveGroup(next);
+        guard?.committed?.();
+        this.invalidateCache();
+        return next;
+      });
     }
     const data = await this.readConfig();
     const index = data.groups.findIndex((group) => group.groupId === groupId);
@@ -98,10 +113,12 @@ export class GroupConfigService {
     }
 
     const current = normalizeGroupConfig(data.groups[index]);
+    assertRevision(current, guard);
     const next = normalizeGroupConfigPatch(current, input);
     data.groups[index] = next;
 
     await this.writeConfig(data);
+    guard?.committed?.();
     return next;
   }
 
@@ -612,7 +629,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
   };
 }
 
-function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUpdateInput): GroupBotConfig {
+export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupConfigUpdateInput): GroupBotConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new GroupConfigValidationError("invalid_group_config");
   }

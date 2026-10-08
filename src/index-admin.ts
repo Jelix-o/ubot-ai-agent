@@ -1,3 +1,4 @@
+import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
 import { loadConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
 import { AdminHttpServer } from "./admin-http-server.js";
@@ -45,6 +46,7 @@ export async function main(): Promise<void> {
 
   const readClient = new IngressReadApiClient(`http://127.0.0.1:${config.ingressReadApiPort}`);
   const sharedDb = openSharedDb(config.dataDir);
+  setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
   const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const groupConfigService = new GroupConfigService(

@@ -4,6 +4,7 @@ import { stat } from "node:fs/promises";
 import type { GroupMemory, GroupMemoryEvidence, GroupMemoryType } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
+import { assertRevision, type MutationGuard } from "./state-mutation.js";
 
 const EVIDENCE_SUMMARY_LIMIT = 2400;
 const MEMORY_CONTENT_LIMIT = 1800;
@@ -251,10 +252,11 @@ export class GroupMemoryStore {
     return cloneMemory(memory);
   }
 
-  async update(id: string, patch: Partial<GroupMemoryInput> & { enabled?: boolean }): Promise<GroupMemory | undefined> {
+  async update(id: string, patch: Partial<GroupMemoryInput> & { enabled?: boolean }, guard?: MutationGuard): Promise<GroupMemory | undefined> {
     if (this.v3State) {
       return this.v3State.runAtomically(() => {
         const current = this.v3State!.getMemory(id);
+        assertRevision(current, guard);
         if (!current) return undefined;
         const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
         const updated = normalizeMemory({
@@ -264,6 +266,7 @@ export class GroupMemoryStore {
           updatedAt: new Date().toISOString(),
         });
         this.v3State!.saveMemory(updated);
+        guard?.committed?.();
         return cloneMemory(updated);
       });
     }
@@ -274,6 +277,7 @@ export class GroupMemoryStore {
     }
 
     const current = data.memories[index]!;
+    assertRevision(current, guard);
     const hasSubjectUserId = Object.prototype.hasOwnProperty.call(patch, "subjectUserId");
     const updated = normalizeMemory({
       ...current,
@@ -283,12 +287,14 @@ export class GroupMemoryStore {
     });
     data.memories[index] = updated;
     await this.writeData(data);
+    guard?.committed?.();
     return cloneMemory(updated);
   }
 
-  async remove(id: string): Promise<boolean> {
-    if (this.v3State) return this.v3State.deleteMemory(id);
+  async remove(id: string, guard?: MutationGuard): Promise<boolean> {
+    if (this.v3State) return this.v3State.runAtomically(() => { assertRevision(this.v3State!.getMemory(id), guard); const removed = this.v3State!.deleteMemory(id); if (removed) guard?.committed?.(); return removed; });
     const data = await this.readData();
+    assertRevision(data.memories.find(memory => memory.id === id), guard);
     const next = data.memories.filter((memory) => memory.id !== id);
     if (next.length === data.memories.length) {
       return false;
@@ -296,6 +302,7 @@ export class GroupMemoryStore {
 
     data.memories = next;
     await this.writeData(data);
+    guard?.committed?.();
     return true;
   }
 

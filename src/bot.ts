@@ -1,3 +1,4 @@
+import { withModelOperation } from "./services/model-telemetry.js";
 import os from "node:os";
 
 import { logError, logInfo, logWarn } from "./logger.js";
@@ -532,7 +533,7 @@ export class BotApplication {
     signal?: AbortSignal,
     conversationRoute?: ConversationRoute,
     options: HandleGroupMessageOptions = {},
-  ): Promise<void> {
+  ): Promise<void> { return withModelOperation("reply", String(event.group_id), async () => {
     const groupId = String(event.group_id);
     const userId = String(event.user_id);
 
@@ -986,7 +987,8 @@ export class BotApplication {
         signal,
       );
     });
-  }
+
+}); }
 
   async getPublicTransportHealthStatus(): Promise<TransportHealthStatus> {
     return this.getTransportHealthStatus();

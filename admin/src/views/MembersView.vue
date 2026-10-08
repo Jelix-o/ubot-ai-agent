@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import AppIcon from "../components/AppIcon.vue";
+import AdminDialog from "../components/AdminDialog.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { api, queryString, type MemberListResponse, type MemberProfile, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
@@ -197,9 +198,9 @@ async function setPrivacyOptOut(member: MemberProfile, optedOut: boolean): Promi
       `/api/groups/${encodeURIComponent(app.groupId)}/members/${encodeURIComponent(member.userId)}/privacy-opt-out`,
       { method: optedOut ? "POST" : "DELETE", body: "{}" },
     );
-    members.value = members.value.map((item) => item.userId === member.userId
-      ? { ...item, memoryDisabled: optedOut }
-      : item);
+    const updated = { ...member, memoryDisabled: optedOut };
+    members.value = members.value.map((item) => item.userId === member.userId ? updated : item);
+    if (editingMember.value?.userId === member.userId) editingMember.value = updated;
     app.showToast(optedOut ? "已记录成员的隐私退出请求" : "已重新启用成员的记忆收集");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -621,47 +622,20 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
       </div>
     </section>
 
-    <!-- Modal for Editing Member Note and Aliases -->
-    <div v-if="editingMember" class="modal-overlay" @click.self="editingMember = null">
-      <div class="modal-card">
-        <div class="modal-header">
-          <div>
-            <h3>设置成员备注与身份</h3>
-            <p class="muted">{{ editingMember.displayName }} (QQ: {{ editingMember.userId }})</p>
-          </div>
-          <button class="icon-btn close-modal-btn" type="button" @click="editingMember = null">✕</button>
+    <AdminDialog v-if="editingMember" :title="editingMember.displayName" drawer description="成员备注、身份信息、隐私状态和记忆入口。" @close="editingMember = null">
+      <div class="member-detail-panel">
+        <div class="member-detail-identity">
+          <div class="initial-avatar">{{ editingMember.displayName.slice(0, 1).toUpperCase() }}</div>
+          <div><strong>{{ editingMember.displayName }}</strong><span class="role-badge" :class="roleClass(editingMember.role)">{{ roleLabel(editingMember.role) }}</span></div>
         </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label class="form-label">成员备注</label>
-            <input
-              v-model="noteDraft"
-              class="input"
-              placeholder="例如：技术骨干、后端开发、常驻核心"
-              autofocus
-            />
-
-          </div>
-          <div class="form-group">
-            <label class="form-label">别名 / 称呼（多项用逗号分隔）</label>
-            <input
-              v-model="aliasesDraft"
-              class="input"
-              placeholder="例如：小李, 老李, 李哥"
-            />
-
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="ghost-btn" type="button" :disabled="savingUserId === editingMember.userId" @click="editingMember = null">
-            取消
-          </button>
-          <button class="btn" type="button" :disabled="savingUserId === editingMember.userId" @click="saveNoteModal">
-            {{ savingUserId === editingMember.userId ? "保存中..." : "保存备注" }}
-          </button>
-        </div>
+        <div class="member-detail-row"><span>QQ 号</span><strong>{{ editingMember.userId }}</strong><button class="ghost-btn" type="button" @click="copyUserId(editingMember.userId)">复制</button></div>
+        <label class="member-detail-field">成员备注<input v-model="noteDraft" class="input" placeholder="例如：技术骨干、后端开发" /></label>
+        <label class="member-detail-field">别名 / 称呼<input v-model="aliasesDraft" class="input" placeholder="用逗号分隔多个称呼" /></label>
+        <section class="member-memory-summary"><div><span>已沉淀记忆</span><strong>{{ editingMember.memoryCount || 0 }} 条</strong></div><span v-if="editingMember.memoryDisabled" class="tag danger">隐私退出</span><span v-else class="tag ok">记忆收集开启</span><button class="ghost-btn" type="button" @click="openMemories(editingMember)">打开成员记忆</button></section>
+        <div class="member-privacy-control"><div><strong>隐私与记忆收集</strong><p class="muted">退出后停止为该成员新增记忆，已有记忆仍可单独管理。</p></div><button v-if="!editingMember.memoryDisabled" class="ghost-btn danger" type="button" :disabled="privacyBusyUserId === editingMember.userId" @click="setPrivacyOptOut(editingMember, true)">{{ privacyBusyUserId === editingMember.userId ? "处理中…" : "记录隐私退出" }}</button><button v-else class="ghost-btn" type="button" :disabled="privacyBusyUserId === editingMember.userId || !canReenablePrivacy" @click="setPrivacyOptOut(editingMember, false)">{{ canReenablePrivacy ? "重新启用收集" : "仅超级管理员可恢复" }}</button></div>
       </div>
-    </div>
+      <template #footer><button class="ghost-btn" type="button" :disabled="savingUserId === editingMember.userId" @click="editingMember = null">关闭</button><button class="btn" type="button" :disabled="savingUserId === editingMember.userId" @click="saveNoteModal">{{ savingUserId === editingMember.userId ? "保存中..." : "保存备注与身份" }}</button></template>
+    </AdminDialog>
   </section>
 </template>
 
@@ -670,6 +644,17 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
   display: grid;
   gap: 18px;
 }
+.member-detail-panel { display: grid; gap: 18px; }
+.member-detail-identity { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.member-detail-identity > div:last-child { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.member-detail-identity strong { color: var(--text-strong); font-size: 17px; }
+.member-detail-row { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.member-detail-row strong { margin-left: auto; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.member-detail-field { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
+.member-memory-summary, .member-privacy-control { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 6px; }
+.member-memory-summary > div { display: flex; justify-content: space-between; color: var(--muted); }
+.member-memory-summary > div strong { color: var(--text-strong); }
+.member-privacy-control p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; }
 
 /* Stat Cards */
 .stat-card {

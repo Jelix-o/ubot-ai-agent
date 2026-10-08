@@ -4,6 +4,7 @@ import { stat } from "node:fs/promises";
 import type { KnowledgeBaseEntry } from "../types.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
+import { assertRevision, type MutationGuard } from "./state-mutation.js";
 
 interface KnowledgeBaseFile {
   entries: KnowledgeBaseEntry[];
@@ -139,9 +140,11 @@ export class KnowledgeBaseStore {
     return undefined;
   }
 
-  async update(id: string, patch: Partial<KnowledgeBaseEntryInput>): Promise<KnowledgeBaseEntry | undefined> {
+  async update(id: string, patch: Partial<KnowledgeBaseEntryInput>, guard?: MutationGuard): Promise<KnowledgeBaseEntry | undefined> {
     if (this.v3State) {
-      const current = this.v3State.getKnowledge(id);
+      return this.v3State.runAtomically(() => {
+      const current = this.v3State!.getKnowledge(id);
+      assertRevision(current, guard);
       if (!current) return undefined;
       const updated = normalizeEntry({
         ...current,
@@ -149,8 +152,10 @@ export class KnowledgeBaseStore {
         keywords: patch.keywords === undefined ? current.keywords : patch.keywords,
         updatedAt: new Date().toISOString(),
       });
-      this.v3State.saveKnowledge(updated);
+      this.v3State!.saveKnowledge(updated);
+      guard?.committed?.();
       return cloneEntry(updated);
+      });
     }
     const data = await this.readData();
     const index = data.entries.findIndex((entry) => entry.id === id);
@@ -159,6 +164,7 @@ export class KnowledgeBaseStore {
     }
 
     const current = data.entries[index]!;
+    assertRevision(current, guard);
     const updated = normalizeEntry({
       ...current,
       ...patch,
@@ -167,18 +173,21 @@ export class KnowledgeBaseStore {
     });
     data.entries[index] = updated;
     await this.writeData(data);
+    guard?.committed?.();
     return cloneEntry(updated);
   }
 
-  async remove(id: string): Promise<boolean> {
-    if (this.v3State) return this.v3State.deleteKnowledge(id);
+  async remove(id: string, guard?: MutationGuard): Promise<boolean> {
+    if (this.v3State) return this.v3State.runAtomically(() => { assertRevision(this.v3State!.getKnowledge(id), guard); const removed = this.v3State!.deleteKnowledge(id); if (removed) guard?.committed?.(); return removed; });
     const data = await this.readData();
+    assertRevision(data.entries.find(entry => entry.id === id), guard);
     const next = data.entries.filter((entry) => entry.id !== id);
     if (next.length === data.entries.length) {
       return false;
     }
     data.entries = next;
     await this.writeData(data);
+    guard?.committed?.();
     return true;
   }
 

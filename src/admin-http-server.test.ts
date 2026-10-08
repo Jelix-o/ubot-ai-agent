@@ -8,12 +8,14 @@ import test from "node:test";
 import { AdminHttpServer } from "./admin-http-server.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
+import { AdminTaskStore } from "./services/admin-task-store.js";
 import { CharacterProfileService } from "./services/character-profile-service.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
+import { ModelTelemetryStore } from "./services/model-telemetry.js";
 import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
@@ -150,6 +152,7 @@ async function startFixture(
   const memories = new GroupMemoryStore(path.join(dir, "memory.json"), repository);
   const knowledge = new KnowledgeBaseStore(path.join(dir, "knowledge.json"), repository);
   const operations = new AdminOperationLogService(path.join(dir, "operations.jsonl"), repository);
+  const tasks = new AdminTaskStore(path.join(dir, "tasks.json"), repository);
   const memeLibraryService = new MemeLibraryService(dir, repository);
   const settings = new SystemSettingsStore(path.join(dir, "settings.json"), [], undefined, repository);
   const characterProfileService = new CharacterProfileService(repository, { bootstrapProfile: huixian });
@@ -180,6 +183,7 @@ async function startFixture(
     privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     characterProfileService,
     systemSettingsStore: settings,
+    adminTaskStore: tasks,
     htmlPreviewService,
     memeLibraryService,
     adminOperationLogService: operations,
@@ -199,7 +203,7 @@ async function startFixture(
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, db, memories, operations, htmlPreviewService, memeLibraryService };
+  return { baseUrl, db, memories, operations, tasks, htmlPreviewService, memeLibraryService };
 }
 
 async function request(baseUrl: string, pathname: string, options: RequestInit = {}): Promise<Response> {
@@ -267,6 +271,20 @@ async function reauth(baseUrl: string, auth: Auth, password = "secret-password")
     body: JSON.stringify({ password }),
   });
 }
+
+test("HTTP loopback sessions avoid the Secure-only __Host cookie prefix", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const response = await request(baseUrl, "/api/auth/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "admin", password: "secret-password" }),
+  });
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get("set-cookie") ?? "";
+  assert.match(cookie, /^ubot_admin_session=/);
+  assert.doesNotMatch(cookie, /__Host-/);
+  assert.doesNotMatch(cookie, /; Secure(?:;|$)/);
+});
 
 test("V3 admin uses SQLite password authentication and retires legacy routes", async (t) => {
   const { baseUrl, memories, operations } = await startFixture(t);
@@ -1038,4 +1056,107 @@ test("sensitive global writes require recent reauth while their read views remai
   assert.equal((await request(baseUrl, "/api/system-settings", { headers: { Cookie: auth.cookie } })).status, 200);
   assert.equal((await request(baseUrl, "/api/persona/huixian", { headers: { Cookie: auth.cookie } })).status, 200);
   assert.equal((await request(baseUrl, "/api/commands", { headers: { Cookie: auth.cookie } })).status, 200);
+});
+
+test("group configuration patches require the current revision and return the next revision", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const initial = await request(baseUrl, "/api/groups/67890/config", { headers: { Cookie: auth.cookie } });
+  const current = await initial.json() as { revision: string; ambientGroupContextEnabled: boolean };
+  assert.equal(typeof current.revision, "string");
+
+  const conflict = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PATCH", headers,
+    body: JSON.stringify({ expectedRevision: "stale", patch: { ambientGroupContextEnabled: false } }),
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json() as { error: string }).error, "configuration_conflict");
+
+  const update = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PATCH", headers,
+    body: JSON.stringify({ expectedRevision: current.revision, patch: { ambientGroupContextEnabled: !current.ambientGroupContextEnabled } }),
+  });
+  assert.equal(update.status, 200);
+  const saved = await update.json() as { revision: string; ambientGroupContextEnabled: boolean };
+  assert.notEqual(saved.revision, current.revision);
+  assert.equal(saved.ambientGroupContextEnabled, !current.ambientGroupContextEnabled);
+});
+
+test("bulk APIs enforce group scope and return an asynchronous task with item results", async (t) => {
+  const { baseUrl, memories } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const invite = await request(baseUrl, "/api/admin-accounts/invites", {
+    method: "POST",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
+  });
+  const admin = await acceptInviteAsAdmin(baseUrl, (await invite.json() as { token: string }).token, "bulk-operator");
+  const memory = await memories.create({ groupId: "67890", type: "group_fact", title: "批量目标", content: "用于批量任务测试。", source: "admin" });
+  const headers = { Cookie: admin.cookie, "X-CSRF-Token": admin.csrf, "Content-Type": "application/json" };
+
+  const forbidden = await request(baseUrl, "/api/bulk-operations/preview", {
+    method: "POST", headers,
+    body: JSON.stringify({ resource: "memories", action: "disable", groupId: "100200", ids: [memory.id] }),
+  });
+  assert.equal(forbidden.status, 403);
+
+  const previewResponse = await request(baseUrl, "/api/bulk-operations/preview", {
+    method: "POST", headers,
+    body: JSON.stringify({ resource: "memories", action: "disable", groupId: "67890", ids: [memory.id] }),
+  });
+  assert.equal(previewResponse.status, 200);
+  const preview = await previewResponse.json() as { id: string; targets: Array<{ before: unknown; after: unknown }> };
+  assert.equal(preview.targets.length, 1);
+
+  const execution = await request(baseUrl, "/api/bulk-operations/apply", {
+    method: "POST", headers,
+    body: JSON.stringify({ previewId: preview.id }),
+  });
+  assert.equal(execution.status, 202);
+  const { taskId } = await execution.json() as { taskId: string };
+  let task: { status: string; result?: { items?: Array<{ id: string; status: string }> } } | undefined;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}`, { headers: { Cookie: admin.cookie } });
+    assert.equal(response.status, 200);
+    task = await response.json() as typeof task;
+    if (task && !["queued", "running"].includes(task.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(task?.status, "succeeded");
+  assert.deepEqual(task?.result?.items?.map((item) => [item.id, item.status]), [[memory.id, "succeeded"]]);
+});
+
+test("analytics endpoints restrict group administrators to authorized group usage", async (t) => {
+  const { baseUrl, db } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const telemetry = new ModelTelemetryStore(db);
+  const startedAt = Date.now() - 500;
+  const base = { modelId: "reply-a", model: "provider-model", purpose: "reply", probe: false, startedAt, durationMs: 42, status: "succeeded" as const, inputTokens: 3, outputTokens: 2, totalTokens: 5, images: 0, actualAmount: null, currency: null };
+  telemetry.record({ ...base, id: "allowed-request", operationId: "op-1", groupId: "67890" });
+  telemetry.record({ ...base, id: "other-group-request", operationId: "op-2", groupId: "100200" });
+  telemetry.record({ ...base, id: "global-request", operationId: "op-3", groupId: "" });
+  telemetry.record({ ...base, id: "probe-request", operationId: "op-4", groupId: "67890", probe: true });
+
+  const invite = await request(baseUrl, "/api/admin-accounts/invites", {
+    method: "POST",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
+  });
+  const admin = await acceptInviteAsAdmin(baseUrl, (await invite.json() as { token: string }).token, "analytics-reader");
+  const from = new Date(startedAt - 1_000).toISOString();
+  const to = new Date(Date.now() + 60_000).toISOString();
+  const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const adminReport = await request(baseUrl, `/api/analytics/summary?${query}`, { headers: { Cookie: admin.cookie } });
+  assert.equal(adminReport.status, 200);
+  const restricted = await adminReport.json() as { summary: { calls: number } };
+  assert.equal(restricted.summary.calls, 1);
+  const adminDetails = await request(baseUrl, `/api/analytics/requests?${query}`, { headers: { Cookie: admin.cookie } });
+  const records = await adminDetails.json() as { items: Array<{ id: string }> };
+  assert.deepEqual(records.items.map((item) => item.id), ["allowed-request"]);
+
+  const superReport = await request(baseUrl, `/api/analytics/summary?${query}`, { headers: { Cookie: superAdmin.cookie } });
+  assert.equal((await superReport.json() as { summary: { calls: number } }).summary.calls, 3);
+  const outside = await request(baseUrl, `/api/analytics/summary?${query}&groupId=100200`, { headers: { Cookie: admin.cookie } });
+  assert.equal(outside.status, 403);
 });

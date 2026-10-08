@@ -1,24 +1,44 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, shallowRef, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import AppIcon from "../components/AppIcon.vue";
 import DateRulePicker from "../components/DateRulePicker.vue";
 import MultiTagSelect from "../components/MultiTagSelect.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
+import { confirmAction } from "../composables/useConfirm";
+import { useUnsavedChanges } from "../composables/useUnsavedChanges";
 import { api, queryString, type GroupConfig, type MemberProfile, type ModelOption, type Pagination, type ScheduleDateRule, type SchedulePreviewDay, type ScheduledReminderTask } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
 const app = useAppStore();
+const route = useRoute();
+const router = useRouter();
 const loading = shallowRef(false);
 const saving = shallowRef(false);
 const remindersLoading = shallowRef(false);
 const reminders = shallowRef<ScheduledReminderTask[]>([]);
 const schedulePreview = shallowRef<SchedulePreviewDay[]>([]);
+const remindersError = shallowRef("");
+const schedulePreviewError = shallowRef("");
 const replyModels = shallowRef<ModelOption[]>([]);
 const memberOptions = shallowRef<MemberProfile[]>([]);
 const editingReminderId = shallowRef<string | null>(null);
-const activeTab = shallowRef<"basic" | "schedule" | "permissions">("basic");
+type ConfigTab = "reply" | "capabilities" | "schedule" | "permissions";
+const configTabs: Array<{ value: ConfigTab; label: string }> = [
+  { value: "reply", label: "回复" },
+  { value: "capabilities", label: "能力" },
+  { value: "permissions", label: "权限" },
+  { value: "schedule", label: "排程" },
+];
+const activeTab = computed<ConfigTab>({
+  get: () => configTabs.some((tab) => tab.value === route.query.tab) ? route.query.tab as ConfigTab : "reply",
+  set: (tab) => { void router.replace({ query: { ...route.query, tab } }); },
+});
+const revision = shallowRef("");
+const originalConfig = shallowRef<Record<string, unknown>>({});
+const loadError = shallowRef("");
 let loadSerial = 0;
 const reminderForm = reactive({
   intervalMinutes: 60,
@@ -31,6 +51,21 @@ const reminderForm = reactive({
   enabled: true,
 });
 const form = reactive<GroupConfig>(defaultGroupConfig());
+const editableFields = ["enabled", "replyModelMode", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "roastModeUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+function configValues(): Record<string, unknown> {
+  return Object.fromEntries(editableFields.map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
+}
+const dirty = computed(() => Boolean(revision.value) && JSON.stringify(configValues()) !== JSON.stringify(originalConfig.value));
+const reminderBaseline = shallowRef(JSON.stringify(reminderForm));
+const reminderDirty = computed(() => JSON.stringify(reminderForm) !== reminderBaseline.value);
+useUnsavedChanges(computed(() => dirty.value || reminderDirty.value));
+const capabilities = [
+  { key: "onlineLookupEnabled", label: "自动查询实时资料", detail: "回答需要最新资料的问题时查询网络。" },
+  { key: "visionEnabled", label: "图片理解", detail: "理解群聊中提供的图片。" },
+  { key: "ambientGroupContextEnabled", label: "短时群聊语境", detail: "使用近期群聊上下文组织回复。" },
+  { key: "htmlPreviewEnabled", label: "静态网页预览", detail: "允许生成并分享网页预览。" },
+  { key: "opsAlertsEnabled", label: "运维告警", detail: "向当前群发送运行告警。" },
+] as const;
 
 const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === form.replyModelMode)?.label || form.replyModelMode || "-");
 const hasReplyModels = computed(() => replyModels.value.length > 0);
@@ -39,7 +74,7 @@ const memberSelectOptions = computed(() => memberOptions.value.map((member) => (
   label: `${member.displayName} / ${member.userId}`,
   hint: member.note || member.role || undefined,
 })));
-const scheduleTimezone = computed(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai");
+const scheduleTimezone = computed(() => "Asia/Shanghai");
 const scheduleEffectText = computed(() => [
   form.dailyReportEnabled ? `日报 ${form.dailyReportTime}` : undefined,
   form.holidayCountdownEnabled ? `节日倒计时 ${form.holidayCountdownTime}` : undefined,
@@ -89,13 +124,14 @@ function resetForm(data: GroupConfig): void {
     liveChatUserIds: [...(data.liveChatUserIds || [])],
     roastModeUserIds: [...(data.roastModeUserIds || [])],
     blacklistedUserIds: [...(data.blacklistedUserIds || [])],
-    triggerKeywords: [...(data.triggerKeywords || [])],
+    triggerKeywords: (data.triggerKeywords || []).map((item) => ({ ...item })),
     dailyReportDateRule: data.dailyReportDateRule || "all",
     dailyReportWeekdays: [...(data.dailyReportWeekdays || [])],
     holidayCountdownDateRule: data.holidayCountdownDateRule || "all",
     holidayCountdownWeekdays: [...(data.holidayCountdownWeekdays || [])],
   });
   reconcileReplyModelSelection();
+  originalConfig.value = JSON.parse(JSON.stringify(configValues()));
 }
 
 async function load(): Promise<void> {
@@ -103,19 +139,29 @@ async function load(): Promise<void> {
   const groupId = app.groupId;
   const serial = ++loadSerial;
   loading.value = true;
+  loadError.value = "";
   try {
     const [data] = await Promise.all([
-      api<GroupConfig>(`/api/groups/${encodeURIComponent(groupId)}/config`),
+      api<GroupConfig & { revision: string }>(`/api/groups/${encodeURIComponent(groupId)}/config`),
       loadModelOptions(),
       loadMemberOptions(groupId),
     ]);
     if (serial !== loadSerial || groupId !== app.groupId) return;
+    revision.value = data.revision;
     resetForm(data);
-    await loadReminders(groupId, serial);
-    await loadSchedulePreview(groupId, serial);
+    resetReminderForm();
+    await Promise.all([
+      loadReminders(groupId, serial).then(() => { remindersError.value = ""; }).catch((error) => {
+        remindersError.value = (error as Error).message || "定时任务暂不可用";
+      }),
+      loadSchedulePreview(groupId, serial).then(() => { schedulePreviewError.value = ""; }).catch((error) => {
+        schedulePreviewError.value = (error as Error).message || "执行预览暂不可用";
+      }),
+    ]);
   } catch (error) {
     if (serial === loadSerial) {
-      app.showToast((error as Error).message || "群配置加载失败", "error");
+      loadError.value = (error as Error).message || "群配置加载失败";
+      app.showToast(loadError.value, "error");
     }
   } finally {
     if (serial === loadSerial) loading.value = false;
@@ -126,6 +172,27 @@ async function loadSchedulePreview(groupId = app.groupId, serial = loadSerial): 
   if (!groupId) return;
   const data = await api<{ previews: SchedulePreviewDay[] }>(`/api/groups/${encodeURIComponent(groupId)}/schedule-preview?days=7`);
   if (serial === loadSerial && groupId === app.groupId) schedulePreview.value = data.previews;
+}
+
+async function retryReminders(): Promise<void> {
+  remindersLoading.value = true;
+  try {
+    await loadReminders();
+    remindersError.value = "";
+  } catch (error) {
+    remindersError.value = (error as Error).message || "定时任务暂不可用";
+  } finally {
+    remindersLoading.value = false;
+  }
+}
+
+async function retrySchedulePreview(): Promise<void> {
+  try {
+    await loadSchedulePreview();
+    schedulePreviewError.value = "";
+  } catch (error) {
+    schedulePreviewError.value = (error as Error).message || "执行预览暂不可用";
+  }
 }
 
 async function loadModelOptions(): Promise<void> {
@@ -178,23 +245,16 @@ async function save(): Promise<void> {
   }
   saving.value = true;
   try {
-    const {
-      manualIdentities: _manualIdentities,
-      memoryDisabledUserIds: _privacyOptOuts,
-      switcherUserIds: _retiredQqAdminUserIds,
-      ...operationalConfig
-    } = form;
-    const payload = {
-      ...operationalConfig,
-      triggerKeywords: (form.triggerKeywords || []).filter((item) => item.keyword.trim()),
-    };
-    await api<GroupConfig>(`/api/groups/${encodeURIComponent(app.groupId)}/config`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
+    const patch = Object.fromEntries(Object.entries(configValues()).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(originalConfig.value[key])));
+    if (!Object.keys(patch).length) { app.showToast("配置没有变化"); return; }
+    const next = await api<GroupConfig & { revision: string }>(`/api/groups/${encodeURIComponent(app.groupId)}/config`, {
+      method: "PATCH",
+      body: JSON.stringify({ expectedRevision: revision.value, patch }),
     });
+    revision.value = next.revision;
+    resetForm(next);
     await app.loadGroups();
     app.showToast("群配置已保存");
-    await load();
   } catch (error) {
     app.showToast((error as Error).message, "error");
   } finally {
@@ -241,6 +301,7 @@ function resetReminderForm(): void {
   reminderForm.dateRule = "all";
   reminderForm.weekdays = [];
   reminderForm.enabled = true;
+  reminderBaseline.value = JSON.stringify(reminderForm);
 }
 
 function fillReminderForm(reminder: ScheduledReminderTask, mode: "edit" | "copy"): void {
@@ -253,6 +314,7 @@ function fillReminderForm(reminder: ScheduledReminderTask, mode: "edit" | "copy"
   reminderForm.dateRule = reminder.dateRule || "all";
   reminderForm.weekdays = [...(reminder.weekdays || [])];
   reminderForm.enabled = reminder.enabled;
+  reminderBaseline.value = JSON.stringify(reminderForm);
 }
 
 function editReminder(reminder: ScheduledReminderTask): void {
@@ -368,7 +430,7 @@ async function updateReminder(reminder: ScheduledReminderTask): Promise<void> {
 
 async function deleteReminder(reminder: ScheduledReminderTask): Promise<void> {
   if (readonly.value) return;
-  if (!confirm(`删除定时任务「${reminder.topic}」？`)) return;
+  if (!await confirmAction({ title: "删除定时任务", message: `删除「${reminder.topic}」后将停止后续提醒。`, confirmText: "删除任务", danger: true })) return;
   remindersLoading.value = true;
   try {
     await api(`/api/groups/${encodeURIComponent(app.groupId)}/reminders/${encodeURIComponent(reminder.id)}`, { method: "DELETE" });
@@ -382,15 +444,19 @@ async function deleteReminder(reminder: ScheduledReminderTask): Promise<void> {
   }
 }
 
+async function reload(): Promise<void> {
+  if ((dirty.value || reminderDirty.value) && !await confirmAction({ title: "重新读取配置", message: "当前尚有未保存的更改，重新读取将丢弃这些更改。", confirmText: "丢弃并读取", danger: true })) return;
+  await load();
+}
 function onRefresh(): void {
-  void load().catch((error) => app.showToast(error.message, "error"));
+  void reload().catch((error) => app.showToast(error.message, "error"));
 }
 
 onMounted(() => {
   void load();
 });
 
-useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
+useRefreshEvents({ refresh: onRefresh });
 
 watch(() => app.groupId, () => {
   void load();
@@ -399,244 +465,58 @@ watch(() => app.groupId, () => {
 </script>
 
 <template>
-  <section class="page">
-    <div class="group-top">
-      <article class="panel group-picker">
-        <label>
-          选择群聊
-          <select v-model="app.groupId" class="select">
-            <option v-for="group in app.groups" :key="group.groupId" :value="group.groupId">群 {{ group.groupId }}</option>
-          </select>
-        </label>
-      </article>
-
-      <article class="panel group-summary">
-        <div class="summary-icon">群</div>
-        <div>
-          <h2>群 {{ form.groupId || app.groupId }}</h2>
-          <span class="tag" :class="{ danger: form.enabled === false || form.botMuted }">{{ form.enabled === false ? "已隐藏" : form.botMuted ? "已静音" : "运行中" }}</span>
-          <p>当前技能 {{ form.currentSkillId || "-" }} · 回复模型 {{ currentReplyModelLabel }}</p>
-        </div>
-        <dl>
-          <div><dt>成员备注</dt><dd>在成员管理中维护</dd></div>
-          <div><dt>日报时间</dt><dd>{{ form.dailyReportTime || "-" }}</dd></div>
-          <div><dt>触发词</dt><dd>{{ form.triggerKeywords?.filter((item) => item.enabled).length || 0 }} 个</dd></div>
-        </dl>
-      </article>
-    </div>
-
-    <div class="tabs-bar">
-      <div class="tabs-group">
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'basic' }"
-          type="button"
-          @click="activeTab = 'basic'"
-        >
-          <AppIcon name="settings" :size="16" />
-          <span>回复与特性</span>
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'schedule' }"
-          type="button"
-          @click="activeTab = 'schedule'"
-        >
-          <AppIcon name="overview" :size="16" />
-          <span>定时与播报</span>
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'permissions' }"
-          type="button"
-          @click="activeTab = 'permissions'"
-        >
-          <AppIcon name="users" :size="16" />
-          <span>成员与黑名单</span>
-        </button>
+  <section class="page group-page">
+    <header class="page-heading">
+      <div><h1>群配置</h1><p>管理回复规则、能力、成员权限与定时任务。</p></div>
+      <div class="heading-actions">
+        <span v-if="dirty" class="dirty-hint"><AppIcon name="bell" :size="15" /> 有未保存的更改</span>
+        <button class="btn" type="button" :disabled="readonly || loading || saving || !dirty" @click="save">{{ saving ? "保存中…" : "保存配置" }}</button>
       </div>
-
-      <div class="tab-actions">
-        <button class="btn tab-save-btn" type="button" :disabled="readonly || loading || saving" @click="save">
-          {{ readonly ? "只读" : saving ? "保存中..." : "保存群配置" }}
-        </button>
-      </div>
-    </div>
-
-    <form class="settings-grid" @submit.prevent="save">
-      <template v-if="activeTab === 'basic'">
-        <section class="panel group-config-card">
-          <h3>基础设置</h3>
-          <div class="field-grid">
-            <label class="switch-line"><input v-model="form.enabled" :disabled="readonly" type="checkbox" /> 显示并启用该群</label>
-            <label>当前人格
-              <div class="fixed-persona">会仙 / huixian</div>
-
-            </label>
-            <label>回复模型
-              <select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels">
-                <option v-if="!hasReplyModels" value="">请先在系统设置启用对话模型</option>
-                <option v-for="model in replyModels" :key="model.id" :value="model.id">
-                  {{ model.label }}
-                </option>
-              </select>
-
-            </label>
-            <label>参与方式
-              <select v-model="form.participationMode" class="select" :disabled="readonly">
-                <option value="mentions_only">仅在 @ / 引用时回复</option>
-                <option value="mentions_and_keywords">@ / 引用 + 关键词</option>
-                <option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option>
-              </select>
-
-            </label>
-            <label>实时对话延迟秒数<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /></label>
-            <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
-            <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
-            <label>节日倒计时时间<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
-          </div>
-        </section>
-
-        <section class="panel group-config-card">
-          <h3>回复策略与能力开关</h3>
-
-          <div class="switch-grid">
-            <label class="switch-card" :class="{ checked: form.dailyReportEnabled }">
-              <div>
-                <strong>群聊日报</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.dailyReportEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.holidayCountdownEnabled }">
-              <div>
-                <strong>节日倒计时</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.holidayCountdownEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.scheduledRemindersEnabled }">
-              <div>
-                <strong>定时提醒</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.scheduledRemindersEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.opsAlertsEnabled }">
-              <div>
-                <strong>运维告警</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.opsAlertsEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.botMuted }">
-              <div>
-                <strong>机器人静音</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.botMuted" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.onlineLookupEnabled }">
-              <div>
-                <strong>自动查询实时资料</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.onlineLookupEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.visionEnabled }">
-              <div>
-                <strong>图片理解</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.visionEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.ambientGroupContextEnabled }">
-              <div>
-                <strong>短时群聊语境</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.ambientGroupContextEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-            <label class="switch-card" :class="{ checked: form.htmlPreviewEnabled }">
-              <div>
-                <strong>静态网页预览</strong>
-
-              </div>
-              <div class="switch-toggle">
-                <input v-model="form.htmlPreviewEnabled" :disabled="readonly" type="checkbox" />
-                <span class="switch-slider" />
-              </div>
-            </label>
-
-          </div>
-        </section>
-
-        <section class="panel group-config-card">
-          <h3>触发关键词</h3>
-          <div class="keyword-list">
-            <div v-for="(item, index) in form.triggerKeywords" :key="index" class="keyword-row">
-              <input v-model="item.keyword" class="input" placeholder="例如：乘风" :disabled="readonly" />
-              <label class="mini-check"><input v-model="item.enabled" :disabled="readonly" type="checkbox" /> 启用</label>
-              <button class="ghost-btn danger" type="button" :disabled="readonly" @click="removeTriggerKeyword(index)">删除</button>
+    </header>
+    <nav class="config-tabs" aria-label="群配置分类">
+      <button v-for="tab in configTabs" :key="tab.value" type="button" :class="{ active: activeTab === tab.value }" :aria-current="activeTab === tab.value ? 'page' : undefined" @click="activeTab = tab.value">{{ tab.label }}</button>
+    </nav>
+    <div v-if="loading" class="panel empty" aria-live="polite">正在加载群配置…</div>
+    <div v-else-if="loadError" class="panel empty" role="alert"><p>{{ loadError }}</p><button class="ghost-btn" type="button" @click="reload">重试</button></div>
+    <div v-else-if="!app.groupId" class="panel empty">暂无获授权群聊。</div>
+    <div v-else class="config-layout" :class="{ scheduling: activeTab === 'schedule' }">
+      <form class="settings-grid" @submit.prevent="save">
+        <template v-if="activeTab === 'reply'">
+          <section class="panel group-config-card">
+            <div class="section-intro"><h2>回复规则</h2><p>设置机器人在当前群的参与方式。</p></div>
+            <div class="field-grid">
+              <label class="switch-line wide"><span><strong>显示并启用该群</strong><small>停用后机器人不再处理当前群的消息。</small></span><input v-model="form.enabled" :disabled="readonly" type="checkbox" /></label>
+              <label class="switch-line wide"><span><strong>机器人静音</strong><small>保留群配置，暂停机器人发言。</small></span><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /></label>
+              <label>回复模型<select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels"><option v-if="!hasReplyModels" value="">请先启用对话模型</option><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
+              <label>参与方式<select v-model="form.participationMode" class="select" :disabled="readonly"><option value="mentions_only">仅在 @ / 引用时回复</option><option value="mentions_and_keywords">@ / 引用 + 关键词</option><option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option></select></label>
+              <label>实时对话延迟<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /><small>单位为秒，仅指定成员低频参与时生效。</small></label>
+              <label>当前人格<div class="fixed-persona">{{ form.currentSkillId || '尚未设置' }}</div><small>人格内容在「内容与表达」工作区维护。</small></label>
             </div>
+          </section>
+          <section class="panel group-config-card">
+            <div class="section-head"><div class="section-intro"><h2>触发关键词</h2><p>按参与方式，启用的关键词可触发回复。</p></div><button class="ghost-btn" type="button" :disabled="readonly" @click="addTriggerKeyword">＋ 新增关键词</button></div>
+            <div v-if="!form.triggerKeywords?.length" class="empty compact">尚未配置触发关键词。</div>
+            <div v-else class="keyword-list">
+              <div class="keyword-header"><span>关键词</span><span>状态</span><span>操作</span></div>
+              <div v-for="(item, index) in form.triggerKeywords" :key="index" class="keyword-row"><input v-model="item.keyword" class="input" :aria-label="'关键词 ' + (index + 1)" placeholder="例如：乘风" :disabled="readonly" /><label class="mini-check"><input v-model="item.enabled" :disabled="readonly" type="checkbox" /> 启用</label><button class="link-btn danger" type="button" :disabled="readonly" @click="removeTriggerKeyword(index)">删除</button></div>
+            </div>
+          </section>
+        </template>
+        <section v-else-if="activeTab === 'capabilities'" class="panel group-config-card">
+          <div class="section-intro"><h2>能力开关</h2><p>为当前群选择需要的能力，保存后生效。</p></div>
+          <div class="capability-list">
+            <label v-for="capability in capabilities" :key="capability.key" class="switch-line"><span><strong>{{ capability.label }}</strong><small>{{ capability.detail }}</small></span><input v-model="form[capability.key]" :disabled="readonly" type="checkbox" /></label>
           </div>
-          <button class="ghost-btn" type="button" :disabled="readonly" @click="addTriggerKeyword">新增关键词</button>
+          <p class="muted">日报、节日倒计时和定时提醒在「排程」中配置。</p>
         </section>
-      </template>
-
-      <template v-else-if="activeTab === 'permissions'">
-        <section class="panel group-config-card">
-          <h3>群管理与权限成员</h3>
-
+        <section v-else-if="activeTab === 'permissions'" class="panel group-config-card">
+          <div class="section-intro"><h2>成员权限</h2><p>成员身份、备注和隐私退出在成员详情中维护。</p></div>
           <div class="field-grid">
-            <label>实时对话 QQ
-              <MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" />
-
-            </label>
-            <label>嘴臭模式 QQ
-              <MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-
-            </label>
-            <label class="wide">黑名单 QQ
-              <MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" />
-
-            </label>
+            <label class="wide">低频参与成员<MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" /><small>需先将参与方式设置为指定成员低频参与。</small></label>
+            <label class="wide">嘴臭模式成员<MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" /></label>
+            <label class="wide">黑名单成员<MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" /></label>
           </div>
         </section>
-      </template>
-
       <template v-else-if="activeTab === 'schedule'">
 
       <section class="panel group-config-card schedule-card">
@@ -708,9 +588,10 @@ watch(() => app.groupId, () => {
               <h4>未来 7 天执行预览</h4>
 
             </div>
-            <button class="ghost-btn" type="button" @click="loadSchedulePreview()">刷新预览</button>
+            <button class="ghost-btn" type="button" @click="retrySchedulePreview">刷新预览</button>
           </div>
-          <div class="preview-days">
+          <div v-if="schedulePreviewError" class="error-state schedule-error" role="alert"><span>执行预览暂不可用</span><button class="ghost-btn" type="button" @click="retrySchedulePreview">重试预览</button></div>
+          <div v-else class="preview-days">
             <article v-for="day in schedulePreview" :key="day.date" class="preview-day">
               <strong>{{ day.date }}</strong>
               <div v-if="day.items.length" class="preview-items">
@@ -735,39 +616,40 @@ watch(() => app.groupId, () => {
           </div>
           <div class="reminder-head-actions">
             <span class="reminder-count">共 {{ reminders.length }} 个任务</span>
-            <button class="btn reminder-new-top" type="button" :disabled="readonly" @click="resetReminderForm">新增任务</button>
+            <button class="btn reminder-new-top" type="button" :disabled="readonly || remindersLoading || Boolean(remindersError)" @click="resetReminderForm">新增任务</button>
           </div>
         </div>
+        <div v-if="remindersError" class="error-state reminder-error" role="alert"><span>群定时任务暂不可用</span><button class="ghost-btn" type="button" :disabled="remindersLoading" @click="retryReminders">重试加载</button></div>
         <div class="reminder-form" :class="{ editing: Boolean(editingReminderId) }">
           <div class="reminder-main-fields">
             <label class="reminder-topic">
               <span class="reminder-field-label">提醒内容</span>
-              <input v-model="reminderForm.topic" class="input" placeholder="输入提醒内容，例如喝水、整理日报" :disabled="readonly" />
+                <input v-model="reminderForm.topic" class="input" placeholder="输入提醒内容，例如喝水、整理日报" :disabled="readonly || Boolean(remindersError)" />
             </label>
             <label class="reminder-time">
               <span class="reminder-field-label">执行开始时间</span>
-              <input v-model="reminderForm.executionStartTime" class="input" type="time" :disabled="readonly" />
+                <input v-model="reminderForm.executionStartTime" class="input" type="time" :disabled="readonly || Boolean(remindersError)" />
             </label>
             <label class="reminder-time">
               <span class="reminder-field-label">执行结束时间</span>
-              <input v-model="reminderForm.executionEndTime" class="input" type="time" :disabled="readonly" />
+                <input v-model="reminderForm.executionEndTime" class="input" type="time" :disabled="readonly || Boolean(remindersError)" />
             </label>
             <label class="reminder-advance">
               <span class="reminder-field-label">执行间隔</span>
               <div class="suffix-input">
-                <input v-model.number="reminderForm.executionIntervalMinutes" class="input interval-input" type="number" min="1" :disabled="readonly" />
+                <input v-model.number="reminderForm.executionIntervalMinutes" class="input interval-input" type="number" min="1" :disabled="readonly || Boolean(remindersError)" />
                 <span>分钟</span>
               </div>
             </label>
             <label class="reminder-toggle-field">
               <span>启用</span>
               <span class="toggle-switch">
-                <input v-model="reminderForm.enabled" :disabled="readonly" type="checkbox" />
+                <input v-model="reminderForm.enabled" :disabled="readonly || Boolean(remindersError)" type="checkbox" />
                 <i></i>
               </span>
             </label>
             <div class="reminder-form-actions">
-              <button class="btn reminder-add" type="button" :disabled="readonly || remindersLoading" @click="submitReminder">{{ readonly ? "只读模式" : reminderSubmitLabel }}</button>
+              <button class="btn reminder-add" type="button" :disabled="readonly || remindersLoading || Boolean(remindersError)" @click="submitReminder">{{ readonly ? "只读模式" : reminderSubmitLabel }}</button>
               <button v-if="editingReminderId" class="ghost-btn reminder-cancel" type="button" :disabled="readonly || remindersLoading" @click="resetReminderForm">取消</button>
             </div>
           </div>
@@ -781,11 +663,12 @@ watch(() => app.groupId, () => {
               v-model:weekdays="reminderForm.weekdays"
               compact
               show-weekday-preview
-              :disabled="readonly"
+              :disabled="readonly || Boolean(remindersError)"
             />
           </section>
         </div>
-        <div v-if="remindersLoading" class="empty compact">正在加载定时任务...</div>
+        <div v-if="remindersError" class="muted reminder-unavailable">定时任务编辑暂不可用。</div>
+        <div v-else-if="remindersLoading" class="empty compact">正在加载定时任务...</div>
         <div v-else-if="!reminders.length" class="empty compact">当前群暂无定时任务。</div>
         <div v-else class="reminder-table">
           <div class="reminder-table-head">
@@ -818,11 +701,15 @@ watch(() => app.groupId, () => {
       </section>
       </template>
 
-      <div class="save-bar">
-        <button class="btn" type="submit" :disabled="readonly || loading || saving">{{ readonly ? "只读模式不可保存" : saving ? "保存中..." : "保存群配置" }}</button>
-        <button class="ghost-btn" type="button" :disabled="loading || saving" @click="load">重新读取</button>
-      </div>
-    </form>
+
+        <div class="save-bar"><span class="muted">{{ dirty ? '更改尚未保存' : '配置已同步' }}</span><div><button class="ghost-btn" type="button" :disabled="loading || saving" @click="reload">重新读取</button><button class="btn" type="submit" :disabled="readonly || loading || saving || !dirty">{{ saving ? "保存中…" : "保存配置" }}</button></div></div>
+      </form>
+      <aside v-if="activeTab !== 'schedule'" class="panel config-summary">
+        <h2>群配置摘要</h2><div class="summary-group"><span class="summary-icon"><AppIcon name="users" /></span><div><strong>{{ app.currentGroup?.groupName || '群 ' + app.groupId }}</strong><small>{{ app.groupId }}</small></div></div>
+        <dl><div><dt>群状态</dt><dd><span class="tag" :class="{ danger: form.enabled === false || form.botMuted }">{{ form.enabled === false ? "已停用" : form.botMuted ? "已静音" : "已启用" }}</span></dd></div><div><dt>回复模型</dt><dd>{{ currentReplyModelLabel }}</dd></div><div><dt>参与方式</dt><dd>{{ form.participationMode === 'selected_members' ? '指定成员低频参与' : form.participationMode === 'mentions_and_keywords' ? '@ / 引用 + 关键词' : '@ / 引用' }}</dd></div><div><dt>关键词</dt><dd>{{ form.triggerKeywords?.filter(item => item.enabled && item.keyword.trim()).length || 0 }} 个已启用</dd></div><div><dt>能力</dt><dd>{{ capabilities.filter(item => form[item.key]).length }} / {{ capabilities.length }} 项已启用</dd></div><div><dt>定时任务</dt><dd>{{ reminders.filter(item => item.enabled).length }} 个已启用</dd></div></dl>
+        <p class="summary-note">{{ dirty ? '摘要包含当前尚未保存的修改。' : '仅显示当前群的实际配置。' }}</p>
+      </aside>
+    </div>
   </section>
 </template>
 
@@ -1724,4 +1611,63 @@ dd {
     grid-template-columns: 1fr;
   }
 }
+
+/* Shared console layout: broad form column and compact factual summary. */
+.page-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; }
+.page-heading h1 { margin:0; font-size:28px; letter-spacing:-.6px; }
+.page-heading p,.section-intro p { margin:7px 0 0; color:var(--muted); line-height:1.7; }
+.heading-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.dirty-hint { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line); color:var(--warning); background:var(--warning-soft); border-radius:6px; padding:9px 12px; font-size:12px; }
+.config-tabs { display:flex; gap:20px; border-bottom:1px solid var(--line); }
+.config-tabs button { padding:13px 15px; border:0; border-bottom:2px solid transparent; border-radius:0; color:var(--muted); background:transparent; }
+.config-tabs button.active { border-bottom-color:var(--accent); color:var(--accent-strong); font-weight:650; }
+.config-layout { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:20px; align-items:start; }
+.config-layout.scheduling { grid-template-columns:minmax(0,1fr); }
+.settings-grid { grid-template-columns:minmax(0,1fr); min-width:0; gap:18px; }
+.group-config-card { padding:24px; gap:22px; }
+.group-config-card h2,.config-summary h2 { margin:0; font-size:16px; }
+.field-grid { gap:20px; }
+.group-config-card label { font-size:13px; color:var(--text); }
+.field-grid small,.switch-line small { display:block; color:var(--muted); font-weight:400; font-size:12px; line-height:1.65; }
+.group-config-card .switch-line { display:flex; justify-content:space-between; align-items:center; padding:14px 0; border-bottom:1px solid var(--line); gap:20px; }
+.switch-line strong { font-weight:600; font-size:14px; }
+.switch-line small { margin-top:4px; }
+.keyword-list { gap:0; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
+.keyword-header,.keyword-row { display:grid; grid-template-columns:minmax(0,1fr) 80px 48px; gap:12px; padding:11px 14px; align-items:center; }
+.keyword-header { background:var(--surface-soft); color:var(--muted); font-size:12px; }
+.keyword-row + .keyword-row { border-top:1px solid var(--line); }
+.keyword-row label { display:flex; align-items:center; gap:5px; }
+.link-btn { background:transparent; color:var(--accent-strong); padding:0; }
+.link-btn.danger { color:var(--danger); }
+.capability-list { display:grid; }
+.config-summary { position:sticky; top:20px; padding:22px; }
+.summary-group { display:flex; align-items:center; gap:12px; padding:22px 0; border-bottom:1px solid var(--line); }
+.summary-group strong,.summary-group small { display:block; }
+.summary-group small { color:var(--muted); margin-top:6px; font-size:12px; }
+.config-summary dl { display:grid; grid-template-columns:1fr; gap:18px; margin:22px 0; }
+.config-summary dl div { display:flex; gap:15px; justify-content:space-between; font-size:12px; align-items:center; }
+.config-summary dd { text-align:right; margin:0; font-weight:500; max-width:65%; overflow-wrap:anywhere; }
+.summary-note { border-top:1px solid var(--line); padding-top:18px; font-size:12px; color:var(--muted); line-height:1.7; }
+.save-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0; }
+.save-bar > div { display:flex; gap:10px; }
+.save-bar > span { font-size:12px; }
+.schedule-layout { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+.schedule-rules { grid-column:1 / -1; border-top:1px solid var(--line); padding-top:20px; }
+.date-rule-panel { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+.reminders-card { padding:24px; border-radius:8px; }
+.reminder-heading h3 { font-size:18px; }
+.reminder-heading p { font-size:12px; font-weight:400; }
+.reminder-heading-icon { width:28px; height:28px; }
+.reminder-count { min-height:36px; font-size:12px; padding:0 12px; }
+.reminder-new-top { min-height:38px; min-width:100px; font-size:13px; }
+.reminder-main-fields,.reminder-form.editing .reminder-main-fields { grid-template-columns:minmax(0,2fr) repeat(3,minmax(0,1fr)); }
+.reminder-form { border-radius:7px; box-shadow:none; padding:18px; }
+.reminder-form .input { min-height:40px; font-size:13px; font-weight:400; }
+.reminder-form-actions { grid-column:3 / -1; justify-content:flex-end; }
+.reminder-add { box-shadow:none; }
+.schedule-effect { font-size:12px; font-weight:500; }
+@media(max-width:1100px) { .config-layout { grid-template-columns:minmax(0,1fr) 250px; gap:16px; } .field-grid { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:900px) { .config-layout { grid-template-columns:minmax(0,1fr); } .config-summary { position:static; } .config-summary dl { grid-template-columns:repeat(2,minmax(0,1fr)); } .schedule-layout,.date-rule-panel { grid-template-columns:minmax(0,1fr); } .schedule-column { border-right:0; padding-right:0; } .schedule-rules { grid-column:auto; } .schedule-head,.reminder-card-head { flex-wrap:wrap; gap:15px; } .reminder-rule-card { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:600px) { .page-heading { flex-direction:column; gap:14px; } .page-heading h1 { font-size:24px; } .heading-actions { width:100%; justify-content:space-between; } .config-tabs { gap:0; justify-content:space-between; } .config-tabs button { padding-inline:13px; } .group-config-card,.config-summary,.reminders-card { padding:18px; } .config-summary dl { grid-template-columns:1fr; } .keyword-header,.keyword-row { grid-template-columns:minmax(0,1fr) 60px 32px; padding:10px; gap:8px; } .keyword-row { font-size:12px; } .reminder-main-fields,.reminder-form.editing .reminder-main-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .reminder-topic { grid-column:1 / -1; } .reminder-form-actions { grid-column:1 / -1; } .save-bar { align-items:flex-start; flex-direction:column; } .save-bar > div { width:100%; justify-content:flex-end; } }
+
 </style>

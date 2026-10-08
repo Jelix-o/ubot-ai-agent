@@ -1,3 +1,6 @@
+import { AdminBulkService, BulkError, revision, type BulkPayload, type BulkTarget } from "./services/admin-bulk-service.js";
+import { ModelTelemetryStore, type AnalyticsFilter } from "./services/model-telemetry.js";
+import { StateConflictError, type MutationGuard } from "./services/state-mutation.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
@@ -16,7 +19,7 @@ import {
   type EvidenceResponseMode,
 } from "./admin-http-utils.js";
 import { logInfo, logWarn } from "./logger.js";
-import { GroupConfigValidationError } from "./services/group-config-service.js";
+import { GroupConfigValidationError, normalizeGroupConfigPatch } from "./services/group-config-service.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { AdminTaskStore } from "./services/admin-task-store.js";
@@ -167,7 +170,7 @@ interface HtmlPreviewAdminService {
     pagination: { page: number; pageSize: number; total: number; totalPages: number };
   }>;
   get(id: string): Promise<HtmlPreviewAdminMetadata | undefined>;
-  remove(id: string): Promise<boolean>;
+  remove(id: string, now?: number, guard?: MutationGuard): Promise<boolean>;
 }
 
 type MemeScope = "normal_chat" | "blacklisted_at";
@@ -223,7 +226,7 @@ interface MemeLibraryAdminService {
     data: Buffer;
     enabled?: boolean;
   }): Promise<MemeLibraryAsset | undefined>;
-  updateAsset(id: string, patch: { name?: string; enabled?: boolean; tags?: string[] }): Promise<MemeLibraryAsset | undefined>;
+  updateAsset(id: string, patch: { name?: string; enabled?: boolean; tags?: string[] }, guard?: MutationGuard): Promise<MemeLibraryAsset | undefined>;
   removeAsset(id: string): Promise<boolean>;
   loadImageFile(id: string): Promise<string | undefined>;
 }
@@ -243,7 +246,8 @@ const ADMIN_HTML_CACHE_CONTROL = "private, no-store";
 const ADMIN_API_CACHE_CONTROL = "private, no-store";
 const ADMIN_SPECULATION_RULES_PATH = "/admin-speculation-rules.json";
 const ADMIN_SPECULATION_RULES = JSON.stringify({ prefetch: [] });
-const ADMIN_SESSION_COOKIE = "__Host-ubot_admin_session";
+const SECURE_ADMIN_SESSION_COOKIE = "__Host-ubot_admin_session";
+const LOCAL_ADMIN_SESSION_COOKIE = "ubot_admin_session";
 const STATIC_CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -271,12 +275,16 @@ export class AdminHttpServer {
     status: ModelHealthStatus;
   }>();
   private readonly auth: AdminAuthService;
+  private readonly bulk?: AdminBulkService;
+  private readonly analytics?: ModelTelemetryStore;
 
   private readonly server = createServer((req, res) => {
     void this.handleRequest(req, res);
   });
 
   constructor(private readonly options: AdminHttpServerOptions) {
+    if (options.sharedDb) this.analytics = new ModelTelemetryStore(options.sharedDb);
+    if (options.sharedDb && options.adminTaskStore) this.bulk = new AdminBulkService(options.sharedDb, options.adminTaskStore);
     if (options.authService) {
       this.auth = options.authService;
       return;
@@ -295,7 +303,7 @@ export class AdminHttpServer {
     // consumes legacy environment credentials exactly once when the account
     // table is empty, rather than deferring that security transition until the
     // first unauthenticated browser request.
-    void this.auth.ensureInitialized()
+    void (async () => { await this.bulk?.interruptPreviousRuns(); await this.auth.ensureInitialized(); })()
       .then(() => {
         this.server.listen(this.options.port, this.options.host, () => {
           logInfo("Admin HTTP server listening.", {
@@ -406,6 +414,8 @@ export class AdminHttpServer {
       this.sendJson(res, { error: "unauthorized" }, 401);
       return;
     }
+
+    if (await this.handleModernApi(req, res, pathname, url, session)) return;
 
     if (req.method === "POST" && pathname === "/api/auth/logout") {
       const authSession = session as AdminAuthSession;
@@ -662,7 +672,7 @@ export class AdminHttpServer {
     }
 
     if (pathname === "/api/system-settings") {
-      if (req.method === "PUT" && !this.requireRecentSuperAdminReauth(session, res)) return;
+      if ((req.method === "PUT" || req.method === "PATCH") && !this.requireRecentSuperAdminReauth(session, res)) return;
       if (!this.requireSuperAdmin(session, res)) return;
       await this.handleSystemSettings(req, res);
       return;
@@ -977,6 +987,110 @@ export class AdminHttpServer {
     }
 
     this.sendJson(res, { error: "not_found" }, 404);
+  }
+
+  private async handleModernApi(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL, session: AdminSession): Promise<boolean> {
+    if (!pathname.startsWith("/api/analytics/") && !pathname.startsWith("/api/bulk-operations/") && !/^\/api\/tasks\/[^/]+\/cancel$/.test(pathname)) return false;
+    try {
+      if (pathname.startsWith("/api/analytics/")) {
+        if (req.method !== "GET") throw new BulkError("method_not_allowed", 405);
+        if (!this.analytics) throw new BulkError("analytics_unavailable", 503);
+        const query = url.searchParams, now = Date.now();
+        const from = query.has("from") ? Date.parse(query.get("from")!) : now - 86400_000;
+        const to = query.has("to") ? Date.parse(query.get("to")!) : now;
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to || to - from > 180 * 86400_000 || from < now - 181 * 86400_000 || to > now + 86400_000) throw new BulkError("invalid_date_range");
+        if (pathname !== "/api/analytics/requests" && from < now - 30 * 86400_000 && ((from + 8 * 3600_000) % 86400_000 || (to < now - 30 * 86400_000 && (to + 8 * 3600_000) % 86400_000))) throw new BulkError("historical_range_requires_whole_beijing_days");
+        const groups = await this.visibleGroups(session, { includeDisabled: session.role === "super_admin" });
+        const groupId = query.get("groupId") || undefined;
+        if (groupId && !groups.some(g => g.groupId === groupId)) throw new BulkError("forbidden", 403);
+        const filter: AnalyticsFilter = { from, to, groupId, modelId: query.get("modelId") || undefined, purpose: query.get("purpose") || undefined, includeProbes: query.get("includeProbes") === "1", visibleGroupIds: groups.map(g => g.groupId), includeGlobal: session.role === "super_admin" };
+        if (pathname === "/api/analytics/requests") { const p = paginationParams(url, 25, 100); this.sendJson(res, this.analytics.requests(filter, p.page, p.pageSize)); }
+        else if (["/api/analytics/summary", "/api/analytics/timeseries"].includes(pathname)) this.sendJson(res, this.analytics.report(filter));
+        else throw new BulkError("not_found", 404);
+        return true;
+      }
+      if (!this.bulk) throw new BulkError("bulk_unavailable", 503);
+      if (req.method !== "POST") throw new BulkError("method_not_allowed", 405);
+      const operatorId = session.userId ?? session.username;
+      if (pathname.endsWith("/cancel")) {
+        const taskId = pathname.split("/")[3];
+        const task = await this.options.adminTaskStore?.get(taskId);
+        if (!task || (session.role !== "super_admin" && (!task.groupId || !await this.canAccessGroup(session, task.groupId)))) throw new BulkError("forbidden", 403);
+        await this.bulk.cancel(taskId, operatorId, session.role === "super_admin"); this.sendJson(res, { ok: true }); return true;
+      }
+      const body = await readJsonBody(req);
+      const adapter = this.bulkAdapter(session);
+      if (pathname === "/api/bulk-operations/preview") {
+        const resource = requiredString(body.resource), action = requiredString(body.action);
+        const allowed: Record<string, string[]> = { "group-config": ["copy"], memories: ["enable", "disable", "delete"], knowledge: ["enable", "disable", "delete"], memes: ["enable", "disable", "tags"], "html-previews": ["delete"] };
+        if (!allowed[resource]?.includes(action)) throw new BulkError("invalid_bulk_action");
+        if ((resource === "group-config" || resource === "memes") && !this.requireRecentSuperAdminReauth(session, res)) return true;
+        let ids = normalizeIds(body.ids), patch: Record<string, unknown> | undefined;
+        const groupId = optionalString(body.groupId);
+        if (session.role !== "super_admin" && (!groupId || !await this.canAccessGroup(session, groupId))) throw new BulkError("forbidden", 403);
+        if (resource === "group-config") {
+          const sourceId = requiredString(body.sourceGroupId);
+          const source = await this.options.groupConfigService.getGroup(sourceId);
+          if (!source) throw new BulkError("source_not_found", 404);
+          const fields = normalizeIds(body.fields);
+          const copyFields = ["enabled", "botMuted", "replyModelMode", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
+          if (!fields.length || fields.some(f => !copyFields.includes(f))) throw new BulkError("invalid_copy_fields");
+          patch = Object.fromEntries(fields.map(f => [f, (source as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined));
+          if (!Object.keys(patch ?? {}).length) throw new BulkError("empty_copy_fields");
+          if (typeof patch?.replyModelMode === "string" && !await this.isApprovedReplyModel(patch.replyModelMode)) throw new BulkError("reply_model_not_approved");
+          ids = ids.filter(id => id !== sourceId);
+        } else if (resource === "memes" && action === "tags") {
+          const tags = normalizeIds(body.tags); const allowedTags = await this.options.memeLibraryService?.listTags();
+          if (tags.some(id => !allowedTags?.some(t => t.id === id))) throw new BulkError("invalid_tag"); patch = { tags };
+        }
+        this.sendJson(res, await this.bulk.preview(operatorId, { resource, action, ids, groupId, patch }, adapter)); return true;
+      }
+      if (pathname === "/api/bulk-operations/apply") {
+        // Reauth protects broad global writes even when a preview was created earlier.
+        if (session.role === "super_admin" && !this.requireRecentSuperAdminReauth(session, res)) return true;
+        const taskId = await this.bulk.execute(requiredString(body.previewId), operatorId, adapter);
+        this.sendJson(res, { taskId }, 202); return true;
+      }
+      throw new BulkError("not_found", 404);
+    } catch (error) { this.sendJson(res, { error: error instanceof BulkError ? error.code : error instanceof GroupConfigValidationError ? error.code : "invalid_bulk_request" }, error instanceof BulkError ? error.status : 400); return true; }
+  }
+
+  private bulkAdapter(session: AdminSession) {
+    return {
+      authorize: async (groupId: string, payload: BulkPayload): Promise<boolean> => {
+        if (["group-config", "memes"].includes(payload.resource)) return session.role === "super_admin";
+        return Boolean(groupId) && await this.canAccessGroup(session, groupId) && (session.role === "super_admin" || payload.groupId === groupId);
+      },
+      read: async (id: string, payload: BulkPayload): Promise<BulkTarget | undefined> => {
+        let value: any;
+        if (payload.resource === "group-config") value = await this.options.groupConfigService.getGroup(id);
+        else if (payload.resource === "memories") value = await this.options.groupMemoryStore.get(id);
+        else if (payload.resource === "knowledge") value = await this.options.knowledgeBaseStore.get(id);
+        else if (payload.resource === "memes") { if (!this.options.memeLibraryService?.isAvailable()) throw new BulkError("meme_library_unavailable", 503); value = await this.options.memeLibraryService.getAsset(id); }
+        else if (payload.resource === "html-previews") value = await this.options.htmlPreviewService?.get(id);
+        if (!value) return undefined;
+        if (payload.resource === "memes" && value.protected) throw new BulkError("protected_asset");
+        if (payload.resource === "memes" && payload.action === "tags" && ((value.scope === "normal_chat" && !(payload.patch?.tags as string[] | undefined)?.length) || (value.scope === "blacklisted_at" && (payload.patch?.tags as string[] | undefined)?.length))) throw new BulkError("invalid_asset_tags");
+        if (payload.resource === "html-previews" && ["pending", "processing", "deleted"].includes(value.status)) throw new BulkError("target_not_deletable", 409);
+        let before: unknown, after: unknown;
+        if (payload.resource === "group-config") { const normalized = normalizeGroupConfigPatch(value, payload.patch ?? {}); before = Object.fromEntries(Object.keys(payload.patch ?? {}).map(k => [k, value[k] ?? null])); after = Object.fromEntries(Object.keys(payload.patch ?? {}).map(k => [k, (normalized as any)[k] ?? null])); }
+        else { before = { enabled: value.enabled ?? null, ...(payload.action === "tags" ? { tags: value.tags } : {}), ...(payload.resource === "html-previews" ? { status: value.status } : {}) }; after = payload.action === "delete" ? { deleted: true } : payload.action === "tags" ? payload.patch : { enabled: payload.action === "enable" }; }
+        return { id, groupId: value.groupId ?? "", label: value.title ?? value.name ?? value.groupName ?? id, revision: revision(value), before, after };
+      },
+      apply: async (target: BulkTarget, payload: BulkPayload, committed?: () => void): Promise<void> => {
+        const atomic = this.options.adminOperationLogService.supportsAtomicRecord;
+        const guard = { expectedRevision: target.revision, ...(atomic ? { committed: () => {
+          this.options.adminOperationLogService.recordAtomic({ groupId: target.groupId, operatorUserId: session.userId ?? session.username, action: `bulk_${payload.resource}_${payload.action}`, target: target.id, detail: JSON.stringify({ before: target.before, after: target.after }) });
+          committed?.();
+        } } : {}) };
+        if (payload.resource === "group-config") { await this.options.groupConfigService.updateGroupConfig(target.id, payload.patch ?? {}, guard); this.invalidateMemberProfileCache(target.id); }
+        else if (payload.resource === "memories") { if (payload.action === "delete") await this.options.groupMemoryStore.remove(target.id, guard); else await this.options.groupMemoryStore.update(target.id, { enabled: payload.action === "enable" }, guard); this.invalidateMemberProfileCache(target.groupId); }
+        else if (payload.resource === "knowledge") { if (payload.action === "delete") await this.options.knowledgeBaseStore.remove(target.id, guard); else await this.options.knowledgeBaseStore.update(target.id, { enabled: payload.action === "enable" }, guard); }
+        else if (payload.resource === "memes") await this.options.memeLibraryService!.updateAsset(target.id, payload.action === "tags" ? { tags: payload.patch?.tags as string[] } : { enabled: payload.action === "enable" }, guard);
+        else if (payload.resource === "html-previews") await this.options.htmlPreviewService!.remove(target.id, Date.now(), guard);
+      },
+      audit: async (target: BulkTarget, payload: BulkPayload): Promise<void> => this.recordOperation({ session, groupId: target.groupId, action: `bulk_${payload.resource}_${payload.action}`, target: target.id, detail: JSON.stringify({ before: target.before, after: target.after }) }),
+    };
   }
 
   private async handleStaticApp(res: ServerResponse, pathname: string): Promise<void> {
@@ -1972,12 +2086,14 @@ export class AdminHttpServer {
   ): Promise<void> {
     if (req.method === "GET") {
       const group = await this.options.groupConfigService.getGroup(params.id);
-      this.sendJson(res, group ?? { error: "not_found" }, group ? 200 : 404);
+      this.sendJson(res, group ? { ...group, revision: revision(group) } : { error: "not_found" }, group ? 200 : 404);
       return;
     }
 
-    if (req.method === "PUT") {
-      const body = await readJsonBody(req);
+    if (req.method === "PUT" || req.method === "PATCH") {
+      const rawBody = await readJsonBody(req);
+      const body = req.method === "PATCH" ? rawBody.patch as Record<string, unknown> : rawBody;
+      if (!body || typeof body !== "object" || Array.isArray(body)) { this.sendJson(res, { error: "invalid_patch" }, 400); return; }
       if ("voiceReplyEnabled" in body || "defaultVoiceReplyEnabled" in body) {
         this.sendJson(res, { error: "voice_feature_retired" }, 410);
         return;
@@ -2003,6 +2119,7 @@ export class AdminHttpServer {
           this.sendJson(res, { error: "not_found" }, 404);
           return;
         }
+        if (req.method === "PATCH" && (typeof rawBody.expectedRevision !== "string" || rawBody.expectedRevision !== revision(existing))) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
         const update = session.role === "group_admin"
           ? sanitizeGroupAdminConfigPatch(body, existing.memoryDisabledUserIds ?? [])
           : body;
@@ -2019,7 +2136,7 @@ export class AdminHttpServer {
           this.sendJson(res, { error: "reply_model_not_approved" }, 403);
           return;
         }
-        const group = await this.options.groupConfigService.updateGroupConfig(params.id, update);
+        const group = await this.options.groupConfigService.updateGroupConfig(params.id, update, req.method === "PATCH" ? { expectedRevision: rawBody.expectedRevision as string } : undefined);
         this.invalidateMemberProfileCache(params.id);
         await this.recordOperation({
           session,
@@ -2028,8 +2145,9 @@ export class AdminHttpServer {
           target: "group_config",
           detail: Object.keys(update).sort().join(",").slice(0, 500),
         });
-        this.sendJson(res, group);
+        this.sendJson(res, { ...group, revision: revision(group) });
       } catch (error) {
+        if (error instanceof StateConflictError) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
         if (error instanceof GroupConfigValidationError) {
           this.sendJson(res, { error: error.code }, 400);
           return;
@@ -2052,11 +2170,17 @@ export class AdminHttpServer {
       return;
     }
     if (req.method === "GET") {
-      this.sendJson(res, await this.options.systemSettingsStore.get());
+      const settings = await this.options.systemSettingsStore.get();
+      this.sendJson(res, { ...settings, revision: revision(settings) });
       return;
     }
-    if (req.method === "PUT") {
-      const body = await readJsonBody(req);
+    if (req.method === "PUT" || req.method === "PATCH") {
+      const rawBody = await readJsonBody(req);
+        const current = await this.options.systemSettingsStore.get();
+        if (req.method === "PATCH" && (!rawBody.expectedRevision || rawBody.expectedRevision !== revision(current))) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
+        const body = req.method === "PATCH" ? rawBody.patch as Record<string, unknown> : rawBody;
+        if (!body || typeof body !== "object" || Array.isArray(body)) { this.sendJson(res, { error: "invalid_patch" }, 400); return; }
+        if (req.method === "PATCH" && Object.keys(body).some(key => !["onlineLookupEnabled", "tokenCostControl", "defaultTriggerKeywords", "models", "selectedModelIds"].includes(key))) { this.sendJson(res, { error: "invalid_patch_field" }, 400); return; }
       if (hasRetiredSystemSettingField(body)) {
         this.sendJson(res, { error: "retired_system_setting" }, 410);
         return;
@@ -2071,8 +2195,10 @@ export class AdminHttpServer {
         body.commands = commands;
       }
       try {
-        this.sendJson(res, await this.options.systemSettingsStore.update(body as Partial<SystemSettings>));
+        const updated = await this.options.systemSettingsStore.update(body as Partial<SystemSettings>, req.method === "PATCH" ? { expectedRevision: rawBody.expectedRevision as string } : undefined);
+        this.sendJson(res, { ...updated, revision: revision(updated) });
       } catch (error) {
+        if (error instanceof StateConflictError) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
         const errorCode = (error as Error).message;
         if ([
           "invalid_time",
@@ -2966,7 +3092,7 @@ export class AdminHttpServer {
   }
 
   private getSession(req: IncomingMessage): AdminAuthSession | undefined {
-    return this.auth.getSession(parseCookies(req.headers.cookie ?? "")[ADMIN_SESSION_COOKIE]);
+    return this.auth.getSession(parseCookies(req.headers.cookie ?? "")[sessionCookieName(this.options.publicBaseUrl)]);
   }
 
   private publicSession(session: AdminSession): Omit<AdminSession, "expiresAt"> & { publicBaseUrl: string } {
@@ -3150,7 +3276,7 @@ export class AdminHttpServer {
     res.setHeader(
       "Set-Cookie",
       [
-        `${ADMIN_SESSION_COOKIE}=${value}`,
+        `${secure ? SECURE_ADMIN_SESSION_COOKIE : LOCAL_ADMIN_SESSION_COOKIE}=${value}`,
         "Path=/",
         "HttpOnly",
         "SameSite=Strict",
@@ -3565,7 +3691,7 @@ function normalizeReminderWeekdays(value: unknown): number[] {
 }
 
 function normalizeTaskType(value: string | undefined): AdminTaskType | undefined {
-  return value === "memory-dedup" || value === "model-check" || value === "bulk-review"
+  return value === "memory-dedup" || value === "model-check" || value === "bulk-review" || value === "bulk-operation"
     ? value
     : undefined;
 }
@@ -4102,6 +4228,10 @@ function redactSensitiveText(value: string): string {
 
 function trimTrailingSlash(pathname: string): string {
   return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname === "/" ? "" : pathname;
+}
+
+function sessionCookieName(publicBaseUrl: string): string {
+  return publicBaseUrl.startsWith("https://") ? SECURE_ADMIN_SESSION_COOKIE : LOCAL_ADMIN_SESSION_COOKIE;
 }
 
 function parseCookies(raw: string): Record<string, string> {

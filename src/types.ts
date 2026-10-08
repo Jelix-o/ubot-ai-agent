@@ -58,7 +58,8 @@ export interface AiHealthStatus {
 export type AdminTaskType =
   | "memory-dedup"
   | "model-check"
-  | "bulk-review";
+  | "bulk-review"
+  | "bulk-operation";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface AdminTaskRecord {

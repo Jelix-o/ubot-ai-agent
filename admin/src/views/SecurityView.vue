@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, shallowRef } from "vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { api, type AdminAccount, type AdminAuthAuditEntry, type AdminInvite, type GroupConfig } from "../services/api";
 import { useAppStore } from "../stores/app";
+import { confirmAction } from "../composables/useConfirm";
 import { formatDateTime } from "../utils/format";
 
 const app = useAppStore();
@@ -82,7 +83,7 @@ async function createInvite(): Promise<void> {
 }
 
 async function revokeInvite(invite: AdminInvite): Promise<void> {
-  if (!window.confirm("撤销后该邀请链接不能再使用。确定继续吗？")) return;
+  if (!await confirmAction({ title: "撤销邀请", message: "撤销后该邀请链接不能再使用。", confirmText: "撤销邀请", danger: true })) return;
   busyAction.value = `invite:${invite.id}`;
   try { await api(`/api/admin-accounts/invites/${encodeURIComponent(invite.id)}/revoke`, { method: "POST", body: "{}" }); await load(); app.showToast("邀请已撤销"); }
   catch (error) { app.showToast((error as Error).message, "error"); }
@@ -91,7 +92,7 @@ async function revokeInvite(invite: AdminInvite): Promise<void> {
 
 async function accountAction(account: AdminAccount, action: "disable" | "enable" | "revoke-sessions"): Promise<void> {
   const labels = { disable: "停用", enable: "启用", "revoke-sessions": "撤销全部会话" };
-  if (!window.confirm(`确定要${labels[action]}账号「${account.username}」吗？`)) return;
+  if (!await confirmAction({ title: `${labels[action]}账号`, message: `确定要${labels[action]}账号「${account.username}」吗？`, confirmText: `${labels[action]}账号`, danger: action !== "enable" })) return;
   busyAction.value = `account:${account.id}:${action}`;
   try { await api(`/api/admin-accounts/${encodeURIComponent(account.id)}/${action}`, { method: "POST", body: "{}" }); await load(); app.showToast(`已${labels[action]}账号`); }
   catch (error) { app.showToast((error as Error).message, "error"); }
@@ -117,7 +118,7 @@ async function saveQqBinding(account: AdminAccount): Promise<void> {
 }
 
 async function removeQqBinding(account: AdminAccount): Promise<void> {
-  if (!account.qqUserId || !window.confirm(`确定解除 QQ ${account.qqUserId} 的绑定吗？`)) return;
+  if (!account.qqUserId || !await confirmAction({ title: "解除 QQ 绑定", message: `解除 QQ ${account.qqUserId} 后，该成员无法使用 QQ 身份登录后台。`, confirmText: "解除绑定", danger: true })) return;
   busyAction.value = `qq:${account.id}`;
   try { await api(`/api/admin-accounts/${encodeURIComponent(account.id)}/qq-binding`, { method: "DELETE" }); await load(); app.showToast("QQ 绑定已解除"); }
   catch (error) { app.showToast((error as Error).message, "error"); }

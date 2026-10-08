@@ -14,7 +14,7 @@ async function readAdmin(relativePath: string): Promise<string> {
 test("admin presents a single memory workspace without candidate routes", async () => {
   const [router, shell, overview, memories, appStore, api] = await Promise.all([
     readAdmin("router.ts"),
-    readAdmin("App.vue"),
+    readAdmin(path.join("components", "ConsoleShell.vue")),
     readAdmin(path.join("views", "OverviewView.vue")),
     readAdmin(path.join("views", "MemoriesView.vue")),
     readAdmin(path.join("stores", "app.ts")),
@@ -47,7 +47,8 @@ test("admin exposes a dedicated Huixian persona editor instead of a skills marke
   assert.match(persona, /\/api\/persona\/huixian/);
   assert.match(persona, /唯一运行时人格/);
   assert.match(persona, /现实证明时会自然转场/);
-  assert.match(groups, /会仙\s*\/\s*huixian/);
+  assert.match(groups, /currentReplyModelLabel/);
+  assert.match(groups, /configTabs/);
   assert.doesNotMatch(groups, /\/api\/skill-options|allowedSkillIds"/);
   assert.match(server, /\/api\/persona\/huixian/);
   assert.doesNotMatch(server, /pathname === "\/api\/skills"/);
@@ -81,7 +82,7 @@ test("runtime documentation and release packaging do not carry retired personas"
 test("admin hides compatibility routes and loads a missing member cache explicitly", async () => {
   const [router, shell, members, api, server, adminEntry] = await Promise.all([
     readAdmin("router.ts"),
-    readAdmin("App.vue"),
+    readAdmin(path.join("components", "ConsoleShell.vue")),
     readAdmin(path.join("views", "MembersView.vue")),
     readAdmin(path.join("services", "api.ts")),
     readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),
@@ -90,8 +91,9 @@ test("admin hides compatibility routes and loads a missing member cache explicit
 
   assert.match(router, /path:\s*"\/skills",\s*redirect:\s*"\/persona"/);
   assert.match(router, /navigation:\s*false/);
-  assert.match(shell, /typeof item\.name === "string"/);
-  assert.match(shell, /item\.meta\?\.navigation !== false/);
+  assert.match(shell, /routes\.filter/);
+  assert.match(shell, /item\.name !== "login"/);
+  assert.match(shell, /item\.meta\.navigation !== false/);
   assert.match(api, /interface MemberListResponse/);
   assert.match(members, /cacheStatus === "unloaded"/);
   assert.match(members, /\/members\/refresh/);
@@ -105,7 +107,7 @@ test("admin hides compatibility routes and loads a missing member cache explicit
 test("admin manages HTML preview metadata without embedding generated page content", async () => {
   const [router, shell, previewView, api, groups, server] = await Promise.all([
     readAdmin("router.ts"),
-    readAdmin("App.vue"),
+    readAdmin(path.join("workspaces.ts")),
     readAdmin(path.join("views", "HtmlPreviewsView.vue")),
     readAdmin(path.join("services", "api.ts")),
     readAdmin(path.join("views", "GroupsView.vue")),
@@ -131,7 +133,7 @@ test("admin manages HTML preview metadata without embedding generated page conte
 test("admin exposes a super-admin-only meme library with authenticated image previews", async () => {
   const [router, shell, view, api, server, adminEntry] = await Promise.all([
     readAdmin("router.ts"),
-    readAdmin("App.vue"),
+    readAdmin(path.join("workspaces.ts")),
     readAdmin(path.join("views", "MemeLibraryView.vue")),
     readAdmin(path.join("services", "api.ts")),
     readFile(path.join(repoRoot, "src", "admin-http-server.ts"), "utf8"),

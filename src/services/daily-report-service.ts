@@ -1,3 +1,4 @@
+import { withModelOperation } from "./model-telemetry.js";
 import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 import type { ChatSummaryRequest } from "../utils/chat-summary-request.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
@@ -83,7 +84,7 @@ export class DailyReportService {
     groupConfig: GroupBotConfig,
     now = new Date(),
     options: DailyReportBuildOptions = {},
-  ): Promise<string> {
+  ): Promise<string> { return withModelOperation('report', groupConfig.groupId, async () => {
     const dayKey = toLocalDateKey(now);
     const messages = await this.store.getMessages(groupConfig.groupId, dayKey);
     const topUserCount = normalizeTopUserCount(groupConfig.dailyReportTopUserCount);
@@ -120,7 +121,7 @@ export class DailyReportService {
     ];
 
     return lines.join("\n");
-  }
+  }); }
 
   async buildChatSummary(args: {
     groupId: string;
@@ -128,7 +129,7 @@ export class DailyReportService {
     now?: Date;
     useAiSummary?: boolean;
     members?: readonly NapcatGroupMember[];
-  }): Promise<string> {
+  }): Promise<string> { return withModelOperation('summary', args.groupId, async () => {
     const now = args.now ?? new Date();
     const { dayKey, messages } = await this.loadMessagesForRequest(
       args.groupId,
@@ -162,7 +163,7 @@ export class DailyReportService {
     }
 
     return buildFallbackChatSummary(args.request, stats, resolvedMessages);
-  }
+  }); }
 
   private async loadMessagesForRequest(
     groupId: string,

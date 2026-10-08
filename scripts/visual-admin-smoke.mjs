@@ -122,7 +122,7 @@ try {
   const csrf = login.data.session?.csrfToken;
   if (!cookie || typeof csrf !== "string") throw new Error("V3 password login did not issue an opaque session and CSRF token.");
 
-  const pages = ["/", "/login", "/groups", "/members", "/memories", "/knowledge", "/memes", "/tasks", "/audit", "/health", "/persona", "/commands", "/settings"];
+  const pages = ["/", "/login", "/analytics", "/groups", "/groups/bulk", "/members", "/memories", "/knowledge", "/html-previews", "/memes", "/tasks", "/audit", "/security", "/health", "/persona", "/commands", "/settings"];
   for (const page of pages) {
     const response = await fetch(`${baseUrl}${page}`, { headers: { Cookie: cookie } });
     if (!response.ok) throw new Error(`Admin page failed: ${page} ${response.status}`);
@@ -217,6 +217,13 @@ try {
   if (!updatePersona.response.ok) throw new Error(`Persona update failed: ${updatePersona.response.status} ${JSON.stringify(updatePersona.data)}`);
 
   console.log(`ADMIN_SMOKE_OK=${baseUrl}`);
+  if (process.argv.includes("--hold")) {
+    console.log("ADMIN_SMOKE_HOLD=press Ctrl+C to stop the local fixture");
+    await new Promise((resolve) => {
+      process.once("SIGINT", resolve);
+      process.once("SIGTERM", resolve);
+    });
+  }
 } finally {
   server?.close();
   sharedDb?.close();

@@ -12,6 +12,7 @@ import { logWarn } from "../logger.js";
 import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
+import { assertRevision, type MutationGuard } from "./state-mutation.js";
 
 type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
   models?: Array<Partial<SystemModelConfig> & { apiKey?: unknown }>;
@@ -45,8 +46,29 @@ export class SystemSettingsStore {
     return sanitizeSettings(await this.readData());
   }
 
-  async update(input: SystemSettingsUpdateInput): Promise<SystemSettings> {
+  async update(input: SystemSettingsUpdateInput, guard?: MutationGuard): Promise<SystemSettings> {
+    if (this.v3State) {
+      this.v3State.requireCutover();
+      return this.v3State.runAtomically(() => {
+        const stored = this.v3State!.getSystemSettings<SystemSettings>();
+        const current = stored ? normalizeSettings(stored, this.defaultModels) : defaultSettings(this.defaultModels);
+        assertRevision(sanitizeSettings(current), guard);
+        const next = this.buildUpdate(current, input);
+        this.v3State!.saveSystemSettings(next);
+        guard?.committed?.();
+        this.cachedData = next;
+        return sanitizeSettings(next);
+      });
+    }
     const current = await this.readData();
+    assertRevision(sanitizeSettings(current), guard);
+    const next = this.buildUpdate(current, input);
+    await this.writeData(next);
+    guard?.committed?.();
+    return sanitizeSettings(next);
+  }
+
+  private buildUpdate(current: SystemSettings, input: SystemSettingsUpdateInput): SystemSettings {
     if (input.models !== undefined) {
       if (input.models.some((model) => (model as { purpose?: unknown }).purpose === "tts")) {
         throw new Error("voice_feature_retired");
@@ -70,8 +92,7 @@ export class SystemSettingsStore {
       commands: input.commands === undefined ? current.commands : input.commands,
       updatedAt: new Date().toISOString(),
     }, this.defaultModels);
-    await this.writeData(next);
-    return sanitizeSettings(next);
+    return next;
   }
 
   async getInternal(): Promise<SystemSettings> {

@@ -16,7 +16,7 @@ export const useAppStore = defineStore("app", () => {
   const publicBaseUrl = shallowRef("");
   const sessionLoaded = shallowRef(false);
   const toast = reactive({ message: "", type: "ok" as "ok" | "error", visible: false });
-  const themeMode = shallowRef<ThemeMode>((localStorage.getItem(themeStorageKey) as ThemeMode) || "system");
+  const themeMode = shallowRef<ThemeMode>((localStorage.getItem(themeStorageKey) as ThemeMode) || "light");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let sessionPromise: Promise<void> | undefined;
 

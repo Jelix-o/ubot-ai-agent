@@ -1,3 +1,4 @@
+import { currentModelOperation, recordModelRequest, withModelOperation } from "./model-telemetry.js";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -90,7 +91,7 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     prompt: string;
     signal?: AbortSignal;
     onStarted?: () => void | Promise<void>;
-  }): Promise<GeneratedImageResult> {
+  }): Promise<GeneratedImageResult> { return withModelOperation('image', input.groupId, async () => {
     const prompt = input.prompt.trim();
     if (!prompt) throw new ImageGenerationError("prompt_empty");
     if (countImagePromptCharacters(prompt) > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
@@ -136,10 +137,10 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
       try {
-        const generated = await requestGeneratedImage(candidate, prompt, {
+        const generated = await withModelOperation("image", input.groupId, () => requestGeneratedImage(candidate, prompt, {
           signal: input.signal,
           fetchImpl: this.fetchImpl,
-        });
+        }), candidate.id);
         const filePath = await this.stage(generated.data, generated.extension);
         this.recordSuccess(input.groupId, input.userId);
         return {
@@ -168,7 +169,7 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
       "upstream_unavailable",
       lastRetryableError instanceof Error ? lastRetryableError.message : "upstream_unavailable",
     );
-  }
+  }); }
 
   async discard(filePath: string): Promise<void> {
     if (!isPathInside(this.rootDir, filePath)) return;
@@ -242,6 +243,10 @@ export async function requestGeneratedImage(
   mimeType: "image/png" | "image/jpeg" | "image/webp";
   extension: "png" | "jpg" | "webp";
 }> {
+  const telemetryStartedAt = Date.now();
+  let telemetryResponse: unknown;
+  let telemetryStatus: "succeeded" | "failed" | "cancelled" = "failed";
+  const telemetryOperation = currentModelOperation();
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
   let timedOut = false;
@@ -287,6 +292,7 @@ export async function requestGeneratedImage(
         throw new ImageGenerationError("invalid_image_response", "image_response_too_large");
       }
       payload = JSON.parse(responseText);
+      telemetryResponse = payload;
     } catch (error) {
       if (error instanceof ImageGenerationError) throw error;
       throw new ImageGenerationError("invalid_image_response", "image_response_invalid_json");
@@ -295,6 +301,7 @@ export async function requestGeneratedImage(
     const data = decodeBase64Image(encoded);
     const type = detectImageType(data);
     if (!type) throw new ImageGenerationError("invalid_image_response", "image_response_type_invalid");
+    telemetryStatus = "succeeded";
     return { data, ...type };
   } catch (error) {
     if (error instanceof ImageGenerationError || error instanceof ImageUpstreamError) throw error;
@@ -306,6 +313,8 @@ export async function requestGeneratedImage(
       kind === "network" || kind === "timeout" || kind === "unavailable" || kind === "rate_limit",
     );
   } finally {
+    if (options.signal?.aborted) telemetryStatus = "cancelled";
+    recordModelRequest({ startedAt: telemetryStartedAt, model: model.model, status: telemetryStatus, response: telemetryResponse, images: telemetryStatus === "succeeded" ? 1 : 0, operation: telemetryOperation });
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", abort);
   }

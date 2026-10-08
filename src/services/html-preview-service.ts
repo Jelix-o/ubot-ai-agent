@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, readdir, rename, rm, statfs, writeFile } from "nod
 import path from "node:path";
 
 import type { SharedDb } from "../shared/sqlite.js";
+import { assertRevision, type MutationGuard } from "./state-mutation.js";
 import {
   HTML_PREVIEW_RETENTION_MS,
   HtmlPreviewRepository,
@@ -224,11 +225,18 @@ export class HtmlPreviewService {
   }
 
   /** Deletes the static directory before exposing the terminal state to admin. */
-  async remove(id: string, now = Date.now()): Promise<boolean> {
+  async remove(id: string, now = Date.now(), guard?: MutationGuard): Promise<boolean> {
     const page = this.repository.get(id);
     if (!page || page.status === "deleted") return false;
+    assertRevision(this.toMetadata(page), guard);
     await this.removePageDirectory(page.id);
-    return this.repository.markDeleted(page.id, now);
+    return this.repository.runAtomically(() => {
+      const current = this.repository.get(id);
+      assertRevision(current ? this.toMetadata(current) : undefined, guard);
+      const removed = this.repository.markDeleted(page.id, now);
+      if (removed) guard?.committed?.();
+      return removed;
+    });
   }
 
   /**

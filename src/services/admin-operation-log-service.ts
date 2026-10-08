@@ -27,6 +27,14 @@ export class AdminOperationLogService {
     private readonly v3State?: V3StateRepository,
   ) {}
 
+  get supportsAtomicRecord(): boolean { return Boolean(this.v3State); }
+  /** Called inside an authoritative store transaction for a bulk target. */
+  recordAtomic(entry: Omit<AdminOperationLogEntry, "timestamp"> & { timestamp?: string }): void {
+    if (!this.v3State) throw new Error("atomic_audit_unavailable");
+    this.v3State.saveDocument(V3_OPERATION_DOCUMENT_TYPE, randomUUID(), { ...entry, timestamp: entry.timestamp ?? new Date().toISOString() });
+    this.pruneV3Entries();
+  }
+
   async record(entry: Omit<AdminOperationLogEntry, "timestamp"> & { timestamp?: string }): Promise<void> {
     const normalized: AdminOperationLogEntry = {
       timestamp: entry.timestamp ?? new Date().toISOString(),

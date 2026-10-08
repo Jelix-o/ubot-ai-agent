@@ -15,10 +15,16 @@ import AppSettingsView from "./views/SettingsView.vue";
 import AppSecurityView from "./views/SecurityView.vue";
 import AppHtmlPreviewsView from "./views/HtmlPreviewsView.vue";
 import AppMemeLibraryView from "./views/MemeLibraryView.vue";
+import AppAnalyticsView from "./views/AnalyticsView.vue";
+import AppBulkConfigView from "./views/BulkConfigView.vue";
+import { workspaces } from "./workspaces";
+import { allowContextChange } from "./composables/useUnsavedChanges";
 
 export const routes = [
   { path: "/login", name: "login", component: AppLoginView, meta: { title: "后台登录", subtitle: "使用管理员账号进入 UBot 控制台" } },
   { path: "/", name: "overview", component: AppOverviewView, meta: { title: "总览", subtitle: "查看群聊助手的关键数据和运行状态" } },
+  { path: "/analytics", name: "analytics", component: AppAnalyticsView, meta: { title: "调用分析", subtitle: "查看真实模型请求、用量和上游计费" } },
+  { path: "/groups/bulk", name: "group-bulk", component: AppBulkConfigView, meta: { title: "跨群配置", subtitle: "预览差异后，将选定配置复制到多个群", superOnly: true } },
   { path: "/groups", name: "groups", component: AppGroupsView, meta: { title: "群配置", subtitle: "管理群回复、权限、触发词和定时能力" } },
   { path: "/members", name: "members", component: AppMembersView, meta: { title: "成员管理", subtitle: "维护成员备注、身份标签、明确记忆和隐私退出" } },
   { path: "/memories", name: "memories", component: AppMemoriesView, meta: { title: "记忆", subtitle: "维护明确保存的记忆、归属、状态和来源" } },
@@ -36,12 +42,17 @@ export const routes = [
   { path: "/settings", name: "settings", component: AppSettingsView, meta: { title: "系统管理", subtitle: "统一配置机器人全局行为、模型接入与记忆策略", superOnly: true } },
 ];
 
+for (const route of routes) Object.assign(route.meta, { workspace: workspaces.find(workspace => workspace.pages.includes(String(route.name)))?.id });
+
 export const router = createRouter({
   history: createWebHistory(),
   routes,
 });
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
+  if (from.name && to.fullPath !== from.fullPath &&
+      (to.path !== from.path || to.query.group !== from.query.group) &&
+      !(await allowContextChange())) return false;
   if (to.name === "login") return true;
   const app = useAppStore();
   if (!app.sessionLoaded) {

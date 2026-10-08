@@ -1,3 +1,4 @@
+import { withModelOperation } from "./model-telemetry.js";
 ﻿import { logInfo, logWarn } from "../logger.js";
 import type { GroupMemory } from "../types.js";
 import type { MemorySemanticJudgeInput, MemorySemanticJudgeResult } from "./ai-service.js";
@@ -64,9 +65,9 @@ export class GroupMemoryDeduplicateService {
       semanticTimeoutMs?: number;
       onProgress?: (event: MemoryDedupProgressEvent) => Promise<void> | void;
     } = {},
-  ): Promise<MemoryDedupPreviewBuildResult> {
+  ): Promise<MemoryDedupPreviewBuildResult> { return withModelOperation('memory', memories[0]?.groupId, async () => {
     return buildMemoryDeduplicateDecisions(memories, this.judgeMemorySemanticRelation, options);
-  }
+  }); }
 
   async apply(
     groupId: string,
@@ -146,7 +147,7 @@ export class GroupMemoryDeduplicateService {
       onProgress?: (event: MemoryDedupProgressEvent) => Promise<void> | void;
       excludedSubjectUserIds?: readonly string[];
     } = {},
-  ): Promise<MemoryDedupPreviewBuildResult> {
+  ): Promise<MemoryDedupPreviewBuildResult> { return withModelOperation('memory', groupId, async () => {
     const excludedSubjectUserIds = new Set(options.excludedSubjectUserIds ?? []);
     const memories = (await this.memoryStore.list(groupId))
       .filter((memory) => memory.enabled)
@@ -166,7 +167,7 @@ export class GroupMemoryDeduplicateService {
       semanticTimeoutMs: options.semanticTimeoutMs,
       onProgress: options.onProgress,
     });
-  }
+  }); }
 
   async deduplicateMemberMemoriesForGroup(
     groupId: string,
