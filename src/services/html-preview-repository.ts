@@ -91,6 +91,8 @@ export class HtmlPreviewRepository {
 
   constructor(private readonly sharedDb: SharedDb) {}
 
+  runAtomically<T>(callback: () => T): T { return this.withImmediateTransaction(callback); }
+
   enqueue(input: {
     groupId: string;
     creatorUserId: string;

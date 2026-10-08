@@ -2,12 +2,18 @@
 import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 
 import { useRefreshEvents } from "../composables/useRefreshEvents";
+import { confirmAction } from "../composables/useConfirm";
+import { useContentBulk } from "../composables/useContentBulk";
+import AdminDialog from "../components/AdminDialog.vue";
+import BulkPreviewDialog from "../components/BulkPreviewDialog.vue";
+import ContentBulkBar from "../components/ContentBulkBar.vue";
 import { api, queryString, type HtmlPreviewMetadata, type HtmlPreviewStatus, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
 const app = useAppStore();
 const previews = shallowRef<HtmlPreviewMetadata[]>([]);
+const { selectedIds, selectedGroupCount, preview: bulkPreview, bulkBusy, eligible, toggleSelection, toggleSelectionPage, clearSelection, prepareBulk, executeBulk } = useContentBulk("html-previews");
 const loading = shallowRef(false);
 const deletingIds = shallowRef(new Set<string>());
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
@@ -100,7 +106,7 @@ function applyFilters(): void {
 }
 
 async function deletePreview(item: HtmlPreviewMetadata): Promise<void> {
-  if (!confirm(`立即删除网页预览「${item.title}」？删除后链接将无法访问。`)) return;
+  if (!await confirmAction({ title: "删除网页预览", message: `删除「${item.title}」后，链接将无法访问。`, confirmText: "删除预览", danger: true })) return;
   setDeleting(item.id, true);
   try {
     await api<{ ok: boolean }>(`/api/html-previews/${encodeURIComponent(item.id)}`, { method: "DELETE" });
@@ -117,6 +123,15 @@ async function deletePreview(item: HtmlPreviewMetadata): Promise<void> {
 function resetFilters(): void {
   filters.status = "";
   applyFilters();
+}
+
+function allVisibleSelected(): boolean {
+  const selectable = previews.value.filter((item) => eligible({ id: item.id, status: item.status }));
+  return selectable.length > 0 && selectable.every((item) => selectedIds.value.has(item.id));
+}
+
+function onBulkAction(action: "delete"): void {
+  void prepareBulk(action);
 }
 
 watch(() => app.groupId, () => {
@@ -191,6 +206,8 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
         </div>
       </div>
 
+      <ContentBulkBar :count="selectedIds.size" :group-count="selectedGroupCount" :busy="bulkBusy" :disabled="app.readonly" delete-only :all-selected="allVisibleSelected()" :has-items="previews.some((item) => eligible({ id: item.id, status: item.status }))" @select-page="toggleSelectionPage(previews.map((item) => ({ id: item.id, groupId: item.groupId, title: item.title, status: item.status })))" @clear="clearSelection" @action="onBulkAction" />
+
       <div v-if="loading" class="empty">正在读取网页预览...</div>
       <div v-else-if="!previews.length" class="empty-state">
         <div class="empty-visual">HTML</div>
@@ -201,6 +218,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
       </div>
       <div v-else class="preview-table">
         <div class="preview-table-head">
+          <span><input type="checkbox" :checked="allVisibleSelected()" aria-label="选择当前页网页预览" @change="toggleSelectionPage(previews.map((item) => ({ id: item.id, groupId: item.groupId, title: item.title, status: item.status })))" /></span>
           <span>网页</span>
           <span>状态</span>
           <span>创建者</span>
@@ -210,6 +228,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
           <span>操作</span>
         </div>
         <article v-for="item in previews" :key="item.id" class="preview-row">
+          <span><input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="app.readonly || !eligible({ id: item.id, status: item.status })" :aria-label="`选择 ${item.title || item.id}`" @change="toggleSelection({ id: item.id, groupId: item.groupId, title: item.title, status: item.status })" /></span>
           <div class="preview-title">
             <strong>{{ item.title || "未命名网页" }}</strong>
             <small>{{ item.id }}</small>
@@ -241,6 +260,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
         <button class="ghost-btn" type="button" :disabled="loading || pagination.page >= pagination.totalPages" @click="pagination.page += 1">下一页</button>
       </div>
     </section>
+    <BulkPreviewDialog v-if="bulkPreview" :preview="bulkPreview" :busy="bulkBusy" @close="bulkPreview = null" @execute="executeBulk" />
   </section>
 </template>
 
@@ -314,10 +334,10 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 .preview-table-head,
 .preview-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.35fr) 92px 120px 160px 160px 78px minmax(170px, auto);
+  grid-template-columns: 30px minmax(220px, 1.35fr) 92px 120px 160px 160px 78px minmax(170px, auto);
   gap: 12px;
   align-items: center;
-  min-width: 1080px;
+  min-width: 1120px;
   padding: 12px 14px;
 }
 

@@ -1,3 +1,4 @@
+import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
 import { loadConfig } from "./config.js";
 import { AdminHttpServer } from "./admin-http-server.js";
 import { NapCatClient } from "./napcat-client.js";
@@ -64,6 +65,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     replyModel: config.openAiModel,
   });
   const sharedDb = openSharedDb(config.dataDir);
+  setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
   const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const groupMemoryStore = new GroupMemoryStore(config.groupMemoryPath, v3State);

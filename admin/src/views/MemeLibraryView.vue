@@ -2,6 +2,11 @@
 import { computed, onMounted, reactive, shallowRef } from "vue";
 
 import { api, type MemeAsset, type MemeLibraryPolicy, type MemeLibrarySnapshot, type MemeScope, type MemeTag } from "../services/api";
+import { confirmAction } from "../composables/useConfirm";
+import { useContentBulk } from "../composables/useContentBulk";
+import AdminDialog from "../components/AdminDialog.vue";
+import BulkPreviewDialog from "../components/BulkPreviewDialog.vue";
+import ContentBulkBar from "../components/ContentBulkBar.vue";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
@@ -27,6 +32,9 @@ const policy = reactive<MemeLibraryPolicy>({
 });
 const tags = shallowRef<MemeTag[]>([]);
 const assets = shallowRef<MemeAsset[]>([]);
+const { selectedIds, selectedGroupCount, preview: bulkPreview, bulkBusy, eligible, toggleSelection, toggleSelectionPage, clearSelection, prepareBulk, executeBulk } = useContentBulk("memes");
+const bulkTagsOpen = shallowRef(false);
+const bulkTagIds = shallowRef<string[]>([]);
 const tagForm = reactive({ name: "", description: "", keywords: "" });
 const tagEditingId = shallowRef("");
 const tagEditForm = reactive({ name: "", description: "", keywords: "" });
@@ -40,6 +48,12 @@ const normalAssetCount = computed(() => assets.value.filter((asset) => asset.sco
 const blacklistAssetCount = computed(() => assets.value.filter((asset) => asset.scope === "blacklisted_at").length);
 const selectedScopeIsBlacklist = computed(() => assetForm.scope === "blacklisted_at");
 const readonly = computed(() => app.role !== "super_admin");
+const selectedBulkAssets = computed(() => assets.value.filter((asset) => selectedIds.value.has(asset.id)));
+const bulkTagsAllowed = computed(() => selectedBulkAssets.value.length > 0 && selectedBulkAssets.value.every((asset) => asset.scope === "normal_chat" && !asset.protected));
+const allVisibleSelected = computed(() => {
+  const selectable = filteredAssets.value.filter((asset) => eligible({ id: asset.id, protected: asset.protected }));
+  return selectable.length > 0 && selectable.every((asset) => selectedIds.value.has(asset.id));
+});
 
 function resetAssetForm(asset?: MemeAsset): void {
   if (asset) {
@@ -53,6 +67,22 @@ function resetAssetForm(asset?: MemeAsset): void {
   assetForm.scope = "normal_chat";
   assetForm.tags = [];
   assetForm.enabled = true;
+}
+
+function onBulkAction(action: "enable" | "disable" | "tags"): void {
+  if (action === "tags") {
+    if (!bulkTagsAllowed.value) return;
+    bulkTagIds.value = [];
+    bulkTagsOpen.value = true;
+    return;
+  }
+  void prepareBulk(action);
+}
+
+function previewBulkTags(): void {
+  if (!bulkTagsAllowed.value || !bulkTagIds.value.length) return;
+  bulkTagsOpen.value = false;
+  void prepareBulk("tags", { tags: [...bulkTagIds.value] });
 }
 
 function applySnapshot(snapshot: MemeLibrarySnapshot): void {
@@ -267,7 +297,7 @@ async function deleteAsset(asset: MemeAsset): Promise<void> {
     app.showToast("内置黑名单素材不能删除", "error");
     return;
   }
-  if (!confirm(`删除表情包「${asset.name}」？此操作不可恢复。`)) return;
+  if (!await confirmAction({ title: "删除表情素材", message: `删除「${asset.name}」后无法恢复。`, confirmText: "删除素材", danger: true })) return;
   deletingAssetId.value = asset.id;
   try {
     await api<{ ok: boolean }>(`/api/meme-library/assets/${encodeURIComponent(asset.id)}`, { method: "DELETE" });
@@ -344,7 +374,7 @@ async function saveTag(tag: MemeTag): Promise<void> {
 }
 
 async function deleteTag(tag: MemeTag): Promise<void> {
-  if (!confirm(`删除标签「${tag.name}」？未被素材引用时才能删除。`)) return;
+  if (!await confirmAction({ title: "删除表情标签", message: `删除「${tag.name}」；已关联素材时服务端会阻止此操作。`, confirmText: "删除标签", danger: true })) return;
   deletingTagId.value = tag.id;
   try {
     await api<{ ok: boolean }>(`/api/meme-library/tags/${encodeURIComponent(tag.id)}`, { method: "DELETE" });
@@ -445,17 +475,23 @@ onMounted(() => {
             </select>
           </div>
 
+          <ContentBulkBar :count="selectedIds.size" :group-count="selectedGroupCount" :busy="bulkBusy" :disabled="readonly" tags :all-selected="allVisibleSelected" :has-items="filteredAssets.length > 0" @select-page="toggleSelectionPage(filteredAssets.map((asset) => ({ id: asset.id, name: asset.name, protected: asset.protected })))" @clear="clearSelection" @action="onBulkAction" />
+          <p v-if="selectedIds.size && !bulkTagsAllowed" class="muted bulk-tag-note">批量更新标签仅适用于全部选中的普通对话素材。</p>
+
           <div v-if="loading" class="empty">正在读取图库...</div>
           <div v-else-if="!filteredAssets.length" class="empty">当前场景还没有表情包。</div>
           <div v-else class="asset-grid">
-            <button v-for="asset in filteredAssets" :key="asset.id" class="asset-card" :class="{ active: selectedAssetId === asset.id, disabled: !asset.enabled }" type="button" @click="selectAsset(asset)">
-              <img :src="previewUrl(asset)" :alt="asset.name" loading="lazy" />
-              <span class="asset-card-body">
-                <strong>{{ asset.name }}</strong>
-                <small>{{ formatBytes(asset.sizeBytes) }} · {{ asset.mimeType.replace("image/", "").toUpperCase() }}</small>
-                <span class="asset-status"><span class="tag" :class="scopeClass(asset.scope)">{{ scopeLabel(asset.scope) }}</span><span v-if="!asset.enabled" class="tag neutral">已停用</span><span v-if="asset.protected" class="tag warn">内置</span></span>
-              </span>
-            </button>
+            <article v-for="asset in filteredAssets" :key="asset.id" class="asset-item">
+              <label class="asset-bulk-select"><input type="checkbox" :checked="selectedIds.has(asset.id)" :disabled="readonly || asset.protected" :aria-label="`选择 ${asset.name} 进行批量操作`" @change="toggleSelection({ id: asset.id, name: asset.name, protected: asset.protected })" /></label>
+              <button class="asset-card" :class="{ active: selectedAssetId === asset.id, disabled: !asset.enabled }" type="button" @click="selectAsset(asset)">
+                <img :src="previewUrl(asset)" :alt="asset.name" loading="lazy" />
+                <span class="asset-card-body">
+                  <strong>{{ asset.name }}</strong>
+                  <small>{{ formatBytes(asset.sizeBytes) }} · {{ asset.mimeType.replace("image/", "").toUpperCase() }}</small>
+                  <span class="asset-status"><span class="tag" :class="scopeClass(asset.scope)">{{ scopeLabel(asset.scope) }}</span><span v-if="!asset.enabled" class="tag neutral">已停用</span><span v-if="asset.protected" class="tag warn">内置</span></span>
+                </span>
+              </button>
+            </article>
           </div>
         </section>
       </div>
@@ -516,6 +552,12 @@ onMounted(() => {
         </section>
       </aside>
     </div>
+    <AdminDialog v-if="bulkTagsOpen" title="批量更新表情包标签" :busy="bulkBusy" description="所选普通对话素材将替换为以下标签。" @close="bulkTagsOpen = false">
+      <div class="bulk-tag-options"><label v-for="tag in tags" :key="tag.id"><input v-model="bulkTagIds" type="checkbox" :value="tag.id" /> <span>{{ tag.name }}</span></label></div>
+      <p v-if="!tags.length" class="muted">请先创建标签后再批量更新。</p>
+      <template #footer><button class="ghost-btn" type="button" @click="bulkTagsOpen = false">取消</button><button class="btn" type="button" :disabled="bulkBusy || !bulkTagIds.length || !tags.length" @click="previewBulkTags">预览变更</button></template>
+    </AdminDialog>
+    <BulkPreviewDialog v-if="bulkPreview" :preview="bulkPreview" :busy="bulkBusy" @close="bulkPreview = null" @execute="executeBulk" />
   </section>
 </template>
 
@@ -663,6 +705,13 @@ onMounted(() => {
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
   gap: 10px;
 }
+.asset-item { position: relative; min-width: 0; }
+.asset-bulk-select { position: absolute; z-index: 2; top: 8px; left: 8px; display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: var(--shadow-sm); }
+.asset-bulk-select input { margin: 0; }
+.asset-item .asset-card { width: 100%; height: 100%; padding-top: 38px; }
+.bulk-tag-note { margin: -7px 0 12px; font-size: 12px; }
+.bulk-tag-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.bulk-tag-options label { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 5px; }
 .asset-card {
   overflow: hidden;
   min-width: 0;

@@ -138,6 +138,10 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
   min-height: 0;
 }
 
+.overview-main-grid {
+  align-items: start;
+}
+
 .overview-list-panel,
 .overview-status-panel {
   display: grid;
@@ -147,6 +151,12 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 
 .overview-list-panel {
   min-height: 480px;
+}
+
+.persona-summary {
+  grid-template-rows: auto auto;
+  align-content: start;
+  min-height: 240px;
 }
 
 .overview-scroll-list {
@@ -165,6 +175,10 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
 
 .compact-empty {
   min-height: 100%;
+}
+
+.persona-summary .compact-empty {
+  min-height: 72px;
 }
 
 .health-mini {

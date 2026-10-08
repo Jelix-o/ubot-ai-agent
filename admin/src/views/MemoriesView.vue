@@ -2,6 +2,13 @@
 import { computed, onMounted, onUnmounted, reactive, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 
+import AdminDialog from "../components/AdminDialog.vue";
+import BulkPreviewDialog from "../components/BulkPreviewDialog.vue";
+import ContentBulkBar from "../components/ContentBulkBar.vue";
+import { useContentBulk } from "../composables/useContentBulk";
+import { contentPage, contentPageSize, useContentUrlState } from "../composables/useContentUrlState";
+import { confirmAction } from "../composables/useConfirm";
+import { useUnsavedChanges } from "../composables/useUnsavedChanges";
 import SearchableSelect from "../components/SearchableSelect.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { api, queryString, type AdminTaskRecord, type MemberProfile, type Memory, type MemoryType, type Pagination } from "../services/api";
@@ -15,7 +22,11 @@ const memberOptions = shallowRef<MemberProfile[]>([]);
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const filters = reactive({ q: "", userId: "", type: "" as MemoryType | "", enabled: "" });
 const loading = shallowRef(false);
-const selectedIds = shallowRef<Set<string>>(new Set());
+const { selectedIds, selectedGroupCount, preview: bulkPreview, bulkBusy, clearSelection, toggleSelection, toggleSelectionPage, removeSelection, prepareBulk, executeBulk } = useContentBulk("memories");
+const loadError = shallowRef("");
+const createVisible = shallowRef(false);
+const editBaseline = shallowRef("");
+let loadSerial = 0;
 const editingId = shallowRef("");
 const evidenceItem = shallowRef<Memory>();
 const evidenceLoading = shallowRef(false);
@@ -77,6 +88,13 @@ const memberSelectOptions = computed(() => memberOptions.value.map((member) => (
   hint: member.note || member.role || undefined,
 })));
 
+const editingItem = computed(() => items.value.find((item) => item.id === editingId.value));
+const editDirty = computed(() => Boolean(editingId.value) && JSON.stringify(editForm) !== editBaseline.value);
+const createDirty = computed(() => createVisible.value && Boolean(createForm.title.trim() || createForm.content.trim() || createForm.subjectUserId));
+useUnsavedChanges(computed(() => editDirty.value || createDirty.value));
+async function closeEdit(): Promise<void> { if (editDirty.value && !await confirmAction({ title: "放弃记忆更改？", message: "当前记忆尚未保存。", confirmText: "放弃更改", danger: true })) return; editingId.value = ""; }
+async function closeCreate(): Promise<void> { if (createDirty.value && !await confirmAction({ title: "放弃新增记忆？", message: "已填写的内容尚未保存。", confirmText: "放弃更改", danger: true })) return; createVisible.value = false; }
+
 function typeLabel(type: MemoryType): string {
   return type === "member_profile" ? "成员显式记忆" : "群内事实";
 }
@@ -104,10 +122,13 @@ function setBusy(id: string, busy: boolean): void {
 
 async function load(): Promise<void> {
   if (!app.groupId) return;
+  const groupId = app.groupId;
+  const serial = ++loadSerial;
   loading.value = true;
+  loadError.value = "";
   try {
     const data = await api<{ memories: Memory[]; pagination: Pagination }>(`/api/memories${queryString({
-      groupId: app.groupId,
+      groupId,
       q: filters.q,
       subjectUserId: filters.userId,
       type: filters.type,
@@ -116,11 +137,13 @@ async function load(): Promise<void> {
       page: pagination.page,
       pageSize: pagination.pageSize,
     })}`);
+    if (serial !== loadSerial || groupId !== app.groupId) return;
     items.value = data.memories;
     Object.assign(pagination, data.pagination);
-    selectedIds.value = new Set([...selectedIds.value].filter((id) => data.memories.some((item) => item.id === id)));
+  } catch (error) {
+    if (serial === loadSerial) loadError.value = (error as Error).message;
   } finally {
-    loading.value = false;
+    if (serial === loadSerial) loading.value = false;
   }
 }
 
@@ -174,6 +197,7 @@ async function createMemory(): Promise<void> {
         enabled: true,
       }),
     });
+    createVisible.value = false;
     createForm.title = "";
     createForm.content = "";
     createForm.subjectUserId = "";
@@ -192,21 +216,8 @@ function applyFilters(): void {
   void load().catch((error) => app.showToast(error.message, "error"));
 }
 
-function toggle(id: string): void {
-  if (readonly.value) return;
-  const next = new Set(selectedIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  selectedIds.value = next;
-}
-
-function togglePage(): void {
-  if (readonly.value) return;
-  const allSelected = items.value.length > 0 && items.value.every((item) => selectedIds.value.has(item.id));
-  selectedIds.value = allSelected
-    ? new Set([...selectedIds.value].filter((id) => !items.value.some((item) => item.id === id)))
-    : new Set([...selectedIds.value, ...items.value.map((item) => item.id)]);
-}
+function toggle(item: Memory): void { toggleSelection(item); }
+function togglePage(): void { toggleSelectionPage(items.value); }
 
 function startEdit(item: Memory): void {
   if (!ensureWritable()) return;
@@ -218,6 +229,7 @@ function startEdit(item: Memory): void {
   editForm.confidence = item.confidence;
   editForm.source = item.source || "admin";
   editForm.enabled = item.enabled;
+  editBaseline.value = JSON.stringify(editForm);
 }
 
 async function openEvidence(item: Memory): Promise<void> {
@@ -298,11 +310,11 @@ async function setEnabled(item: Memory, enabled: boolean): Promise<void> {
 
 async function deleteOne(item: Memory): Promise<void> {
   if (!ensureWritable()) return;
-  if (!confirm(`删除记忆「${item.title}」？`)) return;
+  if (!await confirmAction({ title: "确认操作", message: `删除记忆「${item.title}」？`, confirmText: "确认", danger: true })) return;
   setBusy(item.id, true);
   try {
     await api(`/api/memories/${encodeURIComponent(item.id)}`, { method: "DELETE" });
-    selectedIds.value.delete(item.id);
+    removeSelection(item.id);
     await load();
     app.showToast("记忆已删除");
   } catch (error) {
@@ -312,29 +324,7 @@ async function deleteOne(item: Memory): Promise<void> {
   }
 }
 
-async function bulk(action: "disable" | "delete"): Promise<void> {
-  if (!ensureWritable()) return;
-  const ids = [...selectedIds.value];
-  if (!ids.length) {
-    app.showToast("请先选择记忆", "error");
-    return;
-  }
-  if (action === "delete" && !confirm(`删除已选择的 ${ids.length} 条记忆？`)) return;
-  loading.value = true;
-  try {
-    const result = await api<{ processedCount: number; skippedCount: number }>("/api/memories/bulk", {
-      method: "POST",
-      body: JSON.stringify({ action, ids }),
-    });
-    selectedIds.value = new Set();
-    await load();
-    app.showToast(`已处理 ${result.processedCount} 条，跳过 ${result.skippedCount} 条`);
-  } catch (error) {
-    app.showToast((error as Error).message, "error");
-  } finally {
-    loading.value = false;
-  }
-}
+async function bulk(action: "enable" | "disable" | "delete" | "tags"): Promise<void> { if (action !== "tags") await prepareBulk(action); }
 
 function clearDedupPolling(): void {
   if (dedupPollTimer) {
@@ -463,7 +453,7 @@ async function applyDeduplicate(): Promise<void> {
     app.showToast("请先选择一个记忆成员，再应用去重。", "error");
     return;
   }
-  if (!confirm(`确认处理 ${dedupDecisions.value.length} 条重复记忆？重复项会被停用。`)) return;
+  if (!await confirmAction({ title: "确认操作", message: `确认处理 ${dedupDecisions.value.length} 条重复记忆？重复项会被停用。`, confirmText: "确认", danger: true })) return;
   dedupLoading.value = true;
   try {
     const result = await api<{ appliedCount: number; skippedCount: number }>("/api/memories/deduplicate/apply", {
@@ -486,7 +476,11 @@ function onRefresh(): void {
 
 function onGroupChanged(): void {
   clearDedupPolling();
-  selectedIds.value = new Set();
+  if (app.role !== "super_admin") clearSelection();
+  editingId.value = "";
+  createVisible.value = false;
+  closeEvidence();
+  items.value = [];
   pagination.page = 1;
   filters.userId = "";
   dedupTask.value = null;
@@ -502,6 +496,10 @@ function onKeydown(event: KeyboardEvent): void {
     closeEvidence();
   }
 }
+
+useContentUrlState(() => ({ q: filters.q, userId: filters.userId, type: filters.type, enabled: filters.enabled, page: pagination.page, pageSize: pagination.pageSize }), (query) => {
+  filters.q = query.q; filters.userId = query.userId; filters.type = ["member_profile", "group_fact"].includes(query.type) ? query.type as MemoryType : ""; filters.enabled = ["true", "false"].includes(query.enabled) ? query.enabled : ""; pagination.page = contentPage(query.page); pagination.pageSize = contentPageSize(query.pageSize);
+}, onRefresh);
 
 onMounted(() => {
   const q = typeof route.query.q === "string" ? route.query.q : "";
@@ -533,187 +531,67 @@ watch(() => [pagination.page, pagination.pageSize], () => {
 </script>
 
 <template>
-  <section class="panel">
+  <section class="panel content-panel">
     <div class="section-head">
-      <div>
-        <h2>记忆 <span class="tag">{{ pagination.total }}</span></h2>
-        <p>只展示成员或管理员明确保存的信息；普通聊天不会自动写入。</p>
-      </div>
+      <div><h2>记忆 <span class="tag neutral">{{ pagination.total }}</span></h2><p>维护成员明确保存的信息和群内事实。</p></div>
+      <div class="row-actions"><button class="ghost-btn" type="button" :disabled="loading" @click="onRefresh">刷新</button><button class="btn" type="button" :disabled="readonly" @click="createVisible = true">＋ 新增记忆</button></div>
     </div>
-
-    <section class="create-panel">
-      <div>
-        <h3>新增记忆</h3>
-        <p>管理员可直接保存群事实或指定成员的明确偏好、边界和长期背景。</p>
-      </div>
-      <div class="create-grid">
-        <label>类型<select v-model="createForm.type" class="select"><option value="member_profile">成员记忆</option><option value="group_fact">群事实</option></select></label>
-        <label>成员
-          <SearchableSelect v-model="createForm.subjectUserId" :options="memberSelectOptions" placeholder="选择成员" empty-label="群整体" :disabled="createForm.type === 'group_fact'" />
-        </label>
-        <label>标题<input v-model="createForm.title" class="input" placeholder="例如：回复偏好" /></label>
-        <label>置信度<input v-model.number="createForm.confidence" class="input" type="number" min="0" max="1" step="0.01" /></label>
-        <label class="wide">内容<textarea v-model="createForm.content" class="textarea" placeholder="只填写已明确获得的信息；不要保存密码、令牌或私人凭据。" /></label>
-      </div>
-      <div class="create-actions"><button class="btn" type="button" :disabled="readonly || creating" @click="createMemory">{{ creating ? "保存中..." : "保存记忆" }}</button></div>
-    </section>
-
     <div class="filter-card">
-      <label>关键词 / 来源<input v-model="filters.q" class="input" placeholder="搜索记忆标题、关键词、内容..." @change="applyFilters" /></label>
-      <label>记忆成员
-        <SearchableSelect
-          v-model="filters.userId"
-          :options="memberSelectOptions"
-          placeholder="搜索成员昵称或 QQ"
-          empty-label="全部成员"
-          @change="applyFilters"
-        />
-      </label>
-      <label>记忆类型
-        <select v-model="filters.type" class="select" @change="applyFilters">
-          <option value="">全部类型</option>
-          <option value="member_profile">成员显式记忆</option>
-          <option value="group_fact">群内事实</option>
-        </select>
-      </label>
-      <label>状态
-        <select v-model="filters.enabled" class="select" @change="applyFilters">
-          <option value="">全部状态</option>
-          <option value="true">已启用</option>
-          <option value="false">已停用</option>
-        </select>
-      </label>
-      <label>每页条数
-        <select v-model="pagination.pageSize" class="select">
-          <option :value="10">10 条</option>
-          <option :value="20">20 条</option>
-          <option :value="50">50 条</option>
-          <option :value="100">100 条</option>
-        </select>
-      </label>
+      <label>搜索<input v-model="filters.q" class="input" type="search" placeholder="标题、内容或来源" @change="applyFilters" /></label>
+      <label>关联成员<SearchableSelect v-model="filters.userId" :options="memberSelectOptions" placeholder="昵称或 QQ" empty-label="全部成员" @change="applyFilters" /></label>
+      <label>类型<select v-model="filters.type" class="select" @change="applyFilters"><option value="">全部类型</option><option value="member_profile">成员显式记忆</option><option value="group_fact">群内事实</option></select></label>
+      <label>状态<select v-model="filters.enabled" class="select" @change="applyFilters"><option value="">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select></label>
+      <button class="ghost-btn" type="button" @click="filters.q = ''; filters.userId = ''; filters.type = ''; filters.enabled = ''; applyFilters()">重置</button>
     </div>
-
-    <div class="notice">
-      <span>按成员与群事实维护明确保存的记忆；重复或相似内容可以先停用再删除。</span>
-      <button class="ghost-btn" type="button" @click="filters.q = ''; filters.userId = ''; filters.type = ''; filters.enabled = ''; applyFilters()">清空筛选</button>
+    <ContentBulkBar :count="selectedIds.size" :group-count="selectedGroupCount" :busy="bulkBusy" :disabled="readonly || loading" :has-items="items.length > 0" :all-selected="items.length > 0 && items.every(item => selectedIds.has(item.id))" @select-page="togglePage" @clear="clearSelection" @action="bulk" />
+    <p v-if="selectedIds.size && app.role === 'super_admin'" class="scope-hint">切换顶部群选择可继续选择其他群的记忆，执行前会逐项预览。</p>
+    <div v-if="loadError" class="error-state" role="alert"><strong>记忆加载失败</strong><p>{{ loadError }}</p><button class="ghost-btn" type="button" @click="load">重试</button></div>
+    <div v-else-if="loading" class="empty" role="status">正在加载记忆…</div>
+    <div v-else-if="!items.length" class="empty"><strong>没有匹配的记忆</strong><p>调整筛选条件，或新增一条明确获得的记忆。</p></div>
+    <div v-else class="memory-table-wrap">
+      <table class="memory-table">
+        <thead><tr><th class="selection-cell"><span class="sr-only">选择</span></th><th>记忆内容</th><th>类型 / 状态</th><th>关联成员</th><th>来源 / 置信度</th><th>更新时间</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="item in items" :key="item.id" :class="{ selected: selectedIds.has(item.id) }">
+          <td><input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="readonly || isBusy(item.id)" :aria-label="'选择记忆 ' + item.title" @change="toggle(item)" /></td>
+          <td class="memory-content-cell"><button class="text-title" type="button" @click="openEvidence(item)">{{ item.title }}</button><p class="content-preview">{{ item.content }}</p></td>
+          <td><div class="status-stack"><span class="tag neutral">{{ typeLabel(item.type) }}</span><span class="status-dot" :class="{ inactive: !item.enabled }">{{ item.enabled ? "已启用" : "已停用" }}</span></div></td>
+          <td>{{ item.subjectLabel?.label || item.subjectUserId || "群整体" }}</td>
+          <td><span>{{ item.source || "—" }}</span><small class="cell-secondary">{{ confidenceText(item.confidence) }}</small></td>
+          <td class="date-cell">{{ formatDateTime(item.updatedAt || item.createdAt) }}</td>
+          <td><div class="row-actions"><button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="startEdit(item)">编辑</button><button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="setEnabled(item, !item.enabled)">{{ item.enabled ? "停用" : "启用" }}</button><button class="ghost-btn danger" type="button" :disabled="readonly || isBusy(item.id)" @click="deleteOne(item)">删除</button></div></td>
+        </tr></tbody>
+      </table>
     </div>
-
-    <section class="dedup-panel">
-      <div>
-        <h3>记忆去重</h3>
-        <p>请选择一个成员后再检查重复。去重只处理已经明确保存的成员记忆，避免全局扫描超时。</p>
+    <div class="pager"><span class="muted pager-total">共 {{ pagination.total }} 条</span><select v-model="pagination.pageSize" class="select page-size" aria-label="每页条数"><option :value="10">10 条 / 页</option><option :value="20">20 条 / 页</option><option :value="50">50 条 / 页</option><option :value="100">100 条 / 页</option></select><button class="ghost-btn" type="button" :disabled="loading || pagination.page <= 1" @click="pagination.page -= 1">上一页</button><span class="muted">{{ pagination.page }} / {{ pagination.totalPages }}</span><button class="ghost-btn" type="button" :disabled="loading || pagination.page >= pagination.totalPages" @click="pagination.page += 1">下一页</button></div>
+    <details class="dedup-details">
+      <summary>记忆去重 <span class="muted">检查当前成员的重复记忆</span></summary>
+      <section class="dedup-panel">
+        <div><h3>当前成员去重</h3><p>选择上方成员筛选后开始检测。快速检测使用本地相似度，深度检测会调用模型。</p></div>
+        <div class="dedup-actions"><button class="ghost-btn" type="button" :disabled="readonly || dedupLoading || !filters.userId" @click="previewDeduplicate('fast')">{{ dedupLoading && dedupMode === "fast" ? "快速检测中…" : "快速检测" }}</button><button class="ghost-btn" type="button" :disabled="readonly || dedupLoading || !filters.userId" @click="previewDeduplicate('deep')">{{ dedupLoading && dedupMode === "deep" ? "深度检测中…" : "深度检测" }}</button><button class="btn" type="button" :disabled="readonly || dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">应用去重</button></div>
+        <div v-if="dedupTaskMessage || dedupTask" class="dedup-task-status"><span>{{ dedupTaskMessage || "后台任务已更新" }}</span><RouterLink v-if="dedupTask" :to="{ path: '/tasks', query: { task: dedupTask.id } }">查看任务 · {{ dedupTask.progress }}%</RouterLink></div>
+        <div v-if="dedupDecisions.length" class="dedup-results"><div class="dedup-summary">发现 {{ dedupDecisions.length }} 条建议，展示前 5 条。</div><article v-for="decision in dedupDecisions.slice(0, 5)" :key="decision.duplicateId" class="dedup-row"><span class="tag">{{ decision.action }}</span><span class="muted">重复项 {{ decision.duplicateId }}</span><span class="muted">{{ confidenceText(decision.similarity) }}</span><p>{{ decision.reason }}</p></article></div>
+      </section>
+    </details>
+    <AdminDialog v-if="createVisible" title="新增记忆" description="只保存已明确获得的信息。" drawer :busy="creating" @close="closeCreate">
+      <div class="create-grid">
+        <label>类型<select v-model="createForm.type" class="select"><option value="member_profile">成员显式记忆</option><option value="group_fact">群内事实</option></select></label>
+        <label>关联成员<SearchableSelect v-model="createForm.subjectUserId" :options="memberSelectOptions" placeholder="选择成员" empty-label="群整体" :disabled="createForm.type === 'group_fact'" /></label>
+        <label class="wide">标题<input v-model="createForm.title" class="input" placeholder="例如：回复偏好" /></label>
+        <label class="wide">内容<textarea v-model="createForm.content" class="textarea" placeholder="填写明确偏好、边界或长期背景。" /></label>
+        <label>置信度<input v-model.number="createForm.confidence" class="input" type="number" min="0" max="1" step="0.01" /></label>
       </div>
-      <div class="dedup-actions">
-        <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate('fast')">
-          {{ readonly ? "只读模式不可检测" : dedupLoading && dedupMode === "fast" ? "快速检测中..." : "快速检测当前成员重复" }}
-        </button>
-        <button class="ghost-btn" type="button" :disabled="readonly || dedupLoading" @click="previewDeduplicate('deep')">
-          {{ readonly ? "只读模式不可检测" : dedupLoading && dedupMode === "deep" ? "深度检测中..." : "深度检测" }}
-        </button>
-        <button class="btn" type="button" :disabled="readonly || dedupLoading || !dedupDecisions.length" @click="applyDeduplicate">
-          {{ readonly ? "只读模式不可去重" : "应用去重" }}
-        </button>
-      </div>
-      <div v-if="dedupTaskMessage || dedupTask" class="dedup-task-status">
-        <span>{{ dedupTaskMessage || "后台任务已更新" }}</span>
-        <span v-if="dedupTask" class="muted">
-          {{ dedupModeLabel(dedupMode) }} · 任务 {{ dedupTask.id }} · {{ dedupTask.status }} · {{ dedupTask.progress }}% · {{ formatDateTime(dedupTask.updatedAt) }}
-        </span>
-      </div>
-      <div v-if="dedupDecisions.length" class="dedup-results">
-        <div class="dedup-summary">发现 {{ dedupDecisions.length }} 条处理建议，先展示前 5 条。</div>
-        <article v-for="decision in dedupDecisions.slice(0, 5)" :key="decision.duplicateId" class="dedup-row">
-          <span class="tag">{{ decision.action }}</span>
-          <span class="muted">重复项 {{ decision.duplicateId }}</span>
-          <span class="muted">相似度 {{ confidenceText(decision.similarity) }}</span>
-          <p>{{ decision.reason }}</p>
-        </article>
-      </div>
-    </section>
-
-    <div class="bulk-bar">
-      <label><input type="checkbox" :checked="items.length > 0 && items.every((item) => selectedIds.has(item.id))" :disabled="readonly || loading || !items.length" @change="togglePage" /> 选择当前页</label>
-      <span class="muted">已选择 {{ selectedIds.size }} 项</span>
-      <button class="ghost-btn" type="button" :disabled="readonly || loading || !selectedIds.size" @click="bulk('disable')">批量停用</button>
-      <button class="ghost-btn danger" type="button" :disabled="readonly || loading || !selectedIds.size" @click="bulk('delete')">批量删除</button>
-    </div>
-
-    <div v-if="loading" class="empty">正在加载记忆...</div>
-    <div v-else-if="!items.length" class="empty">暂无记忆。</div>
-    <div v-else class="memory-list">
-      <article v-for="item in items" :key="item.id" class="memory-row">
-        <input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="readonly || isBusy(item.id)" @change="toggle(item.id)" />
-        <div class="memory-main">
-          <template v-if="editingId === item.id">
-            <div class="edit-grid">
-              <label class="wide">标题<input v-model="editForm.title" class="input" /></label>
-              <label class="wide">内容<textarea v-model="editForm.content" class="textarea" /></label>
-              <label>类型
-                <select v-model="editForm.type" class="select">
-                  <option value="member_profile">成员显式记忆</option>
-                  <option value="group_fact">群内事实</option>
-                </select>
-              </label>
-              <label>QQ<input v-model="editForm.subjectUserId" class="input" :disabled="editForm.type === 'group_fact'" /></label>
-              <label>来源<input v-model="editForm.source" class="input" /></label>
-              <label>置信度<input v-model.number="editForm.confidence" class="input" type="number" min="0" max="1" step="0.01" /></label>
-              <label class="check-line"><input v-model="editForm.enabled" type="checkbox" /> 启用</label>
-            </div>
-            <div class="row-actions">
-              <button class="btn" type="button" :disabled="isBusy(item.id)" @click="saveEdit(item)">保存</button>
-              <button class="ghost-btn" type="button" :disabled="isBusy(item.id)" @click="editingId = ''">取消</button>
-            </div>
-          </template>
-          <template v-else>
-            <div class="row-top">
-              <h3 class="row-title">{{ item.title }}</h3>
-              <div class="row-tags">
-                <span class="tag" :class="{ danger: !item.enabled }">{{ item.enabled ? "已启用" : "已停用" }}</span>
-                <span class="tag">{{ typeLabel(item.type) }}</span>
-              </div>
-            </div>
-            <p class="row-content">{{ item.content }}</p>
-            <div class="row-meta-grid">
-              <span>{{ item.subjectLabel?.label || item.subjectUserId || "群整体" }}</span>
-              <span>{{ item.source }}</span>
-              <span>{{ confidenceText(item.confidence) }}</span>
-              <span>{{ formatDateTime(item.updatedAt || item.createdAt) }}</span>
-            </div>
-          </template>
-        </div>
-        <div v-if="editingId !== item.id" class="row-actions">
-          <button class="ghost-btn" type="button" @click="openEvidence(item)">溯源</button>
-          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="startEdit(item)">编辑</button>
-          <button class="ghost-btn" type="button" :disabled="readonly || isBusy(item.id)" @click="setEnabled(item, !item.enabled)">{{ item.enabled ? "停用" : "启用" }}</button>
-          <button class="ghost-btn danger" type="button" :disabled="readonly || isBusy(item.id)" @click="deleteOne(item)">删除</button>
-        </div>
-      </article>
-    </div>
-
-    <div class="pager">
-      <button class="ghost-btn" type="button" :disabled="pagination.page <= 1" @click="pagination.page -= 1">上一页</button>
-      <span class="muted">第 {{ pagination.page }} / {{ pagination.totalPages }} 页</span>
-      <button class="ghost-btn" type="button" :disabled="pagination.page >= pagination.totalPages" @click="pagination.page += 1">下一页</button>
-    </div>
-
-    <aside v-if="evidenceItem" class="evidence-drawer" @click.self="closeEvidence">
-      <div class="drawer-panel" role="dialog" aria-modal="true">
-        <div class="section-head">
-          <div>
-            <h3>记忆溯源</h3>
-            <p>{{ evidenceItem.title }}</p>
-          </div>
-          <button class="icon-close" type="button" @click="closeEvidence">×</button>
-        </div>
-        <dl class="evidence-meta">
-          <div><dt>时间范围</dt><dd>{{ formatDateTime(evidenceItem.evidence?.startAt) }} 至 {{ formatDateTime(evidenceItem.evidence?.endAt) }}</dd></div>
-          <div><dt>消息数量</dt><dd>{{ evidenceItem.evidence?.messageCount ?? 0 }} 条</dd></div>
-          <div><dt>发言人</dt><dd>{{ evidenceSpeakers(evidenceItem.evidence) }}</dd></div>
-        </dl>
-        <div v-if="evidenceLoading" class="empty compact">正在加载完整溯源...</div>
-        <article class="evidence-text">{{ formattedEvidenceSummary() }}</article>
-      </div>
-    </aside>
+      <template #footer><button class="ghost-btn" type="button" :disabled="creating" @click="closeCreate">取消</button><button class="btn" type="button" :disabled="readonly || creating" @click="createMemory">{{ creating ? "保存中…" : "保存记忆" }}</button></template>
+    </AdminDialog>
+    <AdminDialog v-if="editingItem" title="编辑记忆" drawer :busy="isBusy(editingId)" @close="closeEdit">
+      <div class="edit-grid"><label class="wide">标题<input v-model="editForm.title" class="input" /></label><label class="wide">内容<textarea v-model="editForm.content" class="textarea" /></label><label>类型<select v-model="editForm.type" class="select"><option value="member_profile">成员显式记忆</option><option value="group_fact">群内事实</option></select></label><label>关联 QQ<input v-model="editForm.subjectUserId" class="input" :disabled="editForm.type === 'group_fact'" /></label><label>来源<input v-model="editForm.source" class="input" /></label><label>置信度<input v-model.number="editForm.confidence" class="input" type="number" min="0" max="1" step="0.01" /></label><label class="check-line"><input v-model="editForm.enabled" type="checkbox" /> 已启用</label></div>
+      <template #footer><button class="ghost-btn" type="button" :disabled="isBusy(editingId)" @click="closeEdit">取消</button><button class="btn" type="button" :disabled="isBusy(editingId)" @click="saveEdit(editingItem)">{{ isBusy(editingId) ? "保存中…" : "保存更改" }}</button></template>
+    </AdminDialog>
+    <AdminDialog v-if="evidenceItem" title="记忆详情" :description="evidenceItem.title" drawer @close="closeEvidence">
+      <span class="tag" :class="{ neutral: !evidenceItem.enabled }">{{ evidenceItem.enabled ? "已启用" : "已停用" }}</span><article class="evidence-text">{{ evidenceItem.content }}</article>
+      <dl class="evidence-meta"><div><dt>类型</dt><dd>{{ typeLabel(evidenceItem.type) }}</dd></div><div><dt>关联成员</dt><dd>{{ evidenceItem.subjectLabel?.label || evidenceItem.subjectUserId || "群整体" }}</dd></div><div><dt>来源</dt><dd>{{ evidenceItem.source || "—" }}</dd></div><div><dt>更新时间</dt><dd>{{ formatDateTime(evidenceItem.updatedAt) }}</dd></div><div><dt>时间范围</dt><dd>{{ formatDateTime(evidenceItem.evidence?.startAt) }} 至 {{ formatDateTime(evidenceItem.evidence?.endAt) }}</dd></div><div><dt>消息数量</dt><dd>{{ evidenceItem.evidence?.messageCount ?? 0 }} 条</dd></div><div><dt>发言人</dt><dd>{{ evidenceSpeakers(evidenceItem.evidence) }}</dd></div></dl>
+      <h3>信息溯源</h3><div v-if="evidenceLoading" class="empty compact" role="status">正在读取完整溯源…</div><article v-else class="evidence-text">{{ formattedEvidenceSummary() || "未提供溯源记录" }}</article>
+    </AdminDialog>
+    <BulkPreviewDialog v-if="bulkPreview" :preview="bulkPreview" :busy="bulkBusy" @close="bulkPreview = null" @execute="executeBulk" />
   </section>
 </template>
 

@@ -1,3 +1,4 @@
+import { instrumentCompletions, withModelOperation } from "./model-telemetry.js";
 import OpenAI from "openai";
 
 import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
@@ -268,7 +269,7 @@ export class AiService {
       timeout: this.replyRequestOptions.timeoutMs,
       maxRetries: 0,
     });
-    this.chatCompletions = chatCompletions ?? this.client.chat.completions;
+    this.chatCompletions = instrumentCompletions(chatCompletions ?? this.client.chat.completions, model);
     const configuredCapabilities = mergeProviderCapabilities(
       OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES,
       requestOptions.providerCapabilities,
@@ -286,7 +287,7 @@ export class AiService {
     return { ...this.providerCapabilities };
   }
 
-  async checkHealth(options: { refresh?: boolean; cacheOnly?: boolean; cacheTtlMs?: number } = {}): Promise<AiHealthStatus> {
+  async checkHealth(options: { refresh?: boolean; cacheOnly?: boolean; cacheTtlMs?: number } = {}): Promise<AiHealthStatus> { return withModelOperation("probe", undefined, async () => {
     const cacheTtlMs = options.cacheTtlMs ?? 5 * 60 * 1000;
     if (
       !options.refresh &&
@@ -347,7 +348,8 @@ export class AiService {
       this.cachedHealth = status;
       return status;
     }
-  }
+
+}); }
 
   async generateReply(args: {
     skill: SkillDefinition;
@@ -358,7 +360,7 @@ export class AiService {
     scenarioInstruction?: string;
     toolRuntime?: AiToolRuntime;
     signal?: AbortSignal;
-  }): Promise<AiReply> {
+  }): Promise<AiReply> { return withModelOperation("reply", args.identityContext?.groupId, async () => {
     const { skill, history, userInput, images = [], identityContext, scenarioInstruction, toolRuntime, signal } = args;
     if (images.length > 0 && !this.providerCapabilities.vision) {
       throw new ImageInspectionError("The configured model does not support image input.");
@@ -409,9 +411,10 @@ export class AiService {
       ...(imageInspection ? { imageInspectionUsed: true } : {}),
       ...(reply.knowledgeToolCalls?.length ? { knowledgeToolCalls: reply.knowledgeToolCalls } : {}),
     };
-  }
 
-  async generateStaticHtml(args: StaticHtmlGenerationRequest): Promise<StaticHtmlGenerationResult> {
+}); }
+
+  async generateStaticHtml(args: StaticHtmlGenerationRequest): Promise<StaticHtmlGenerationResult> { return withModelOperation("html", undefined, async () => {
     const request = args.request.trim();
     if (!request) {
       throw new Error("static_html_request_empty");
@@ -477,14 +480,15 @@ export class AiService {
     } finally {
       cleanup();
     }
-  }
+
+}); }
 
   async evaluateReplyDesire(
     skill: SkillDefinition,
     history: ConversationTurn[],
     bufferedMessages: BufferedMessage[],
     signal?: AbortSignal,
-  ): Promise<"REPLY" | "SKIP"> {
+  ): Promise<"REPLY" | "SKIP"> { return withModelOperation("participation", undefined, async () => {
     const systemPrompt = buildReplyDesireSystemPrompt(skill);
     const historyText = history
       .slice(-6)
@@ -523,7 +527,8 @@ export class AiService {
     } catch {
       return "SKIP";
     }
-  }
+
+}); }
 
   async evaluateControlledMention(args: {
     skill: SkillDefinition;
@@ -532,7 +537,7 @@ export class AiService {
     assistantReply: string;
     identityContext: AiIdentityContext;
     signal?: AbortSignal;
-  }): Promise<ControlledMentionDecision> {
+  }): Promise<ControlledMentionDecision> { return withModelOperation("participation", args.identityContext?.groupId, async () => {
     const identities = args.identityContext.manualIdentities ?? [];
     if (identities.length === 0) {
       return { shouldMention: false, reason: "no manual identities" };
@@ -591,9 +596,10 @@ export class AiService {
     } catch {
       return { shouldMention: false, reason: "decision failed" };
     }
-  }
 
-  async judgeMemorySemanticRelation(args: MemorySemanticJudgeInput): Promise<MemorySemanticJudgeResult | null> {
+}); }
+
+  async judgeMemorySemanticRelation(args: MemorySemanticJudgeInput): Promise<MemorySemanticJudgeResult | null> { return withModelOperation("memory", undefined, async () => {
     try {
       const completion = await this.chatCompletions.create({
         model: this.model,
@@ -639,7 +645,8 @@ export class AiService {
     } catch {
       return null;
     }
-  }
+
+}); }
 
   async generateDailyReportInsights(args: {
     dateLabel: string;
@@ -658,7 +665,7 @@ export class AiService {
       text: string;
       timestamp: string;
     }>;
-  }): Promise<DailyReportInsights | null> {
+  }): Promise<DailyReportInsights | null> { return withModelOperation("report", undefined, async () => {
     const topUsersText = args.topUsers
       .map((user, index) => {
         const samples = user.sampleMessages.map((text) => `- ${text}`).join("\n");
@@ -734,11 +741,12 @@ export class AiService {
     } catch {
       return null;
     }
-  }
+
+}); }
 
   async generateBroadcastQuip(
     scene: "holiday_morning" | "daily_report_evening",
-  ): Promise<string> {
+  ): Promise<string> { return withModelOperation("broadcast", undefined, async () => {
     const fallback =
       scene === "holiday_morning"
         ? "先把活挂着，别把摸鱼摸成工伤"
@@ -782,14 +790,15 @@ export class AiService {
     } catch {
       return fallback;
     }
-  }
+
+}); }
 
   async generateScheduledReminderText(args: {
     topic: string;
     groupId: string;
     intervalMinutes: number;
     recentMessages?: string[];
-  }): Promise<string | null> {
+  }): Promise<string | null> { return withModelOperation("reminder", args.groupId, async () => {
     const recentText = (args.recentMessages ?? [])
       .slice(-5)
       .map((message, index) => `${index + 1}. ${message}`)
@@ -832,9 +841,10 @@ export class AiService {
     } catch {
       return null;
     }
-  }
 
-  async generateChatPeriodSummary(args: ChatPeriodSummaryInput): Promise<string | null> {
+}); }
+
+  async generateChatPeriodSummary(args: ChatPeriodSummaryInput): Promise<string | null> { return withModelOperation("summary", undefined, async () => {
     const topUsersText =
       args.topUsers.length > 0
         ? args.topUsers.map((user) => `${user.userName}${user.messageCount}条`).join("、")
@@ -892,7 +902,8 @@ export class AiService {
     } catch {
       return null;
     }
-  }
+
+}); }
 
   private async inspectImages(
     userInput: string,

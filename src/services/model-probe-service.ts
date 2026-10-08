@@ -1,3 +1,4 @@
+import { withModelOperation } from "./model-telemetry.js";
 import os from "node:os";
 
 import { AiService } from "./ai-service.js";
@@ -11,10 +12,10 @@ export interface ModelProbeStatus extends AiHealthStatus {
   upstreamStatusCode?: number;
 }
 
-export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "requestTimeoutMs">): Promise<ModelProbeStatus> {
+export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "requestTimeoutMs"> & { id?: string }): Promise<ModelProbeStatus> { return withModelOperation("probe", undefined, async () => {
   if (model.purpose === "image") return probeImageModel(model);
   return probeChatModel(model);
-}
+}, model.id); }
 
 export function getServerStatusSnapshot(): Record<string, unknown> {
   const memory = process.memoryUsage();

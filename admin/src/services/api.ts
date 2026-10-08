@@ -10,6 +10,7 @@ export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
 export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "selected_members";
 
 export interface GroupConfig {
+  revision?: string;
   groupId: string;
   groupName?: string;
   enabled?: boolean;
@@ -381,7 +382,8 @@ export interface SkillDefinition {
 export type AdminTaskType =
   | "memory-dedup"
   | "model-check"
-  | "bulk-review";
+  | "bulk-review"
+  | "bulk-operation";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface AdminTaskRecord {
@@ -469,6 +471,10 @@ export function friendlyApiError(code: string): string {
     too_many_login_attempts: "尝试次数过多，请稍后再试。",
     csrf_required: "登录状态已失效，请重新登录。",
     forbidden: "当前账号无权执行该操作。",
+    version_conflict: "配置已被其他操作修改，请刷新后重新编辑。",
+    target_changed: "目标已发生变化，请重新预览。",
+    preview_expired: "预览已过期，请重新预览。",
+    protected_asset: "受保护素材不可执行此操作。",
     invalid_knowledge_source_command: "命令须以半角 # 开头，后接 1 至 31 个文字、数字、下划线或连字符，不可含空格。",
     knowledge_command_conflict: "该命令与知识源或系统命令重叠，请更换一个独立的命令。",
     knowledge_source_bindings_unavailable: "当前运行版本暂不支持编辑知识源命令。",

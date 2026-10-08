@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { V3StateRepository } from "./v3-state-repository.js";
+import { assertRevision, type MutationGuard } from "./state-mutation.js";
 
 export const MEME_LIBRARY_DOCUMENT_TYPE = "meme-library";
 export const MEME_LIBRARY_DOCUMENT_KEY = "default";
@@ -446,7 +447,7 @@ export class MemeLibraryService {
     return cloneAsset(asset);
   }
 
-  async updateAsset(id: string, patch: MemeLibraryAssetPatch): Promise<MemeAsset | undefined> {
+  async updateAsset(id: string, patch: MemeLibraryAssetPatch, guard?: MutationGuard): Promise<MemeAsset | undefined> {
     const repository = this.repository();
     if (!repository) return undefined;
     const assetId = normalizeId(id, "meme_asset_id_invalid");
@@ -467,6 +468,7 @@ export class MemeLibraryService {
           const index = document.assets.findIndex((asset) => asset.id === assetId);
           if (index < 0) return document;
           const previous = document.assets[index]!;
+          assertRevision(previous, guard);
           if (previous.protected) {
             throw new MemeLibraryValidationError("meme_asset_protected");
           }
@@ -489,6 +491,7 @@ export class MemeLibraryService {
         },
         now,
       );
+      if (updated) guard?.committed?.();
     });
     return updated ? cloneAsset(updated) : undefined;
   }

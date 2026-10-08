@@ -927,6 +927,43 @@ const MIGRATIONS: readonly SqliteMigration[] = [
       );
     `),
   },
+  {
+    version: 17,
+    name: "admin-analytics-and-bulk-operations",
+    apply: (db) => db.exec(`
+      CREATE TABLE model_requests (
+        id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, group_id TEXT NOT NULL,
+        model_id TEXT NOT NULL, purpose TEXT NOT NULL, probe INTEGER NOT NULL,
+        record_json TEXT NOT NULL
+      );
+      CREATE INDEX model_requests_time ON model_requests(started_at);
+      CREATE INDEX model_requests_group_time ON model_requests(group_id,started_at);
+      CREATE TABLE model_daily_usage (
+        day TEXT NOT NULL, group_id TEXT NOT NULL, model_id TEXT NOT NULL,
+        purpose TEXT NOT NULL, probe INTEGER NOT NULL, aggregate_json TEXT NOT NULL,
+        PRIMARY KEY(day,group_id,model_id,purpose,probe)
+      );
+      CREATE TABLE model_analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE admin_bulk_previews (
+        id TEXT PRIMARY KEY, operator_id TEXT NOT NULL, expires_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL, task_id TEXT
+      );
+      CREATE TABLE admin_bulk_runs (
+        task_id TEXT PRIMARY KEY, preview_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL,
+        cancel_requested INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+      );
+    `),
+  },
+  {
+    version: 18,
+    name: "durable-bulk-target-results",
+    apply: (db) => db.exec(`
+      CREATE TABLE admin_bulk_results (
+        task_id TEXT NOT NULL, target_id TEXT NOT NULL, result_json TEXT NOT NULL,
+        PRIMARY KEY(task_id,target_id)
+      );
+    `),
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;

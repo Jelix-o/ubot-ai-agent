@@ -3,6 +3,11 @@ import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { useRefreshEvents } from "../composables/useRefreshEvents";
+import { confirmAction } from "../composables/useConfirm";
+import { useContentBulk } from "../composables/useContentBulk";
+import AdminDialog from "../components/AdminDialog.vue";
+import BulkPreviewDialog from "../components/BulkPreviewDialog.vue";
+import ContentBulkBar from "../components/ContentBulkBar.vue";
 import { api, queryString, type KnowledgeEntry, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
@@ -51,6 +56,7 @@ const rankingQuery = shallowRef("");
 const rankingProvince = shallowRef("");
 const rankingLoading = shallowRef(false);
 const items = shallowRef<KnowledgeEntry[]>([]);
+const { selectedIds, selectedGroupCount, preview: bulkPreview, bulkBusy, toggleSelection, toggleSelectionPage, clearSelection, prepareBulk, executeBulk } = useContentBulk("knowledge");
 const pagination = reactive<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 1 });
 const query = shallowRef("");
 const loading = shallowRef(false);
@@ -159,6 +165,14 @@ async function load(): Promise<void> {
 function applyFilters(): void {
   pagination.page = 1;
   void load().catch((error) => app.showToast(error.message, "error"));
+}
+
+function allVisibleSelected(): boolean {
+  return items.value.length > 0 && items.value.every((item) => selectedIds.value.has(item.id));
+}
+
+function onBulkAction(action: "enable" | "disable" | "delete"): void {
+  void prepareBulk(action);
 }
 
 async function loadRanking(): Promise<void> {
@@ -297,7 +311,7 @@ async function toggleEnabled(item: KnowledgeEntry): Promise<void> {
 
 async function deleteOne(item: KnowledgeEntry): Promise<void> {
   if (!ensureWritable()) return;
-  if (!confirm(`删除 FAQ「${item.title}」？`)) return;
+  if (!await confirmAction({ title: "删除 FAQ", message: `删除「${item.title}」后无法恢复。`, confirmText: "删除 FAQ", danger: true })) return;
   setBusy(item.id, true);
   try {
     await api(`/api/knowledge/${encodeURIComponent(item.id)}`, { method: "DELETE" });
@@ -454,13 +468,9 @@ watch(() => route.query.tab, (tab) => {
       </div>
     </section>
 
-    <section v-if="formVisible" class="form-panel">
-      <div class="section-head">
-        <div>
-          <h3>{{ editingId ? "编辑 FAQ" : "新增 FAQ" }}</h3>
-          <p>标准答案应尽量明确、简短，可用关键词提升命中率。</p>
-        </div>
-      </div>
+    <ContentBulkBar :count="selectedIds.size" :group-count="selectedGroupCount" :busy="bulkBusy" :disabled="readonly" :all-selected="allVisibleSelected()" :has-items="items.length > 0" @select-page="toggleSelectionPage(items)" @clear="clearSelection" @action="onBulkAction" />
+
+    <AdminDialog v-if="formVisible" :title="editingId ? '编辑 FAQ' : '新增 FAQ'" drawer description="标准答案应尽量明确、简短，可用关键词提升命中率。" @close="formVisible = false; resetForm()">
       <div class="form-grid">
         <label>标题<input v-model="form.title" class="input" /></label>
         <label>关键词<textarea v-model="form.keywordsText" class="textarea small" placeholder="一行一个，或用逗号分隔" /></label>
@@ -468,11 +478,11 @@ watch(() => route.query.tab, (tab) => {
         <label class="wide">答案<textarea v-model="form.answer" class="textarea" /></label>
         <label class="check-line"><input v-model="form.enabled" type="checkbox" /> 启用</label>
       </div>
-      <div class="row-actions">
+      <template #footer>
         <button class="btn" type="button" :disabled="readonly || loading" @click="save">{{ readonly ? "只读模式不可保存" : editingId ? "保存 FAQ" : "创建 FAQ" }}</button>
         <button class="ghost-btn" type="button" :disabled="loading" @click="formVisible = false; resetForm()">取消</button>
-      </div>
-    </section>
+      </template>
+    </AdminDialog>
 
     <div v-if="loading" class="empty">正在加载知识库...</div>
     <div v-else-if="!items.length" class="empty-state">
@@ -485,6 +495,7 @@ watch(() => route.query.tab, (tab) => {
     </div>
     <div v-else class="faq-table">
       <div class="table-head">
+        <span><input type="checkbox" :checked="allVisibleSelected()" aria-label="选择当前页 FAQ" @change="toggleSelectionPage(items)" /></span>
         <span>问题</span>
         <span>关键词</span>
         <span>更新时间</span>
@@ -492,6 +503,7 @@ watch(() => route.query.tab, (tab) => {
         <span>操作</span>
       </div>
       <article v-for="item in items" :key="item.id" class="table-row">
+        <span><input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="readonly" :aria-label="`选择 ${item.title}`" @change="toggleSelection({ id: item.id, groupId: item.groupId, title: item.title })" /></span>
         <div>
           <strong>{{ item.title }}</strong>
           <p>{{ item.question }}</p>
@@ -516,6 +528,8 @@ watch(() => route.query.tab, (tab) => {
       <span class="muted">第 {{ pagination.page }} / {{ pagination.totalPages }} 页</span>
       <button class="ghost-btn" type="button" :disabled="pagination.page >= pagination.totalPages" @click="pagination.page += 1">下一页</button>
     </div>
+
+    <BulkPreviewDialog v-if="bulkPreview" :preview="bulkPreview" :busy="bulkBusy" @close="bulkPreview = null" @execute="executeBulk" />
   </section>
   <section v-else class="panel ranking-panel">
     <div class="section-head">
@@ -780,7 +794,7 @@ watch(() => route.query.tab, (tab) => {
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: minmax(280px, 1.4fr) minmax(180px, 0.8fr) minmax(150px, 0.7fr) 100px auto;
+  grid-template-columns: 30px minmax(280px, 1.4fr) minmax(180px, 0.8fr) minmax(150px, 0.7fr) 100px auto;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;

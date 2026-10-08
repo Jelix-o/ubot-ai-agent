@@ -1,3 +1,4 @@
+import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
 import { logError, logInfo } from "./logger.js";
@@ -581,6 +582,7 @@ async function buildBotApp(
 ): Promise<{ botApp: BotApplication; groupConfigService: GroupConfigService }> {
   const dataDir = config.dataDir;
   const sharedDb = openSharedDb(dataDir);
+  setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
   const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const contextRepository = new ConversationContextRepository(sharedDb);
@@ -756,6 +758,7 @@ export async function main(): Promise<void> {
   const config = loadConfig();
   const readClient = new IngressReadApiClient(`http://127.0.0.1:${config.ingressReadApiPort}`);
   const sharedDb = openSharedDb(config.dataDir);
+  setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const transport = new WorkerTransport(sharedDb, {
     resolveImageInputs: (images) => readClient.resolveImages(images),
     listGroupMembers: (groupId, options) => readClient.listGroupMembers(groupId, options),

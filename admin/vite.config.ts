@@ -12,7 +12,13 @@ export default defineConfig({
   server: {
     port: 5178,
     proxy: {
-      "/api": "http://127.0.0.1:6200",
+      "/api": {
+        target: process.env.ADMIN_API_TARGET ?? "http://127.0.0.1:6200",
+        configure(proxy) {
+          const origin = process.env.ADMIN_API_ORIGIN;
+          if (origin) proxy.on("proxyReq", (proxyRequest) => proxyRequest.setHeader("origin", origin));
+        },
+      },
     },
   },
 });

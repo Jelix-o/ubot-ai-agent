@@ -402,7 +402,7 @@ function normalizeStatus(value: unknown): AdminTaskStatus {
 }
 
 function isAdminTaskType(value: unknown): value is AdminTaskType {
-  return value === "memory-dedup" || value === "model-check" || value === "bulk-review";
+  return value === "memory-dedup" || value === "model-check" || value === "bulk-review" || value === "bulk-operation";
 }
 
 function isAdminTaskStatus(value: unknown): value is AdminTaskStatus {

@@ -2,11 +2,17 @@
 import { computed, onMounted, onUnmounted, reactive, shallowRef, watch } from "vue";
 
 import { useRefreshEvents } from "../composables/useRefreshEvents";
+import AdminDialog from "../components/AdminDialog.vue";
+import { useRoute, useRouter } from "vue-router";
+import { confirmAction } from "../composables/useConfirm";
+import { useUrlState } from "../composables/useUrlState";
 import { api, queryString, type AdminTaskRecord, type AdminTaskStatus, type AdminTaskType, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
 const app = useAppStore();
+const route = useRoute();
+const router = useRouter();
 const tasks = shallowRef<AdminTaskRecord[]>([]);
 const activeTask = shallowRef<AdminTaskRecord | null>(null);
 const loading = shallowRef(false);
@@ -19,6 +25,13 @@ const filters = reactive({
   type: "" as "" | AdminTaskType,
   status: "" as "" | AdminTaskStatus,
 });
+useUrlState(filters, ["q", "scope", "type", "status"]);
+useUrlState(pagination, ["page", "pageSize"], "task");
+type BulkItem = { id:string; groupId:string; label:string; status:"succeeded"|"failed"|"skipped"; error?:string };
+const activeBulkItems = computed(() => {
+  const result = activeTask.value?.result as { items?: unknown } | undefined;
+  return Array.isArray(result?.items) ? result.items as BulkItem[] : [];
+});
 
 const runningCount = computed(() => tasks.value.filter((task) => task.status === "queued" || task.status === "running").length);
 const canUseAllGroups = computed(() => app.role === "super_admin");
@@ -30,6 +43,7 @@ const queryScopeLabel = computed(() => filters.scope === "all" && canUseAllGroup
 const activeTaskResult = computed(() => {
   const task = activeTask.value;
   if (!task || task.result === undefined) return "";
+  if (task.type === "bulk-operation") return "";
   try {
     return JSON.stringify(task.result, null, 2);
   } catch {
@@ -77,6 +91,10 @@ async function load(): Promise<void> {
     if (activeTask.value) {
       const visibleTask = data.tasks.find((task) => task.id === activeTask.value?.id);
       if (visibleTask) activeTask.value = { ...activeTask.value, ...visibleTask };
+      else {
+        const detail = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(activeTask.value.id)}`);
+        activeTask.value = detail;
+      }
     }
   } finally {
     loading.value = false;
@@ -112,6 +130,7 @@ function typeLabel(type: AdminTaskType): string {
     "memory-dedup": "记忆去重",
     "model-check": "模型检测",
     "bulk-review": "批量审核",
+    "bulk-operation": "批量运营",
   } as Record<AdminTaskType, string>)[type];
 }
 
@@ -129,6 +148,10 @@ function scopeLabel(task: AdminTaskRecord): string {
 
 function resultSummary(task: AdminTaskRecord): string {
   if (task.error) return task.error;
+  if (task.type === "bulk-operation") {
+    const result = task.result as { counts?: { succeeded?:number; failed?:number; skipped?:number } } | undefined;
+    if (result?.counts) return `成功 ${result.counts.succeeded ?? 0} · 失败 ${result.counts.failed ?? 0} · 跳过 ${result.counts.skipped ?? 0}`;
+  }
   if (task.result === undefined) return task.detail || "-";
   try {
     return JSON.stringify(task.result).slice(0, 220);
@@ -148,6 +171,7 @@ async function openTaskDetail(task: AdminTaskRecord): Promise<void> {
   detailLoading.value = true;
   try {
     activeTask.value = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(task.id)}`);
+    await router.replace({ query: { ...route.query, task: task.id } });
   } catch (error) {
     app.showToast(error instanceof Error ? error.message : "任务详情加载失败", "error");
   } finally {
@@ -157,6 +181,25 @@ async function openTaskDetail(task: AdminTaskRecord): Promise<void> {
 
 function closeTaskDetail(): void {
   activeTask.value = null;
+  const query = { ...route.query };
+  delete query.task;
+  void router.replace({ query });
+}
+
+function bulkStatusLabel(status: BulkItem["status"]): string {
+  return ({ succeeded:"成功", failed:"失败", skipped:"跳过" } as const)[status];
+}
+
+async function cancelBulkTask(): Promise<void> {
+  const task = activeTask.value;
+  if (!task || task.type !== "bulk-operation" || !["queued", "running"].includes(task.status)) return;
+  if (!await confirmAction({ title:"停止批量任务", message:"停止后续目标。已经完成的变更会保留，并逐项显示结果。", confirmText:"停止后续项目", danger:true })) return;
+  try {
+    await api(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, { method:"POST", body:"{}" });
+    app.showToast("已请求停止后续项目");
+    activeTask.value = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(task.id)}`);
+    await load();
+  } catch (error) { app.showToast((error as Error).message, "error"); }
 }
 
 function syncAutoRefresh(): void {
@@ -183,6 +226,15 @@ function onRefresh(): void {
 onMounted(() => {
   void load();
 });
+
+watch(() => route.query.task, async (value) => {
+  if (typeof value !== "string") { if (activeTask.value && route.query.task == null) activeTask.value = null; return; }
+  if (activeTask.value?.id === value) return;
+  detailLoading.value = true;
+  try { activeTask.value = await api<AdminTaskRecord>(`/api/tasks/${encodeURIComponent(value)}`); }
+  catch (error) { app.showToast((error as Error).message, "error"); }
+  finally { detailLoading.value = false; }
+}, { immediate:true });
 
 onUnmounted(() => {
   if (refreshTimer) {
@@ -249,6 +301,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
             <option value="memory-dedup">记忆去重</option>
             <option value="model-check">模型检测</option>
             <option value="bulk-review">批量审核</option>
+            <option value="bulk-operation">批量运营</option>
           </select>
         </label>
         <label>任务状态
@@ -307,14 +360,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         </article>
       </div>
 
-      <section v-if="activeTask" class="task-detail" aria-live="polite">
-        <div class="detail-head">
-          <div>
-            <h3>{{ activeTask.title }}</h3>
-            <p>{{ activeTask.detail || "任务详情已从执行记录读取。" }}</p>
-          </div>
-          <button class="ghost-btn" type="button" @click="closeTaskDetail">收起</button>
-        </div>
+      <AdminDialog v-if="activeTask" :title="activeTask.title" drawer description="任务状态与逐项执行结果" @close="closeTaskDetail">
+        <p v-if="activeTask.detail" class="muted">{{ activeTask.detail }}</p>
         <div class="detail-body">
           <div class="detail-block">
             <h4>基础信息</h4>
@@ -337,11 +384,13 @@ watch(() => [pagination.page, pagination.pageSize], () => {
           <div class="detail-block detail-result">
             <h4>执行结果</h4>
             <p v-if="activeTask.error" class="error-text">{{ activeTask.error }}</p>
+            <div v-if="activeTask.type === 'bulk-operation' && activeBulkItems.length" class="table-wrap bulk-result-table"><table><thead><tr><th>目标</th><th>群</th><th>结果</th><th>说明</th></tr></thead><tbody><tr v-for="item in activeBulkItems" :key="item.id"><td><strong>{{ item.label }}</strong></td><td>{{ item.groupId || '全局' }}</td><td><span class="tag" :class="item.status === 'failed' ? 'danger' : item.status === 'skipped' ? 'neutral' : ''">{{ bulkStatusLabel(item.status) }}</span></td><td class="muted">{{ item.error || '已完成' }}</td></tr></tbody></table></div>
             <pre v-else-if="activeTaskResult">{{ activeTaskResult }}</pre>
             <p v-else class="muted">暂无结构化结果。</p>
           </div>
         </div>
-      </section>
+        <template #footer><button class="ghost-btn" type="button" @click="closeTaskDetail">关闭</button><button v-if="activeTask.type === 'bulk-operation' && ['queued','running'].includes(activeTask.status)" class="btn danger" type="button" @click="cancelBulkTask">停止后续项目</button></template>
+      </AdminDialog>
 
       <div class="pager">
         <button class="ghost-btn" type="button" :disabled="pagination.page <= 1" @click="pagination.page -= 1">上一页</button>
@@ -358,6 +407,8 @@ watch(() => [pagination.page, pagination.pageSize], () => {
   min-width: 0;
   max-width: 100%;
 }
+.bulk-result-table { max-width:100%; }
+.bulk-result-table table { min-width:500px; }
 
 .task-summary {
   display: grid;
