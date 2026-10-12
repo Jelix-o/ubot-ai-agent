@@ -1260,7 +1260,7 @@ test("BT respects group silence, blacklist, command disabling and configured ren
   let count = 0;
   const btSearchService: BtSearchRuntime = { async search() { count++; throw new BtSearchError("busy"); } };
   const settings = new FakeSystemSettingsStore([{ id: "bt_search", title: "搜索", primary: "/搜索", aliases: ["#资源"], enabled: true, permission: "member", help: "", updatedAt: "" }]);
-  const { app, transport, aiService, groupConfigService } = createApp({ btSearchService, systemSettingsStore: settings });
+  const { app, transport, aiService, groupConfigService, dailyReportService, conversationStore } = createApp({ btSearchService, systemSettingsStore: settings });
   await app.handleGroupMessage(createEvent("/搜索 test"));
   await app.handleGroupMessage(createEvent("#资源 test"));
   assert.equal(count, 2);
@@ -1279,6 +1279,8 @@ test("BT respects group silence, blacklist, command disabling and configured ren
   assert.equal(count, 2);
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent.length, 2);
+  assert.equal(dailyReportService.recorded.length, 0);
+  assert.deepEqual(conversationStore.turnsByKey, {});
 });
 
 test("responds to mentioned group message without writing legacy personal history", async () => {

@@ -14,6 +14,10 @@ can safely consume a pending row after rollback without exposing its JSON or
 splitting complete magnets into ordinary group messages. Retain the additive
 column; do not rewind SQLite or replay terminal/ambiguous sending rows.
 
+v3.0.36 records the column addition as migration 19 for existing versioned
+databases. The migration also accepts a column already added during v3.0.35
+recovery. Keep migration history when switching back to an earlier binary.
+
 ## v3.0.34 capability policy rollback
 
 The deployer saves `capability-policy.json` next to the offline SQLite backup

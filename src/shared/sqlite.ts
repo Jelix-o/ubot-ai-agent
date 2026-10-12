@@ -683,7 +683,6 @@ function reconcileLegacyColumns(db: DatabaseSync): void {
 
   const outboxCols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
   const additions: Array<[string, string]> = [
-    ["forward_payload_json", "TEXT"],
     ["updated_at", "INTEGER"],
     ["topic_id", "TEXT"],
     ["branch_id", "TEXT"],
@@ -706,6 +705,13 @@ function addOutboxAttemptColumn(db: DatabaseSync): void {
   const outboxCols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
   if (!outboxCols.some((col) => col.name === "attempts")) {
     db.exec("ALTER TABLE outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+function addOutboxForwardPayloadColumn(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  if (!columns.some(column => column.name === "forward_payload_json")) {
+    db.exec("ALTER TABLE outbox ADD COLUMN forward_payload_json TEXT");
   }
 }
 
@@ -966,6 +972,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
         PRIMARY KEY(task_id,target_id)
       );
     `),
+  },
+  {
+    version: 19,
+    name: "add-outbox-forward-payload",
+    apply: addOutboxForwardPayloadColumn,
   },
 ];
 

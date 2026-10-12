@@ -608,6 +608,14 @@ export class BotApplication {
       this.knowledgeContinuationSessions.delete(knowledgeSessionKey);
     }
 
+    const btCommand = matchBtCommand(commandText, runtimeCommands);
+    if (btCommand) {
+      if (btCommand.enabled && groupConfig.botMuted !== true && !this.isBlacklistedUser(groupConfig, userId)) {
+        await this.handleBtSearchCommand(groupConfig, btCommand, signal);
+      }
+      return;
+    }
+
     const blacklistCommand = matchRuntimeCommand(commandText, runtimeCommands, "blacklist");
     if (blacklistCommand) {
       const handled = await this.handleBlacklistCommand(groupConfig, event, blacklistCommand.rewrittenText);
@@ -627,12 +635,6 @@ export class BotApplication {
       if (parsedMessage.hasAtBot) {
         await this.maybeSendBlacklistedAtMeme(groupId);
       }
-      return;
-    }
-
-    const btCommand = matchBtCommand(commandText, runtimeCommands);
-    if (btCommand) {
-      if (btCommand.enabled && groupConfig.botMuted !== true) await this.handleBtSearchCommand(groupConfig, btCommand, signal);
       return;
     }
 
