@@ -21,7 +21,10 @@ test("forward payload migration upgrades an already versioned database and toler
     const dbPath = tempDb(t);
     const old = new SharedDb(dbPath);
     const originalId = old.enqueueOutbox("group-old", null, "old queued text");
-    old.db.exec("DELETE FROM schema_migrations WHERE version = 19");
+    old.db.exec("DELETE FROM schema_migrations WHERE version IN (19, 20)");
+    old.db.exec("DROP TABLE message_recalls");
+    old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_after_ms");
+    old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_deadline_ms");
     if (!preApplied) old.db.exec("ALTER TABLE outbox DROP COLUMN forward_payload_json");
     assert.equal(old.listSchemaMigrations().at(-1)?.version, 18);
     old.close();
@@ -39,6 +42,27 @@ test("forward payload migration upgrades an already versioned database and toler
     assert.equal(reopened.db.prepare("SELECT forward_payload_json FROM outbox WHERE id = ?").get(cardId)?.forward_payload_json, payload);
     reopened.close();
   }
+});
+
+test("durable message recall migration upgrades an existing v3.0.37-style database", t => {
+  const dbPath = tempDb(t);
+  const old = new SharedDb(dbPath);
+  const originalId = old.enqueueOutbox("group-old", null, "old queued text");
+  old.db.exec("DELETE FROM schema_migrations WHERE version = 20");
+  old.db.exec("DROP TABLE message_recalls");
+  old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_after_ms");
+  old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_deadline_ms");
+  assert.equal(old.listSchemaMigrations().at(-1)?.version, 19);
+  old.close();
+
+  const upgraded = new SharedDb(dbPath);
+  const columns = upgraded.db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  assert.equal(columns.some((column) => column.name === "auto_recall_after_ms"), true);
+  assert.equal(columns.some((column) => column.name === "auto_recall_deadline_ms"), true);
+  assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(originalId)?.text, "old queued text");
+  assert.equal(upgraded.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_recalls'").get()?.name, "message_recalls");
+  assert.equal(upgraded.listSchemaMigrations().filter((migration) => migration.version === 20).length, 1);
+  upgraded.close();
 });
 
 test("participation decisions persist the latest auditable policy result per source message", (t) => {
@@ -233,6 +257,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 17, name: "admin-analytics-and-bulk-operations" },
       { version: 18, name: "durable-bulk-target-results" },
       { version: 19, name: "add-outbox-forward-payload" },
+      { version: 20, name: "add-durable-message-recalls" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -254,7 +279,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -554,6 +579,115 @@ test("outbox stores context and atomically acknowledges the real platform id", (
   assert.equal(binding.branch_id, "branch-1");
   assert.equal(binding.turn_id, turnId);
   assert.throws(() => db.ackOutboxDelivery(outboxId, "different-id"), /different platform message id/);
+  db.close();
+});
+
+test("forward acknowledgements create one recall only after actual card delivery", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const policy = { afterMs: 90_000, deadlineMs: 105_000 };
+  const cardId = db.enqueueOutbox(
+    "10001",
+    null,
+    "fallback text",
+    "forward",
+    undefined,
+    '[{"senderId":"1","senderName":"会仙","text":"card"}]',
+    policy,
+  );
+  const fallbackId = db.enqueueOutbox("10001", null, "fallback text", "forward", undefined, "[]", policy);
+  const textId = db.enqueueOutbox("10001", null, "ordinary text", "text", undefined, undefined, policy);
+
+  db.ackOutboxDelivery(cardId, "qq-card", 5_000);
+  db.ackOutboxDelivery(fallbackId, "qq-fallback", 5_000, { actualForward: false });
+  db.ackOutboxDelivery(textId, "qq-text", 5_000, { actualForward: true });
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS count FROM message_recalls").get()?.count, 0);
+
+  db.ackOutboxDelivery(cardId, "qq-card", 5_001, { actualForward: true });
+  db.ackOutboxDelivery(cardId, "qq-card", 5_002, { actualForward: true });
+  const recall = db.db.prepare(
+    `SELECT outbox_id, group_id, platform_message_id, sent_at, due_at, deadline_at, status, attempts
+       FROM message_recalls`,
+  ).get() as {
+    outbox_id: number;
+    group_id: string;
+    platform_message_id: string;
+    sent_at: number;
+    due_at: number;
+    deadline_at: number;
+    status: string;
+    attempts: number;
+  };
+  assert.deepEqual({ ...recall }, {
+    outbox_id: cardId,
+    group_id: "10001",
+    platform_message_id: "qq-card",
+    sent_at: 5_000,
+    due_at: 95_000,
+    deadline_at: 110_000,
+    status: "pending",
+    attempts: 0,
+  });
+  const outbox = db.db.prepare(
+    "SELECT auto_recall_after_ms, auto_recall_deadline_ms FROM outbox WHERE id = ?",
+  ).get(cardId) as { auto_recall_after_ms: number; auto_recall_deadline_ms: number };
+  assert.deepEqual({ ...outbox }, { auto_recall_after_ms: 90_000, auto_recall_deadline_ms: 105_000 });
+  db.close();
+});
+
+test("message recall jobs claim atomically, retry once, and retain terminal outcomes", (t) => {
+  const dbPath = tempDb(t);
+  const first = new SharedDb(dbPath);
+  const second = new SharedDb(dbPath);
+  const policy = { afterMs: 90_000, deadlineMs: 105_000 };
+  const scheduled = first.scheduleDirectMessageRecall("10001", "qq-direct", policy, 1_000);
+  const duplicate = first.scheduleDirectMessageRecall("10001", "qq-direct", policy, 1_001);
+  assert.equal(duplicate.id, scheduled.id, "direct receipt replay must not create another task");
+  assert.equal(scheduled.outbox_id, null);
+  assert.equal(first.claimDueMessageRecalls(1, 90_999).length, 0);
+
+  const claimed = first.claimDueMessageRecalls(1, 91_000);
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0]?.id, scheduled.id);
+  assert.equal(claimed[0]?.status, "sending");
+  assert.equal(claimed[0]?.attempts, 1);
+  assert.deepEqual(second.claimDueMessageRecalls(1, 91_000), [], "another process cannot claim the same task");
+
+  assert.equal(first.rescheduleMessageRecallAfterNotSent(scheduled.id, 101_000, 91_001), true);
+  assert.equal(first.getMessageRecall(scheduled.id)?.status, "pending");
+  assert.equal(first.getMessageRecall(scheduled.id)?.due_at, 101_000);
+  const retry = second.claimDueMessageRecalls(1, 101_000)[0]!;
+  assert.equal(retry.attempts, 2);
+  assert.equal(first.rescheduleMessageRecallAfterNotSent(scheduled.id, 102_000, 101_001), false);
+  assert.equal(first.getMessageRecall(scheduled.id)?.status, "not_sent_expired");
+  assert.equal(first.getMessageRecall(scheduled.id)?.completed_at, 101_001);
+
+  const success = first.scheduleDirectMessageRecall("10001", "qq-success", policy, 1_000);
+  first.claimDueMessageRecalls(1, 91_000);
+  assert.equal(first.markMessageRecallTerminal(success.id, "recalled", 91_001), true);
+  assert.equal(first.markMessageRecallTerminal(success.id, "recalled", 91_002), false);
+  assert.equal(first.pruneTerminalMessageRecalls(200_000), 2);
+  first.close();
+  second.close();
+});
+
+test("message recall expiration, stale action recovery, and external recall are terminal", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const policy = { afterMs: 90_000, deadlineMs: 105_000 };
+  const expired = db.scheduleDirectMessageRecall("10001", "qq-expired", policy, 1_000);
+  assert.equal(db.expireMessageRecalls(106_001), 1);
+  assert.equal(db.getMessageRecall(expired.id)?.status, "expired");
+
+  const stale = db.scheduleDirectMessageRecall("10001", "qq-stale", policy, 1_000);
+  assert.equal(db.claimDueMessageRecalls(1, 91_000)[0]?.id, stale.id);
+  assert.equal(db.recoverStaleSendingMessageRecalls(91_000, 0), 1, "startup may quarantine inherited sending work immediately");
+  assert.equal(db.getMessageRecall(stale.id)?.status, "outcome_unknown");
+  assert.equal(db.markMessageRecallObserved("10001", "qq-stale", 92_000), 1);
+  assert.equal(db.getMessageRecall(stale.id)?.status, "recalled", "a later QQ notice resolves an ambiguous outcome");
+
+  const observed = db.scheduleDirectMessageRecall("10001", "qq-observed", policy, 1_000);
+  assert.equal(db.markMessageRecallObserved("10001", "qq-observed", 10_000), 1);
+  assert.equal(db.getMessageRecall(observed.id)?.status, "recalled");
+  assert.equal(db.claimDueMessageRecalls(10, 91_000).length, 0);
   db.close();
 });
 

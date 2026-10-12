@@ -56,6 +56,8 @@ export interface OutboxRow {
   kind: string;
   text: string;
   forward_payload_json?: string | null;
+  auto_recall_after_ms: number | null;
+  auto_recall_deadline_ms: number | null;
   status: string;
   retry_after: number | null;
   attempts: number;
@@ -75,6 +77,50 @@ export interface OutboxContext {
   branchId: string;
   sourceTurnId?: number;
   turnId?: number;
+}
+
+/**
+ * A relative timing policy persisted with an outbox card until its real QQ
+ * receipt is acknowledged. Times are measured from that receipt, not enqueue.
+ */
+export interface OutboxAutoRecallPolicy {
+  afterMs: number;
+  deadlineMs: number;
+}
+
+export type MessageRecallStatus =
+  | "pending"
+  | "sending"
+  | "recalled"
+  | "rejected"
+  | "outcome_unknown"
+  | "expired"
+  | "unsupported"
+  | "not_sent_expired";
+
+/** Durable, non-content-bearing recall work for a bot-owned QQ message. */
+export interface MessageRecallRow {
+  id: number;
+  outbox_id: number | null;
+  group_id: string;
+  platform_message_id: string;
+  sent_at: number;
+  due_at: number;
+  deadline_at: number;
+  status: MessageRecallStatus;
+  attempts: number;
+  claimed_at: number | null;
+  completed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface InsertMessageRecallInput {
+  outboxId?: number;
+  groupId: string;
+  platformMessageId: string;
+  sentAtMs: number;
+  policy: OutboxAutoRecallPolicy;
 }
 
 export interface RecentGroupMessageRow {
@@ -715,6 +761,46 @@ function addOutboxForwardPayloadColumn(db: DatabaseSync): void {
   }
 }
 
+function addDurableMessageRecalls(db: DatabaseSync): void {
+  const outboxColumns = new Set(
+    (db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!outboxColumns.has("auto_recall_after_ms")) {
+    db.exec("ALTER TABLE outbox ADD COLUMN auto_recall_after_ms INTEGER");
+  }
+  if (!outboxColumns.has("auto_recall_deadline_ms")) {
+    db.exec("ALTER TABLE outbox ADD COLUMN auto_recall_deadline_ms INTEGER");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS message_recalls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      outbox_id INTEGER REFERENCES outbox(id) ON DELETE SET NULL,
+      group_id TEXT NOT NULL,
+      platform_message_id TEXT NOT NULL,
+      sent_at INTEGER NOT NULL,
+      due_at INTEGER NOT NULL,
+      deadline_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN (
+          'pending', 'sending', 'recalled', 'rejected', 'outcome_unknown',
+          'expired', 'unsupported', 'not_sent_expired'
+        )),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimed_at INTEGER,
+      completed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (outbox_id),
+      UNIQUE (group_id, platform_message_id),
+      CHECK (due_at <= deadline_at)
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_recalls_due
+      ON message_recalls (status, due_at, id);
+    CREATE INDEX IF NOT EXISTS idx_message_recalls_deadline
+      ON message_recalls (status, deadline_at, id);
+  `);
+}
+
 function addVerifiedMentionUserIdsColumn(db: DatabaseSync): void {
   const messageCols = db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
   if (!messageCols.some((col) => col.name === "verified_mention_user_ids_json")) {
@@ -978,9 +1064,23 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "add-outbox-forward-payload",
     apply: addOutboxForwardPayloadColumn,
   },
+  {
+    version: 20,
+    name: "add-durable-message-recalls",
+    apply: addDurableMessageRecalls,
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
+const MAX_MESSAGE_RECALL_ATTEMPTS = 2;
+const TERMINAL_MESSAGE_RECALL_STATUSES = new Set<MessageRecallStatus>([
+  "recalled",
+  "rejected",
+  "outcome_unknown",
+  "expired",
+  "unsupported",
+  "not_sent_expired",
+]);
 
 export class SharedDb {
   readonly db: DatabaseSync;
@@ -1609,14 +1709,17 @@ export class SharedDb {
     kind = "text",
     context?: OutboxContext,
     forwardPayloadJson?: string,
+    autoRecall?: OutboxAutoRecallPolicy,
   ): number {
     const status = context && context.turnId === undefined ? "preparing" : "pending";
+    const recallPolicy = normalizeOutboxAutoRecallPolicy(autoRecall);
     const result = this.db
       .prepare(
         `INSERT INTO outbox
            (group_id, reply_to, kind, text, status, topic_id, branch_id,
-            source_turn_id, turn_id, created_at, forward_payload_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            source_turn_id, turn_id, created_at, forward_payload_json,
+            auto_recall_after_ms, auto_recall_deadline_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         groupId,
@@ -1630,6 +1733,8 @@ export class SharedDb {
         context?.turnId ?? null,
         Date.now(),
         forwardPayloadJson ?? null,
+        recallPolicy?.afterMs ?? null,
+        recallPolicy?.deadlineMs ?? null,
       );
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${id}`, id);
@@ -1702,8 +1807,17 @@ export class SharedDb {
       .run(now, now, id);
   }
 
-  /** Atomically stores the real platform id and makes it available as a reply anchor. */
-  ackOutboxDelivery(id: number, platformMessageId: string, sentAtMs = Date.now()): void {
+  /**
+   * Atomically stores the real platform id and makes it available as a reply
+   * anchor. A recall task is created only when the sender confirms it sent the
+   * actual forward card; an explicit text fallback must never inherit it.
+   */
+  ackOutboxDelivery(
+    id: number,
+    platformMessageId: string,
+    sentAtMs = Date.now(),
+    options: { actualForward?: boolean } = {},
+  ): void {
     const normalizedMessageId = platformMessageId.trim();
     if (!normalizedMessageId) {
       throw new Error("platformMessageId must not be empty");
@@ -1727,11 +1841,59 @@ export class SharedDb {
       this.db
         .prepare("INSERT OR REPLACE INTO bot_messages (group_id, msg_id, sent_at) VALUES (?, ?, ?)")
         .run(row.group_id, normalizedMessageId, sentAt);
+      if (
+        options.actualForward === true &&
+        row.kind === "forward" &&
+        row.auto_recall_after_ms !== null &&
+        row.auto_recall_deadline_ms !== null
+      ) {
+        this.insertMessageRecall({
+          outboxId: row.id,
+          groupId: row.group_id,
+          platformMessageId: normalizedMessageId,
+          sentAtMs: sentAt,
+          policy: {
+            afterMs: row.auto_recall_after_ms,
+            deadlineMs: row.auto_recall_deadline_ms,
+          },
+        });
+      }
       this.syncOutboxConversationContext(
         { ...row, platform_message_id: normalizedMessageId, sent_at: sentAt },
         sentAt,
       );
     });
+  }
+
+  /**
+   * Persists a recall for a legacy/direct sender after that sender obtains the
+   * real QQ receipt. The group/message uniqueness makes repeated receipt
+   * handling idempotent.
+   */
+  scheduleDirectMessageRecall(
+    groupId: string,
+    platformMessageId: string,
+    policy: OutboxAutoRecallPolicy,
+    sentAtMs = Date.now(),
+  ): MessageRecallRow {
+    const normalizedGroupId = groupId.trim();
+    const normalizedMessageId = platformMessageId.trim();
+    if (!normalizedGroupId) {
+      throw new Error("groupId must not be empty");
+    }
+    if (!normalizedMessageId) {
+      throw new Error("platformMessageId must not be empty");
+    }
+    const normalizedPolicy = normalizeOutboxAutoRecallPolicy(policy);
+    if (!normalizedPolicy) {
+      throw new Error("A message recall policy is required");
+    }
+    return this.withImmediateTransaction(() => this.insertMessageRecall({
+      groupId: normalizedGroupId,
+      platformMessageId: normalizedMessageId,
+      sentAtMs,
+      policy: normalizedPolicy,
+    }));
   }
 
   /**
@@ -1815,6 +1977,248 @@ export class SharedDb {
           WHERE id = ?`,
       )
       .run(MAX_OUTBOX_DELIVERY_ATTEMPTS, retryAfter, now, id);
+  }
+
+  // ---- durable bot-message recalls ----
+
+  /**
+   * Claims due recall work before the platform deadline. A claimant owns the
+   * row until it records a terminal result or an explicit not-sent retry.
+   */
+  claimDueMessageRecalls(limit: number, nowMs = Date.now()): MessageRecallRow[] {
+    const normalizedLimit = Math.max(0, Math.floor(limit));
+    if (normalizedLimit === 0) {
+      return [];
+    }
+    const now = normalizeEpochMs(nowMs, "nowMs");
+    return this.withImmediateTransaction(() => {
+      this.expireMessageRecallsInTransaction(now);
+      const candidates = this.db
+        .prepare(
+          `SELECT id FROM message_recalls
+             WHERE status = 'pending'
+               AND due_at <= ?
+               AND deadline_at >= ?
+             ORDER BY due_at ASC, id ASC
+             LIMIT ?`,
+        )
+        .all(now, now, normalizedLimit) as Array<{ id: number }>;
+      if (candidates.length === 0) {
+        return [];
+      }
+      const ids = candidates.map((row) => row.id);
+      const placeholders = ids.map(() => "?").join(",");
+      this.db
+        .prepare(
+          `UPDATE message_recalls
+              SET status = 'sending', attempts = attempts + 1,
+                  claimed_at = ?, updated_at = ?
+            WHERE id IN (${placeholders})
+              AND status = 'pending'
+              AND due_at <= ?
+              AND deadline_at >= ?`,
+        )
+        .run(now, now, ...ids, now, now);
+      return this.db
+        .prepare(
+          `SELECT * FROM message_recalls
+             WHERE id IN (${placeholders}) AND status = 'sending'
+             ORDER BY due_at ASC, id ASC`,
+        )
+        .all(...ids) as unknown as MessageRecallRow[];
+    });
+  }
+
+  /** Marks pending work past its safety deadline as terminal without sending it. */
+  expireMessageRecalls(nowMs = Date.now()): number {
+    const now = normalizeEpochMs(nowMs, "nowMs");
+    return this.withImmediateTransaction(() => this.expireMessageRecallsInTransaction(now));
+  }
+
+  /**
+   * A recall action left in-flight across a process crash is ambiguous. Never
+   * replay it automatically because it may already have recalled the card.
+   */
+  recoverStaleSendingMessageRecalls(nowMs = Date.now(), staleAfterMs = 30_000): number {
+    const now = normalizeEpochMs(nowMs, "nowMs");
+    const cutoff = now - normalizeNonNegativeDurationMs(staleAfterMs, "staleAfterMs");
+    const result = this.db
+      .prepare(
+        `UPDATE message_recalls
+            SET status = 'outcome_unknown', completed_at = COALESCE(completed_at, ?),
+                updated_at = ?
+          WHERE status = 'sending'
+            AND (claimed_at IS NULL OR claimed_at <= ?)`,
+      )
+      .run(now, now, cutoff);
+    return Number(result.changes);
+  }
+
+  /** Completes a claimed recall with a definite platform outcome. */
+  markMessageRecallTerminal(
+    id: number,
+    status: Exclude<MessageRecallStatus, "pending" | "sending">,
+    nowMs = Date.now(),
+  ): boolean {
+    if (!TERMINAL_MESSAGE_RECALL_STATUSES.has(status)) {
+      throw new Error(`Unsupported terminal recall status: ${status}`);
+    }
+    const now = normalizeEpochMs(nowMs, "nowMs");
+    const result = this.db
+      .prepare(
+        `UPDATE message_recalls
+            SET status = ?, completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE id = ? AND status = 'sending'`,
+      )
+      .run(status, now, now, id);
+    return Number(result.changes) === 1;
+  }
+
+  /**
+   * Requeues a definitely unsent action exactly once. A second unsent result,
+   * or a retry target after the deadline, is terminalized instead.
+   */
+  rescheduleMessageRecallAfterNotSent(id: number, retryAtMs: number, nowMs = Date.now()): boolean {
+    const now = normalizeEpochMs(nowMs, "nowMs");
+    const requestedRetryAt = normalizeEpochMs(retryAtMs, "retryAtMs");
+    return this.withImmediateTransaction(() => {
+      const row = this.db
+        .prepare("SELECT * FROM message_recalls WHERE id = ?")
+        .get(id) as MessageRecallRow | undefined;
+      if (!row || row.status !== "sending") {
+        return false;
+      }
+      const retryAt = Math.max(now, requestedRetryAt);
+      if (now > row.deadline_at || retryAt > row.deadline_at) {
+        this.terminalizeMessageRecallInTransaction(id, "expired", now);
+        return false;
+      }
+      if (row.attempts >= MAX_MESSAGE_RECALL_ATTEMPTS) {
+        this.terminalizeMessageRecallInTransaction(id, "not_sent_expired", now);
+        return false;
+      }
+      const result = this.db
+        .prepare(
+          `UPDATE message_recalls
+              SET status = 'pending', due_at = ?, claimed_at = NULL, updated_at = ?
+            WHERE id = ? AND status = 'sending'`,
+        )
+        .run(retryAt, now, id);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  /**
+   * Records a recall notification received from QQ. Matching jobs become
+   * definitively recalled, whether another operator or this process performed it.
+   */
+  markMessageRecallObserved(groupId: string, platformMessageId: string, nowMs = Date.now()): number {
+    const normalizedGroupId = groupId.trim();
+    const normalizedMessageId = platformMessageId.trim();
+    if (!normalizedGroupId || !normalizedMessageId) {
+      return 0;
+    }
+    const now = normalizeEpochMs(nowMs, "nowMs");
+    const result = this.db
+      .prepare(
+        `UPDATE message_recalls
+            SET status = 'recalled', completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE group_id = ? AND platform_message_id = ?
+            AND status <> 'recalled'`,
+      )
+      .run(now, now, normalizedGroupId, normalizedMessageId);
+    return Number(result.changes);
+  }
+
+  /** Deletes finished audit rows after the normal bot-message retention period. */
+  pruneTerminalMessageRecalls(beforeMs: number): number {
+    const before = normalizeEpochMs(beforeMs, "beforeMs");
+    const result = this.db
+      .prepare(
+        `DELETE FROM message_recalls
+          WHERE status IN ('recalled', 'rejected', 'outcome_unknown', 'expired', 'unsupported', 'not_sent_expired')
+            AND completed_at IS NOT NULL
+            AND completed_at < ?`,
+      )
+      .run(before);
+    return Number(result.changes);
+  }
+
+  getMessageRecall(id: number): MessageRecallRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM message_recalls WHERE id = ?")
+      .get(id) as MessageRecallRow | undefined;
+  }
+
+  private insertMessageRecall(input: InsertMessageRecallInput): MessageRecallRow {
+    const normalizedPolicy = normalizeOutboxAutoRecallPolicy(input.policy);
+    if (!normalizedPolicy) {
+      throw new Error("A message recall policy is required");
+    }
+    const sentAt = normalizeEpochMs(input.sentAtMs, "sentAtMs");
+    const dueAt = addEpochMs(sentAt, normalizedPolicy.afterMs, "auto recall due time");
+    const deadlineAt = addEpochMs(sentAt, normalizedPolicy.deadlineMs, "auto recall deadline");
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO message_recalls
+           (outbox_id, group_id, platform_message_id, sent_at, due_at, deadline_at,
+            status, attempts, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+         ON CONFLICT DO NOTHING`,
+      )
+      .run(
+        input.outboxId ?? null,
+        input.groupId,
+        input.platformMessageId,
+        sentAt,
+        dueAt,
+        deadlineAt,
+        now,
+        now,
+      );
+    if (input.outboxId !== undefined) {
+      this.db
+        .prepare(
+          `UPDATE message_recalls
+              SET outbox_id = COALESCE(outbox_id, ?)
+            WHERE group_id = ? AND platform_message_id = ?`,
+        )
+        .run(input.outboxId, input.groupId, input.platformMessageId);
+    }
+    const row = this.db
+      .prepare("SELECT * FROM message_recalls WHERE group_id = ? AND platform_message_id = ?")
+      .get(input.groupId, input.platformMessageId) as MessageRecallRow | undefined;
+    if (!row) {
+      throw new Error("Unable to persist message recall");
+    }
+    return row;
+  }
+
+  private expireMessageRecallsInTransaction(now: number): number {
+    const result = this.db
+      .prepare(
+        `UPDATE message_recalls
+            SET status = 'expired', completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE status = 'pending' AND deadline_at < ?`,
+      )
+      .run(now, now, now);
+    return Number(result.changes);
+  }
+
+  private terminalizeMessageRecallInTransaction(
+    id: number,
+    status: Exclude<MessageRecallStatus, "pending" | "sending">,
+    now: number,
+  ): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE message_recalls
+            SET status = ?, completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE id = ? AND status = 'sending'`,
+      )
+      .run(status, now, now, id);
+    return Number(result.changes) === 1;
   }
 
   /** Removes worker-only drafts that have never become visible to the emitter. */
@@ -1957,6 +2361,49 @@ function parseOutboxDeliveryId(value: string): number | undefined {
   }
   const id = Number(match[1]);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+function normalizeOutboxAutoRecallPolicy(
+  policy: OutboxAutoRecallPolicy | undefined,
+): OutboxAutoRecallPolicy | undefined {
+  if (policy === undefined) {
+    return undefined;
+  }
+  const afterMs = normalizeDurationMs(policy.afterMs, "autoRecall.afterMs");
+  const deadlineMs = normalizeDurationMs(policy.deadlineMs, "autoRecall.deadlineMs");
+  if (deadlineMs < afterMs) {
+    throw new Error("autoRecall.deadlineMs must be greater than or equal to autoRecall.afterMs");
+  }
+  return { afterMs, deadlineMs };
+}
+
+function normalizeDurationMs(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive safe integer duration`);
+  }
+  return value;
+}
+
+function normalizeNonNegativeDurationMs(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer duration`);
+  }
+  return value;
+}
+
+function normalizeEpochMs(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer timestamp`);
+  }
+  return value;
+}
+
+function addEpochMs(baseMs: number, offsetMs: number, name: string): number {
+  const result = baseMs + offsetMs;
+  if (!Number.isSafeInteger(result)) {
+    throw new Error(`${name} exceeds the safe integer range`);
+  }
+  return result;
 }
 
 function normalizeOptionalText(value: string | undefined): string | null {

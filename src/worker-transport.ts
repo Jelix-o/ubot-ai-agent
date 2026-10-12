@@ -5,7 +5,7 @@ import { BT_FORWARD_FALLBACK_TEXT, serializeForwardNodes, type ForwardMessageNod
 import type { SharedDb } from "./shared/sqlite.js";
 import type { OutboxContext } from "./shared/sqlite.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
-import type { MessageReceipt, MessageTransport, TransportHealthStatus } from "./bot.js";
+import type { ForwardAutoRecallOptions, MessageReceipt, MessageTransport, TransportHealthStatus } from "./bot.js";
 import type {
   GroupMemberIdentity,
   MessageImageInput,
@@ -81,8 +81,16 @@ export class WorkerTransport implements MessageTransport {
     return { deliveryId: `outbox:${id}` };
   }
 
-  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]): Promise<MessageReceipt> {
-    const id = this.db.enqueueOutbox(groupId, null, BT_FORWARD_FALLBACK_TEXT, "forward", this.outboxContext(), serializeForwardNodes(nodes));
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[], options?: ForwardAutoRecallOptions): Promise<MessageReceipt> {
+    const id = this.db.enqueueOutbox(
+      groupId,
+      null,
+      BT_FORWARD_FALLBACK_TEXT,
+      "forward",
+      this.outboxContext(),
+      serializeForwardNodes(nodes),
+      options?.autoRecall,
+    );
     logInfo("Worker enqueued forward message to outbox.", { outboxId: id, groupId, nodeCount: nodes.length });
     return { deliveryId: `outbox:${id}` };
   }

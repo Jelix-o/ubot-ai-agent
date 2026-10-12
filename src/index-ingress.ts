@@ -12,6 +12,7 @@ import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js"
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
+import { MessageRecallService } from "./message-recall-service.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageReceipt, MessageTransport } from "./bot.js";
@@ -67,16 +68,27 @@ export async function deliverOutboxRow(
   sharedDb: SharedDb,
   transport: MessageTransport,
   row: OutboxRow,
-  sentAtMs = Date.now(),
+  sentAtMs?: number,
   onAckFailure?: (error: unknown) => void,
   generatedImageRoot?: string,
 ): Promise<string> {
   let receipt: MessageReceipt | void;
+  let deliveredForward = false;
   let generatedImagePath: string | undefined;
   if (row.kind === "record" || row.kind === "airecord") {
     throw new Error("Retired voice outbox kind cannot be delivered.");
   } else if (row.kind === "forward") {
-    receipt = await sendForwardOrFallback(transport, row.group_id, parseForwardNodes(row.forward_payload_json), row.text);
+    const delivery = await sendForwardOrFallback(
+      transport,
+      row.group_id,
+      parseForwardNodes(row.forward_payload_json),
+      row.text,
+      row.auto_recall_after_ms !== null && row.auto_recall_deadline_ms !== null
+        ? { autoRecall: { afterMs: row.auto_recall_after_ms, deadlineMs: row.auto_recall_deadline_ms } }
+        : undefined,
+    );
+    receipt = delivery.receipt;
+    deliveredForward = delivery.kind === "forward";
   } else if (row.kind === "image") {
     receipt = await transport.sendGroupImage(row.group_id, row.text);
   } else if (row.kind === "generated_image") {
@@ -98,7 +110,11 @@ export async function deliverOutboxRow(
     throw new Error("NapCat send succeeded without a real platform message id");
   }
   try {
-    sharedDb.ackOutboxDelivery(row.id, platformMessageId, sentAtMs);
+    // The success receipt, rather than the queued time, starts an adult card's
+    // display window. A text fallback explicitly cannot create a recall job.
+    sharedDb.ackOutboxDelivery(row.id, platformMessageId, sentAtMs ?? Date.now(), {
+      actualForward: deliveredForward,
+    });
   } catch (error) {
     if (generatedImagePath) await rm(generatedImagePath, { force: true }).catch(() => undefined);
     onAckFailure?.(error);
@@ -148,6 +164,7 @@ export class IngressApp {
   private readonly transport: MessageTransport;
   private readonly emitterTimer: NodeJS.Timeout;
   private readonly maintenanceTimer: NodeJS.Timeout;
+  private readonly messageRecalls: MessageRecallService;
   private readonly v3State: ReturnType<typeof resolveV3RuntimeState>;
 
   constructor(
@@ -172,6 +189,9 @@ export class IngressApp {
     if (typeof this.transport.sendGroupMessage !== "function") {
       throw new Error("Ingress requires a transport that can send group messages.");
     }
+    this.messageRecalls = new MessageRecallService(this.sharedDb, this.transport, {
+      onMetric: (name, by) => this.metrics.inc(name, by),
+    });
 
     // Subscribe to incoming group messages and recall notices.
     const runtime = this.transport as MessageTransport & {
@@ -210,6 +230,7 @@ export class IngressApp {
     if (typeof withStart.start === "function") {
       withStart.start();
     }
+    this.messageRecalls.start();
     logInfo("Ingress started.", {
       botQq: this.options.botQq,
       dataDir: this.options.dataDir,
@@ -219,6 +240,7 @@ export class IngressApp {
   async stop(): Promise<void> {
     clearInterval(this.emitterTimer);
     clearInterval(this.maintenanceTimer);
+    await this.messageRecalls.stop();
     this.metrics.stop();
     this.readApi.close();
     this.sharedDb.close();
@@ -361,6 +383,7 @@ export class IngressApp {
       return;
     }
     this.sharedDb.markRetracted(groupId, messageId, Date.now());
+    this.messageRecalls.observeGroupRecall(groupId, messageId, Date.now());
     this.metrics.inc("recall_handled");
     logInfo("Message recall registered.", { groupId, messageId });
   }
@@ -382,7 +405,7 @@ export class IngressApp {
           this.sharedDb,
           this.transport,
           row,
-          Date.now(),
+          undefined,
           () => this.metrics.inc("outbox_ack_backfill_failed"),
           path.join(this.options.dataDir, "generated-images"),
         );

@@ -70,6 +70,41 @@ test("forward payload travels across worker/ingress databases with a real platfo
   assert.equal(ingressDb.claimOutbox(1).length, 0);
 });
 
+test("adult forward recall policy persists through the worker outbox and only a real card receipt schedules it", async t => {
+  const { dbPath, dir } = tempDbPath();
+  const workerDb = new SharedDb(dbPath), ingressDb = new SharedDb(dbPath);
+  t.after(() => { workerDb.close(); ingressDb.close(); rmSync(dir, { recursive: true, force: true }); });
+  const policy = { autoRecall: { afterMs: 90_000, deadlineMs: 105_000 } };
+  await new WorkerTransport(workerDb).sendGroupForwardMessage("group-adult", forwardNodes, policy);
+  const forwardRow = ingressDb.claimOutbox(1, 1_000)[0]!;
+  assert.equal(forwardRow.auto_recall_after_ms, 90_000);
+  assert.equal(forwardRow.auto_recall_deadline_ms, 105_000);
+  const forwardTransport = new ReceiptTransport(() => "qq-adult-card");
+  Object.assign(forwardTransport, { async sendGroupForwardMessage() {
+    return { platformMessageId: "qq-adult-card" };
+  } });
+  await deliverOutboxRow(ingressDb, forwardTransport, forwardRow, 2_000);
+  const scheduled = ingressDb.db.prepare(
+    "SELECT group_id, platform_message_id, sent_at, due_at, deadline_at, status, attempts FROM message_recalls",
+  ).all() as Array<{
+    group_id: string; platform_message_id: string; sent_at: number; due_at: number; deadline_at: number; status: string; attempts: number;
+  }>;
+  assert.deepEqual(scheduled.map((row) => ({ ...row })), [{
+    group_id: "group-adult", platform_message_id: "qq-adult-card", sent_at: 2_000,
+    due_at: 92_000, deadline_at: 107_000, status: "pending", attempts: 0,
+  }]);
+
+  await new WorkerTransport(workerDb).sendGroupForwardMessage("group-adult", forwardNodes, policy);
+  const fallbackRow = ingressDb.claimOutbox(1, 3_000)[0]!;
+  const fallbackTransport = new ReceiptTransport(() => "qq-adult-fallback");
+  Object.assign(fallbackTransport, { async sendGroupForwardMessage() { throw new NapCatActionRejectedError("unsupported"); } });
+  await deliverOutboxRow(ingressDb, fallbackTransport, fallbackRow, 4_000);
+  assert.equal(
+    (ingressDb.db.prepare("SELECT COUNT(*) AS count FROM message_recalls").get() as { count: number }).count,
+    1,
+  );
+});
+
 test("forward rejection or unsupported transport sends only one short fallback", async t => {
   const { dbPath, dir } = tempDbPath(); const db = new SharedDb(dbPath);
   t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });

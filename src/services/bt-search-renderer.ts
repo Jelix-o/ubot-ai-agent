@@ -1,6 +1,8 @@
 import type { ForwardMessageNode } from "../forward-message.js";
 import type { BtSearchItem, BtSearchRequest, BtSearchResult } from "./bt-search-service.js";
 
+export const BT_ADULT_CONTENT_WARNING = "【成人内容提示】含成人向资源，仅限成年人查看；请注意隐私并遵守当地法律。";
+
 /** Used only for ordinary string messages; forward text segments stay literal. */
 export function escapeBtText(text: string): string {
   return text.replace(/&/gu, "&amp;").replace(/\[/gu, "&#91;").replace(/\]/gu, "&#93;");
@@ -43,7 +45,10 @@ function renderItem(item: BtSearchItem, index: number): string {
 /** All result entries travel in one card; links are never decoded or cut. */
 export function renderBtForwardNodes(result: BtSearchResult, request: BtSearchRequest, senderId: string): ForwardMessageNode[] {
   const type = { anime: "动漫", movie: "影视", adult: "成人" }[result.resolvedType];
-  const blocks = [`【BT 搜索】${result.query}（${type}）\n共 ${result.uniqueResultCount} 条资源 · 展示 ${result.items.length} 条 · ${Math.round(result.durationMs / 1000)} 秒${result.fromCache ? " · 缓存命中" : ""}\n点击查看完整下载链接。`];
+  // Diagnostic cards for an empty adult query are not adult resource cards.
+  // They must not carry the warning or become candidates for silent recall.
+  const isAdultResourceCard = result.resolvedType === "adult" && result.items.length > 0;
+  const blocks = [`${isAdultResourceCard ? `${BT_ADULT_CONTENT_WARNING}\n` : ""}【BT 搜索】${result.query}（${type}）\n共 ${result.uniqueResultCount} 条资源 · 展示 ${result.items.length} 条 · ${Math.round(result.durationMs / 1000)} 秒${result.fromCache ? " · 缓存命中" : ""}\n点击查看完整下载链接。`];
   if (request.json) {
     blocks.push(JSON.stringify({ ...result, items: [], sites: [] }, null, 2),
       ...result.sites.map(({ items: _items, ...site }) => JSON.stringify({ query: result.query, site }, null, 2)),
