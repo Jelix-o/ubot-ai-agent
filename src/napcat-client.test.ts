@@ -2,6 +2,35 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { NapCatClient } from "./napcat-client.js";
+import { NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
+
+test("HTTP forward API keeps literal content and never retries ambiguous requests", async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let mode = "ok", attempts = 0;
+  const text = "[CQ:at,qq=all]\nmagnet:?xt=urn:btih:abc&dn=%E5%AE%8C%E6%95%B4&tr=udp%3A%2F%2Ftracker.test";
+  globalThis.fetch = async (input, init) => {
+    attempts++;
+    assert.equal(String(input), "http://127.0.0.1:3001/send_group_forward_msg");
+    assert.deepEqual(JSON.parse(String(init?.body)), { group_id: 67890, messages: [{ type: "node", data: {
+      user_id: 12345, nickname: "会仙", content: [{ type: "text", data: { text } }],
+    } }] });
+    if (mode === "network") throw new Error("lost connection");
+    if (mode === "404") return new Response("unsupported", { status: 404 });
+    if (mode === "500") return new Response("unknown", { status: 500 });
+    if (mode === "invalid") return new Response("invalid JSON", { status: 200 });
+    return new Response(JSON.stringify({ status: mode.startsWith("rejected") ? "failed" : "ok", retcode: mode.startsWith("rejected") ? 1404 : 0, message: mode === "rejected-timeout" ? "send timeout" : "",
+      data: mode === "ok" ? { message_id: 9002 } : {} }), { status: 200 });
+  };
+  const client = new NapCatClient({ wsUrl: "ws://127.0.0.1:3001/onebot/v11/ws" });
+  const nodes = [{ senderId: "12345", senderName: "会仙", text }];
+  assert.deepEqual(await client.sendGroupForwardMessage("67890", nodes), { messageId: "9002", platformMessageId: "9002" });
+  for (const next of ["rejected", "rejected-timeout", "404", "500", "network", "invalid", "missing-id"]) {
+    mode = next;
+    await assert.rejects(client.sendGroupForwardMessage("67890", nodes), ["rejected", "404"].includes(next) ? NapCatActionRejectedError : NapCatActionOutcomeUnknownError);
+  }
+  assert.equal(attempts, 8);
+});
 
 test("falls back to HTTP send_group_msg when websocket is not open", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];

@@ -25,6 +25,8 @@ import { V3StateRepository } from "./services/v3-state-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
 import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
 import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-service.js";
+import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
+import { NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -48,6 +50,13 @@ import type {
 
 class FakeTransport implements MessageTransport {
   readonly sent: Array<{ groupId: string; text: string }> = [];
+  readonly forwards: Array<{ groupId: string; nodes: ForwardMessageNode[] }> = [];
+  sendForwardError?: Error;
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]) {
+    if (this.sendForwardError) throw this.sendForwardError;
+    this.forwards.push({ groupId, nodes });
+    return { messageId: String(this.nextSentMessageId++) };
+  }
   readonly images: Array<{ groupId: string; imageFile: string }> = [];
   readonly generatedImages: Array<{ groupId: string; imagePath: string }> = [];
   readonly outbound: Array<{ kind: "text" | "image"; groupId: string }> = [];
@@ -365,6 +374,7 @@ class FakeSkillService {
 }
 
 class FakeConversationStore {
+  async flush(): Promise<void> {}
   turnsByKey: Record<string, ConversationTurn[]> = {};
   sharedTopics: Record<string, SharedConversationTopic> = {};
   sharedTopicMessageIndex: Record<string, string> = {};
@@ -1167,7 +1177,7 @@ test("BT entries work for ordinary members without @ and never call chat or reco
       totalResults: 0, rawResultCount: 0, uniqueResultCount: 0, durationMs: 1, fromCache: false, cacheAgeMs: 0, budgetExceeded: false };
   } };
   const { app, transport, aiService, groupMemoryStore, conversationStore, dailyReportService } = createApp({ btSearchService });
-  for (const text of ["#bt 测试 anime", "/bt 测试 anime", "#bt", "/bt --bad 测试"]) await app.handleGroupMessage(createEvent(text));
+  for (const text of ["#bt 测试 anime", "/bt 测试 anime", "#bt", "#bt --help", "/bt --bad 测试"]) await app.handleGroupMessage(createEvent(text));
   assert.deepEqual(calls, ["测试", "测试"]);
   assert.equal(aiService.calls.length, 0);
   assert.equal(groupMemoryStore.memories.length, 0);
@@ -1175,6 +1185,75 @@ test("BT entries work for ordinary members without @ and never call chat or reco
   assert.equal(dailyReportService.recorded.length, 0);
   assert.ok(transport.sent.some(message => message.text.includes("未找到")));
   assert.ok(transport.sent.some(message => message.text.includes("--source")));
+});
+
+function btCardResult(query = "测试", fromCache = false) {
+  return { query, requestedType: "anime" as const, resolvedType: "anime" as const,
+    items: Array.from({ length: 5 }, (_, index) => ({ title: `资源 ${index + 1}`, magnet: `magnet:?xt=urn:btih:${"a".repeat(40)}&dn=%E5%AE%8C%E6%95%B4&tr=udp%3A%2F%2Ftracker.test`,
+      page: "https://example.test/item", torrent: "https://example.test/item.torrent", resolution: "1080P", size: "1 GiB", subtitle: "中字", sources: ["Nyaa"], episodeStart: 1, episodeEnd: 1, isBatch: false })),
+    sites: [], warnings: [], totalResults: 5, rawResultCount: 5, uniqueResultCount: 5, durationMs: 3_000, fromCache, cacheAgeMs: 0, budgetExceeded: false };
+}
+
+test("BT fast and cached results send only one card, including full/debug/JSON output", async t => {
+  const { app, transport, aiService, conversationStore } = createApp({ btSearchService: { async search(request, options) {
+    await options?.onStarted?.();
+    return btCardResult(request.query, request.query === "缓存");
+  } } });
+  t.after(() => app.stop());
+  for (const command of ["#bt 测试 anime --fast", "/bt 缓存 anime", "#bt 测试 --full --debug", "#bt 测试 --json"]) {
+    await app.handleGroupMessage(createEvent(command));
+  }
+  assert.equal(transport.sent.length, 0);
+  assert.equal(transport.forwards.length, 4);
+  for (const card of transport.forwards.slice(0, 3)) assert.equal(card.nodes.filter(node => node.text.includes("磁力（完整链接）")).length, 5);
+  for (const node of transport.forwards[3]!.nodes.slice(1)) assert.doesNotThrow(() => JSON.parse(node.text));
+  assert.equal(aiService.calls.length, 0);
+  assert.deepEqual(conversationStore.turnsByKey, {});
+});
+
+test("BT sends one delayed progress message and cancels the timer on completion or cancellation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let complete!: () => void;
+  let started = false;
+  const { app, transport } = createApp({ btSearchService: { async search(request, options) {
+    await options?.onStarted?.();
+    started = true;
+    await new Promise<void>(resolve => { complete = resolve; });
+    return btCardResult(request.query);
+  } } });
+  t.after(() => app.stop());
+  const pending = app.handleGroupMessage(createEvent("#bt 慢搜索"));
+  while (!started) await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.tick(4_999);
+  assert.equal(transport.sent.length, 0);
+  t.mock.timers.tick(2);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(transport.sent.length, 1);
+  complete(); await pending;
+  t.mock.timers.tick(10_000);
+  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.forwards.length, 1);
+
+  started = false;
+  const controller = new AbortController();
+  const cancelled = app.handleGroupMessage(createEvent("#bt 取消搜索"), controller.signal);
+  while (!started) await new Promise<void>(resolve => setImmediate(resolve));
+  controller.abort(); t.mock.timers.tick(6_000);
+  complete(); await cancelled;
+  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.forwards.length, 1);
+});
+
+test("BT card rejection produces one short fallback and unknown delivery produces no duplicate", async t => {
+  const { app, transport } = createApp({ btSearchService: { async search() { return btCardResult(); } } });
+  t.after(() => app.stop());
+  transport.sendForwardError = new NapCatActionRejectedError("unsupported");
+  await app.handleGroupMessage(createEvent("#bt 测试"));
+  assert.deepEqual(transport.sent.map(message => message.text), [BT_FORWARD_FALLBACK_TEXT]);
+  transport.sendForwardError = new NapCatActionOutcomeUnknownError("timeout");
+  await app.handleGroupMessage(createEvent("#bt 测试"));
+  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.forwards.length, 0);
 });
 
 test("BT respects group silence, blacklist, command disabling and configured renaming", async () => {

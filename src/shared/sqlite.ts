@@ -55,6 +55,7 @@ export interface OutboxRow {
   reply_to: string | null;
   kind: string;
   text: string;
+  forward_payload_json?: string | null;
   status: string;
   retry_after: number | null;
   attempts: number;
@@ -314,6 +315,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   reply_to TEXT,
   kind TEXT NOT NULL DEFAULT 'text',
   text TEXT NOT NULL,
+  forward_payload_json TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   retry_after INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -681,6 +683,7 @@ function reconcileLegacyColumns(db: DatabaseSync): void {
 
   const outboxCols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
   const additions: Array<[string, string]> = [
+    ["forward_payload_json", "TEXT"],
     ["updated_at", "INTEGER"],
     ["topic_id", "TEXT"],
     ["branch_id", "TEXT"],
@@ -1594,14 +1597,15 @@ export class SharedDb {
     text: string,
     kind = "text",
     context?: OutboxContext,
+    forwardPayloadJson?: string,
   ): number {
     const status = context && context.turnId === undefined ? "preparing" : "pending";
     const result = this.db
       .prepare(
         `INSERT INTO outbox
            (group_id, reply_to, kind, text, status, topic_id, branch_id,
-            source_turn_id, turn_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            source_turn_id, turn_id, created_at, forward_payload_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         groupId,
@@ -1614,6 +1618,7 @@ export class SharedDb {
         context?.sourceTurnId ?? null,
         context?.turnId ?? null,
         Date.now(),
+        forwardPayloadJson ?? null,
       );
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${id}`, id);

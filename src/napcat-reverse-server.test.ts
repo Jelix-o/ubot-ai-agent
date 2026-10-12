@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
+import { NapCatActionRejectedError } from "./napcat-action-errors.js";
 
 import {
   NapCatActionNotSentError,
@@ -12,6 +13,38 @@ import {
 async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test("reverse forward API keeps literal links, returns ids and distinguishes rejection/unknown sends", async t => {
+  const server = new NapCatReverseServer({ host: "127.0.0.1", port: 0, path: "/onebot/ws", actionTimeoutMs: 200 });
+  server.start();
+  const http = (server as any).httpServer;
+  if (!http.listening) await new Promise<void>(resolve => http.once("listening", resolve));
+  const ws = new WebSocket(`ws://127.0.0.1:${http.address().port}/onebot/ws`);
+  t.after(() => { ws.terminate(); server.close(); });
+  await new Promise<void>((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
+  let mode = "ok";
+  const actions: any[] = [];
+  ws.on("message", data => {
+    const action = JSON.parse(data.toString()); actions.push(action);
+    if (mode === "timeout") return;
+    ws.send(JSON.stringify({ echo: action.echo, status: mode.startsWith("rejected") ? "failed" : "ok", retcode: mode.startsWith("rejected") ? 1404 : 0, message: mode === "rejected-timeout" ? "send timeout" : "",
+      data: mode === "ok" ? { message_id: 9001, res_id: "forward-resource" } : {} }));
+  });
+  const text = "[CQ:at,qq=all]\nmagnet:?xt=urn:btih:123&dn=%E5%AE%8C%E6%95%B4&tr=udp%3A%2F%2Ftracker.test";
+  const nodes = [{ senderId: "12345", senderName: "会仙", text }];
+  assert.deepEqual(await server.sendGroupForwardMessage("67890", nodes), { messageId: "9001", platformMessageId: "9001" });
+  assert.equal(actions[0].action, "send_group_forward_msg");
+  assert.deepEqual(actions[0].params, { group_id: 67890, messages: [{ type: "node", data: { user_id: 12345, nickname: "会仙", content: [{ type: "text", data: { text } }] } }] });
+  mode = "rejected";
+  await assert.rejects(server.sendGroupForwardMessage("67890", nodes), NapCatActionRejectedError);
+  mode = "rejected-timeout";
+  await assert.rejects(server.sendGroupForwardMessage("67890", nodes), NapCatActionOutcomeUnknownError);
+  mode = "missing-id";
+  await assert.rejects(server.sendGroupForwardMessage("67890", nodes), NapCatActionOutcomeUnknownError);
+  mode = "timeout";
+  await assert.rejects(server.sendGroupForwardMessage("67890", nodes), NapCatActionOutcomeUnknownError);
+  assert.equal(actions.length, 5);
+});
 
 test("reverse server accepts token and emits group events", async () => {
   const server = new NapCatReverseServer({

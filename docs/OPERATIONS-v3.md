@@ -106,3 +106,17 @@ Install the pinned Python and browser dependencies using `assets/bt/README.md` b
 The worker owns one global search slot with four waiting requests. Full searches have a 180-second total deadline and default 30-second per-site timeout; fast searches stop at 15 seconds, returning available partial results. Command settings live in the existing backend command editor. `bt_search` is an explicit capability added by the additive upgrade while retaining existing command customizations.
 
 Before migrating, the deployer saves the old capability policy. Restore that policy before selecting a binary that does not recognize `bt_search`; see `docs/ROLLBACK-v3.md`. Policy rollback never rewinds message or outbox state.
+
+Starting in v3.0.35, each BT result set is one QQ merged-forward card. Each
+resource is a literal text node with its complete original links; fast/cache
+results have no progress bubble, and a running search emits at most one after
+five seconds. Ingress owns the `send_group_forward_msg` action and confirms
+the actual platform message ID. Forward rows store their payload separately
+from the short fallback `text`, making v3.0.34 rollback safe.
+
+An explicit rejection falls back to one short notice. Network/dispatch
+timeouts, missing message IDs and NapCat-reported send timeouts are ambiguous
+and terminal; do not replay those rows. An acknowledgement persistence failure
+also remains quarantined for reconciliation. A disconnected socket before
+dispatch is safe to retry. QQ card presentation is checked through the user's
+normal searches; automated delivery checks use mock transports.

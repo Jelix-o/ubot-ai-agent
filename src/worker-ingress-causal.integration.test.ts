@@ -809,8 +809,8 @@ test("Worker isolates both BT entries without mentions, routes or later context 
   const searches: string[] = [];
   const bot = createBot(transport, repository, ai, undefined, { btSearchService: { async search(request) {
     searches.push(request.query);
-    return { query: request.query, requestedType: "anime", resolvedType: "anime", items: [], sites: [], warnings: [],
-      totalResults: 0, rawResultCount: 0, uniqueResultCount: 0, durationMs: 0, fromCache: false, cacheAgeMs: 0, budgetExceeded: false };
+    return { query: request.query, requestedType: "anime", resolvedType: "anime", items: [{ title: "测试资源", magnet: "magnet:?xt=urn:btih:123&dn=%E6%B5%8B%E8%AF%95", torrent: "", page: "https://example.test/item", size: "1 GB", resolution: "1080P", subtitle: "中字", sources: ["nyaa"], episodeStart: 0, episodeEnd: 0, isBatch: false }], sites: [], warnings: [],
+      totalResults: 1, rawResultCount: 1, uniqueResultCount: 1, durationMs: 0, fromCache: false, cacheAgeMs: 0, budgetExceeded: false };
   } } });
   const worker = new WorkerApp({ dataDir, botApp: bot, consumerKey: "worker:bt-test", isBlacklistedUser: async () => false }, transport);
   t.after(async () => { await bot.stop(); await worker.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
@@ -824,12 +824,14 @@ test("Worker isolates both BT entries without mentions, routes or later context 
   assert.equal(searches.length, 2);
   assert.equal(ai.calls.length, 0);
   assert.equal((db.db.prepare("SELECT count(*) AS n FROM conversation_message_routes").get() as { n: number }).n, 0);
-  const outbox = db.db.prepare("SELECT id, text, topic_id, branch_id FROM outbox").all() as Array<{ id: number; text: string; topic_id: string | null; branch_id: string | null }>;
+  const outbox = db.db.prepare("SELECT id, kind, text, forward_payload_json, topic_id, branch_id FROM outbox").all() as Array<{ id: number; kind: string; text: string; forward_payload_json: string; topic_id: string | null; branch_id: string | null }>;
   assert.equal(outbox.length, 2);
   for (const row of outbox) {
     assert.equal(row.topic_id, null);
     assert.equal(row.branch_id, null);
     assert.ok(row.text.startsWith("【BT 搜索】"));
+    assert.equal(row.kind, "forward");
+    assert.equal(JSON.parse(row.forward_payload_json).length, 2);
     db.ackOutboxDelivery(row.id, `bt-receipt-${row.id}`, now - 2000);
   }
   const sourceRowId = insert("current question", "context-boundary", now);

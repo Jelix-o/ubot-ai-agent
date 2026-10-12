@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { logInfo } from "./logger.js";
+import { BT_FORWARD_FALLBACK_TEXT, serializeForwardNodes, type ForwardMessageNode } from "./forward-message.js";
 import type { SharedDb } from "./shared/sqlite.js";
 import type { OutboxContext } from "./shared/sqlite.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
@@ -77,6 +78,12 @@ export class WorkerTransport implements MessageTransport {
   async sendGroupMessage(groupId: string, text: string): Promise<MessageReceipt | undefined> {
     const id = this.db.enqueueOutbox(groupId, null, text, "text", this.outboxContext());
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
+    return { deliveryId: `outbox:${id}` };
+  }
+
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]): Promise<MessageReceipt> {
+    const id = this.db.enqueueOutbox(groupId, null, BT_FORWARD_FALLBACK_TEXT, "forward", this.outboxContext(), serializeForwardNodes(nodes));
+    logInfo("Worker enqueued forward message to outbox.", { outboxId: id, groupId, nodeCount: nodes.length });
     return { deliveryId: `outbox:${id}` };
   }
 

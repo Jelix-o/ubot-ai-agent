@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import type { Server } from "node:http";
 import { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -190,14 +191,24 @@ async function startFixture(
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
     ...(options.listGroupMembers ? { listGroupMembers: options.listGroupMembers } : {}),
   });
-  server.start();
-  const rawServer = (server as unknown as {
-    server: { once(event: "listening", listener: () => void): void; address(): AddressInfo | null };
-  }).server;
-  await new Promise<void>((resolve) => rawServer.once("listening", resolve));
-  const address = rawServer.address();
-  assert.ok(address);
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const rawServer = (server as unknown as { server: Server }).server;
+  let baseUrl = "";
+  // Windows can assign a port forbidden by fetch (for example, 10080).
+  // Rebind the fixture only for that error; real HTTP failures still fail.
+  for (;;) {
+    server.start();
+    await new Promise<void>((resolve) => rawServer.once("listening", resolve));
+    const address = rawServer.address() as AddressInfo | null;
+    assert.ok(address);
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      await fetch(`${baseUrl}/api/health`);
+      break;
+    } catch (error) {
+      if (!(error instanceof TypeError) || !(error.cause instanceof Error) || error.cause.message !== "bad port") throw error;
+      await new Promise<void>((resolve, reject) => rawServer.close(error => error ? reject(error) : resolve()));
+    }
+  }
   t.after(() => {
     server.close();
     db.close();

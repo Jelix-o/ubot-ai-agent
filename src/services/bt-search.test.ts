@@ -6,7 +6,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { BtSearchError, BtSearchService, btEngineArguments, normalizeBtSearchResult, parseBtSearchRequest, type BtSearchResult } from "./bt-search-service.js";
-import { renderBtSearchMessages } from "./bt-search-renderer.js";
+import { btHelp, btEmptyResultMessage, renderBtForwardNodes } from "./bt-search-renderer.js";
+import { toNapCatForwardNodes } from "../forward-message.js";
 import { matchBtCommand } from "./command-prefixes.js";
 
 const require = createRequire(import.meta.url);
@@ -54,19 +55,30 @@ test("BT parses every supported flag without interpreting shell characters", () 
   assert.equal(matchBtCommand("/btree"), undefined);
 });
 
-test("BT messages preserve complete links, escape CQ and distinguish empty-result failures", () => {
+test("BT forward nodes preserve complete links as literal text and distinguish empty-result failures", () => {
   const value = normalizeBtSearchResult(payload, request());
   value.items = Array.from({ length: 5 }, (_, index) => ({ ...value.items[0]!, title: `${index} [CQ:at,qq=all] ${"长标题".repeat(70)}` }));
-  const messages = renderBtSearchMessages(value, request());
-  assert.ok(messages.length > 1);
-  assert.equal(messages.join("\n").includes("[CQ:at"), false);
-  for (const message of messages.filter(message => message.includes("magnet:"))) assert.ok(message.includes(magnet.replaceAll("&", "&amp;")));
+  const nodes = renderBtForwardNodes(value, request(), "12345");
+  assert.equal(nodes.length, 6);
+  assert.ok(nodes[0]!.text.startsWith("【BT 搜索】"));
+  const segments = toNapCatForwardNodes(nodes);
+  for (const node of segments.slice(1)) {
+    assert.equal(node.data.content[0]!.type, "text");
+    assert.ok(node.data.content[0]!.data.text.includes("[CQ:at,qq=all]"));
+    assert.ok(node.data.content[0]!.data.text.split("\n").includes(magnet));
+  }
   for (const [warning, expected] of [["", "未找到"], ["搜索超时", "超时"], ["Cloudflare 验证页", "验证页"], ["抓取依赖 curl_cffi 不可用", "依赖缺失"]]) {
     const empty = { ...value, items: [], warnings: warning ? [warning!] : [] };
-    assert.ok(renderBtSearchMessages(empty, request()).join("\n").includes(expected!));
+    assert.ok(btEmptyResultMessage(empty).includes(expected!));
   }
-  const json = renderBtSearchMessages(normalizeBtSearchResult(payload, request()), { ...request(), json: true });
-  for (const message of json) assert.doesNotThrow(() => JSON.parse(message.replaceAll("&amp;", "&").replaceAll("&#91;", "[").replaceAll("&#93;", "]")));
+  const json = renderBtForwardNodes(normalizeBtSearchResult(payload, request()), { ...request(), json: true }, "12345");
+  for (const node of json.slice(1)) assert.doesNotThrow(() => JSON.parse(node.text));
+  assert.equal(btHelp().split("\n").length, 4);
+  assert.ok(btHelp("/资源", true).includes("--source"));
+  value.sites[0]!.items = value.items;
+  const details = renderBtForwardNodes(value, { ...request(), full: true, debug: true }, "12345");
+  assert.equal(details.filter(node => node.text.includes("磁力（完整链接）")).length, 5);
+  assert.ok(details.at(-1)!.text.includes("原始 2 条"));
 });
 
 test("BT subprocess passes literal argv and persistent paths and decodes split UTF-8", async (t) => {
@@ -199,4 +211,96 @@ test("BT real orchestrator treats --timeout as per-site, keeps full source cover
   assert.ok(partial.items.length >= 1);
   assert.equal(partial.sites[0].siteId, "mikan");
   assert.ok(partial.sites.some((site: { via: string }) => site.via === "超时"));
+});
+
+
+test("BT pasted five-resource regression keeps every original encoded link inside one card", () => {
+  const originalItems = [
+  {
+    "title": "[千夏字幕组][葬送的芙莉莲_Sousou no Frieren][第29-38话][1080p_HEVC][简繁内封][合集]",
+    "magnet": "magnet:?xt=urn:btih:b083f2e4b02783c9292718cbbfd8a98a4aa0b42e&dn=%5B%E5%8D%83%E5%A4%8F%E5%AD%97%E5%B9%95%E7%BB%84%5D%5B%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2_Sousou%20no%20Frieren%5D%5B%E7%AC%AC29-38%E8%AF%9D%5D%5B1080p_HEVC%5D%5B%E7%AE%80%E7%B9%81%E5%86%85%E5%B0%81%5D%5B%E5%90%88%E9%9B%86%5D&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce",
+    "torrent": "https://nyaa.net/download/2108703.torrent",
+    "page": "https://nyaa.net/view/2108703",
+    "resolution": "1080P",
+    "size": "7.5 GiB",
+    "subtitle": "中字",
+    "sources": [
+      "nyaa"
+    ],
+    "episodeStart": 0,
+    "episodeEnd": 0,
+    "isBatch": false
+  },
+  {
+    "title": "[❀拨雪寻春❀] 送葬者芙莉莲第二季/ 葬送のフリーレン 第二期/ Sousou no Frieren 2nd Season - 37 [WebRip][HEVC-10bit 1080p][简繁日内封]（检索用：葬送的芙莉莲第二季）",
+    "magnet": "magnet:?xt=urn:btih:63a0cddb0dcba7b14ee26873265987f21e3a4012&dn=%5B%E2%9D%80%E6%8B%A8%E9%9B%AA%E5%AF%BB%E6%98%A5%E2%9D%80%5D%20%E9%80%81%E8%91%AC%E8%80%85%E8%8A%99%E8%8E%89%E8%8E%B2%20%E7%AC%AC%E4%BA%8C%E5%AD%A3%20%2F%20%E8%91%AC%E9%80%81%E3%81%AE%E3%83%95%E3%83%AA%E3%83%BC%E3%83%AC%E3%83%B3%20%E7%AC%AC%E4%BA%8C%E6%9C%9F%20%2F%20Sousou%20no%20Frieren%202nd%20Season%20-%2037%20%5BWebRip%5D%5BHEVC-10bit%201080p%5D%5B%E7%AE%80%E7%B9%81%E6%97%A5%E5%86%85%E5%B0%81%5D%EF%BC%88%E6%A3%80%E7%B4%A2%E7%94%A8%EF%BC%9A%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2%20%E7%AC%AC%E4%BA%8C%E5%AD%A3%EF%BC%89&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce",
+    "torrent": "https://nyaa.net/download/2099067.torrent",
+    "page": "https://nyaa.net/view/2099067",
+    "resolution": "1080P",
+    "size": "710.2 MiB",
+    "subtitle": "中字",
+    "sources": [
+      "nyaa"
+    ],
+    "episodeStart": 0,
+    "episodeEnd": 0,
+    "isBatch": false
+  },
+  {
+    "title": "[❀拨雪寻春❀] 送葬者芙莉莲第二季/ 葬送のフリーレン 第二期/ Sousou no Frieren 2nd Season - 38 [WebRip][HEVC-10bit 1080p][简繁日内封]（检索用：葬送的芙莉莲第二季）",
+    "magnet": "magnet:?xt=urn:btih:5a273992839ab058f3120d0b5767890f8202b321&dn=%5B%E2%9D%80%E6%8B%A8%E9%9B%AA%E5%AF%BB%E6%98%A5%E2%9D%80%5D%20%E9%80%81%E8%91%AC%E8%80%85%E8%8A%99%E8%8E%89%E8%8E%B2%20%E7%AC%AC%E4%BA%8C%E5%AD%A3%20%2F%20%E8%91%AC%E9%80%81%E3%81%AE%E3%83%95%E3%83%AA%E3%83%BC%E3%83%AC%E3%83%B3%20%E7%AC%AC%E4%BA%8C%E6%9C%9F%20%2F%20Sousou%20no%20Frieren%202nd%20Season%20-%2038%20%5BWebRip%5D%5BHEVC-10bit%201080p%5D%5B%E7%AE%80%E7%B9%81%E6%97%A5%E5%86%85%E5%B0%81%5D%EF%BC%88%E6%A3%80%E7%B4%A2%E7%94%A8%EF%BC%9A%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2%20%E7%AC%AC%E4%BA%8C%E5%AD%A3%EF%BC%89&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce",
+    "torrent": "https://nyaa.net/download/2099408.torrent",
+    "page": "https://nyaa.net/view/2099408",
+    "resolution": "1080P",
+    "size": "642.5 MiB",
+    "subtitle": "中字",
+    "sources": [
+      "nyaa"
+    ],
+    "episodeStart": 0,
+    "episodeEnd": 0,
+    "isBatch": false
+  },
+  {
+    "title": "[❀拨雪寻春❀] 送葬者芙莉莲第二季/ 葬送のフリーレン 第二期/ Sousou no Frieren 2nd Season - 37 [WebRip][HEVC-10bit 1080p][简日内嵌]（检索用：葬送的芙莉莲第二季）",
+    "magnet": "magnet:?xt=urn:btih:4350a985b3c65fe31617407d340f5ee4b8a75510&dn=%5B%E2%9D%80%E6%8B%A8%E9%9B%AA%E5%AF%BB%E6%98%A5%E2%9D%80%5D%20%E9%80%81%E8%91%AC%E8%80%85%E8%8A%99%E8%8E%89%E8%8E%B2%20%E7%AC%AC%E4%BA%8C%E5%AD%A3%20%2F%20%E8%91%AC%E9%80%81%E3%81%AE%E3%83%95%E3%83%AA%E3%83%BC%E3%83%AC%E3%83%B3%20%E7%AC%AC%E4%BA%8C%E6%9C%9F%20%2F%20Sousou%20no%20Frieren%202nd%20Season%20-%2037%20%5BWebRip%5D%5BHEVC-10bit%201080p%5D%5B%E7%AE%80%E6%97%A5%E5%86%85%E5%B5%8C%5D%EF%BC%88%E6%A3%80%E7%B4%A2%E7%94%A8%EF%BC%9A%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2%20%E7%AC%AC%E4%BA%8C%E5%AD%A3%EF%BC%89&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce",
+    "torrent": "https://nyaa.net/download/2099065.torrent",
+    "page": "https://nyaa.net/view/2099065",
+    "resolution": "1080P",
+    "size": "610.0 MiB",
+    "subtitle": "中字",
+    "sources": [
+      "nyaa"
+    ],
+    "episodeStart": 0,
+    "episodeEnd": 0,
+    "isBatch": false
+  },
+  {
+    "title": "[北宇治字幕组] 葬送的芙莉莲/ Sousou no Frieren [36][WebRip][1080p][HEVC_AAC][简繁日内封]",
+    "magnet": "magnet:?xt=urn:btih:27e517212a878ac905ad37b66bdeee41450d7ff2&dn=%5B%E5%8C%97%E5%AE%87%E6%B2%BB%E5%AD%97%E5%B9%95%E7%BB%84%5D%20%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2%20%2F%20Sousou%20no%20Frieren%20%5B36%5D%5BWebRip%5D%5B1080p%5D%5BHEVC_AAC%5D%5B%E7%AE%80%E7%B9%81%E6%97%A5%E5%86%85%E5%B0%81%5D&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce",
+    "torrent": "https://nyaa.net/download/2092441.torrent",
+    "page": "https://nyaa.net/view/2092441",
+    "resolution": "1080P",
+    "size": "636.9 MiB",
+    "subtitle": "中字",
+    "sources": [
+      "nyaa"
+    ],
+    "episodeStart": 0,
+    "episodeEnd": 0,
+    "isBatch": false
+  }
+];
+  const result = normalizeBtSearchResult({ ...payload, rawResultCount: 40, uniqueResultCount: 39, items: originalItems }, request());
+  const nodes = renderBtForwardNodes(result, request(), "12345");
+  assert.equal(nodes.length, 6);
+  assert.ok(nodes[0].text.includes("共 39 条资源"));
+  for (const [index, original] of originalItems.entries()) {
+    const lines = nodes[index + 1].text.split("\n");
+    assert.ok(lines.includes(original.magnet));
+    assert.ok(lines.includes(original.torrent));
+    assert.ok(lines.includes(original.page));
+    assert.ok(nodes[index + 1].text.includes(original.title));
+  }
 });
