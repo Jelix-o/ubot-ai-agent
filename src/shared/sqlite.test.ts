@@ -16,6 +16,31 @@ function tempDb(t: test.TestContext): string {
   return path.join(dir, "bot-shared.db");
 }
 
+test("forward payload migration upgrades an already versioned database and tolerates a pre-applied column", t => {
+  for (const preApplied of [false, true]) {
+    const dbPath = tempDb(t);
+    const old = new SharedDb(dbPath);
+    const originalId = old.enqueueOutbox("group-old", null, "old queued text");
+    old.db.exec("DELETE FROM schema_migrations WHERE version = 19");
+    if (!preApplied) old.db.exec("ALTER TABLE outbox DROP COLUMN forward_payload_json");
+    assert.equal(old.listSchemaMigrations().at(-1)?.version, 18);
+    old.close();
+
+    const upgraded = new SharedDb(dbPath);
+    const original = upgraded.db.prepare("SELECT text, forward_payload_json FROM outbox WHERE id = ?").get(originalId);
+    assert.equal(original?.text, "old queued text");
+    assert.equal(original?.forward_payload_json, null);
+    const payload = '[{"senderId":"12345","senderName":"会仙","text":"magnet:?xt=urn:btih:abc&dn=%25"}]';
+    const cardId = upgraded.enqueueOutbox("group-bt", null, "short fallback", "forward", undefined, payload);
+    upgraded.close();
+
+    const reopened = new SharedDb(dbPath);
+    assert.equal(reopened.listSchemaMigrations().filter(migration => migration.version === 19).length, 1);
+    assert.equal(reopened.db.prepare("SELECT forward_payload_json FROM outbox WHERE id = ?").get(cardId)?.forward_payload_json, payload);
+    reopened.close();
+  }
+});
+
 test("participation decisions persist the latest auditable policy result per source message", (t) => {
   const db = new SharedDb(tempDb(t));
 
@@ -207,6 +232,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 16, name: "add-knowledge-source-command-bindings" },
       { version: 17, name: "admin-analytics-and-bulk-operations" },
       { version: 18, name: "durable-bulk-target-results" },
+      { version: 19, name: "add-outbox-forward-payload" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -228,7 +254,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
