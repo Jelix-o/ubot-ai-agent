@@ -1185,6 +1185,8 @@ test("BT entries work for ordinary members without @ and never call chat or reco
   assert.equal(dailyReportService.recorded.length, 0);
   assert.ok(transport.sent.some(message => message.text.includes("未找到")));
   assert.ok(transport.sent.some(message => message.text.includes("--source")));
+  const briefHelp = transport.sent.find(message => message.text.startsWith("【BT 搜索】 #bt <"));
+  assert.equal(briefHelp?.text.split("\n").length, 4);
 });
 
 function btCardResult(query = "测试", fromCache = false) {

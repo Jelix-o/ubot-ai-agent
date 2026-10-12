@@ -1358,7 +1358,7 @@ export class BotApplication {
   private async handleBtSearchCommand(groupConfig: GroupBotConfig, command: BtCommandMatch, signal?: AbortSignal): Promise<void> {
     const groupId = groupConfig.groupId;
     // Every segment is excluded from later conversation evidence.
-    const send = (message: string) => this.sendText(groupId, `【BT 搜索】\n${message}`);
+    const send = (message: string, compactHeader = false) => this.sendText(groupId, `【BT 搜索】${compactHeader ? " " : "\n"}${message}`);
     if (!this.isCapabilityEnabled("bt_search")) {
       await send("BT 搜索功能未启用");
       return;
@@ -1373,7 +1373,7 @@ export class BotApplication {
     };
     try {
       const request = parseBtSearchRequest(command.suffix);
-      if (!request) { await send(escapeBtText(btHelp(command.primary, /(?:^|\s)(?:--help|-h)(?:\s|$)/u.test(command.suffix)))); return; }
+      if (!request) { await send(escapeBtText(btHelp(command.primary, /(?:^|\s)(?:--help|-h)(?:\s|$)/u.test(command.suffix))), true); return; }
       if (!this.btSearchService) { await send("BT 搜索暂不可用，请稍后再试"); return; }
       const result = await this.btSearchService.search(request, {
         signal,
