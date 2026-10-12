@@ -98,3 +98,11 @@ Before V3 migration completes, the deploy script restores the old `current` sele
 3. Escalate with the exact release version, migration output, unit journal, and a copy of the restricted backup. An approved operator decides whether a manual database restore or a forward-only repair is appropriate.
 
 Never run a legacy release against a V3-migrated data directory, and never retry historical pending/sending Outbox rows automatically.
+
+## BT search operations (v3.0.34)
+
+Install the pinned Python and browser dependencies using `assets/bt/README.md` before enabling `#bt` / `/bt`. Keep the venv and browsers under `/opt/ai-project/bt-runtime`, and caches, site health, cookies and Chromium XDG state under persistent `data/bt/`; the service handles `ProtectHome` without accessing user home directories. Set `UBOT_BT_PROXY` to an existing verified SOCKS5 proxy if needed.
+
+The worker owns one global search slot with four waiting requests. Full searches have a 180-second total deadline and default 30-second per-site timeout; fast searches stop at 15 seconds, returning available partial results. Command settings live in the existing backend command editor. `bt_search` is an explicit capability added by the additive upgrade while retaining existing command customizations.
+
+Before migrating, the deployer saves the old capability policy. Restore that policy before selecting a binary that does not recognize `bt_search`; see `docs/ROLLBACK-v3.md`. Policy rollback never rewinds message or outbox state.

@@ -511,6 +511,23 @@ test("knowledge binding APIs enforce role, group scope, conflict validation and 
   })).status, 409, "system commands cannot take knowledge bindings");
 });
 
+test("BT command can be renamed and disabled through the admin API and rejects namespace collisions", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const before = await (await request(baseUrl, "/api/commands", { headers })).json() as { commands: Array<{ id: string; primary: string; aliases: string[]; enabled: boolean }> };
+  const bt = before.commands.find(command => command.id === "bt_search")!;
+  assert.equal(bt.primary, "#bt");
+  assert.deepEqual(bt.aliases, ["/bt"]);
+  const put = (command: unknown) => request(baseUrl, "/api/commands", { method: "PUT", headers, body: JSON.stringify({ commands: [command] }) });
+  assert.equal((await put({ ...bt, primary: "#模型" })).status, 409);
+  assert.equal((await put({ ...bt, primary: "#资源", aliases: ["/搜索"], enabled: false })).status, 200);
+  const after = await (await request(baseUrl, "/api/commands", { headers })).json() as typeof before;
+  assert.equal(after.commands.find(command => command.id === "bt_search")?.enabled, false);
+  assert.equal(after.commands.find(command => command.id === "bt_search")?.primary, "#资源");
+  assert.deepEqual(after.commands.filter(command => command.id !== "bt_search"), before.commands.filter(command => command.id !== "bt_search"));
+});
+
 test("group administrators are limited to authorized groups and operational features", async (t) => {
   const { baseUrl } = await startFixture(t);
   const superAdmin = await login(baseUrl);

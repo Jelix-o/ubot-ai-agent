@@ -319,6 +319,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     huixianProfileRevision: { applied: boolean; revision: string };
     groupVisionEnabled: { applied: boolean; groupsUpdated: number };
     imageGenerationCapability: { changed: boolean; initialized?: boolean };
+    btSearchCapability: { changed: boolean };
     knowledgePacks: { enabledGroups: number; created: number };
   };
   assert.equal(report.mode, "existing-cutover-upgrade");
@@ -328,6 +329,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
   assert.deepEqual(report.huixianProfileRevision, { applied: true, revision: "immersive-natural-v3.0.3" });
   assert.deepEqual(report.groupVisionEnabled, { applied: true, groupsUpdated: 1 });
   assert.deepEqual(report.imageGenerationCapability, { changed: true });
+  assert.deepEqual(report.btSearchCapability, { changed: true });
   assert.deepEqual(report.knowledgePacks, { enabledGroups: 1, created: 1 });
   assert.equal(existsSync(path.join(dataDir, "v3-rollback")), false);
   assert.equal(readFileSync(path.join(appRoot, "config", "groups.json"), "utf8"), "{ malformed groups JSON");
@@ -347,6 +349,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     repository.saveGroup({ ...repository.getGroup("10001")!, visionEnabled: false });
     const policy = repository.getCapabilityPolicy();
     assert.equal(policy?.enabledCapabilities.includes("image_generation"), true);
+    assert.equal(policy?.enabledCapabilities.includes("bt_search"), true);
     assert.equal(policy?.providerCapabilities?.openai?.includes("imageGeneration"), true);
     assert.equal(repository.getKnowledgePack("10001")?.enabled, true);
   } finally {
@@ -365,11 +368,13 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     huixianProfileRevision: { applied: boolean; revision: string };
     groupVisionEnabled: { applied: boolean; groupsUpdated: number };
     imageGenerationCapability: { changed: boolean; initialized?: boolean };
+    btSearchCapability: { changed: boolean };
     knowledgePacks: { enabledGroups: number; created: number };
   };
   assert.deepEqual(repeated.huixianProfileRevision, { applied: false, revision: "immersive-natural-v3.0.3" });
   assert.deepEqual(repeated.groupVisionEnabled, { applied: false, groupsUpdated: 0 });
   assert.deepEqual(repeated.imageGenerationCapability, { changed: false });
+  assert.deepEqual(repeated.btSearchCapability, { changed: false });
   assert.deepEqual(repeated.knowledgePacks, { enabledGroups: 1, created: 0 });
 
   const afterRepeat = new SharedDb(dbPath);

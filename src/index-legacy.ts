@@ -1,4 +1,6 @@
 import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
+import path from "node:path";
+import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
 import { AdminHttpServer } from "./admin-http-server.js";
 import { NapCatClient } from "./napcat-client.js";
@@ -172,6 +174,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     undefined,
     loadPrivateEnterpriseRanking(),
     new KnowledgeSourceBindingStore(v3State),
+    new BtSearchService({ dataDir: path.join(config.dataDir, "bt") }),
   );
 
   const adminHttpServer = config.adminHttpEnabled
@@ -224,6 +227,15 @@ async function startLegacyBot(): Promise<BotApplication> {
       if (rowId === 0) {
         return;
       }
+      if (await app.getBtCommand(parsed.text)) {
+        const group = await groupConfigService.getGroup(groupId);
+        if (!(group?.blacklistedUserIds ?? []).includes(userId)) {
+          sharedDb.recordParticipationDecision({ sourceRowId: rowId, groupId, userId, action: "admin_command",
+            reason: "administrative_command", score: 1, policyVersion: "bt-search-v1", signals: { isCommand: true } });
+        }
+        await app.handleGroupMessage(event);
+        return;
+      }
       const recent = sharedDb.listRecentGroupMessages(groupId, messageTime - 60 * 60 * 1_000);
       atmosphere.update(groupId, recent.map((row) => ({
         groupId: row.group_id,
@@ -232,7 +244,7 @@ async function startLegacyBot(): Promise<BotApplication> {
         text: row.text || (safeImageCount(row.images_json) > 0 ? "[图片消息]" : ""),
         timestamp: new Date(row.msg_time).toISOString(),
       })).filter((message) => Boolean(message.text)), messageTime);
-      const isAdministrativeCommand = parsed.text.trim().startsWith("#");
+      const isAdministrativeCommand = await app.isSystemCommand(parsed.text);
       // A OneBot reply segment alone is not an authorization to speak. Match
       // the worker path: only a same-group, acknowledged bot message may
       // continue without an explicit @.

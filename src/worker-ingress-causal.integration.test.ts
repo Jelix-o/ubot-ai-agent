@@ -25,6 +25,7 @@ import type {
   SkillDefinition,
 } from "./types.js";
 import { WorkerTransport } from "./worker-transport.js";
+import type { BtSearchRuntime } from "./services/bt-search-service.js";
 
 const BOT_QQ = "12345";
 const GROUP_ID = "67890";
@@ -702,6 +703,7 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
 interface TestBotOptions {
   groupConfigOverrides?: Partial<GroupBotConfig>;
   dailyReportRecords?: Array<{ groupId: string; userId: string; text: string }>;
+  btSearchService?: BtSearchRuntime;
 }
 
 function createBot(
@@ -793,8 +795,48 @@ function createBot(
     undefined,
     undefined,
     recentGroupEvidenceService,
+    undefined, undefined, undefined, undefined,
+    options.btSearchService,
   );
 }
+
+test("Worker isolates both BT entries without mentions, routes or later context leakage", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-bt-"));
+  const db = openSharedDb(dataDir);
+  const transport = new WorkerTransport(db);
+  const repository = new ConversationContextRepository(db);
+  const ai = new CapturingAiService();
+  const searches: string[] = [];
+  const bot = createBot(transport, repository, ai, undefined, { btSearchService: { async search(request) {
+    searches.push(request.query);
+    return { query: request.query, requestedType: "anime", resolvedType: "anime", items: [], sites: [], warnings: [],
+      totalResults: 0, rawResultCount: 0, uniqueResultCount: 0, durationMs: 0, fromCache: false, cacheAgeMs: 0, budgetExceeded: false };
+  } } });
+  const worker = new WorkerApp({ dataDir, botApp: bot, consumerKey: "worker:bt-test", isBlacklistedUser: async () => false }, transport);
+  t.after(async () => { await bot.stop(); await worker.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
+  const now = Date.now();
+  const insert = (text: string, id: string, time: number) => db.insertMessage({ groupId: GROUP_ID, userId: USER_ID, selfId: BOT_QQ, msgId: id,
+    msgTime: time, text, imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: time });
+  insert("#bt 测试 anime", "bt-hash", now - 4000);
+  insert("/bt 测试 anime", "bt-slash", now - 3000);
+  worker.start();
+  await waitFor(() => (db.db.prepare("SELECT watermark_id FROM consumers WHERE key='worker:bt-test'").get() as { watermark_id: number })?.watermark_id === 2);
+  assert.equal(searches.length, 2);
+  assert.equal(ai.calls.length, 0);
+  assert.equal((db.db.prepare("SELECT count(*) AS n FROM conversation_message_routes").get() as { n: number }).n, 0);
+  const outbox = db.db.prepare("SELECT id, text, topic_id, branch_id FROM outbox").all() as Array<{ id: number; text: string; topic_id: string | null; branch_id: string | null }>;
+  assert.equal(outbox.length, 2);
+  for (const row of outbox) {
+    assert.equal(row.topic_id, null);
+    assert.equal(row.branch_id, null);
+    assert.ok(row.text.startsWith("【BT 搜索】"));
+    db.ackOutboxDelivery(row.id, `bt-receipt-${row.id}`, now - 2000);
+  }
+  const sourceRowId = insert("current question", "context-boundary", now);
+  const context = db.listAmbientGroupContext({ groupId: GROUP_ID, beforeSourceRowId: sourceRowId, lookbackMs: 60_000, limit: 30 });
+  assert.deepEqual(context, []);
+  assert.deepEqual(db.listRecentGroupMessages(GROUP_ID, now - 60_000).map(row => row.text), ["current question"]);
+});
 
 function inboundEvent(input: {
   messageId: number;

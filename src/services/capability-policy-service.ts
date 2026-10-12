@@ -13,6 +13,7 @@ export const V3_RUNTIME_CAPABILITIES = [
   "realtime_lookup",
   "html_preview",
   "image_generation",
+  "bt_search",
 ] as const;
 
 export type V3RuntimeCapability = typeof V3_RUNTIME_CAPABILITIES[number];

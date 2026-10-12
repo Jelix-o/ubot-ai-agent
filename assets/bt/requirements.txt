@@ -1,0 +1,2 @@
+curl_cffi==0.16.3
+scrapling[fetchers]==0.4.15

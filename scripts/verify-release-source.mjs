@@ -3,6 +3,7 @@ import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import btReleaseFiles from "./bt-release-files.cjs";
 
 const [rootArg, ...optionArgs] = process.argv.slice(2);
 const root = path.resolve(rootArg ?? process.cwd());
@@ -39,6 +40,7 @@ const allowedRootNames = new Set([
   "install-deps.cmd",
 ]);
 const requiredPaths = [
+  ...btReleaseFiles,
   "package.json",
   "package-lock.json",
   "README.md",
@@ -79,6 +81,7 @@ const requiredPaths = [
 // `assets/`, or `docs/` directory would make it too easy to ship local state
 // or an operator-only helper by accident.
 const approvedStaticFiles = new Set([
+  ...btReleaseFiles,
   ".env.example",
   ".env.server-2022.example",
   "COMMANDS.md",

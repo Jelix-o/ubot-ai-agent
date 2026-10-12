@@ -97,6 +97,8 @@ $itemsToCopy = @(
   "assets/blacklisted-at-meme.jpg"
 )
 
+$itemsToCopy += @(node "$projectRoot/scripts/bt-release-files.cjs")
+if ($LASTEXITCODE -ne 0) { throw "Cannot read BT release allow-list" }
 foreach ($item in $itemsToCopy) {
   $source = Join-Path $projectRoot $item
   if (-not (Test-Path -LiteralPath $source)) {

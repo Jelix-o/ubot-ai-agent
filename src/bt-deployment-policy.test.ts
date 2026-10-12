@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { SharedDb } from "./shared/sqlite.js";
+
+test("BT rollback restores the exact prior capability policy without rewinding messages", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "bt-policy-"));
+  const dbPath = path.join(root, "bot.db");
+  const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
+  const snapshot = path.join(root, "policy.json");
+  const helper = path.resolve("scripts/bt-capability-policy.mjs");
+  const oldPolicy = JSON.stringify({ version: 1, enabledCapabilities: ["conversation"], providerCapabilities: { openai: ["chat"] } });
+  db.db.prepare("INSERT INTO v3_capability_policies (policy_key, policy_json, updated_at) VALUES ('default', ?, 100)").run(oldPolicy);
+  execFileSync(process.execPath, [helper, "backup", dbPath, snapshot]);
+  db.db.prepare("UPDATE v3_capability_policies SET policy_json=?, updated_at=200 WHERE policy_key='default'").run(JSON.stringify({ version: 1, enabledCapabilities: ["conversation", "bt_search"] }));
+  db.enqueueOutbox("10001", null, "a message created after backup");
+  execFileSync(process.execPath, [helper, "restore", dbPath, snapshot]);
+  const restored = db.db.prepare("SELECT policy_json, updated_at FROM v3_capability_policies WHERE policy_key='default'").get() as { policy_json: string; updated_at: number };
+  assert.equal(restored.policy_json, oldPolicy);
+  assert.equal(restored.updated_at, 100);
+  assert.equal((db.db.prepare("SELECT count(*) AS n FROM outbox").get() as { n: number }).n, 1);
+  db.db.prepare("DELETE FROM v3_capability_policies").run();
+  execFileSync(process.execPath, [helper, "backup", dbPath, snapshot]);
+  db.db.prepare("INSERT INTO v3_capability_policies (policy_key, policy_json, updated_at) VALUES ('default', '{}', 300)").run();
+  execFileSync(process.execPath, [helper, "restore", dbPath, snapshot]);
+  assert.equal(db.db.prepare("SELECT * FROM v3_capability_policies").get(), undefined);
+});

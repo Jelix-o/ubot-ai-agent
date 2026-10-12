@@ -2,6 +2,7 @@ import { logWarn } from "../logger.js";
 import type { GroupBotConfig, SystemSettings } from "../types.js";
 import { parseExplicitMemoryRequest } from "./explicit-memory-service.js";
 import { ParticipationPolicy, type ParticipationDecision } from "./participation-policy.js";
+import { isSystemCommandText } from "./command-prefixes.js";
 
 const CHENGFENG_TRIGGER_GROUP_ID = "866209871";
 const CHENGFENG_TRIGGER_KEYWORD = "乘风";
@@ -11,7 +12,7 @@ export interface GroupParticipationConfigReader {
 }
 
 export interface GroupParticipationSettingsReader {
-  get(): Promise<Pick<SystemSettings, "defaultTriggerKeywords">>;
+  get(): Promise<Pick<SystemSettings, "defaultTriggerKeywords"> & Partial<Pick<SystemSettings, "commands">>>;
 }
 
 export interface GroupParticipationDecisionOptions {
@@ -41,7 +42,7 @@ export class GroupParticipationService {
   ): Promise<ParticipationDecision> {
     const groupConfig = await this.groupConfigReader.getGroup(groupId);
     const normalized = text.trim();
-    const isCommand = normalized.startsWith("#");
+    const isCommand = isSystemCommandText(normalized, (await this.readSettings())?.commands);
     const isExplicitMemoryRequest = Boolean(parseExplicitMemoryRequest(normalized));
     const keywordTriggered = groupConfig && groupConfig.enabled !== false && groupConfig.botMuted !== true && allowsKeywordParticipation(groupConfig)
       ? await this.shouldTriggerKeyword(groupConfig, text, hasAtBot, text)
@@ -70,7 +71,7 @@ export class GroupParticipationService {
     hasAtBot: boolean,
     commandText = text,
   ): Promise<boolean> {
-    if (!allowsKeywordParticipation(groupConfig) || hasAtBot || commandText.trim().startsWith("#")) {
+    if (!allowsKeywordParticipation(groupConfig) || hasAtBot || isSystemCommandText(commandText, (await this.readSettings())?.commands)) {
       return false;
     }
 
@@ -101,6 +102,10 @@ export class GroupParticipationService {
     return groupId === CHENGFENG_TRIGGER_GROUP_ID
       ? [{ keyword: CHENGFENG_TRIGGER_KEYWORD, enabled: true }]
       : [];
+  }
+
+  private async readSettings(): Promise<(Pick<SystemSettings, "defaultTriggerKeywords"> & Partial<Pick<SystemSettings, "commands">>) | undefined> {
+    try { return await this.settingsReader?.get(); } catch { return undefined; }
   }
 }
 

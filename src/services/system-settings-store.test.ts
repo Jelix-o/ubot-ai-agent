@@ -35,6 +35,19 @@ async function withDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+test("SystemSettingsStore adds BT while preserving existing command customizations on upgrade", async () => {
+  await withDir(async dir => {
+    const file = path.join(dir, "settings.json");
+    await writeFile(file, JSON.stringify({ commands: [{ id: "help", title: "自定义帮助", primary: "#指南", aliases: ["#guide"], enabled: false }] }));
+    const store = new SystemSettingsStore(file);
+    const commands = (await store.get()).commands;
+    assert.equal(commands.find(command => command.id === "help")?.primary, "#指南");
+    assert.equal(commands.find(command => command.id === "help")?.enabled, false);
+    assert.equal(commands.find(command => command.id === "bt_search")?.primary, "#bt");
+    assert.deepEqual(commands.find(command => command.id === "bt_search")?.aliases, ["/bt"]);
+  });
+});
+
 test("SystemSettingsStore redacts provider keys from public reads", async () => {
   await withDir(async (dir) => {
     const store = new SystemSettingsStore(path.join(dir, "settings.json"), [

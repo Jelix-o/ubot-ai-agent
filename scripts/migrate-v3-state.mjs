@@ -23,6 +23,7 @@ const DEFAULT_V3_ENABLED_CAPABILITIES = [
   "daily_reports", "holiday_countdown", "realtime_lookup",
   "html_preview",
   "image_generation",
+  "bt_search",
 ];
 const DEFAULT_V3_PROVIDER_CAPABILITIES = {
   openai: ["chat", "vision", "streaming", "reasoningEffort", "requestTimeout", "imageGeneration"],
@@ -177,6 +178,7 @@ async function runExistingCutoverUpgrade() {
       }),
       htmlPreviewCapability: enableHtmlPreviewCapability(repository, now),
       imageGenerationCapability: enableImageGenerationCapability(repository, now),
+      btSearchCapability: enableBtSearchCapability(repository, now),
       knowledgePacks: repository.ensureKnowledgePacksForEnabledGroups(now),
     }));
     writeReport({
@@ -256,6 +258,20 @@ function defaultV3CapabilityPolicy(now) {
     providerCapabilities: structuredClone(DEFAULT_V3_PROVIDER_CAPABILITIES),
     updatedAt: new Date(now).toISOString(),
   };
+}
+
+function enableBtSearchCapability(repository, now) {
+  const policy = repository.getCapabilityPolicy();
+  if (!policy) {
+    repository.saveCapabilityPolicy(defaultV3CapabilityPolicy(now), now);
+    return { changed: true, initialized: true };
+  }
+  if (policy.enabledCapabilities.includes("bt_search")) return { changed: false };
+  repository.saveCapabilityPolicy({ ...policy,
+    enabledCapabilities: [...policy.enabledCapabilities, "bt_search"],
+    updatedAt: new Date(now).toISOString(),
+  }, now);
+  return { changed: true };
 }
 
 async function runMaintenance() {

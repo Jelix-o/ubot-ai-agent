@@ -1,5 +1,6 @@
 import { AdminBulkService, BulkError, revision, type BulkPayload, type BulkTarget } from "./services/admin-bulk-service.js";
 import { ModelTelemetryStore, type AnalyticsFilter } from "./services/model-telemetry.js";
+import { btSystemCommandConflict } from "./services/command-prefixes.js";
 import { StateConflictError, type MutationGuard } from "./services/state-mutation.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -3952,7 +3953,7 @@ function minutesToTime(value: number): string {
 function normalizeCommandConfigList(value: unknown, current: SystemCommandConfig[]): SystemCommandConfig[] {
   const currentById = new Map(current.map((command) => [command.id, command]));
   const raw = Array.isArray(value) ? value : [];
-  return raw
+  const updates = raw
     .map((item) => {
       const record = item as Partial<SystemCommandConfig>;
       const id = String(record.id ?? "").trim();
@@ -3964,13 +3965,17 @@ function normalizeCommandConfigList(value: unknown, current: SystemCommandConfig
         ...existing,
         title: typeof record.title === "string" && record.title.trim() ? record.title.trim().slice(0, 80) : existing.title,
         primary: typeof record.primary === "string" && record.primary.trim() ? record.primary.trim().slice(0, 40) : existing.primary,
-        aliases: normalizeNames(record.aliases).slice(0, 12),
+        aliases: record.aliases === undefined ? existing.aliases : normalizeNames(record.aliases).slice(0, 12),
         enabled: record.enabled !== false,
         help: typeof record.help === "string" ? record.help.trim().slice(0, 400) : existing.help,
         updatedAt: new Date().toISOString(),
       };
     })
     .filter((item): item is SystemCommandConfig => Boolean(item));
+  const byId = new Map(updates.map(command => [command.id, command]));
+  const commands = current.map(command => byId.get(command.id) ?? command);
+  if (btSystemCommandConflict(commands)) throw new AdminRequestBodyError("command_conflict", 409);
+  return commands;
 }
 
 function buildKnowledgeImportCandidates(text: string): KnowledgeCandidate[] {

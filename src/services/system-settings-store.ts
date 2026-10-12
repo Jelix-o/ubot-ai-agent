@@ -595,6 +595,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     permission: SystemCommandConfig["permission"];
     help: string;
   }> = [
+    { id: "bt_search", title: "BT 资源搜索", primary: "#bt", aliases: ["/bt"], permission: "member", help: "搜索动漫、影视和成人资源，返回磁力与种子链接；支持 --fast、--full 和来源筛选" },
     { id: "conversation", title: "对话", primary: "#对话", aliases: ["#clear"], permission: "member", help: "清空或管理当前群对话上下文" },
     { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
     { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图"], permission: "super_admin", help: "根据文字提示生成一张图片" },

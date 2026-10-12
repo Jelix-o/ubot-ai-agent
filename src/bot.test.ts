@@ -24,6 +24,7 @@ import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
 import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
+import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -1029,6 +1030,7 @@ function createApp(options?: {
   imageGenerationService?: ImageGenerationRuntime;
   privateEnterpriseRanking?: PrivateEnterpriseRanking;
   knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
+  btSearchService?: BtSearchRuntime;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1137,6 +1139,7 @@ function createApp(options?: {
     options?.imageGenerationService,
     options?.privateEnterpriseRanking,
     options?.knowledgeSourceBindingStore,
+    options?.btSearchService,
   );
 
   return {
@@ -1154,6 +1157,50 @@ function createApp(options?: {
     knowledgeBaseStore,
   };
 }
+
+test("BT entries work for ordinary members without @ and never call chat or record memory", async () => {
+  const calls: string[] = [];
+  const btSearchService: BtSearchRuntime = { async search(request, options) {
+    calls.push(request.query);
+    await options?.onStarted?.();
+    return { query: request.query, requestedType: "anime", resolvedType: "anime", items: [], sites: [], warnings: [],
+      totalResults: 0, rawResultCount: 0, uniqueResultCount: 0, durationMs: 1, fromCache: false, cacheAgeMs: 0, budgetExceeded: false };
+  } };
+  const { app, transport, aiService, groupMemoryStore, conversationStore, dailyReportService } = createApp({ btSearchService });
+  for (const text of ["#bt 测试 anime", "/bt 测试 anime", "#bt", "/bt --bad 测试"]) await app.handleGroupMessage(createEvent(text));
+  assert.deepEqual(calls, ["测试", "测试"]);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(groupMemoryStore.memories.length, 0);
+  assert.deepEqual(conversationStore.turnsByKey, {});
+  assert.equal(dailyReportService.recorded.length, 0);
+  assert.ok(transport.sent.some(message => message.text.includes("未找到")));
+  assert.ok(transport.sent.some(message => message.text.includes("--source")));
+});
+
+test("BT respects group silence, blacklist, command disabling and configured renaming", async () => {
+  let count = 0;
+  const btSearchService: BtSearchRuntime = { async search() { count++; throw new BtSearchError("busy"); } };
+  const settings = new FakeSystemSettingsStore([{ id: "bt_search", title: "搜索", primary: "/搜索", aliases: ["#资源"], enabled: true, permission: "member", help: "", updatedAt: "" }]);
+  const { app, transport, aiService, groupConfigService } = createApp({ btSearchService, systemSettingsStore: settings });
+  await app.handleGroupMessage(createEvent("/搜索 test"));
+  await app.handleGroupMessage(createEvent("#资源 test"));
+  assert.equal(count, 2);
+  assert.ok(transport.sent.every(message => message.text.includes("繁忙")));
+  groupConfigService.groups[0]!.botMuted = true;
+  await app.handleGroupMessage(createEvent("/搜索 test"));
+  groupConfigService.groups[0]!.botMuted = false;
+  groupConfigService.groups[0]!.blacklistedUserIds = ["20001"];
+  await app.handleGroupMessage(createEvent("/搜索 test"));
+  groupConfigService.groups[0]!.blacklistedUserIds = [];
+  groupConfigService.groups[0]!.enabled = false;
+  await app.handleGroupMessage(createEvent("/搜索 test"));
+  groupConfigService.groups[0]!.enabled = true;
+  (await settings.get()).commands[0]!.enabled = false;
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "/搜索 test 创建网页" } }]));
+  assert.equal(count, 2);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, 2);
+});
 
 test("responds to mentioned group message without writing legacy personal history", async () => {
   const { app, transport, aiService, conversationStore } = createApp();
