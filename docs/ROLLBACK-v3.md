@@ -5,6 +5,27 @@ but it never automatically restores SQLite or replays QQ history after the V3
 cutover marker may have been written. This protects message causality and
 prevents accidental duplicate sends.
 
+## v3.0.34 capability policy rollback
+
+The deployer saves `capability-policy.json` next to the offline SQLite backup
+before enabling `bt_search`. A failed additive upgrade restores this exact
+policy before starting the prior target. It does not rewind messages/outbox.
+
+For a manual rollback to v3.0.33 or earlier, stop all V3 services, restore the
+policy with the v3.0.34 helper, then select the prior release and restart:
+
+```bash
+sudo systemctl stop ubot.target
+sudo -u ubuntu node /opt/ai-project-releases/v3.0.34/scripts/bt-capability-policy.mjs \
+  restore /opt/ai-project/data/shared/bot-shared.db \
+  /opt/ai-project/release-backups/<deployment>-v3.0.34/capability-policy.json
+# Select the verified prior release using the established atomic-link procedure.
+sudo systemctl start ubot.target
+```
+
+Keep services stopped if policy restore fails. Older binaries reject unknown
+capabilities, so switching only the release symlink is insufficient.
+
 ## Before State Cutover
 
 If the deployment fails before `migrate-v3-state.mjs --execute` starts, the

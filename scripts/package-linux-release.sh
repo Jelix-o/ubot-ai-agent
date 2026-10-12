@@ -87,6 +87,10 @@ for release_path in \
   copy_release_path "$release_path"
 done
 
+while IFS= read -r release_path; do
+  copy_release_path "$release_path"
+done < <(node scripts/bt-release-files.cjs)
+
 find "$STAGING_DIR/dist" -type f -name '*.test.js' -delete
 
 node scripts/verify-release-source.mjs "$STAGING_DIR"

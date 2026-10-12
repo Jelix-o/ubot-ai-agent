@@ -5,6 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 
 import {
   headquartersResearchApprovalPayload,
@@ -23,6 +24,7 @@ const reviewKeyIdName = "UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_
 const releaseVersion = String(JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8")).version);
 
 const releasePaths = [
+  ...createRequire(import.meta.url)(path.join(projectRoot, "scripts/bt-release-files.cjs")) as string[],
   ".env.example",
   ".env.server-2022.example",
   "COMMANDS.md",

@@ -1,4 +1,7 @@
 import { withModelOperation } from "./services/model-telemetry.js";
+import { BT_COMMAND_PRIMARY, BT_COMMAND_ALIASES, matchBtCommand, isSystemCommandText, type BtCommandMatch } from "./services/command-prefixes.js";
+import { BtSearchError, parseBtSearchRequest, type BtSearchRuntime } from "./services/bt-search-service.js";
+import { btHelp, escapeBtText, renderBtSearchMessages } from "./services/bt-search-renderer.js";
 import os from "node:os";
 
 import { logError, logInfo, logWarn } from "./logger.js";
@@ -176,6 +179,7 @@ const ROAST_MODE_SCENARIO_INSTRUCTION = [
 ].join("\n");
 
 const RUNTIME_COMMAND_SPECS = {
+  bt_search: { builtinPrefix: BT_COMMAND_PRIMARY, builtinAliases: BT_COMMAND_ALIASES },
   blacklist: { builtinPrefix: BLACKLIST_PREFIX, builtinAliases: [] },
   conversation: { builtinPrefix: CONVERSATION_PREFIX, builtinAliases: [CLEAR_GROUP_CONTEXT_COMMAND] },
   daily_report: { builtinPrefix: DAILY_REPORT_PREFIX, builtinAliases: [] },
@@ -449,6 +453,7 @@ export class BotApplication {
     private readonly imageGenerationService?: ImageGenerationRuntime,
     private readonly privateEnterpriseRanking?: PrivateEnterpriseRanking,
     private readonly knowledgeSourceBindingStore = new KnowledgeSourceBindingStore(),
+    private readonly btSearchService?: BtSearchRuntime,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -484,6 +489,7 @@ export class BotApplication {
 
   async stop(): Promise<void> {
     this.maintenanceScheduler.stop();
+    await this.btSearchService?.stop?.();
     await this.conversationStore.flush();
   }
 
@@ -494,6 +500,14 @@ export class BotApplication {
 
   private async getRuntimeCommands(): Promise<SystemCommandConfig[]> {
     return readRuntimeCommands(this.systemSettingsStore);
+  }
+
+  async getBtCommand(text: string): Promise<BtCommandMatch | undefined> {
+    return matchBtCommand(text, await this.getRuntimeCommands());
+  }
+
+  async isSystemCommand(text: string): Promise<boolean> {
+    return isSystemCommandText(text, await this.getRuntimeCommands());
   }
 
   /**
@@ -508,7 +522,7 @@ export class BotApplication {
     }
     // A disabled runtime command remains disabled. Do not let the pure parser
     // reinterpret its literal `#网页` spelling as a natural-language request.
-    if (text.trim().startsWith("#")) {
+    if (isSystemCommandText(text, commands)) {
       return undefined;
     }
     return parseHtmlPreviewRequest(text, hasAtBot);
@@ -583,7 +597,7 @@ export class BotApplication {
     const triggeredReply = parsedMessage.hasAtBot || options.allowReplyWithoutMention === true;
     const canContinueKnowledge = Boolean(previousKnowledgeSession &&
       Date.now() - previousKnowledgeSession.updatedAt < KNOWLEDGE_CONTINUATION_WINDOW_MS &&
-      triggeredReply && !commandText.trim().startsWith("#") &&
+      triggeredReply && !isSystemCommandText(commandText, runtimeCommands) &&
       (!parsedMessage.replyMessageId || Boolean(previousKnowledgeSession.branchId &&
         previousKnowledgeSession.branchId === conversationRoute?.branchId)) &&
       isKnowledgeContinuation(previousKnowledgeSession, incomingText));
@@ -610,6 +624,12 @@ export class BotApplication {
       if (parsedMessage.hasAtBot) {
         await this.maybeSendBlacklistedAtMeme(groupId);
       }
+      return;
+    }
+
+    const btCommand = matchBtCommand(commandText, runtimeCommands);
+    if (btCommand) {
+      if (btCommand.enabled && groupConfig.botMuted !== true) await this.handleBtSearchCommand(groupConfig, btCommand, signal);
       return;
     }
 
@@ -837,7 +857,7 @@ export class BotApplication {
       return;
     }
 
-    const naturalHtmlPreviewRequest = commandText.trim().startsWith("#")
+    const naturalHtmlPreviewRequest = isSystemCommandText(commandText, runtimeCommands)
       ? undefined
       : parseHtmlPreviewRequest(parsedMessage.text, parsedMessage.hasAtBot);
     if (naturalHtmlPreviewRequest?.source === "natural") {
@@ -1327,6 +1347,40 @@ export class BotApplication {
       logWarn("Failed to clean generated image files.", {
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  private async handleBtSearchCommand(groupConfig: GroupBotConfig, command: BtCommandMatch, signal?: AbortSignal): Promise<void> {
+    const groupId = groupConfig.groupId;
+    // Every segment is excluded from later conversation evidence.
+    const send = (message: string) => this.sendText(groupId, `【BT 搜索】\n${message}`);
+    if (!this.isCapabilityEnabled("bt_search")) {
+      await send("BT 搜索功能未启用");
+      return;
+    }
+    try {
+      const request = parseBtSearchRequest(command.suffix);
+      if (!request) { await send(escapeBtText(btHelp(command.primary))); return; }
+      if (!this.btSearchService) { await send("BT 搜索暂不可用，请稍后再试"); return; }
+      const result = await this.btSearchService.search(request, {
+        signal,
+        onStarted: async () => { await send(request.fast ? "正在快速搜索 BT 资源…" : "正在搜索 BT 资源，完整搜索最多约 3 分钟…"); },
+      });
+      for (const message of renderBtSearchMessages(result, request)) {
+        if (signal?.aborted) return;
+        await send(message);
+      }
+      logInfo("BT search completed.", { groupId, type: result.resolvedType, resultCount: result.items.length, durationMs: result.durationMs, fromCache: result.fromCache });
+    } catch (error) {
+      if (signal?.aborted || (error instanceof BtSearchError && error.code === "cancelled")) return;
+      if (error instanceof BtSearchError && error.code === "invalid_arguments") {
+        await send(escapeBtText(`${error.message}\n\n${btHelp(command.primary)}`));
+        return;
+      }
+      const message = error instanceof BtSearchError && error.code === "busy" ? "BT 搜索繁忙，请稍后再试" :
+        error instanceof BtSearchError && error.code === "timeout" ? "BT 搜索超时，请换个来源或加 --fast 后重试" : "BT 搜索失败，请稍后再试";
+      logWarn("BT search failed.", { groupId, errorCode: error instanceof BtSearchError ? error.code : "unknown" });
+      await send(message);
     }
   }
 
@@ -4433,6 +4487,11 @@ function matchRuntimeCommand(
     return undefined;
   }
 
+  if (commandId === "bt_search") {
+    const match = matchBtCommand(commandText, commands);
+    return match?.enabled ? { matchedPrefix: match.primary, suffix: match.suffix, rewrittenText: `${BT_COMMAND_PRIMARY} ${match.suffix}`.trim() } : undefined;
+  }
+
   if (commandId === "mute") {
     return matchMuteRuntimeCommand(commandText, configured);
   }
@@ -5088,6 +5147,12 @@ type HelpSection = {
 function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean): HelpSection[] {
   return [
     {
+      title: "BT 搜索", aliases: ["bt", "资源", "bt搜索", "资源搜索"],
+      lines: [`${command("bt_search")} <关键词> [anime|movie|adult]`,
+        "默认完整搜索，展示前 5 条；--fast 加速，--full 展开分站详情。",
+        "支持 --source、--timeout、--limit、--no-cache、--no-deep、--json、--debug。"],
+    },
+    {
       title: "对话",
       aliases: ["对话", "聊天", "chat"],
       lines: [
@@ -5172,6 +5237,7 @@ function buildHelpOverviewMessage(
 ): string {
   const features = [
     "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
+    `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`,
     ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>（仅超级管理员）`] : []),
     `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
     `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,

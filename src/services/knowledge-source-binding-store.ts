@@ -13,6 +13,7 @@ export const DEFAULT_KNOWLEDGE_SOURCE_COMMANDS: Readonly<Record<KnowledgeSourceI
 };
 
 const BUILTIN_COMMANDS = [
+  "#bt", "/bt",
   "#对话", "#clear", "#网页", "#html", "#画图", "#生图", "#功能", "#帮助", "#命令",
   "#模型", "#闭嘴", "#说话", "#实时对话", "#日报", "#节假日", "#定时任务", "#状态",
   "#操作日志", "#服务器", "#告警", "#记忆", "#知识库", "#拉黑", "#健康检查", "#健康",

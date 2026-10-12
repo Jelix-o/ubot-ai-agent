@@ -1266,6 +1266,10 @@ export class SharedDb {
         `SELECT group_id, user_id, msg_id, msg_time, text, images_json
            FROM messages
           WHERE group_id = ? AND msg_time >= ? AND is_bot_msg = 0
+            AND lower(trim(text)) NOT IN ('#bt', '/bt')
+            AND lower(ltrim(text)) NOT LIKE '#bt %'
+            AND lower(ltrim(text)) NOT LIKE '/bt %'
+            AND NOT EXISTS (SELECT 1 FROM participation_decisions p WHERE p.source_row_id = messages.id AND p.action = 'admin_command')
           ORDER BY id DESC
           LIMIT ?`,
       )
@@ -1354,6 +1358,11 @@ export class SharedDb {
             AND is_bot_msg = 0
             AND processable = 1
             AND (text = '' OR ltrim(text) NOT LIKE '#%')
+            AND NOT (lower(trim(text)) = '/bt' OR lower(ltrim(text)) LIKE '/bt %')
+            AND NOT EXISTS (
+              SELECT 1 FROM participation_decisions p
+              WHERE p.source_row_id = messages.id AND p.action = 'admin_command'
+            )
             ${exclusionClause}
           ORDER BY id DESC
           LIMIT ?`,
@@ -1378,6 +1387,7 @@ export class SharedDb {
             WHERE group_id = ?
               AND status = 'sent'
               AND kind = 'text'
+              AND text NOT LIKE '【BT 搜索】%'
               AND sent_at IS NOT NULL
               AND sent_at >= ?
               AND sent_at < ?

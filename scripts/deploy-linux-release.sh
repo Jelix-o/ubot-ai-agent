@@ -827,6 +827,13 @@ rollback() {
   restore_persistent_env
   restore_preview_nginx_files
   restore_unit_files
+  local policy_restored=1
+  if [[ -f "$BACKUP_DIR/capability-policy.json" ]]; then
+    if ! node "$DEPLOY_SCRIPT_DIR/bt-capability-policy.mjs" restore "$DB_PATH" "$BACKUP_DIR/capability-policy.json"; then
+      policy_restored=0
+      echo "Capability policy restore failed; keep the previous services stopped and restore the saved policy before restarting." >&2
+    fi
+  fi
   if [[ -n "$old_current_target" ]]; then
     switch_current_link "$old_current_target" || true
   else
@@ -840,13 +847,13 @@ rollback() {
   if [[ "$cutover_may_have_started" -eq 0 && "$old_legacy_active" -eq 1 ]]; then
     sudo systemctl start "$LEGACY_SERVICE" || true
   fi
-  if [[ "$cutover_may_have_started" -eq 0 && "$old_target_active" -eq 1 ]]; then
+  if [[ "$cutover_may_have_started" -eq 0 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 ]]; then
     sudo systemctl start ubot.target || true
   fi
   # An additive upgrade starts from an already cut-over V3 database. Its
   # migrations are transactional and old V3 code remains compatible with
   # extra tables, so restart the previous target after configuration rollback.
-  if [[ "$cutover_may_have_started" -eq 1 && "$existing_cutover_before_deploy" -eq 1 && "$old_target_active" -eq 1 ]]; then
+  if [[ "$cutover_may_have_started" -eq 1 && "$existing_cutover_before_deploy" -eq 1 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 ]]; then
     sudo systemctl start ubot.target || true
   elif [[ "$cutover_may_have_started" -eq 1 ]]; then
     echo "V3 state migration may have changed SQLite. Release, unit, Nginx, dotenv, and NapCat configuration were restored. Do not restart the legacy service; use docs/OPERATIONS-v3.md for manual recovery." >&2
@@ -960,6 +967,7 @@ try {
 }
 NODE
   chmod 600 "$BACKUP_DIR/bot-shared.db"
+  node "$DEPLOY_SCRIPT_DIR/bt-capability-policy.mjs" backup "$DB_PATH" "$BACKUP_DIR/capability-policy.json"
 fi
 
 # Parse, but never source or print, secrets from the persistent dotenv file.

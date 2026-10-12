@@ -1,4 +1,5 @@
 import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
+import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
 import { logError, logInfo } from "./logger.js";
@@ -141,6 +142,11 @@ export class WorkerApp {
         if (await this.isBlacklistedMessage(message)) {
           return `${message.group_id}:blacklisted`;
         }
+        if (await this.options.botApp.getBtCommand(message.text)) {
+          await this.getOrRecordParticipationDecision(message);
+          // Each request reaches the bounded global search queue immediately.
+          return `${message.group_id}:bt-search:${message.id}`;
+        }
         this.updateAtmosphere(message.group_id, message.msg_time);
         const previewRequest = await this.options.botApp.getHtmlPreviewRequest(
           message.text,
@@ -151,7 +157,7 @@ export class WorkerApp {
         }
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
         // 等指令全部被当成自由发言跳过，指令不生效）。
-        const isCommand = message.text.trim().startsWith("#");
+        const isCommand = await this.options.botApp.isSystemCommand(message.text);
         if (isCommand) {
           const decision = await this.getOrRecordParticipationDecision(message);
           this.metrics.inc(`participation_decision_${decision.action}`);
@@ -252,7 +258,8 @@ export class WorkerApp {
       Boolean(message.has_at_bot),
     );
     const isPreview = Boolean(previewRequest);
-    const isCommand = message.text.trim().startsWith("#");
+    const isBt = Boolean(await this.options.botApp.getBtCommand(message.text));
+    const isCommand = await this.options.botApp.isSystemCommand(message.text);
     const participation = isCommand || isPreview
       ? undefined
       : await this.getOrRecordParticipationDecision(message);
@@ -272,7 +279,9 @@ export class WorkerApp {
     const route = !isRoutedConversation
       ? undefined
       : this.contextRepository.getRouteBySourceRowId(message.id) ?? this.resolveRoute(message);
-    const key = isPreview
+    const key = isBt
+      ? `${message.group_id}:bt-search:${message.id}`
+      : isPreview
       ? `${message.group_id}:html-preview`
       : isCommand
         ? `${message.group_id}:command`
@@ -334,7 +343,7 @@ export class WorkerApp {
 
     // Conversation keys retain their existing in-flight merge semantics.
     const existingInflight = this.sharedDb.getInflight(key);
-    if (existingInflight && !isPreview) {
+    if (existingInflight && !isPreview && !isBt) {
       const decision = this.inflight.decideNewMessage(key, message.text, Date.now());
       if (decision.action === "drop") {
         this.metrics.inc("duplicate_trigger_dropped");
@@ -709,6 +718,7 @@ async function buildBotApp(
     imageGenerationService,
     loadPrivateEnterpriseRanking(),
     new KnowledgeSourceBindingStore(v3State),
+    new BtSearchService({ dataDir: path.join(dataDir, "bt") }),
   );
   return { botApp, groupConfigService };
 }
