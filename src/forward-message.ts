@@ -1,10 +1,16 @@
-import type { MessageReceipt, MessageTransport } from "./bot.js";
+import type { ForwardAutoRecallOptions, MessageReceipt, MessageTransport } from "./bot.js";
 import { NapCatActionRejectedError } from "./napcat-action-errors.js";
 
 export interface ForwardMessageNode {
   senderId: string;
   senderName: string;
   text: string;
+}
+
+export interface ForwardDeliveryResult {
+  /** `forward` means the card itself was accepted by NapCat; `fallback` means only fallback text was sent. */
+  kind: "forward" | "fallback";
+  receipt: void | MessageReceipt;
 }
 
 export const BT_FORWARD_FALLBACK_TEXT = "【BT 搜索】\n合并转发暂不可用，请稍后重新搜索。";
@@ -40,12 +46,20 @@ export function parseForwardNodes(json: string | null | undefined): ForwardMessa
 
 /** Never fall back after an ambiguous send, which could create a duplicate. */
 export async function sendForwardOrFallback(
-  transport: MessageTransport, groupId: string, nodes: ForwardMessageNode[], fallbackText: string,
-): Promise<void | MessageReceipt> {
-  if (!transport.sendGroupForwardMessage) return transport.sendGroupMessage(groupId, fallbackText);
-  try { return await transport.sendGroupForwardMessage(groupId, nodes); }
+  transport: MessageTransport,
+  groupId: string,
+  nodes: ForwardMessageNode[],
+  fallbackText: string,
+  options?: ForwardAutoRecallOptions,
+): Promise<ForwardDeliveryResult> {
+  if (!transport.sendGroupForwardMessage) {
+    return { kind: "fallback", receipt: await transport.sendGroupMessage(groupId, fallbackText) };
+  }
+  try {
+    return { kind: "forward", receipt: await transport.sendGroupForwardMessage(groupId, nodes, options) };
+  }
   catch (error) {
     if (!(error instanceof NapCatActionRejectedError)) throw error;
-    return transport.sendGroupMessage(groupId, fallbackText);
+    return { kind: "fallback", receipt: await transport.sendGroupMessage(groupId, fallbackText) };
   }
 }

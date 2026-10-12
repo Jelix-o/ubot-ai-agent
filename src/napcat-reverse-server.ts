@@ -8,7 +8,7 @@ import { logInfo, logWarn } from "./logger.js";
 import { toNapCatForwardNodes, type ForwardMessageNode } from "./forward-message.js";
 import { NapCatActionNotSentError, NapCatActionOutcomeUnknownError, napCatActionFailure } from "./napcat-action-errors.js";
 export { NapCatActionNotSentError, NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
-import type { TransportHealthStatus } from "./bot.js";
+import type { ForwardAutoRecallOptions, TransportHealthStatus } from "./bot.js";
 import type {
   GroupMemberIdentity,
   MessageImageInput,
@@ -164,13 +164,17 @@ export class NapCatReverseServer extends EventEmitter<{
     return toMessageReceipt(response.data);
   }
 
-  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]) {
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[], _options?: ForwardAutoRecallOptions) {
     const response = await this.callAction<NapCatSendMessageResponse>("send_group_forward_msg", {
       group_id: Number(groupId), messages: toNapCatForwardNodes(nodes),
     });
     const receipt = toMessageReceipt(response.data);
     if (!receipt?.platformMessageId?.trim()) throw new NapCatActionOutcomeUnknownError("Forward send succeeded without a message id");
     return receipt;
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    await this.callAction("delete_msg", { message_id: messageId });
   }
 
   async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
@@ -261,7 +265,7 @@ export class NapCatReverseServer extends EventEmitter<{
         return;
       }
 
-      if (parsed.post_type === "notice" && parsed.notice_type === "group_recall" && parsed.message_type === "group") {
+      if (parsed.post_type === "notice" && parsed.notice_type === "group_recall") {
         this.emit("groupRecall", parsed);
         return;
       }

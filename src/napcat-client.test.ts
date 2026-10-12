@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { WebSocketServer } from "ws";
 
 import { NapCatClient } from "./napcat-client.js";
 import { NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
@@ -24,12 +25,94 @@ test("HTTP forward API keeps literal content and never retries ambiguous request
   };
   const client = new NapCatClient({ wsUrl: "ws://127.0.0.1:3001/onebot/v11/ws" });
   const nodes = [{ senderId: "12345", senderName: "会仙", text }];
-  assert.deepEqual(await client.sendGroupForwardMessage("67890", nodes), { messageId: "9002", platformMessageId: "9002" });
+  const recallOptions = { autoRecall: { afterMs: 90_000, deadlineMs: 105_000 } };
+  assert.deepEqual(await client.sendGroupForwardMessage("67890", nodes, recallOptions), { messageId: "9002", platformMessageId: "9002" });
   for (const next of ["rejected", "rejected-timeout", "404", "500", "network", "invalid", "missing-id"]) {
     mode = next;
     await assert.rejects(client.sendGroupForwardMessage("67890", nodes), ["rejected", "404"].includes(next) ? NapCatActionRejectedError : NapCatActionOutcomeUnknownError);
   }
   assert.equal(attempts, 8);
+});
+
+test("HTTP delete_msg keeps the outer message id and classifies recall outcomes", async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let mode = "ok";
+  let attempts = 0;
+  globalThis.fetch = async (input, init) => {
+    attempts++;
+    assert.equal(String(input), "http://127.0.0.1:3001/delete_msg");
+    assert.deepEqual(JSON.parse(String(init?.body)), { message_id: "outer-card-id-9002" });
+    if (mode === "network") throw new Error("lost connection");
+    if (mode === "404") return new Response("unsupported", { status: 404 });
+    if (mode === "500") return new Response("unknown", { status: 500 });
+    if (mode === "invalid") return new Response("invalid JSON", { status: 200 });
+    return new Response(JSON.stringify({
+      status: mode.startsWith("rejected") ? "failed" : "ok",
+      retcode: mode.startsWith("rejected") ? 1404 : 0,
+      message: mode === "rejected-timeout" ? "delete timeout" : "",
+      data: {},
+    }), { status: 200 });
+  };
+
+  const client = new NapCatClient({ wsUrl: "ws://127.0.0.1:3001/onebot/v11/ws" });
+  await client.deleteMessage("outer-card-id-9002");
+  for (const next of ["rejected", "rejected-timeout", "404", "500", "network", "invalid"]) {
+    mode = next;
+    await assert.rejects(
+      client.deleteMessage("outer-card-id-9002"),
+      ["rejected", "404"].includes(next) ? NapCatActionRejectedError : NapCatActionOutcomeUnknownError,
+    );
+  }
+  assert.equal(attempts, 7);
+});
+
+test("WebSocket delete_msg classifies explicit rejection and indeterminate delivery", async t => {
+  const wsServer = new WebSocketServer({ port: 0 });
+  if (!wsServer.address()) await new Promise<void>(resolve => wsServer.once("listening", resolve));
+  const address = wsServer.address();
+  if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+
+  let mode = "ok";
+  const actions: any[] = [];
+  wsServer.on("connection", socket => {
+    socket.on("message", raw => {
+      const action = JSON.parse(raw.toString());
+      actions.push(action);
+      if (mode === "timeout") return;
+      socket.send(JSON.stringify({
+        echo: action.echo,
+        status: mode.startsWith("rejected") ? "failed" : "ok",
+        retcode: mode.startsWith("rejected") ? 1404 : 0,
+        message: mode === "rejected-timeout" ? "delete timeout" : "",
+        data: {},
+      }));
+    });
+  });
+
+  const connected = new Promise<void>(resolve => wsServer.once("connection", () => resolve()));
+  const client = new NapCatClient({ wsUrl: `ws://127.0.0.1:${address.port}`, actionTimeoutMs: 80 });
+  client.connect();
+  const opened = new Promise<void>((resolve, reject) => {
+    const socket = (client as any).socket;
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  await connected;
+  await opened;
+  t.after(() => { client.close(); wsServer.close(); });
+
+  await client.deleteMessage("outer-card-id-9003");
+  assert.deepEqual(actions[0] && { action: actions[0].action, params: actions[0].params }, {
+    action: "delete_msg",
+    params: { message_id: "outer-card-id-9003" },
+  });
+  mode = "rejected";
+  await assert.rejects(client.deleteMessage("9003"), NapCatActionRejectedError);
+  mode = "rejected-timeout";
+  await assert.rejects(client.deleteMessage("9003"), NapCatActionOutcomeUnknownError);
+  mode = "timeout";
+  await assert.rejects(client.deleteMessage("9003"), NapCatActionOutcomeUnknownError);
 });
 
 test("falls back to HTTP send_group_msg when websocket is not open", async () => {
@@ -140,4 +223,27 @@ test("emits groupMessage for group message events", async () => {
   );
 
   assert.equal(await eventPromise, 67890);
+});
+
+test("emits groupRecall for group recall notices", async () => {
+  const client = new NapCatClient({ wsUrl: "ws://127.0.0.1:3001" });
+  const eventPromise = new Promise<any>((resolve) => {
+    client.once("groupRecall", resolve);
+  });
+
+  (client as any).handleMessage(JSON.stringify({
+    post_type: "notice",
+    notice_type: "group_recall",
+    group_id: 67890,
+    message_id: 9003,
+    operator_id: 12345,
+  }));
+
+  assert.deepEqual(await eventPromise, {
+    post_type: "notice",
+    notice_type: "group_recall",
+    group_id: 67890,
+    message_id: 9003,
+    operator_id: 12345,
+  });
 });

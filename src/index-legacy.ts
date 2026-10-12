@@ -44,13 +44,16 @@ import { openSharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { extractImagesFromMessage, parseGroupMessage } from "./utils/message-parser.js";
+import { MessageRecallService } from "./message-recall-service.js";
 
 type NapCatRuntime = MessageTransport & {
   start(): void;
   on(event: "groupMessage", listener: (event: NapcatGroupMessageEvent) => void): unknown;
+  on(event: "groupRecall", listener: (event: unknown) => void): unknown;
 };
 
 let activeLegacyBot: BotApplication | undefined;
+let activeLegacyMessageRecalls: MessageRecallService | undefined;
 let legacyStartup: Promise<BotApplication> | undefined;
 let shuttingDown = false;
 
@@ -121,6 +124,19 @@ async function startLegacyBot(): Promise<BotApplication> {
           wsUrl: config.napcatWsUrl,
           accessToken: config.napcatAccessToken,
         });
+  const messageRecalls = new MessageRecallService(sharedDb, napcatRuntime);
+  napcatRuntime.scheduleMessageRecall = (groupId, platformMessageId, policy) => {
+    sharedDb.scheduleDirectMessageRecall(groupId, platformMessageId, policy);
+  };
+  napcatRuntime.on("groupRecall", (payload) => {
+    const event = payload as { group_id?: string | number; message_id?: string | number };
+    const groupId = String(event.group_id ?? "");
+    const messageId = String(event.message_id ?? "");
+    if (groupId && messageId) {
+      sharedDb.markRetracted(groupId, messageId, Date.now());
+      messageRecalls.observeGroupRecall(groupId, messageId);
+    }
+  });
 
   const app = new BotApplication(
     napcatRuntime,
@@ -284,6 +300,8 @@ async function startLegacyBot(): Promise<BotApplication> {
 
   app.start();
   napcatRuntime.start();
+  messageRecalls.start();
+  activeLegacyMessageRecalls = messageRecalls;
   adminHttpServer?.start();
   logInfo("NapCat QQ skill bot started.", {
     mode: config.napcatMode,
@@ -393,6 +411,7 @@ const shutdown = async () => {
   shuttingDown = true;
   logInfo("Shutting down legacy runtime...");
   try {
+    await activeLegacyMessageRecalls?.stop();
     const bot = activeLegacyBot ?? await legacyStartup;
     await bot?.stop();
     logInfo("Legacy shutdown complete.");

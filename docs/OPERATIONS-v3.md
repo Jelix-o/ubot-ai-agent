@@ -120,3 +120,17 @@ and terminal; do not replay those rows. An acknowledgement persistence failure
 also remains quarantined for reconciliation. A disconnected socket before
 dispatch is safe to retry. QQ card presentation is checked through the user's
 normal searches; automated delivery checks use mock transports.
+
+Starting in v3.0.38, a result set whose final resolved type is `adult` has
+the fixed adult-content warning as the first line of its first forward node.
+Only a successfully delivered outer QQ forward card with a real platform
+message ID is eligible for silent recall: Ingress persists a recall task at
+acknowledgement time, first calls `delete_msg` 90 seconds later, and may retry
+once only when the first action was definitely not dispatched. It never starts
+a new recall action after 105 seconds. Rejected, ambiguous, unsupported and
+externally recalled cards end their task without any group notice. The fallback
+text used after an explicit forward rejection is never recalled. Recall tasks
+store delivery identifiers and timing only; they do not store the search query,
+magnet links or card contents. Inspect task states through the shared SQLite
+database and service logs when validating an upgrade; do not manually replay
+terminal recall actions.

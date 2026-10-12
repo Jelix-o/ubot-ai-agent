@@ -32,7 +32,8 @@ test("reverse forward API keeps literal links, returns ids and distinguishes rej
   });
   const text = "[CQ:at,qq=all]\nmagnet:?xt=urn:btih:123&dn=%E5%AE%8C%E6%95%B4&tr=udp%3A%2F%2Ftracker.test";
   const nodes = [{ senderId: "12345", senderName: "会仙", text }];
-  assert.deepEqual(await server.sendGroupForwardMessage("67890", nodes), { messageId: "9001", platformMessageId: "9001" });
+  const recallOptions = { autoRecall: { afterMs: 90_000, deadlineMs: 105_000 } };
+  assert.deepEqual(await server.sendGroupForwardMessage("67890", nodes, recallOptions), { messageId: "9001", platformMessageId: "9001" });
   assert.equal(actions[0].action, "send_group_forward_msg");
   assert.deepEqual(actions[0].params, { group_id: 67890, messages: [{ type: "node", data: { user_id: 12345, nickname: "会仙", content: [{ type: "text", data: { text } }] } }] });
   mode = "rejected";
@@ -46,7 +47,46 @@ test("reverse forward API keeps literal links, returns ids and distinguishes rej
   assert.equal(actions.length, 5);
 });
 
-test("reverse server accepts token and emits group events", async () => {
+test("reverse server recalls the outer message id and preserves action outcome classification", async t => {
+  const server = new NapCatReverseServer({ host: "127.0.0.1", port: 0, path: "/onebot/ws", actionTimeoutMs: 80 });
+  server.start();
+  const http = (server as any).httpServer;
+  if (!http.listening) await new Promise<void>(resolve => http.once("listening", resolve));
+  const ws = new WebSocket(`ws://127.0.0.1:${http.address().port}/onebot/ws`);
+  t.after(() => { ws.terminate(); server.close(); });
+  await new Promise<void>((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
+
+  let mode = "ok";
+  const actions: any[] = [];
+  ws.on("message", data => {
+    const action = JSON.parse(data.toString());
+    actions.push(action);
+    if (mode === "timeout") return;
+    ws.send(JSON.stringify({
+      echo: action.echo,
+      status: mode.startsWith("rejected") ? "failed" : "ok",
+      retcode: mode.startsWith("rejected") ? 1404 : 0,
+      message: mode === "rejected-timeout" ? "delete timeout" : "",
+      data: {},
+    }));
+  });
+
+  await server.deleteMessage("outer-card-id-9001");
+  assert.deepEqual(actions[0], {
+    action: "delete_msg",
+    params: { message_id: "outer-card-id-9001" },
+    echo: actions[0]?.echo,
+  });
+
+  mode = "rejected";
+  await assert.rejects(server.deleteMessage("9001"), NapCatActionRejectedError);
+  mode = "rejected-timeout";
+  await assert.rejects(server.deleteMessage("9001"), NapCatActionOutcomeUnknownError);
+  mode = "timeout";
+  await assert.rejects(server.deleteMessage("9001"), NapCatActionOutcomeUnknownError);
+});
+
+test("reverse server accepts token and emits group and recall events", async (t) => {
   const server = new NapCatReverseServer({
     host: "127.0.0.1",
     port: 0,
@@ -55,6 +95,7 @@ test("reverse server accepts token and emits group events", async () => {
   });
 
   server.start();
+  t.after(() => server.close());
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
@@ -86,8 +127,20 @@ test("reverse server accepts token and emits group events", async () => {
 
   assert.equal(await eventPromise, 866209871);
 
+  const recallPromise = new Promise<{ group_id: number; message_id: number }>((resolve) => {
+    server.once("groupRecall", (payload) => resolve(payload as { group_id: number; message_id: number }));
+  });
+  ws.send(JSON.stringify({
+    post_type: "notice",
+    notice_type: "group_recall",
+    group_id: 866209871,
+    message_id: 9004,
+  }));
+  const recall = await recallPromise;
+  assert.equal(recall.group_id, 866209871);
+  assert.equal(recall.message_id, 9004);
+
   ws.close();
-  server.close();
 });
 
 test("reverse server rejects wrong token", async () => {
@@ -252,6 +305,7 @@ test("reverse server classifies a missing socket as definitely not sent", async 
     server.sendGroupImage("866209871", "base64://image"),
     NapCatActionNotSentError,
   );
+  await assert.rejects(server.deleteMessage("9001"), NapCatActionNotSentError);
   server.close();
 });
 

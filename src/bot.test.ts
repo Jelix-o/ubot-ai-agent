@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   BotApplication,
+  type ForwardAutoRecallOptions,
   type HtmlPreviewFallbackRoute,
   type MemeLibraryRuntimeService,
   type MessageTransport,
@@ -26,6 +27,7 @@ import { SharedDb } from "./shared/sqlite.js";
 import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
 import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-service.js";
 import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
+import { BT_ADULT_CONTENT_WARNING } from "./services/bt-search-renderer.js";
 import { NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
@@ -50,12 +52,18 @@ import type {
 
 class FakeTransport implements MessageTransport {
   readonly sent: Array<{ groupId: string; text: string }> = [];
-  readonly forwards: Array<{ groupId: string; nodes: ForwardMessageNode[] }> = [];
+  readonly forwards: Array<{ groupId: string; nodes: ForwardMessageNode[]; options?: ForwardAutoRecallOptions }> = [];
+  readonly scheduledRecalls: Array<{ groupId: string; platformMessageId: string; policy: NonNullable<ForwardAutoRecallOptions["autoRecall"]> }> = [];
   sendForwardError?: Error;
-  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]) {
+  scheduleMessageRecallError?: Error;
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[], options?: ForwardAutoRecallOptions) {
     if (this.sendForwardError) throw this.sendForwardError;
-    this.forwards.push({ groupId, nodes });
+    this.forwards.push({ groupId, nodes, options });
     return { messageId: String(this.nextSentMessageId++) };
+  }
+  async scheduleMessageRecall(groupId: string, platformMessageId: string, policy: NonNullable<ForwardAutoRecallOptions["autoRecall"]>) {
+    if (this.scheduleMessageRecallError) throw this.scheduleMessageRecallError;
+    this.scheduledRecalls.push({ groupId, platformMessageId, policy });
   }
   readonly images: Array<{ groupId: string; imageFile: string }> = [];
   readonly generatedImages: Array<{ groupId: string; imagePath: string }> = [];
@@ -1211,6 +1219,58 @@ test("BT fast and cached results send only one card, including full/debug/JSON o
   for (const node of transport.forwards[3]!.nodes.slice(1)) assert.doesNotThrow(() => JSON.parse(node.text));
   assert.equal(aiService.calls.length, 0);
   assert.deepEqual(conversationStore.turnsByKey, {});
+});
+
+test("BT adult cards receive a 90-second auto-recall policy and one in-card warning", async t => {
+  const adult = (query: string, fromCache = false) => ({
+    ...btCardResult(query, fromCache),
+    requestedType: "adult" as const,
+    resolvedType: "adult" as const,
+  });
+  const { app, transport } = createApp({ btSearchService: { async search(request, options) {
+    await options?.onStarted?.();
+    if (request.query === "无结果") return { ...adult(request.query), items: [], totalResults: 0, rawResultCount: 0, uniqueResultCount: 0 };
+    if (request.query === "动漫") return btCardResult(request.query);
+    return adult(request.query, request.query === "缓存");
+  } } });
+  t.after(() => app.stop());
+  for (const command of ["#bt 成人 adult", "#bt 缓存 adult", "#bt 成人 adult --full", "#bt 成人 adult --debug", "#bt 成人 adult --json"]) {
+    await app.handleGroupMessage(createEvent(command));
+  }
+  await app.handleGroupMessage(createEvent("#bt 动漫 anime"));
+  await app.handleGroupMessage(createEvent("#bt 无结果 adult"));
+  for (const command of ["#bt 无结果 adult --full", "#bt 无结果 adult --debug", "#bt 无结果 adult --json"]) {
+    await app.handleGroupMessage(createEvent(command));
+  }
+
+  assert.equal(transport.forwards.length, 9);
+  for (const card of transport.forwards.slice(0, 5)) {
+    assert.deepEqual(card.options, { autoRecall: { afterMs: 90_000, deadlineMs: 105_000 } });
+    assert.equal(card.nodes[0]!.text.split("\n")[0], BT_ADULT_CONTENT_WARNING);
+    assert.equal(card.nodes.flatMap(node => node.text.split("\n")).filter(line => line.includes("【成人内容提示】")).length, 1);
+  }
+  for (const card of transport.forwards.slice(5)) assert.equal(card.options, undefined);
+  for (const card of transport.forwards.slice(6)) {
+    assert.equal(card.nodes[0]!.text.includes(BT_ADULT_CONTENT_WARNING), false);
+  }
+  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.scheduledRecalls.length, 5);
+  for (const recall of transport.scheduledRecalls) {
+    assert.equal(recall.groupId, "67890");
+    assert.deepEqual(recall.policy, { afterMs: 90_000, deadlineMs: 105_000 });
+  }
+
+  transport.sendForwardError = new NapCatActionRejectedError("unsupported");
+  await app.handleGroupMessage(createEvent("#bt 降级 adult"));
+  assert.equal(transport.scheduledRecalls.length, 5);
+  assert.deepEqual(transport.sent.at(-1), { groupId: "67890", text: BT_FORWARD_FALLBACK_TEXT });
+
+  transport.sendForwardError = undefined;
+  transport.scheduleMessageRecallError = new Error("sqlite busy");
+  await app.handleGroupMessage(createEvent("#bt 调度失败 adult"));
+  assert.equal(transport.forwards.length, 10);
+  assert.equal(transport.scheduledRecalls.length, 5);
+  assert.equal(transport.sent.length, 2);
 });
 
 test("BT sends one delayed progress message and cancels the timer on completion or cancellation", async t => {

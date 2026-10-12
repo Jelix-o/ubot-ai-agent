@@ -5,6 +5,21 @@ but it never automatically restores SQLite or replays QQ history after the V3
 cutover marker may have been written. This protects message causality and
 prevents accidental duplicate sends.
 
+## v3.0.38 adult-card recall rollback
+
+Migration 20 is additive: it adds nullable recall-policy fields to `outbox`
+and the `message_recalls` table. It does not alter card payloads, historic
+messages or completed outbox rows. Preserve these fields and the table when
+selecting an earlier binary; an older release can safely ignore them.
+
+Before stopping v3.0.38 for a rollback, leave the new Ingress running for up
+to 105 seconds after the last successful adult BT card delivery. This lets its
+durable silent-recall tasks reach their final action deadline. Do not manually
+replay pending or sending recall tasks under the old binary. If an immediate
+rollback is unavoidable, retain the SQLite state and restore v3.0.38 later to
+reconcile the retained task records; do not send any compensating group
+message.
+
 ## v3.0.35 forward-message rollback
 
 The upgrade adds a nullable `outbox.forward_payload_json` column and the

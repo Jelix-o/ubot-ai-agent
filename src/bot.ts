@@ -279,9 +279,21 @@ export interface TransportHealthStatus {
   detail: string;
 }
 
+export interface MessageRecallPolicy {
+  afterMs: number;
+  deadlineMs: number;
+}
+
+export interface ForwardAutoRecallOptions {
+  autoRecall?: MessageRecallPolicy;
+}
+
 export interface MessageTransport {
   sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
-  sendGroupForwardMessage?(groupId: string, nodes: ForwardMessageNode[]): Promise<void | MessageReceipt>;
+  sendGroupForwardMessage?(groupId: string, nodes: ForwardMessageNode[], options?: ForwardAutoRecallOptions): Promise<void | MessageReceipt>;
+  /** Persists a recall after a direct transport receives a real platform receipt. */
+  scheduleMessageRecall?(groupId: string, platformMessageId: string, policy: MessageRecallPolicy): Promise<void> | void;
+  deleteMessage?(messageId: string): Promise<void>;
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
   /** Queues a worker-local generated image for ingress delivery and cleanup. */
   sendGeneratedGroupImage?(groupId: string, imagePath: string): Promise<void | MessageReceipt>;
@@ -1390,7 +1402,21 @@ export class BotApplication {
       await finishProgress();
       if (signal?.aborted) return;
       if (result.items.length || request.json || request.full || request.debug) {
-        await sendForwardOrFallback(this.transport, groupId, renderBtForwardNodes(result, request, this.botQq), BT_FORWARD_FALLBACK_TEXT);
+        const autoRecall: ForwardAutoRecallOptions | undefined = result.resolvedType === "adult" && result.items.length > 0
+          ? { autoRecall: { afterMs: 90_000, deadlineMs: 105_000 } }
+          : undefined;
+        const delivery = await sendForwardOrFallback(this.transport, groupId, renderBtForwardNodes(result, request, this.botQq), BT_FORWARD_FALLBACK_TEXT, autoRecall);
+        const platformMessageId = delivery.receipt?.platformMessageId ?? delivery.receipt?.messageId;
+        if (delivery.kind === "forward" && autoRecall?.autoRecall && platformMessageId?.trim() && this.transport.scheduleMessageRecall) {
+          try {
+            await this.transport.scheduleMessageRecall(groupId, platformMessageId, autoRecall.autoRecall);
+          } catch (error) {
+            logWarn("BT adult card recall could not be scheduled after delivery.", {
+              groupId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
         this.liveChatService.recordBotActivity(groupId);
         await this.handleSendSuccessRecovery();
       } else {

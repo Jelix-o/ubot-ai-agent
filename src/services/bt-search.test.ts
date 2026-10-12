@@ -6,7 +6,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { BtSearchError, BtSearchService, btEngineArguments, normalizeBtSearchResult, parseBtSearchRequest, type BtSearchResult } from "./bt-search-service.js";
-import { btHelp, btEmptyResultMessage, renderBtForwardNodes } from "./bt-search-renderer.js";
+import { BT_ADULT_CONTENT_WARNING, btHelp, btEmptyResultMessage, renderBtForwardNodes } from "./bt-search-renderer.js";
 import { toNapCatForwardNodes } from "../forward-message.js";
 import { matchBtCommand } from "./command-prefixes.js";
 
@@ -66,6 +66,30 @@ test("BT forward nodes preserve complete links as literal text and distinguish e
     assert.equal(node.data.content[0]!.type, "text");
     assert.ok(node.data.content[0]!.data.text.includes("[CQ:at,qq=all]"));
     assert.ok(node.data.content[0]!.data.text.split("\n").includes(magnet));
+  }
+  for (const adultRequest of [
+    { ...request(), type: "adult" as const },
+    { ...request(), type: "adult" as const, full: true },
+    { ...request(), type: "adult" as const, debug: true },
+    { ...request(), type: "adult" as const, json: true },
+  ]) {
+    const baseline = renderBtForwardNodes(value, adultRequest, "12345");
+    const adultNodes = renderBtForwardNodes({ ...value, requestedType: "adult", resolvedType: "adult" }, adultRequest, "12345");
+    assert.equal(adultNodes.length, baseline.length);
+    assert.equal(adultNodes[0]!.text.split("\n")[0], BT_ADULT_CONTENT_WARNING);
+    assert.equal(adultNodes[0]!.text.split("\n").filter(line => line.includes("【成人内容提示】")).length, 1);
+    assert.ok(adultNodes[0]!.text.slice(`${BT_ADULT_CONTENT_WARNING}\n`.length).startsWith(`【BT 搜索】${value.query}（成人）`));
+    if (adultRequest.json) {
+      const adultMagnets = adultNodes.slice(1)
+        .map(node => JSON.parse(node.text) as { item?: { magnet?: string } })
+        .flatMap(value => value.item?.magnet ? [value.item.magnet] : []);
+      const baselineMagnets = baseline.slice(1)
+        .map(node => JSON.parse(node.text) as { item?: { magnet?: string } })
+        .flatMap(value => value.item?.magnet ? [value.item.magnet] : []);
+      assert.deepEqual(adultMagnets, baselineMagnets);
+    } else {
+      for (const [index, node] of adultNodes.slice(1).entries()) assert.equal(node.text, baseline[index + 1]!.text);
+    }
   }
   for (const [warning, expected] of [["", "未找到"], ["搜索超时", "超时"], ["Cloudflare 验证页", "验证页"], ["抓取依赖 curl_cffi 不可用", "依赖缺失"]]) {
     const empty = { ...value, items: [], warnings: warning ? [warning!] : [] };

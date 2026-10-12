@@ -5,7 +5,7 @@ import WebSocket, { type RawData } from "ws";
 import { logError, logInfo, logWarn } from "./logger.js";
 import { toNapCatForwardNodes, type ForwardMessageNode } from "./forward-message.js";
 import { NapCatActionNotSentError, NapCatActionRejectedError, NapCatActionOutcomeUnknownError, napCatActionFailure } from "./napcat-action-errors.js";
-import type { TransportHealthStatus } from "./bot.js";
+import type { ForwardAutoRecallOptions, TransportHealthStatus } from "./bot.js";
 import type {
   MessageImageInput,
   MessageSegment,
@@ -62,7 +62,10 @@ interface NapCatSendMessageResponse {
 
 const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
 
-export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessageEvent] }> {
+export class NapCatClient extends EventEmitter<{
+  groupMessage: [NapcatGroupMessageEvent];
+  groupRecall: [unknown];
+}> {
   private socket?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
   private readonly httpBaseUrl: string;
@@ -141,13 +144,17 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     return toMessageReceipt(data);
   }
 
-  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]) {
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[], _options?: ForwardAutoRecallOptions) {
     const data = await this.callAction<NapCatSendMessageResponse>("send_group_forward_msg", {
       group_id: Number(groupId), messages: toNapCatForwardNodes(nodes),
     });
     const receipt = toMessageReceipt(data);
     if (!receipt?.platformMessageId?.trim()) throw new NapCatActionOutcomeUnknownError("Forward send succeeded without a message id");
     return receipt;
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    await this.callAction("delete_msg", { message_id: messageId });
   }
 
   async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
@@ -216,7 +223,7 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
 
   private handleMessage(raw: string): void {
     try {
-      const parsed = JSON.parse(raw) as Partial<NapcatGroupMessageEvent> & NapCatActionResponse<unknown>;
+      const parsed = JSON.parse(raw) as Record<string, unknown> & NapCatActionResponse<unknown>;
       if (parsed.echo && this.pendingActions.has(parsed.echo)) {
         const pending = this.pendingActions.get(parsed.echo);
         if (!pending) {
@@ -231,11 +238,15 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
         }
         return;
       }
+      if (parsed.post_type === "notice" && parsed.notice_type === "group_recall") {
+        this.emit("groupRecall", parsed);
+        return;
+      }
       if (parsed.post_type !== "message" || parsed.message_type !== "group") {
         return;
       }
 
-      this.emit("groupMessage", parsed as NapcatGroupMessageEvent);
+      this.emit("groupMessage", parsed as unknown as NapcatGroupMessageEvent);
     } catch (error) {
       logWarn("Failed to parse NapCat event.", {
         raw,
@@ -380,7 +391,7 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
   }
 
   private async callHttpAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
-    const forward = action === "send_group_forward_msg";
+    const deliveryAction = action === "send_group_forward_msg" || action === "delete_msg";
     let response: Response;
     try { response = await fetch(`${this.httpBaseUrl}/${action}`, {
       method: "POST",
@@ -391,26 +402,26 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
           : {}),
       },
       body: JSON.stringify(payload),
-      ...(forward ? { signal: AbortSignal.timeout(this.options.actionTimeoutMs ?? 10_000) } : {}),
+      ...(deliveryAction ? { signal: AbortSignal.timeout(this.options.actionTimeoutMs ?? 10_000) } : {}),
     }); } catch (error) {
-      if (forward) throw new NapCatActionOutcomeUnknownError("Forward HTTP dispatch outcome is unknown");
+      if (deliveryAction) throw new NapCatActionOutcomeUnknownError(`NapCat ${action} HTTP dispatch outcome is unknown`);
       throw error;
     }
 
     if (!response.ok) {
-      if (forward) {
-        if ([400, 401, 403, 404, 405, 422].includes(response.status)) throw new NapCatActionRejectedError(`Forward HTTP rejected with status ${response.status}`);
-        throw new NapCatActionOutcomeUnknownError(`Forward HTTP returned status ${response.status}`);
+      if (deliveryAction) {
+        if ([400, 401, 403, 404, 405, 422].includes(response.status)) throw new NapCatActionRejectedError(`NapCat ${action} HTTP rejected with status ${response.status}`);
+        throw new NapCatActionOutcomeUnknownError(`NapCat ${action} HTTP returned status ${response.status}`);
       }
       throw new Error(`NapCat HTTP ${action} failed with status ${response.status}`);
     }
 
     let json: NapCatActionResponse<TData> | TData;
     try { json = await response.json(); } catch (error) {
-      if (forward) throw new NapCatActionOutcomeUnknownError("Forward HTTP response could not be decoded");
+      if (deliveryAction) throw new NapCatActionOutcomeUnknownError(`NapCat ${action} HTTP response could not be decoded`);
       throw error;
     }
-    if (forward && (!json || typeof json !== "object")) throw new NapCatActionOutcomeUnknownError("Forward HTTP response is invalid");
+    if (deliveryAction && (!json || typeof json !== "object")) throw new NapCatActionOutcomeUnknownError(`NapCat ${action} HTTP response is invalid`);
 
     if ((json as NapCatActionResponse).retcode || (json as NapCatActionResponse).status === "failed") {
       throw napCatActionFailure(action, json as NapCatActionResponse);
