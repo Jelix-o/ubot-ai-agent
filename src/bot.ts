@@ -1,7 +1,9 @@
 import { withModelOperation } from "./services/model-telemetry.js";
 import { BT_COMMAND_PRIMARY, BT_COMMAND_ALIASES, matchBtCommand, isSystemCommandText, type BtCommandMatch } from "./services/command-prefixes.js";
 import { BtSearchError, parseBtSearchRequest, type BtSearchRuntime } from "./services/bt-search-service.js";
-import { btHelp, escapeBtText, renderBtSearchMessages } from "./services/bt-search-renderer.js";
+import { btHelp, btEmptyResultMessage, escapeBtText, renderBtForwardNodes } from "./services/bt-search-renderer.js";
+import { BT_FORWARD_FALLBACK_TEXT, sendForwardOrFallback, type ForwardMessageNode } from "./forward-message.js";
+import { NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
 import os from "node:os";
 
 import { logError, logInfo, logWarn } from "./logger.js";
@@ -279,6 +281,7 @@ export interface TransportHealthStatus {
 
 export interface MessageTransport {
   sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
+  sendGroupForwardMessage?(groupId: string, nodes: ForwardMessageNode[]): Promise<void | MessageReceipt>;
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
   /** Queues a worker-local generated image for ingress delivery and cleanup. */
   sendGeneratedGroupImage?(groupId: string, imagePath: string): Promise<void | MessageReceipt>;
@@ -1358,21 +1361,48 @@ export class BotApplication {
       await send("BT 搜索功能未启用");
       return;
     }
+    let progressTimer: NodeJS.Timeout | undefined;
+    let progressSend: Promise<void> | undefined;
+    let finished = false;
+    const finishProgress = async () => {
+      finished = true;
+      clearTimeout(progressTimer);
+      await progressSend;
+    };
     try {
       const request = parseBtSearchRequest(command.suffix);
-      if (!request) { await send(escapeBtText(btHelp(command.primary))); return; }
+      if (!request) { await send(escapeBtText(btHelp(command.primary, /(?:^|\s)(?:--help|-h)(?:\s|$)/u.test(command.suffix)))); return; }
       if (!this.btSearchService) { await send("BT 搜索暂不可用，请稍后再试"); return; }
       const result = await this.btSearchService.search(request, {
         signal,
-        onStarted: async () => { await send(request.fast ? "正在快速搜索 BT 资源…" : "正在搜索 BT 资源，完整搜索最多约 3 分钟…"); },
+        onStarted: async () => {
+          progressTimer = setTimeout(() => {
+            if (finished || signal?.aborted) return;
+            progressSend = send(request.fast ? "正在快速搜索 BT 资源…" : "正在搜索 BT 资源，完整搜索最多约 3 分钟…")
+              .then(() => undefined)
+              .catch(() => { logWarn("BT progress message could not be sent.", { groupId }); });
+          }, 5_000);
+          progressTimer.unref();
+        },
       });
-      for (const message of renderBtSearchMessages(result, request)) {
-        if (signal?.aborted) return;
-        await send(message);
+      await finishProgress();
+      if (signal?.aborted) return;
+      if (result.items.length || request.json || request.full || request.debug) {
+        await sendForwardOrFallback(this.transport, groupId, renderBtForwardNodes(result, request, this.botQq), BT_FORWARD_FALLBACK_TEXT);
+        this.liveChatService.recordBotActivity(groupId);
+        await this.handleSendSuccessRecovery();
+      } else {
+        await send(btEmptyResultMessage(result));
       }
       logInfo("BT search completed.", { groupId, type: result.resolvedType, resultCount: result.items.length, durationMs: result.durationMs, fromCache: result.fromCache });
     } catch (error) {
+      await finishProgress();
       if (signal?.aborted || (error instanceof BtSearchError && error.code === "cancelled")) return;
+      // A dispatched card may already exist. Do not append an error bubble or resend it.
+      if (error instanceof NapCatActionOutcomeUnknownError) {
+        logWarn("BT forward delivery outcome is unknown.", { groupId });
+        return;
+      }
       if (error instanceof BtSearchError && error.code === "invalid_arguments") {
         await send(escapeBtText(`${error.message}\n\n${btHelp(command.primary)}`));
         return;
@@ -1381,6 +1411,8 @@ export class BotApplication {
         error instanceof BtSearchError && error.code === "timeout" ? "BT 搜索超时，请换个来源或加 --fast 后重试" : "BT 搜索失败，请稍后再试";
       logWarn("BT search failed.", { groupId, errorCode: error instanceof BtSearchError ? error.code : "unknown" });
       await send(message);
+    } finally {
+      await finishProgress();
     }
   }
 
@@ -5149,7 +5181,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
     {
       title: "BT 搜索", aliases: ["bt", "资源", "bt搜索", "资源搜索"],
       lines: [`${command("bt_search")} <关键词> [anime|movie|adult]`,
-        "默认完整搜索，展示前 5 条；--fast 加速，--full 展开分站详情。",
+        "默认完整搜索，前 5 条合并为一张转发卡片；--fast 加速，--full 展开分站详情。",
         "支持 --source、--timeout、--limit、--no-cache、--no-deep、--json、--debug。"],
     },
     {

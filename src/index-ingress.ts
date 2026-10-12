@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { parseForwardNodes, sendForwardOrFallback } from "./forward-message.js";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { logError, logInfo, logWarn } from "./logger.js";
@@ -74,6 +75,8 @@ export async function deliverOutboxRow(
   let generatedImagePath: string | undefined;
   if (row.kind === "record" || row.kind === "airecord") {
     throw new Error("Retired voice outbox kind cannot be delivered.");
+  } else if (row.kind === "forward") {
+    receipt = await sendForwardOrFallback(transport, row.group_id, parseForwardNodes(row.forward_payload_json), row.text);
   } else if (row.kind === "image") {
     receipt = await transport.sendGroupImage(row.group_id, row.text);
   } else if (row.kind === "generated_image") {
@@ -91,6 +94,7 @@ export async function deliverOutboxRow(
   }
   const platformMessageId = receipt?.platformMessageId ?? receipt?.messageId;
   if (!platformMessageId) {
+    if (row.kind === "forward") throw new NapCatActionOutcomeUnknownError("Forward send succeeded without a real platform message id");
     throw new Error("NapCat send succeeded without a real platform message id");
   }
   try {
@@ -125,7 +129,7 @@ export function markOutboxDeliveryFailed(
   error: unknown,
 ): OutboxFailureDisposition {
   const retiredVoice = row.kind === "record" || row.kind === "airecord";
-  const retryable = !retiredVoice && (row.kind !== "generated_image" || error instanceof NapCatActionNotSentError);
+  const retryable = !retiredVoice && (!["generated_image", "forward"].includes(row.kind) || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }

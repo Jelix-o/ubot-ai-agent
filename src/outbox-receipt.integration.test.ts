@@ -10,6 +10,9 @@ import { NapCatActionNotSentError, NapCatActionOutcomeUnknownError } from "./nap
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { WorkerTransport } from "./worker-transport.js";
+import { DatabaseSync } from "node:sqlite";
+import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
+import { NapCatActionRejectedError } from "./napcat-action-errors.js";
 
 class ReceiptTransport implements MessageTransport {
   readonly deliveries: Array<{ groupId: string; kind: string; text: string }> = [];
@@ -41,6 +44,112 @@ function tempDbPath(): { dbPath: string; dir: string } {
   const dir = mkdtempSync(path.join(os.tmpdir(), "outbox-receipt-integration-"));
   return { dbPath: path.join(dir, "bot-shared.db"), dir };
 }
+
+const forwardNodes: ForwardMessageNode[] = [{ senderId: "12345", senderName: "会仙", text: "【BT 搜索】\nmagnet:?xt=urn:btih:abcdef&dn=%E5%AE%8C%E6%95%B4" }];
+
+test("forward payload travels across worker/ingress databases with a real platform receipt", async t => {
+  const { dbPath, dir } = tempDbPath();
+  const workerDb = new SharedDb(dbPath), ingressDb = new SharedDb(dbPath);
+  t.after(() => { workerDb.close(); ingressDb.close(); rmSync(dir, { recursive: true, force: true }); });
+  const receipt = await new WorkerTransport(workerDb).sendGroupForwardMessage("group-bt", forwardNodes);
+  const row = ingressDb.claimOutbox(1)[0]!;
+  assert.equal(row.kind, "forward");
+  assert.equal(row.text, BT_FORWARD_FALLBACK_TEXT);
+  assert.deepEqual(JSON.parse(row.forward_payload_json!), forwardNodes);
+  assert.equal(row.topic_id, null); assert.equal(row.branch_id, null);
+  const transport = new ReceiptTransport(() => "qq-forward");
+  let cards = 0;
+  Object.assign(transport, { async sendGroupForwardMessage(group: string, nodes: ForwardMessageNode[]) {
+    assert.equal(group, "group-bt"); assert.deepEqual(nodes, forwardNodes); cards++;
+    return { platformMessageId: "qq-forward" };
+  } });
+  assert.equal(await deliverOutboxRow(ingressDb, transport, row), "qq-forward");
+  assert.equal(cards, 1); assert.equal(transport.deliveries.length, 0);
+  const stored = workerDb.db.prepare("SELECT platform_message_id FROM outbox WHERE delivery_id = ?").get(receipt.deliveryId!) as { platform_message_id: string };
+  assert.equal(stored.platform_message_id, "qq-forward");
+  assert.equal(ingressDb.claimOutbox(1).length, 0);
+});
+
+test("forward rejection or unsupported transport sends only one short fallback", async t => {
+  const { dbPath, dir } = tempDbPath(); const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  for (const rejected of [false, true]) {
+    await new WorkerTransport(db).sendGroupForwardMessage("group-bt", forwardNodes);
+    const row = db.claimOutbox(1)[0]!;
+    const transport = new ReceiptTransport(() => "qq-fallback-" + row.id);
+    if (rejected) Object.assign(transport, { async sendGroupForwardMessage() { throw new NapCatActionRejectedError("unsupported"); } });
+    await deliverOutboxRow(db, transport, row);
+    assert.deepEqual(transport.deliveries, [{ groupId: "group-bt", kind: "text", text: BT_FORWARD_FALLBACK_TEXT }]);
+  }
+});
+
+test("ambiguous forward sends and missing message ids cannot trigger retries or fallback", async t => {
+  const { dbPath, dir } = tempDbPath(); const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  for (const missingId of [false, true]) {
+    await new WorkerTransport(db).sendGroupForwardMessage("group-bt", forwardNodes);
+    const row = db.claimOutbox(1)[0]!;
+    const transport = new ReceiptTransport(() => "unused");
+    let attempts = 0;
+    Object.assign(transport, { async sendGroupForwardMessage() {
+      attempts++; if (!missingId) throw new NapCatActionOutcomeUnknownError("timeout");
+      return undefined;
+    } });
+    try { await deliverOutboxRow(db, transport, row); assert.fail("must reject"); }
+    catch (error) {
+      assert.ok(error instanceof NapCatActionOutcomeUnknownError);
+      assert.equal(markOutboxDeliveryFailed(db, row, error), "terminal");
+    }
+    assert.equal(attempts, 1); assert.equal(transport.deliveries.length, 0);
+    assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 0);
+  }
+});
+
+test("forward acknowledgement failure keeps an ambiguous row and never sends another card", async t => {
+  const { dbPath, dir } = tempDbPath(); const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  await new WorkerTransport(db).sendGroupForwardMessage("group-bt", forwardNodes);
+  const row = db.claimOutbox(1)[0]!; let sends = 0;
+  const transport = new ReceiptTransport(() => "unused");
+  Object.assign(transport, { async sendGroupForwardMessage() { sends++; return { platformMessageId: "qq-card" }; } });
+  db.ackOutboxDelivery = () => { throw new Error("disk failure"); };
+  await assert.rejects(deliverOutboxRow(db, transport, row), OutboxAcknowledgementError);
+  assert.equal(sends, 1); assert.equal(transport.deliveries.length, 0);
+  assert.equal(db.claimOutbox(1).length, 0);
+  assert.equal(db.claimOutbox(1, Date.now() + 61_000).length, 0);
+});
+
+test("forward can retry only if the socket was disconnected before dispatch", async t => {
+  const { dbPath, dir } = tempDbPath(); const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  await new WorkerTransport(db).sendGroupForwardMessage("group-bt", forwardNodes);
+  const row = db.claimOutbox(1)[0]!;
+  assert.equal(markOutboxDeliveryFailed(db, row, new NapCatActionNotSentError("offline")), "retryable");
+  assert.equal(db.claimOutbox(1, Date.now() + 2_100).length, 1);
+});
+
+test("outbox migration preserves old rows and an old text-only emitter sees a short fallback", async t => {
+  const { dbPath, dir } = tempDbPath();
+  const oldDb = new DatabaseSync(dbPath);
+  oldDb.exec(`CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT NOT NULL, reply_to TEXT,
+    kind TEXT NOT NULL DEFAULT 'text', text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    retry_after INTEGER, attempts INTEGER NOT NULL DEFAULT 0, topic_id TEXT, branch_id TEXT, source_turn_id INTEGER,
+    turn_id INTEGER, delivery_id TEXT, platform_message_id TEXT, sent_at INTEGER, updated_at INTEGER, created_at INTEGER NOT NULL);
+    INSERT INTO outbox (group_id, text, created_at) VALUES ('group-old', 'old message', 1);`);
+  oldDb.close();
+  const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  const original = db.claimOutbox(1)[0]!;
+  assert.equal(original.text, "old message"); assert.equal(original.forward_payload_json, null);
+  db.ackOutboxDelivery(original.id, "qq-old");
+  await new WorkerTransport(db).sendGroupForwardMessage("group-bt", forwardNodes);
+  const row = db.claimOutbox(1)[0]!;
+  // v3.0.34 sends every non-image/non-voice row through its text branch.
+  const oldTransport = new ReceiptTransport(() => "qq-old-fallback");
+  await oldTransport.sendGroupMessage(row.group_id, row.text);
+  assert.equal(oldTransport.deliveries[0]!.text, BT_FORWARD_FALLBACK_TEXT);
+  assert.ok(!row.text.includes("magnet:"));
+});
 
 function createRoute(
   repository: ConversationContextRepository,

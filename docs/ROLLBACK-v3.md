@@ -5,6 +5,15 @@ but it never automatically restores SQLite or replays QQ history after the V3
 cutover marker may have been written. This protects message causality and
 prevents accidental duplicate sends.
 
+## v3.0.35 forward-message rollback
+
+The upgrade adds a nullable `outbox.forward_payload_json` column and the
+`forward` kind. Existing rows keep a null payload. A forward row's `text`
+contains only a short BT fallback notice, so v3.0.34's text delivery branch
+can safely consume a pending row after rollback without exposing its JSON or
+splitting complete magnets into ordinary group messages. Retain the additive
+column; do not rewind SQLite or replay terminal/ambiguous sending rows.
+
 ## v3.0.34 capability policy rollback
 
 The deployer saves `capability-policy.json` next to the offline SQLite backup

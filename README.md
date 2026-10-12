@@ -1,8 +1,8 @@
-# UBot V3.0.34
+# UBot V3.0.35
 
 UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、提醒、日报、节日倒计时、静态网页预览和受限图片生成；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.34.md](RELEASE-v3.0.34.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。BT 搜索依赖安装见 [assets/bt/README.md](assets/bt/README.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.35.md](RELEASE-v3.0.35.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。BT 搜索依赖安装见 [assets/bt/README.md](assets/bt/README.md)。
 
 ## V3 架构
 
@@ -18,7 +18,7 @@ Ingress、Worker、Admin 是独立进程。生产环境由 systemd 管理三个 
 
 ## 主要行为
 
-- **资源搜索**：启用且非静默的群内，非黑名单成员可直接使用 `#bt <关键词> [anime|movie|adult]`，兼容 `/bt`，无需 @。默认完整搜索、展示前 5 条；仅返回资源索引与完整链接。其他命令继续使用 `#`。
+- **资源搜索**：启用且非静默的群内，非黑名单成员可直接使用 `#bt <关键词> [anime|movie|adult]`，兼容 `/bt`，无需 @。默认完整搜索，前 5 条集中在一张 QQ 合并转发卡片，保留完整下载链接；执行超过 5 秒才提示进度。其他命令继续使用 `#`。
 
 - 会仙是唯一启用的人格，角色市场、旧人格选择和运行时 `skills/` 目录已退休。
 - **后台登录**：管理员账号、密码（至少 12 位）和邀请码；无 TOTP/恢复码。敏感操作要求 10 分钟内密码复验。服务器可用 `npm run admin:reset-password -- --username <account>` 交互重置密码。

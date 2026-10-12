@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 
 import { logError, logInfo, logWarn } from "./logger.js";
+import { toNapCatForwardNodes, type ForwardMessageNode } from "./forward-message.js";
+import { NapCatActionNotSentError, NapCatActionRejectedError, NapCatActionOutcomeUnknownError, napCatActionFailure } from "./napcat-action-errors.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type {
   MessageImageInput,
@@ -25,6 +27,7 @@ import {
 interface NapCatClientOptions {
   wsUrl: string;
   accessToken?: string;
+  actionTimeoutMs?: number;
 }
 
 interface OutgoingAction<TParams> {
@@ -36,6 +39,8 @@ interface OutgoingAction<TParams> {
 interface NapCatActionResponse<TData = unknown> {
   status?: string;
   retcode?: number;
+  message?: string;
+  wording?: string;
   data?: TData;
   echo?: string;
 }
@@ -72,6 +77,7 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
       resolve: (data: unknown) => void;
       reject: (error: Error) => void;
       timer: NodeJS.Timeout;
+      action: string;
     }
   >();
   private manuallyClosed = false;
@@ -100,7 +106,7 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     });
 
     this.socket.on("close", () => {
-      this.rejectPendingActions(new Error("NapCat WebSocket closed."));
+      this.rejectPendingActions(new NapCatActionOutcomeUnknownError("NapCat WebSocket closed."));
       logWarn("NapCat WebSocket closed. Scheduling reconnect.");
       if (!this.manuallyClosed) {
         this.scheduleReconnect();
@@ -123,7 +129,7 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
-    this.rejectPendingActions(new Error("NapCat client stopped."));
+    this.rejectPendingActions(new NapCatActionOutcomeUnknownError("NapCat client stopped."));
     this.socket?.close();
   }
 
@@ -133,6 +139,15 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
       message: text,
     });
     return toMessageReceipt(data);
+  }
+
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]) {
+    const data = await this.callAction<NapCatSendMessageResponse>("send_group_forward_msg", {
+      group_id: Number(groupId), messages: toNapCatForwardNodes(nodes),
+    });
+    const receipt = toMessageReceipt(data);
+    if (!receipt?.platformMessageId?.trim()) throw new NapCatActionOutcomeUnknownError("Forward send succeeded without a message id");
+    return receipt;
   }
 
   async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
@@ -209,8 +224,8 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
         }
         clearTimeout(pending.timer);
         this.pendingActions.delete(parsed.echo);
-        if (parsed.retcode) {
-          pending.reject(new Error(`NapCat action failed with retcode ${parsed.retcode} (${parsed.status ?? "unknown"})`));
+        if (parsed.retcode || parsed.status === "failed") {
+          pending.reject(napCatActionFailure(pending.action, parsed));
         } else {
           pending.resolve(parsed.data);
         }
@@ -333,29 +348,41 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
   private async callWebSocketAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("NapCat WebSocket is not connected.");
+      throw new NapCatActionNotSentError("NapCat WebSocket is not connected.");
     }
     const echo = randomUUID();
     return new Promise<TData>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingActions.delete(echo);
-        reject(new Error(`NapCat action ${action} timed out.`));
-      }, 10_000);
+        reject(new NapCatActionOutcomeUnknownError(`NapCat action ${action} timed out.`));
+      }, this.options.actionTimeoutMs ?? 10_000);
       this.pendingActions.set(echo, {
+        action,
         resolve: (data) => resolve(data as TData),
         reject,
         timer,
       });
-      socket.send(JSON.stringify({
-        action,
-        params: payload,
-        echo,
-      } satisfies OutgoingAction<typeof payload>));
+      try {
+        socket.send(JSON.stringify({ action, params: payload, echo } satisfies OutgoingAction<typeof payload>), error => {
+          if (!error) return;
+          const pending = this.pendingActions.get(echo);
+          if (!pending) return;
+          clearTimeout(pending.timer);
+          this.pendingActions.delete(echo);
+          pending.reject(new NapCatActionOutcomeUnknownError(`NapCat action ${action} could not be confirmed`));
+        });
+      } catch {
+        clearTimeout(timer);
+        this.pendingActions.delete(echo);
+        reject(new NapCatActionOutcomeUnknownError(`NapCat action ${action} dispatch outcome is unknown`));
+      }
     });
   }
 
   private async callHttpAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
-    const response = await fetch(`${this.httpBaseUrl}/${action}`, {
+    const forward = action === "send_group_forward_msg";
+    let response: Response;
+    try { response = await fetch(`${this.httpBaseUrl}/${action}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -364,18 +391,29 @@ export class NapCatClient extends EventEmitter<{ groupMessage: [NapcatGroupMessa
           : {}),
       },
       body: JSON.stringify(payload),
-    });
+      ...(forward ? { signal: AbortSignal.timeout(this.options.actionTimeoutMs ?? 10_000) } : {}),
+    }); } catch (error) {
+      if (forward) throw new NapCatActionOutcomeUnknownError("Forward HTTP dispatch outcome is unknown");
+      throw error;
+    }
 
     if (!response.ok) {
+      if (forward) {
+        if ([400, 401, 403, 404, 405, 422].includes(response.status)) throw new NapCatActionRejectedError(`Forward HTTP rejected with status ${response.status}`);
+        throw new NapCatActionOutcomeUnknownError(`Forward HTTP returned status ${response.status}`);
+      }
       throw new Error(`NapCat HTTP ${action} failed with status ${response.status}`);
     }
 
-    const json = (await response.json()) as NapCatActionResponse<TData> | TData;
+    let json: NapCatActionResponse<TData> | TData;
+    try { json = await response.json(); } catch (error) {
+      if (forward) throw new NapCatActionOutcomeUnknownError("Forward HTTP response could not be decoded");
+      throw error;
+    }
+    if (forward && (!json || typeof json !== "object")) throw new NapCatActionOutcomeUnknownError("Forward HTTP response is invalid");
 
-    if ("retcode" in (json as Record<string, unknown>) && (json as { retcode?: number }).retcode) {
-      throw new Error(
-        `NapCat action ${action} returned retcode ${(json as { retcode?: number }).retcode}`,
-      );
+    if ((json as NapCatActionResponse).retcode || (json as NapCatActionResponse).status === "failed") {
+      throw napCatActionFailure(action, json as NapCatActionResponse);
     }
 
     if ("data" in (json as Record<string, unknown>) && (json as { data?: TData }).data) {

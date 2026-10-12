@@ -5,6 +5,9 @@ import { URL } from "node:url";
 import WebSocket, { RawData, WebSocketServer } from "ws";
 
 import { logInfo, logWarn } from "./logger.js";
+import { toNapCatForwardNodes, type ForwardMessageNode } from "./forward-message.js";
+import { NapCatActionNotSentError, NapCatActionOutcomeUnknownError, napCatActionFailure } from "./napcat-action-errors.js";
+export { NapCatActionNotSentError, NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type {
   GroupMemberIdentity,
@@ -41,6 +44,8 @@ interface OutgoingAction<TParams> {
 interface NapCatActionResponse<TData = unknown> {
   status?: string;
   retcode?: number;
+  message?: string;
+  wording?: string;
   data?: TData;
   echo?: string;
   post_type?: string;
@@ -69,20 +74,6 @@ interface NapCatSendMessageResponse {
   message_id?: number | string;
 }
 
-export class NapCatActionNotSentError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "NapCatActionNotSentError";
-  }
-}
-
-export class NapCatActionOutcomeUnknownError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "NapCatActionOutcomeUnknownError";
-  }
-}
-
 const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export class NapCatReverseServer extends EventEmitter<{
@@ -102,6 +93,7 @@ export class NapCatReverseServer extends EventEmitter<{
       resolve: (response: NapCatActionResponse<unknown>) => void;
       reject: (error: Error) => void;
       timer: NodeJS.Timeout;
+      action: string;
     }
   >();
   private readonly groupMemberCache = new Map<
@@ -170,6 +162,15 @@ export class NapCatReverseServer extends EventEmitter<{
       message: text,
     });
     return toMessageReceipt(response.data);
+  }
+
+  async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[]) {
+    const response = await this.callAction<NapCatSendMessageResponse>("send_group_forward_msg", {
+      group_id: Number(groupId), messages: toNapCatForwardNodes(nodes),
+    });
+    const receipt = toMessageReceipt(response.data);
+    if (!receipt?.platformMessageId?.trim()) throw new NapCatActionOutcomeUnknownError("Forward send succeeded without a message id");
+    return receipt;
   }
 
   async sendGroupImage(groupId: string, imageFile: string): Promise<{ messageId?: string } | undefined> {
@@ -250,9 +251,9 @@ export class NapCatReverseServer extends EventEmitter<{
 
         clearTimeout(pending.timer);
         this.pendingActions.delete(parsed.echo);
-        if (parsed.retcode) {
+        if (parsed.retcode || parsed.status === "failed") {
           pending.reject(
-            new Error(`NapCat action failed with retcode ${parsed.retcode} (${parsed.status ?? "unknown"})`),
+            napCatActionFailure(pending.action, parsed),
           );
         } else {
           pending.resolve(parsed);
@@ -385,6 +386,7 @@ export class NapCatReverseServer extends EventEmitter<{
       }, this.options.actionTimeoutMs ?? 10_000);
 
       this.pendingActions.set(echo, {
+        action,
         resolve: (response) => resolve(response as NapCatActionResponse<TData>),
         reject,
         timer,

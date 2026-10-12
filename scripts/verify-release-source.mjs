@@ -47,6 +47,8 @@ const requiredPaths = [
   "COMMANDS.md",
   `RELEASE-v${version}.md`,
   "dist/index.js",
+  "dist/forward-message.js",
+  "dist/napcat-action-errors.js",
   "dist/services/private-enterprise-ranking.js",
   "assets/huixian-profile.json",
   "assets/private-enterprises-2026.json",
