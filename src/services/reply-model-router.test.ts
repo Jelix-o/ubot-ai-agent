@@ -32,6 +32,19 @@ test("SDK connection failures and nested transport causes reach the next model",
   }
 });
 
+test("streamed SDK service errors without HTTP status can fall back, but explicit authentication errors cannot", async () => {
+  for (const type of ["upstream_error", "overloaded_error", "server_error", "rate_limit_error"]) {
+    const f = fixture();
+    f.behavior.sol = () => Promise.reject(new OpenAI.APIError(undefined, { message: "Please try again later.", type }, undefined, undefined));
+    assert.equal((await f.execute()).modelId, "gpt");
+    assert.deepEqual(f.calls, ["sol", "gpt"]);
+  }
+  const f = fixture();
+  f.behavior.sol = () => Promise.reject(new OpenAI.APIError(401, { message: "overloaded", type: "upstream_error" }, undefined, undefined));
+  await assert.rejects(f.execute()); assert.deepEqual(f.calls, ["sol"]);
+  assert.equal(retryableModelFailure({ error: { type: "upstream_error", message: "Our servers are currently overloaded." } }), true);
+});
+
 test("routes primary first and uses configured backups once, silently", async () => {
   const f = fixture(); f.behavior.sol = unavailable; f.behavior.gpt = unavailable;
   const result = await f.execute();

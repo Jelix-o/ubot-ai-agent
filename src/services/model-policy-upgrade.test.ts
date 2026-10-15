@@ -25,6 +25,7 @@ test("policy upgrade is atomic, encrypted, idempotent and preserves command copy
   assert.deepEqual(upgradeModelPolicy(repository, key), { applied: true, groupCount: 1 });
   const settings = await store.getInternal();
   assert.equal(settings.selectedModelIds.reply, "sol"); assert.deepEqual(settings.replyRouting?.fallbackModelIds, ["gpt", "ds"]);
+  assert.equal(settings.models.find(model => model.id === "ds")?.model, "deepseek-flash");
   const image = settings.commands.find(command => command.id === "image_generation")!;
   assert.equal(image.primary, "#绘画"); assert.equal(image.enabled, false); assert.equal(image.permission, "member");
   assert.equal(repository.getGroup("g1")?.replyModelSource, "global");
@@ -33,6 +34,7 @@ test("policy upgrade is atomic, encrypted, idempotent and preserves command copy
   assert.equal(upgradeModelPolicy(repository, key).applied, false); assert.equal((await store.get()).selectedModelIds.reply, "ds");
   assert.equal((await store.get()).commands.find(command => command.id === "image_generation")?.permission, "group_admin");
   assert.equal(rollbackModelPolicy(repository, key).restored, true); assert.equal((await store.get()).selectedModelIds.reply, "gpt");
+  assert.equal((await store.getInternal()).models.find(model => model.id === "ds")?.model, "ds");
   assert.equal((await store.get()).commands.find(command => command.id === "image_generation")?.permission, "super_admin");
   assert.equal(repository.getGroup("g1")?.replyModelMode, "gpt"); assert.equal(repository.getGroup("g1")?.replyModelSource, undefined);
   assert.equal(rollbackModelPolicy(repository, key).restored, false); assert.equal(upgradeModelPolicy(repository, key).applied, false);

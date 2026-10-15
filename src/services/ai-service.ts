@@ -113,12 +113,17 @@ export interface AiProviderFailureDetails {
 export function getAiProviderFailureDetails(error: unknown): AiProviderFailureDetails {
   const statusCode = extractUpstreamStatusCode(error);
   const messages: string[] = [];
-  let current = error;
-  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
-    const record = current as { message?: unknown; code?: unknown; cause?: unknown };
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  for (let index = 0; index < pending.length && seen.size < 8; index++) {
+    const current = pending[index];
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    const record = current as { message?: unknown; code?: unknown; type?: unknown; cause?: unknown; error?: unknown };
     if (typeof record.message === "string") messages.push(record.message);
     if (typeof record.code === "string") messages.push(record.code);
-    current = record.cause;
+    if (typeof record.type === "string") messages.push(record.type);
+    pending.push(record.cause, record.error);
   }
   const kind = statusCode === 409
     ? "unavailable"
