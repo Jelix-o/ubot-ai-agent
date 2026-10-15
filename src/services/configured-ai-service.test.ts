@@ -118,7 +118,7 @@ test("ConfiguredAiService falls back when no usable selected model remains", asy
       model: "disabled-model",
       enabled: false,
     })],
-    selectedModelIds: { reply: "reply-disabled" },
+
   });
 
   const service = new ConfiguredAiService(fallback, store, "reply", () => {

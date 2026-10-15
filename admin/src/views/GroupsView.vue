@@ -23,6 +23,7 @@ const schedulePreview = shallowRef<SchedulePreviewDay[]>([]);
 const remindersError = shallowRef("");
 const schedulePreviewError = shallowRef("");
 const replyModels = shallowRef<ModelOption[]>([]);
+const defaultReplyModelId = shallowRef("");
 const memberOptions = shallowRef<MemberProfile[]>([]);
 const editingReminderId = shallowRef<string | null>(null);
 type ConfigTab = "reply" | "capabilities" | "schedule" | "permissions";
@@ -51,9 +52,9 @@ const reminderForm = reactive({
   enabled: true,
 });
 const form = reactive<GroupConfig>(defaultGroupConfig());
-const editableFields = ["enabled", "replyModelMode", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "roastModeUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+const editableFields = ["enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "roastModeUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
 function configValues(): Record<string, unknown> {
-  return Object.fromEntries(editableFields.map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
+  return Object.fromEntries(editableFields.filter(key => app.role === "super_admin" || !["replyModelMode", "replyModelSource"].includes(key)).map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
 }
 const dirty = computed(() => Boolean(revision.value) && JSON.stringify(configValues()) !== JSON.stringify(originalConfig.value));
 const reminderBaseline = shallowRef(JSON.stringify(reminderForm));
@@ -67,7 +68,7 @@ const capabilities = [
   { key: "opsAlertsEnabled", label: "运维告警", detail: "向当前群发送运行告警。" },
 ] as const;
 
-const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === form.replyModelMode)?.label || form.replyModelMode || "-");
+const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === (form.replyModelSource === "global" ? defaultReplyModelId.value : form.replyModelMode))?.label || form.replyModelMode || "-");
 const hasReplyModels = computed(() => replyModels.value.length > 0);
 const memberSelectOptions = computed(() => memberOptions.value.map((member) => ({
   value: member.userId,
@@ -90,6 +91,7 @@ function defaultGroupConfig(): GroupConfig {
     enabled: true,
     currentSkillId: "",
     replyModelMode: "gpt",
+    replyModelSource: "global",
     participationMode: "mentions_only",
     allowedSkillIds: [],
     switcherUserIds: [],
@@ -196,8 +198,9 @@ async function retrySchedulePreview(): Promise<void> {
 }
 
 async function loadModelOptions(): Promise<void> {
-  const data = await api<{ replyModels: ModelOption[] }>("/api/model-options");
+  const data = await api<{ replyModels: ModelOption[]; defaultReplyModelId?: string }>("/api/model-options");
   replyModels.value = data.replyModels;
+  defaultReplyModelId.value = data.defaultReplyModelId || "gpt";
   reconcileReplyModelSelection();
 }
 
@@ -487,7 +490,7 @@ watch(() => app.groupId, () => {
             <div class="field-grid">
               <label class="switch-line wide"><span><strong>显示并启用该群</strong><small>停用后机器人不再处理当前群的消息。</small></span><input v-model="form.enabled" :disabled="readonly" type="checkbox" /></label>
               <label class="switch-line wide"><span><strong>机器人静音</strong><small>保留群配置，暂停机器人发言。</small></span><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /></label>
-              <label>回复模型<select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels"><option v-if="!hasReplyModels" value="">请先启用对话模型</option><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
+              <label>模型来源<select v-model="form.replyModelSource" class="select" :disabled="readonly || app.role !== 'super_admin'"><option value="global">跟随统一默认</option><option value="override">指定模型</option></select><small>实际生效：{{ currentReplyModelLabel }}</small></label><label v-if="form.replyModelSource !== 'global'">回复模型<select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels || app.role !== 'super_admin'"><option v-if="!hasReplyModels" value="">请先启用对话模型</option><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
               <label>参与方式<select v-model="form.participationMode" class="select" :disabled="readonly"><option value="mentions_only">仅在 @ / 引用时回复</option><option value="mentions_and_keywords">@ / 引用 + 关键词</option><option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option></select></label>
               <label>实时对话延迟<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /><small>单位为秒，仅指定成员低频参与时生效。</small></label>
               <label>当前人格<div class="fixed-persona">{{ form.currentSkillId || '尚未设置' }}</div><small>人格内容在「内容与表达」工作区维护。</small></label>

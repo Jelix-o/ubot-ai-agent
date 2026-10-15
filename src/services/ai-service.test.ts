@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
 
 import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
 import type { AiIdentityContext, ConversationTurn, SkillDefinition } from "../types.js";
@@ -86,6 +87,52 @@ test("createCancellableTimeout aborts when its timer is the only active handle",
   } finally {
     cleanup();
   }
+});
+
+test("SDK cancellation closes a real HTTP stream and never serializes the signal", { timeout: 5_000 }, async (t) => {
+  let receivedBody: Record<string, unknown> = {};
+  let connected!: () => void;
+  const ready = new Promise<void>(resolve => { connected = resolve; });
+  let closed!: () => void;
+  const disconnected = new Promise<void>(resolve => { closed = resolve; });
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    receivedBody = JSON.parse(body);
+    res.on("close", closed);
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write('data: {"id":"test","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n');
+    connected();
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const service = new AiService(`http://127.0.0.1:${port}/v1`, "test", "test");
+  const controller = new AbortController();
+  const pending = service.generateReply({ skill, history: [], userInput: "test", signal: controller.signal });
+  await ready;
+  controller.abort();
+  await assert.rejects(pending);
+  await disconnected;
+  assert.equal(Object.hasOwn(receivedBody, "signal"), false);
+});
+
+test("auxiliary strict mode exposes malformed decisions for routing while legacy mode stays conservative", async () => {
+  const service = new AiService("https://invalid.example", "test", "test", {
+    async create() { return { choices: [{ message: { content: "undecidable" } }] }; },
+  } as never);
+  assert.equal(await service.evaluateReplyDesire(skill, [], []), "SKIP");
+  await assert.rejects(service.evaluateReplyDesire(skill, [], [], undefined, true), /invalid JSON/);
+  await assert.rejects(service.evaluateControlledMention({ skill, history: [], userInput: "test", assistantReply: "test", identityContext: { groupId: "67890", currentUserId: "20001", manualIdentities: [{ userIds: ["20002"], names: ["Test"] }] }, throwOnFailure: true }), /invalid JSON/);
+});
+
+test("a structured content refusal terminates streaming without compatibility retries", async () => {
+  let calls = 0;
+  const service = new AiService("https://invalid.example", "test", "test", {
+    async create() { calls++; return (async function* () { yield { choices: [{ delta: { refusal: "refused" }, finish_reason: "content_filter" }] }; })(); },
+  } as never);
+  await assert.rejects(service.generateReply({ skill, history: [], userInput: "test" }), /content refusal/);
+  assert.equal(calls, 1);
 });
 
 test("buildSystemPrompt includes target examples", () => {
@@ -988,7 +1035,7 @@ test("generateStaticHtml returns raw strict-JSON output using a bounded non-stre
   assert.equal(requests.length, 1);
   assert.equal(requests[0]?.model, "preview-model");
   assert.equal(requests[0]?.temperature, 0.2);
-  assert.equal(requests[0]?.max_tokens, STATIC_HTML_MAX_COMPLETION_TOKENS);
+  assert.equal(requests[0]?.max_tokens, 4_096);
   assert.equal(requests[0]?.stream, false);
   assert.equal(requestOptions[0]?.signal instanceof AbortSignal, true);
   assert.equal(requestOptions[0]?.timeout, STATIC_HTML_REQUEST_TIMEOUT_MS);

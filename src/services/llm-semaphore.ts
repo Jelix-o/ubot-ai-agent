@@ -24,23 +24,33 @@ export class LlmSemaphore {
   }
 
   /** Acquires a permit; rejects with LlmSemaphoreTimeoutError when the wait exceeds queueTimeoutMs. */
-  acquire(): Promise<() => void> {
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.active < this.maxConcurrent) {
       this.active += 1;
       return Promise.resolve(() => this.release());
     }
 
     return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        const index = this.waiters.findIndex(waiter => waiter.timer === timer);
+        if (index !== -1) this.waiters.splice(index, 1);
+        clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
+        reject(signal?.reason);
+      };
       const timer = setTimeout(() => {
         const index = this.waiters.findIndex((waiter) => waiter.timer === timer);
         if (index !== -1) {
           this.waiters.splice(index, 1);
         }
+        signal?.removeEventListener("abort", onAbort);
         reject(new LlmSemaphoreTimeoutError(this.queueTimeoutMs));
       }, this.queueTimeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
       this.waiters.push({
         resolve: () => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           this.active += 1;
           resolve(() => this.release());
         },

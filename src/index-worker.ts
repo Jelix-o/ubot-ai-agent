@@ -10,7 +10,7 @@ import { WorkerTransport } from "./worker-transport.js";
 import { IngressReadApiClient } from "./ingress-read-api.js";
 import { InflightManager } from "./services/inflight-manager.js";
 import { LlmSemaphore } from "./services/llm-semaphore.js";
-import { CircuitOpenError, degradedMessage, GatewayProxy } from "./services/gateway-proxy.js";
+import { CircuitOpenError, degradedMessage } from "./services/gateway-proxy.js";
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
@@ -69,7 +69,6 @@ export class WorkerApp {
   private readonly contextRouter: ConversationContextRouter;
   private readonly atmosphere: AtmosphereSummarizer;
   private readonly runner: ConsumerRunner;
-  private readonly gateway: GatewayProxy;
   private maxQueueDepthSeen = 0;
   readonly llmGate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>;
   readonly backgroundLlmGate: BackgroundLlmGate;
@@ -97,22 +96,19 @@ export class WorkerApp {
       {},
       resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey),
     );
-    this.gateway = new GatewayProxy(undefined, this.metrics, {
-      tripAfterFailures: 5,
-      slowThresholdMs: 40_000,
-      openMs: 30_000,
-    });
     this.backgroundLlmGate = async <T>(task: () => Promise<T>, signal?: AbortSignal) => {
       let release: (() => void) | undefined;
       try {
-        release = await this.semaphore.acquire();
+        release = await this.semaphore.acquire(signal);
         this.metrics.inc("llm_semaphore_acquired");
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason;
         this.metrics.inc("llm_semaphore_timeout");
         throw new Error("llm_semaphore_timeout");
       }
       try {
-        return await this.gateway.call<T>(async () => task(), { signal });
+        signal?.throwIfAborted();
+        return await task();
       } finally {
         release();
       }

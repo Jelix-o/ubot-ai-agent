@@ -104,3 +104,7 @@ stores back into a live V3 release.
 The legacy `ai-project.service` file remains on the host for manual disaster
 recovery only. It stays disabled after a V3 deployment and must never run in
 parallel with `ubot.target`.
+
+## v3.0.39 模型策略回滚
+
+先停止 Worker 接收新任务，等待最近成人 BT 卡片的撤回任务最多 105 秒结束，再停止新版 Ingress 与 Admin。保留新版发布目录，用新版 `scripts/upgrade-model-policy.mjs --rollback` 恢复加密备份中的系统模型策略、指令权限和原群模型选择，然后切回旧发布并启动三项服务。工具读取持久目录 `.env` 中的状态加密密钥，不输出备份内容。不要只切换程序而保留新版权限策略；旧版仍按自身固定权限执行。重复回滚为无操作，升级标记保留，避免意外再次覆盖配置。

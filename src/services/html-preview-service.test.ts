@@ -23,6 +23,16 @@ const SAFE_PAGE = [
   "</html>",
 ].join("");
 
+test("a cancelled page never publishes or enqueues a failure message", async (t) => {
+  const { service, db } = await createFixture(t);
+  const queued = await service.enqueue({ groupId: "67890", creatorUserId: "20001", sourceMessageId: "cancelled", request: "test" });
+  const controller = new AbortController();
+  const result = await service.processNext({ id: queued.page.id, request: "test", signal: controller.signal, generate: async () => { controller.abort(); return JSON.stringify({ title: "test", html: SAFE_PAGE }); } });
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorCode, "html_preview_cancelled");
+  assert.equal((db.db.prepare("SELECT COUNT(*) AS count FROM outbox").get() as { count: number }).count, 0);
+});
+
 async function createFixture(t: test.TestContext): Promise<{
   db: SharedDb;
   rootDir: string;

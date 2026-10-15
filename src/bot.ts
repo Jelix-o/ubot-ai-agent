@@ -1,3 +1,5 @@
+import { ReplyModelRouter, effectiveReplyModelId } from "./services/reply-model-router.js";
+import { permissionAtLeast } from "./services/command-permissions.js";
 import { withModelOperation } from "./services/model-telemetry.js";
 import { BT_COMMAND_PRIMARY, BT_COMMAND_ALIASES, matchBtCommand, isSystemCommandText, type BtCommandMatch } from "./services/command-prefixes.js";
 import { BtSearchError, parseBtSearchRequest, type BtSearchRuntime } from "./services/bt-search-service.js";
@@ -405,6 +407,7 @@ export class BotApplication {
   private readonly maintenanceScheduler: MaintenanceScheduler;
   private readonly explicitMemoryService?: ExplicitMemoryService;
   private backgroundLlmGate?: BackgroundLlmGate;
+  private replyRouter?: ReplyModelRouter;
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly knowledgeContinuationSessions = new Map<string, KnowledgeContinuationSession>();
   private readonly knowledgeLatestMessages = new Map<string, string>();
@@ -618,6 +621,18 @@ export class BotApplication {
       isKnowledgeContinuation(previousKnowledgeSession, incomingText));
     if (rankingSourceCommandMatch || groupFaqSourceCommandMatch || explicitKnowledgeSource || !canContinueKnowledge) {
       this.knowledgeContinuationSessions.delete(knowledgeSessionKey);
+    }
+
+    // Recognize denied and disabled commands before any chat or evidence path.
+    const configuredCommand = runtimeCommands.find(command => matchCommandPrefix(commandText, [command.primary, ...command.aliases], command.primary));
+    if (configuredCommand && !this.isBlacklistedUser(groupConfig, userId)) {
+      if (!configuredCommand.enabled) return;
+      const match = matchCommandPrefix(commandText, [configuredCommand.primary, ...configuredCommand.aliases], configuredCommand.primary)!;
+      const modelRead = configuredCommand.id === "model" && /^(?:状态|列表)?$/.test(match.suffix.trim());
+      if (!modelRead && !(await this.canUseRuntimeCommand(configuredCommand, groupConfig, event))) {
+        if (!groupConfig.botMuted) await this.sendText(groupId, "你没有使用这条指令的权限");
+        return;
+      }
     }
 
     const btCommand = matchBtCommand(commandText, runtimeCommands);
@@ -909,6 +924,8 @@ export class BotApplication {
       : null;
 
     if (chatSummaryRequest) {
+      const reportCommand = runtimeCommands.find(command => command.id === "daily_report");
+      if (reportCommand && !(await this.canUseRuntimeCommand(reportCommand, groupConfig, event))) return;
       if (!this.isCapabilityEnabled("daily_reports")) {
         await this.rejectCapability(groupId, "daily_reports");
         return;
@@ -938,6 +955,8 @@ export class BotApplication {
           logInfo("Ignored natural scheduled reminder command because runtime command is disabled.", { groupId, userId });
           return;
         }
+        const reminderCommand = runtimeCommands.find(command => command.id === "scheduled_reminder");
+        if (reminderCommand && !(await this.canUseRuntimeCommand(reminderCommand, groupConfig, event))) { await this.sendText(groupId, "你没有设置定时任务的权限"); return; }
         const task = await this.scheduledReminderService.createTask({
           groupId,
           creatorUserId: userId,
@@ -959,6 +978,8 @@ export class BotApplication {
       explicitMemoryRequest &&
       (parsedMessage.hasAtBot || options.allowReplyWithoutMention === true)
     ) {
+      const memoryCommand = runtimeCommands.find(command => command.id === "memory");
+      if (memoryCommand && !(await this.canUseRuntimeCommand(memoryCommand, groupConfig, event))) return;
       if (!this.isCapabilityEnabled("explicit_memory")) {
         await this.rejectCapability(groupId, "explicit_memory");
         return;
@@ -967,6 +988,8 @@ export class BotApplication {
       return;
     }
 
+    const conversationPolicy = runtimeCommands.find(command => command.id === "conversation");
+    if (conversationPolicy && !(await this.canUseRuntimeCommand(conversationPolicy, groupConfig, event))) return;
     if (await this.participationService.shouldTriggerKeyword(groupConfig, parsedMessage.text, parsedMessage.hasAtBot, commandText)) {
       const keywordMentionUserIds = this.resolveKeywordReplyMentionUserIds(
         userId,
@@ -983,6 +1006,7 @@ export class BotApplication {
           messageContext,
           { allowNormalChatMeme },
           conversationRoute,
+          signal,
         );
       });
       return;
@@ -1452,9 +1476,6 @@ export class BotApplication {
   ): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
-    if (!(await this.isSuperAdmin(groupConfig, userId))) {
-      return;
-    }
     if (!this.isCapabilityEnabled("image_generation")) {
       await this.rejectCapability(groupId, "image_generation");
       return;
@@ -1533,6 +1554,8 @@ export class BotApplication {
     signal?: AbortSignal,
   ): Promise<void> {
     const groupId = groupConfig.groupId;
+    const htmlCommand = (await this.getRuntimeCommands()).find(command => command.id === "html_preview");
+    if (htmlCommand && !(await this.canUseRuntimeCommand(htmlCommand, groupConfig, event))) { await this.sendText(groupId, "你没有使用网页生成的权限"); return; }
     if (!this.isCapabilityEnabled("html_preview")) {
       await this.rejectCapability(groupId, "html_preview");
       return;
@@ -1557,12 +1580,19 @@ export class BotApplication {
       const route = await this.getReplyAiRoute(groupConfig);
       let generationRoute: HtmlPreviewFallbackRoute = route;
       let fallbackUsed = false;
+      const routedSession = await (await this.getReplyRouter())?.begin(groupConfig, "html", { signal, gate: this.backgroundLlmGate });
       const result = await this.htmlPreviewService.processNext({
+        maxGenerationAttempts: routedSession ? 20 : 2,
         id: queued.page.id,
         request: request.request,
         signal,
         generate: async (pageRequest, pageSignal) => {
           const requestSignal = pageSignal ?? signal;
+          if (routedSession) {
+            const routed = await routedSession.run((service, attemptSignal) => service.generateStaticHtml({ request: pageRequest, signal: attemptSignal }));
+            generationRoute = { ...route, mode: routed.modelId }; fallbackUsed ||= routed.fallbackUsed;
+            return routed.value;
+          }
           const call = () => generationRoute.service.generateStaticHtml({ request: pageRequest, signal: requestSignal });
           try {
             return await (this.backgroundLlmGate ? this.backgroundLlmGate(call, requestSignal) : call());
@@ -1636,6 +1666,7 @@ export class BotApplication {
         ...(result.failureStage ? { failureStage: result.failureStage } : {}),
       });
     } catch (error) {
+      if (signal?.aborted) return;
       logError("HTML preview generation could not be queued.", {
         groupId,
         sourceMessageId: String(event.message_id),
@@ -2472,10 +2503,13 @@ export class BotApplication {
     commandText: string,
     runtimeCommands: SystemCommandConfig[],
   ): Promise<void> {
-    const includeImageGeneration = await this.isSuperAdmin(groupConfig, String(event.user_id));
+    const visible: SystemCommandConfig[] = [];
+    for (const command of runtimeCommands) if (command.id === "model" && command.enabled || await this.canUseRuntimeCommand(command, groupConfig, event)) visible.push(command);
+    const imageCommand = runtimeCommands.find(command => command.id === "image_generation");
+    const includeImageGeneration = !imageCommand || visible.some(command => command.id === "image_generation");
     await this.sendText(
       groupConfig.groupId,
-      buildFeatureListMessage(commandText, runtimeCommands, includeImageGeneration),
+      buildFeatureListMessage(commandText, visible, includeImageGeneration, new Set(runtimeCommands.filter(command => !visible.includes(command)).map(command => command.id))),
     );
   }
 
@@ -3170,6 +3204,7 @@ export class BotApplication {
         replyMode === "text"
           ? await this.resolveControlledMentionUserId({
               manualIdentities: controlledMentionIdentities,
+              signal,
               skill,
               history,
               userInput: normalizedUserInput,
@@ -3328,6 +3363,7 @@ export class BotApplication {
   }
 
   private async resolveControlledMentionUserId(args: {
+    signal?: AbortSignal;
     manualIdentities: NonNullable<GroupBotConfig["manualIdentities"]>;
     skill: SkillDefinition;
     history: ConversationTurn[];
@@ -3339,13 +3375,15 @@ export class BotApplication {
       return undefined;
     }
 
-    const decision = await this.aiService.evaluateControlledMention?.({
-      skill: args.skill,
-      history: args.history,
-      userInput: args.userInput,
-      assistantReply: args.assistantReply,
-      identityContext: args.identityContext,
-    });
+    let decision;
+    try {
+      const group = await this.groupConfigService.getGroup(args.identityContext.groupId);
+      const router = await this.getReplyRouter();
+      if (router && group) {
+        const session = await router.begin(group, "auxiliary", { signal: args.signal, gate: this.backgroundLlmGate });
+        decision = (await session.run((service, signal) => service.evaluateControlledMention({ ...args, signal, throwOnFailure: true }))).value;
+      } else decision = await this.aiService.evaluateControlledMention?.({ ...args, signal: args.signal });
+    } catch { return undefined; }
 
     const target = resolveManualIdentityTargetFromDecision(args.manualIdentities, decision);
     if (!target?.userId) {
@@ -3368,6 +3406,12 @@ export class BotApplication {
       signal?: AbortSignal;
     },
   ): Promise<ReplyAiResult> {
+    const router = await this.getReplyRouter();
+    if (router) {
+      const session = await router.begin(groupConfig, "chat", { signal: args.signal, vision: Boolean(args.images?.length), gate: this.backgroundLlmGate });
+      const result = await session.run((service, signal) => service.generateReply({ ...args, signal }));
+      return { reply: result.value, usedMode: result.modelId, fallbackUsed: result.fallbackUsed, visionFallback: Boolean(args.images?.length) && result.fallbackUsed };
+    }
     const selectedRoute = await this.getReplyAiRoute(groupConfig);
     const hasImages = (args.images?.length ?? 0) > 0;
     let route = selectedRoute;
@@ -3398,8 +3442,22 @@ export class BotApplication {
     };
   }
 
+  private async getReplyRouter(): Promise<ReplyModelRouter | undefined> {
+    if (!this.systemSettingsStore) return undefined;
+    if (!this.usesV3AdminAuthority() && !(await this.systemSettingsStore.get()).models.some(model => model.purpose === "reply")) return undefined;
+    return this.replyRouter ??= new ReplyModelRouter(this.systemSettingsStore, this.capabilityPolicy);
+  }
+
+  private async canUseRuntimeCommand(command: SystemCommandConfig, group: GroupBotConfig, event: NapcatGroupMessageEvent): Promise<boolean> {
+    if (!command.enabled) return false;
+    const userId = String(event.user_id);
+    const role = await this.isSuperAdmin(group, userId) ? "super_admin" : await this.isAdmin(group, userId, event.sender?.role) ? "group_admin" : "member";
+    return permissionAtLeast(role, command.permission);
+  }
+
   private async getReplyAiRoute(groupConfig: GroupBotConfig): Promise<ReplyAiRoute> {
-    const mode = normalizeReplyModelMode(groupConfig.replyModelMode);
+    const settings = await this.systemSettingsStore?.get();
+    const mode = effectiveReplyModelId(groupConfig, settings?.selectedModelIds.reply);
     const options = await this.getReplyModelOptions({ allowEnvironmentFallback: true });
     const primary = options.find((option) => option.mode === mode) ?? options.find((option) => option.mode === "gpt") ?? options[0]!;
     return primary;
@@ -3506,16 +3564,17 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
     const normalized = commandText.replace(/\s+/g, " ").trim();
-    const currentMode = normalizeReplyModelMode(groupConfig.replyModelMode);
+    const settings = await this.systemSettingsStore?.get();
+    const currentMode = effectiveReplyModelId(groupConfig, settings?.selectedModelIds.reply);
     const options = await this.getReplyModelOptions();
     const currentLabel = options.find((option) => option.mode === currentMode)?.label ?? await this.formatReplyModelName(currentMode);
 
-    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX}状态` || normalized === `${MODEL_PREFIX} 状态` || normalized === `${MODEL_PREFIX} 列表`) {
+    if (normalized === MODEL_PREFIX || normalized === `${MODEL_PREFIX}状态` || normalized === `${MODEL_PREFIX} 状态` || normalized === `${MODEL_PREFIX}列表` || normalized === `${MODEL_PREFIX} 列表`) {
       const lines = options.map((option) => {
         const activeMark = option.mode === currentMode ? " [当前]" : "";
         return `- ${option.mode}: ${option.label}${activeMark}`;
       });
-      await this.sendText(groupId, `当前群聊回复模型：${currentLabel}\n可切换模型：\n${lines.join("\n")}`);
+      await this.sendText(groupId, `当前群聊回复模型：${currentLabel}\n模型来源：${groupConfig.replyModelSource === "global" ? "跟随统一默认" : "本群指定模型"}\n可用模型：\n${lines.join("\n")}`);
       return;
     }
 
@@ -3526,12 +3585,18 @@ export class BotApplication {
       return;
     }
 
-    if (!(await this.isAdmin(groupConfig, userId, event.sender?.role))) {
+    if (!(await this.isSuperAdmin(groupConfig, userId))) {
       await this.sendText(groupId, "你没有切换群聊回复模型的权限");
       return;
     }
 
     const rawTarget = match[1]!.trim();
+    if (["跟随", "默认"].includes(rawTarget)) {
+      await this.groupConfigService.updateGroupConfig(groupId, { replyModelSource: "global" });
+      await this.logAdminOperation(groupId, userId, "回复模型跟随", settings?.selectedModelIds.reply ?? "gpt");
+      await this.sendText(groupId, "已恢复跟随统一默认模型");
+      return;
+    }
     const target = options.find((option) => option.mode.toLowerCase() === rawTarget.toLowerCase());
     if (!target) {
       await this.sendText(groupId, `模型 ${rawTarget} 不在可切换列表中。可用模型：${options.map((option) => option.mode).join("、")}`);
@@ -5150,13 +5215,14 @@ function buildFeatureListMessage(
   commandText = "",
   commands: SystemCommandConfig[] = [],
   includeImageGeneration = false,
+  hiddenIds = new Set<string>(),
 ): string {
   const topic = parseHelpTopic(commandText);
   const helper = createCommandHelpFormatter(commands);
-  const sections = buildHelpSections(helper, includeImageGeneration);
+  const sections = buildHelpSections(helper, includeImageGeneration).filter(section => !section.commandId || !hiddenIds.has(section.commandId));
 
   if (!topic) {
-    return buildHelpOverviewMessage(sections, helper, includeImageGeneration);
+    return buildHelpOverviewMessage(sections, helper, includeImageGeneration, hiddenIds);
   }
 
   const matchedSection = sections.find((section) => section.aliases.includes(topic));
@@ -5167,7 +5233,7 @@ function buildFeatureListMessage(
       `可用分类：${sections.map((section) => section.title).join("、")}`,
       `示例：${helper("help")} 技能`,
       "",
-      buildHelpOverviewMessage(sections, helper, includeImageGeneration),
+      buildHelpOverviewMessage(sections, helper, includeImageGeneration, hiddenIds),
     ].join("\n");
   }
 
@@ -5199,6 +5265,7 @@ function parseHelpTopic(commandText: string): string | null {
 }
 
 type HelpSection = {
+  commandId?: RuntimeCommandId;
   title: string;
   aliases: string[];
   lines: string[];
@@ -5207,13 +5274,13 @@ type HelpSection = {
 function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean): HelpSection[] {
   return [
     {
-      title: "BT 搜索", aliases: ["bt", "资源", "bt搜索", "资源搜索"],
+      commandId: "bt_search", title: "BT 搜索", aliases: ["bt", "资源", "bt搜索", "资源搜索"],
       lines: [`${command("bt_search")} <关键词> [anime|movie|adult]`,
         "默认完整搜索，前 5 条合并为一张转发卡片；--fast 加速，--full 展开分站详情。",
         "支持 --source、--timeout、--limit、--no-cache、--no-deep、--json、--debug。"],
     },
     {
-      title: "对话",
+      commandId: "conversation", title: "对话",
       aliases: ["对话", "聊天", "chat"],
       lines: [
         "1. @机器人 <内容>",
@@ -5225,17 +5292,17 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
       ],
     },
     ...(includeImageGeneration ? [{
-      title: "画图",
+      commandId: "image_generation" as const, title: "画图",
       aliases: ["画图", "生图", "image"],
       lines: [
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
-        "作用：根据文字提示生成一张图片，仅绑定超级管理员可用",
+        "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
         `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；成功生成后冷却 60 秒`,
       ],
     }] : []),
     {
-      title: "实时对话",
+      commandId: "live_chat", title: "实时对话",
       aliases: ["实时对话", "实时", "live", "livechat"],
       lines: [
         `1. ${command("live_chat")} 列表`,
@@ -5245,7 +5312,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
       ],
     },
     {
-      title: "定时任务",
+      commandId: "scheduled_reminder", title: "定时任务",
       aliases: ["定时任务", "提醒", "reminder"],
       lines: [
         "1. @机器人 设置定时任务一个小时提醒群友喝水",
@@ -5259,7 +5326,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
       ],
     },
     {
-      title: "日报",
+      commandId: "daily_report", title: "日报",
       aliases: ["日报", "report"],
       lines: [
         `1. ${command("daily_report")} 状态`,
@@ -5269,7 +5336,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
       ],
     },
     {
-      title: "节假日",
+      commandId: "holiday_countdown", title: "节假日",
       aliases: ["节假日", "假日", "holiday"],
       lines: [
         `1. ${command("holiday_countdown")}`,
@@ -5277,6 +5344,10 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `3. ${command("holiday_countdown")} 发送`,
         `4. ${command("holiday_countdown")} 开启 / 关闭 / 时间 <HH:mm>`,
       ],
+    },
+    {
+      commandId: "model", title: "模型", aliases: ["模型", "model"],
+      lines: [`${command("model")} 状态 / 列表`, `超级管理员：${command("model")} 切换 <模型ID> / 跟随`],
     },
     {
       title: "权限",
@@ -5294,19 +5365,22 @@ function buildHelpOverviewMessage(
   sections: HelpSection[],
   command: CommandHelpFormatter,
   includeImageGeneration: boolean,
+  hiddenIds: Set<string>,
 ): string {
+  const show = (id: RuntimeCommandId, text: string): string[] => hiddenIds.has(id) ? [] : [text];
   const features = [
-    "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解",
-    `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`,
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>（仅超级管理员）`] : []),
-    `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`,
-    `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`,
-    `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`,
-    `节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`,
-    `状态：${command("status")}、${command("health")}、${command("server")}、${command("ops_alert")}、${command("operation_log")}（已授权后台管理员）`,
-    `闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`,
-    `黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`,
-    `帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`,
+    ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
+    ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>`] : []),
+    ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
+    ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
+    ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),
+    ...show("holiday_countdown", `节假日：${command("holiday_countdown")}、状态、发送、开启、关闭、时间 <HH:mm>`),
+    ...show("model", `模型：${command("model")} 状态 / 列表（切换仅限超级管理员）`),
+    ...(["status", "health", "server", "ops_alert", "operation_log"] as RuntimeCommandId[]).filter(id => !hiddenIds.has(id)).map(id => `管理状态：${command(id)}`),
+    ...show("mute", `闭嘴：${command("mute", { includeAliases: true }).join(" / ")}（已授权后台管理员）`),
+    ...show("blacklist", `黑名单：${command("blacklist")} <QQ号>、${command("blacklist")} 解除 <QQ号>`),
+    ...show("help", `帮助：${command("help", { includeAliases: true }).join("、")} 都能调出本列表`),
   ];
   return [
     "系统功能总览：",

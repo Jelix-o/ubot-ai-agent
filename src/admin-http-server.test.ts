@@ -526,11 +526,11 @@ test("BT command can be renamed and disabled through the admin API and rejects n
   const { baseUrl } = await startFixture(t);
   const auth = await login(baseUrl);
   const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
-  const before = await (await request(baseUrl, "/api/commands", { headers })).json() as { commands: Array<{ id: string; primary: string; aliases: string[]; enabled: boolean }> };
+  const before = await (await request(baseUrl, "/api/commands", { headers })).json() as { revision: string; commands: Array<{ id: string; primary: string; aliases: string[]; enabled: boolean }> };
   const bt = before.commands.find(command => command.id === "bt_search")!;
   assert.equal(bt.primary, "#bt");
   assert.deepEqual(bt.aliases, ["/bt"]);
-  const put = (command: unknown) => request(baseUrl, "/api/commands", { method: "PUT", headers, body: JSON.stringify({ commands: [command] }) });
+  const put = (command: unknown) => request(baseUrl, "/api/commands", { method: "PUT", headers, body: JSON.stringify({ commands: [command], expectedRevision: before.revision }) });
   assert.equal((await put({ ...bt, primary: "#模型" })).status, 409);
   assert.equal((await put({ ...bt, primary: "#资源", aliases: ["/搜索"], enabled: false })).status, 200);
   const after = await (await request(baseUrl, "/api/commands", { headers })).json() as typeof before;
@@ -565,6 +565,10 @@ test("group administrators are limited to authorized groups and operational feat
   assert.equal(crossGroupMemberRefresh.status, 403);
   const systemSettings = await request(baseUrl, "/api/system-settings", { headers: { Cookie: cookie } });
   assert.equal(systemSettings.status, 403);
+  for (const patch of [{ replyModelMode: "gpt" }, { replyModelSource: "global" }]) {
+    const denied = await request(baseUrl, "/api/groups/67890/config", { method: "PUT", headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    assert.equal(denied.status, 403, "direct requests cannot change group model policy");
+  }
   const accountList = await request(baseUrl, "/api/admin-accounts", { headers: { Cookie: cookie } });
   assert.equal(accountList.status, 403);
   const diagnostics = await request(baseUrl, "/api/health", { headers: { Cookie: cookie } });
@@ -610,6 +614,47 @@ test("group administrators are limited to authorized groups and operational feat
     headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf },
   });
   assert.equal(restore.status, 403);
+});
+
+test("command permissions expose server floors, persist changes and reject stale or lowered policy", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const before = await (await request(baseUrl, "/api/commands", { headers })).json() as { revision: string; commands: Array<{ id: string; permission: string; minimumPermission: string }> };
+  const image = before.commands.find(command => command.id === "image_generation")!;
+  assert.equal(image.permission, "member"); assert.equal(image.minimumPermission, "member");
+  assert.equal(before.commands.find(command => command.id === "model")?.minimumPermission, "super_admin");
+  const put = (commands: unknown[], expectedRevision = before.revision) => request(baseUrl, "/api/commands", { method: "PUT", headers, body: JSON.stringify({ commands, expectedRevision }) });
+  for (const [id, permission] of [["model", "group_admin"], ["mute", "member"], ["image_generation", "invalid"]]) {
+    assert.equal((await put([{ ...before.commands.find(command => command.id === id), permission }])).status, 400);
+  }
+  const saved = await put([{ ...image, permission: "group_admin" }]);
+  assert.equal(saved.status, 200);
+  const after = await saved.json() as typeof before;
+  assert.equal(after.commands.find(command => command.id === image.id)?.permission, "group_admin");
+  assert.equal((await put([{ ...image, permission: "super_admin" }])).status, 409);
+  assert.equal((await put([{ ...image, permission: "member" }], after.revision)).status, 200);
+});
+
+test("model policy requires current revisions even through legacy PUT and supports restoring global inheritance", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const settings = await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string; replyRouting: Record<string, unknown> };
+  const policy = { models: ["sol", "gpt", "ds"].map(id => ({ id, purpose: "reply", name: id, shortName: id, model: id, baseUrl: "https://test.invalid", apiKey: "test", enabled: true })), selectedModelIds: { reply: "sol" }, replyRouting: { ...settings.replyRouting, fallbackModelIds: ["gpt", "ds"] } };
+  const putSettings = (body: unknown) => request(baseUrl, "/api/system-settings", { method: "PUT", headers, body: JSON.stringify(body) });
+  assert.equal((await putSettings(policy)).status, 409);
+  assert.equal((await putSettings({ ...policy, expectedRevision: settings.revision })).status, 200);
+  const getGroup = async () => (await (await request(baseUrl, "/api/groups/67890/config", { headers })).json()) as { revision: string; replyModelSource: string; replyModelMode: string };
+  const putGroup = (body: unknown) => request(baseUrl, "/api/groups/67890/config", { method: "PUT", headers, body: JSON.stringify(body) });
+  const before = await getGroup();
+  assert.equal((await putGroup({ replyModelSource: "global" })).status, 409);
+  assert.equal((await putGroup({ expectedRevision: before.revision, replyModelMode: "ds", replyModelSource: "override" })).status, 200);
+  assert.equal((await putGroup({ expectedRevision: before.revision, replyModelSource: "global" })).status, 409);
+  const override = await getGroup();
+  assert.equal(override.replyModelSource, "override"); assert.equal(override.replyModelMode, "ds");
+  assert.equal((await putGroup({ expectedRevision: override.revision, replyModelSource: "global" })).status, 200);
+  assert.equal((await getGroup()).replyModelSource, "global");
 });
 
 test("2026 ranking API is authenticated, paginated and strictly read-only", async (t) => {

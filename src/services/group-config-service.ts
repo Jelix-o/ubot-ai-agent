@@ -19,6 +19,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "enabled"
   | "currentSkillId"
   | "replyModelMode"
+  | "replyModelSource"
   | "participationMode"
   | "allowedSkillIds"
   | "switcherUserIds"
@@ -142,6 +143,7 @@ export class GroupConfigService {
         groupId,
         ...(incoming.groupName ? { groupName: incoming.groupName } : {}),
         enabled: false,
+        replyModelSource: "global",
         currentSkillId: "huixian",
         allowedSkillIds: ["huixian"],
         switcherUserIds: [],
@@ -179,6 +181,7 @@ export class GroupConfigService {
     data.groups[index] = normalizeGroupConfig({
       ...data.groups[index],
       replyModelMode: normalizeReplyModelMode(mode),
+      replyModelSource: "override",
     });
 
     await this.writeConfig(data);
@@ -593,6 +596,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     allowedSkillIds: [HUIXIAN_PERSONA_ID],
     enabled: group.enabled !== false,
     replyModelMode: normalizeReplyModelMode(group.replyModelMode),
+    replyModelSource: group.replyModelSource === "global" ? "global" : "override",
     participationMode: normalizeParticipationMode(group.participationMode),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
@@ -648,6 +652,11 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   }
   if ("replyModelMode" in input) {
     next.replyModelMode = normalizeReplyModelModeStrict(input.replyModelMode);
+    if (!("replyModelSource" in input)) next.replyModelSource = "override";
+  }
+  if ("replyModelSource" in input) {
+    if (input.replyModelSource !== "global" && input.replyModelSource !== "override") throw new GroupConfigValidationError("invalid_group_config");
+    next.replyModelSource = input.replyModelSource;
   }
   if ("participationMode" in input) {
     next.participationMode = normalizeParticipationModeStrict(input.participationMode);

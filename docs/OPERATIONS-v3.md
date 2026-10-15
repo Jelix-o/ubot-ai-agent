@@ -134,3 +134,11 @@ store delivery identifiers and timing only; they do not store the search query,
 magnet links or card contents. Inspect task states through the shared SQLite
 database and service logs when validating an upgrade; do not manually replay
 terminal recall actions.
+
+## v3.0.39 模型策略升级
+
+发布前使用当前密钥验证 Sol、GPT、DS 的真实对话和 GPT 视觉调用；有任一必需链路失败则保留旧服务。
+
+在新发布目录运行 `node scripts/upgrade-model-policy.mjs --check`，停止 Worker 后运行 `--apply`。环境支持 `RELEASE_ROOT`、`UBOT_APP_ROOT`、`DB_PATH`。操作在 SQLite 事务中加密备份系统配置及群模型，设置 Sol → GPT → DS、全部群跟随、生图权限为全员，并记录幂等标记。重复执行不重置用户后续设置；日志不输出密钥或模型内容。
+
+后台「系统设置 → 对话回复」调整默认与备用、单次与总超时；「群配置 → 回复」由超级管理员设置例外；「指令设置」修改权限。模型熔断按连接配置隔离，连续失败五次暂停三十秒；慢请求仅计入延迟指标。升级后检查三项服务、实际模型路由日志、群继承及指令权限。

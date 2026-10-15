@@ -1,3 +1,4 @@
+import { isCommandPermission, minimumCommandPermission, permissionAtLeast } from "./services/command-permissions.js";
 import { AdminBulkService, BulkError, revision, type BulkPayload, type BulkTarget } from "./services/admin-bulk-service.js";
 import { ModelTelemetryStore, type AnalyticsFilter } from "./services/model-telemetry.js";
 import { btSystemCommandConflict } from "./services/command-prefixes.js";
@@ -1034,7 +1035,8 @@ export class AdminHttpServer {
           const source = await this.options.groupConfigService.getGroup(sourceId);
           if (!source) throw new BulkError("source_not_found", 404);
           const fields = normalizeIds(body.fields);
-          const copyFields = ["enabled", "botMuted", "replyModelMode", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
+          if (fields.includes("replyModelMode") && !fields.includes("replyModelSource")) fields.push("replyModelSource");
+          const copyFields = ["enabled", "botMuted", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
           if (!fields.length || fields.some(f => !copyFields.includes(f))) throw new BulkError("invalid_copy_fields");
           patch = Object.fromEntries(fields.map(f => [f, (source as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined));
           if (!Object.keys(patch ?? {}).length) throw new BulkError("empty_copy_fields");
@@ -2120,7 +2122,14 @@ export class AdminHttpServer {
           this.sendJson(res, { error: "not_found" }, 404);
           return;
         }
-        if (req.method === "PATCH" && (typeof rawBody.expectedRevision !== "string" || rawBody.expectedRevision !== revision(existing))) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
+        if (session.role !== "super_admin" && ("replyModelMode" in body || "replyModelSource" in body)) {
+          this.sendJson(res, { error: "model_change_requires_super_admin" }, 403); return;
+        }
+        const guardModelUpdate = req.method === "PATCH" || "replyModelMode" in body || "replyModelSource" in body;
+        if (guardModelUpdate && (typeof rawBody.expectedRevision !== "string" || rawBody.expectedRevision !== revision(existing))) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
+        if (typeof body.replyModelMode === "string" && !(await this.isApprovedReplyModel(body.replyModelMode))) {
+          this.sendJson(res, { error: "reply_model_not_approved" }, 400); return;
+        }
         const update = session.role === "group_admin"
           ? sanitizeGroupAdminConfigPatch(body, existing.memoryDisabledUserIds ?? [])
           : body;
@@ -2137,7 +2146,7 @@ export class AdminHttpServer {
           this.sendJson(res, { error: "reply_model_not_approved" }, 403);
           return;
         }
-        const group = await this.options.groupConfigService.updateGroupConfig(params.id, update, req.method === "PATCH" ? { expectedRevision: rawBody.expectedRevision as string } : undefined);
+        const group = await this.options.groupConfigService.updateGroupConfig(params.id, update, guardModelUpdate ? { expectedRevision: rawBody.expectedRevision as string } : undefined);
         this.invalidateMemberProfileCache(params.id);
         await this.recordOperation({
           session,
@@ -2181,7 +2190,9 @@ export class AdminHttpServer {
         if (req.method === "PATCH" && (!rawBody.expectedRevision || rawBody.expectedRevision !== revision(current))) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
         const body = req.method === "PATCH" ? rawBody.patch as Record<string, unknown> : rawBody;
         if (!body || typeof body !== "object" || Array.isArray(body)) { this.sendJson(res, { error: "invalid_patch" }, 400); return; }
-        if (req.method === "PATCH" && Object.keys(body).some(key => !["onlineLookupEnabled", "tokenCostControl", "defaultTriggerKeywords", "models", "selectedModelIds"].includes(key))) { this.sendJson(res, { error: "invalid_patch_field" }, 400); return; }
+        const guardModelUpdate = req.method === "PATCH" || ["models", "selectedModelIds", "replyRouting", "commands"].some(key => key in body);
+        if (guardModelUpdate && rawBody.expectedRevision !== revision(current)) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
+        if (req.method === "PATCH" && Object.keys(body).some(key => !["onlineLookupEnabled", "tokenCostControl", "defaultTriggerKeywords", "models", "selectedModelIds", "replyRouting"].includes(key))) { this.sendJson(res, { error: "invalid_patch_field" }, 400); return; }
       if (hasRetiredSystemSettingField(body)) {
         this.sendJson(res, { error: "retired_system_setting" }, 410);
         return;
@@ -2196,13 +2207,14 @@ export class AdminHttpServer {
         body.commands = commands;
       }
       try {
-        const updated = await this.options.systemSettingsStore.update(body as Partial<SystemSettings>, req.method === "PATCH" ? { expectedRevision: rawBody.expectedRevision as string } : undefined);
+        const updated = await this.options.systemSettingsStore.update(body as Partial<SystemSettings>, guardModelUpdate ? { expectedRevision: rawBody.expectedRevision as string } : undefined);
         this.sendJson(res, { ...updated, revision: revision(updated) });
       } catch (error) {
         if (error instanceof StateConflictError) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
         const errorCode = (error as Error).message;
         if ([
           "invalid_time",
+          "invalid_reply_routing", "invalid_reply_routing_timeout", "reply_model_not_approved", "invalid_command_permission", "command_permission_below_minimum",
           "invalid_models",
           "invalid_model_config",
           "invalid_model_id",
@@ -2306,7 +2318,8 @@ export class AdminHttpServer {
     if (!this.options.systemSettingsStore) {
       const replyModel = { id: "gpt", label: "GPT", purpose: "reply", enabled: true };
       this.sendJson(res, {
-        replyModels: session.role === "super_admin"
+        defaultReplyModelId: "gpt",
+      replyModels: session.role === "super_admin"
           ? [{ ...replyModel, hasApiKey: true }]
           : [replyModel],
       });
@@ -2338,6 +2351,7 @@ export class AdminHttpServer {
     }));
     this.sendJson(res, {
       ...(session.role === "super_admin" ? { models } : {}),
+      defaultReplyModelId: settings.selectedModelIds.reply,
       replyModels: session.role === "super_admin"
         ? replyModels
         : publicReplyModels,
@@ -2554,18 +2568,21 @@ export class AdminHttpServer {
     }
     const settings = await this.options.systemSettingsStore.get();
     if (req.method === "GET") {
-      this.sendJson(res, { commands: settings.commands });
+      this.sendJson(res, { commands: settings.commands.map(command => ({ ...command, minimumPermission: minimumCommandPermission(command.id) })), revision: revision(settings) });
       return;
     }
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
+      if (body.expectedRevision !== revision(settings)) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
       const commands = normalizeCommandConfigList(body.commands ?? body, settings.commands);
       if (this.options.knowledgeSourceBindingStore && systemKnowledgeCommandConflict(commands, this.options.knowledgeSourceBindingStore)) {
         this.sendJson(res, { error: "knowledge_command_conflict" }, 409);
         return;
       }
-      const next = await this.options.systemSettingsStore.update({ commands });
-      this.sendJson(res, { commands: next.commands });
+      try {
+        const next = await this.options.systemSettingsStore.update({ commands }, { expectedRevision: body.expectedRevision as string });
+        this.sendJson(res, { commands: next.commands.map(command => ({ ...command, minimumPermission: minimumCommandPermission(command.id) })), revision: revision(next) });
+      } catch (error) { if (error instanceof StateConflictError) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; } throw error; }
       return;
     }
     this.sendJson(res, { error: "method_not_allowed" }, 405);
@@ -3806,7 +3823,6 @@ function normalizeInviteExpiryHours(value: unknown): number {
 /** Group admins manage their assigned group only, never QQ-level bot admins or global policy. */
 function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPrivacyOptOuts: string[]): Record<string, unknown> {
   const permitted = new Set([
-    "replyModelMode",
     "participationMode",
     "liveChatDelaySeconds",
     "dailyReportEnabled",
@@ -3961,8 +3977,11 @@ function normalizeCommandConfigList(value: unknown, current: SystemCommandConfig
       if (!existing) {
         return undefined;
       }
+      if (record.permission !== undefined && !isCommandPermission(record.permission)) throw new AdminRequestBodyError("invalid_command_permission", 400);
+      if (record.permission !== undefined && !permissionAtLeast(record.permission, minimumCommandPermission(id))) throw new AdminRequestBodyError("command_permission_below_minimum", 400);
       return {
         ...existing,
+        permission: record.permission ?? existing.permission,
         title: typeof record.title === "string" && record.title.trim() ? record.title.trim().slice(0, 80) : existing.title,
         primary: typeof record.primary === "string" && record.primary.trim() ? record.primary.trim().slice(0, 40) : existing.primary,
         aliases: record.aliases === undefined ? existing.aliases : normalizeNames(record.aliases).slice(0, 12),

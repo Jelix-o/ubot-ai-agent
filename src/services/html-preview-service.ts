@@ -69,6 +69,7 @@ export interface HtmlPreviewServiceOptions {
 }
 
 export interface HtmlPreviewProcessOptions {
+  maxGenerationAttempts?: number;
   /** Target source record. If earlier same-group work exists it is drained first. */
   id?: string;
   /** The just-parsed current request. It is never stored in html_previews. */
@@ -284,8 +285,10 @@ export class HtmlPreviewService {
       const request = await this.resolveRequest(page, options, targetId);
       if (!request) throw new HtmlPreviewError("html_preview_request_unavailable");
       await this.assertDiskSpace();
-      const generated = await this.generateValidatedPage(request, options.generate, options.signal);
+      const generated = await this.generateValidatedPage(request, options.generate, options.signal, options.maxGenerationAttempts);
+      options.signal?.throwIfAborted();
       const published = await this.publishFiles(page.id, generated.title, generated.html);
+      options.signal?.throwIfAborted();
       const stored = this.repository.publish({
         id: page.id,
         leaseToken: claim.leaseToken,
@@ -306,6 +309,10 @@ export class HtmlPreviewService {
         ...(announcementOutboxId === undefined ? {} : { announcementOutboxId }),
       };
     } catch (error) {
+      if (options.signal?.aborted) {
+        this.repository.fail(page.id, claim.leaseToken, "html_preview_cancelled", now);
+        return { status: "failed", errorCode: "html_preview_cancelled" };
+      }
       const errorCode = errorCodeOf(error);
       const failureStage = error instanceof HtmlPreviewError ? error.failureStage : undefined;
       const failed = this.repository.fail(page.id, claim.leaseToken, errorCode, now);
@@ -340,16 +347,18 @@ export class HtmlPreviewService {
     request: string,
     generate: HtmlPreviewProcessOptions["generate"],
     signal?: AbortSignal,
+    maxGenerationAttempts = 2,
   ): Promise<ParsedModelPage> {
     let previousOutput: string | undefined;
     let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < Math.max(1, Math.min(20, maxGenerationAttempts)); attempt += 1) {
+      signal?.throwIfAborted();
       let result: HtmlPreviewGenerationResult | string;
       try {
         result = await generate(
           attempt === 0 ? request : buildRepairRequest(request, errorCodeOf(lastError)),
           signal,
-          { repair: attempt === 1, ...(previousOutput ? { previousOutput } : {}) },
+          { repair: attempt > 0, ...(previousOutput ? { previousOutput } : {}) },
         );
       } catch (error) {
         throw new HtmlPreviewError(errorCodeOf(error), attempt === 0 ? "generation" : "repair");
