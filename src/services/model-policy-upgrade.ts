@@ -16,10 +16,11 @@ export function checkModelPolicyUpgrade(repository: V3StateRepository): void {
   }
 }
 
-export function upgradeModelPolicy(repository: V3StateRepository, encryptionKey: string): { applied: boolean; groupCount: number } {
+export function upgradeModelPolicy(repository: V3StateRepository, encryptionKey: string, options: { retryAfterRollback?: boolean } = {}): { applied: boolean; groupCount: number } {
   return repository.runAtomically(() => {
     repository.requireCutover();
-    if (repository.getMeta(marker)) return { applied: false, groupCount: repository.getGroups().groups.length };
+    const state = repository.getMeta(marker);
+    if (state && !(state === "restored" && options.retryAfterRollback === true)) return { applied: false, groupCount: repository.getGroups().groups.length };
     checkModelPolicyUpgrade(repository);
     const settings = repository.getSystemSettings()!;
     const groups = repository.getGroups();

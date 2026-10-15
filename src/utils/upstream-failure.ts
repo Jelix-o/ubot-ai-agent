@@ -47,7 +47,7 @@ export function classifyUpstreamFailure(input: {
   if (/timeout|timed out|abort|etimedout|504/.test(message)) {
     return "timeout";
   }
-  if (/fetch failed|network|econnreset|econnrefused|enotfound|eai_again|socket|dns/.test(message)) {
+  if (/fetch failed|network|connection error|econnreset|econnrefused|enotfound|eai_again|socket|dns/.test(message)) {
     return "network";
   }
   if (/invalid json|unexpected token|parse|did not contain|empty audio|no audio/.test(message)) {

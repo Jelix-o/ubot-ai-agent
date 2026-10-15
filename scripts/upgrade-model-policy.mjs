@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const mode = process.argv[2] ?? "--check";
-if (!["--check", "--apply", "--rollback"].includes(mode) || process.argv.length > 3) throw new Error("Usage: upgrade-model-policy.mjs [--check|--apply|--rollback]");
+const retryAfterRollback = mode === "--apply" && process.argv[3] === "--retry-after-rollback";
+if (!["--check", "--apply", "--rollback"].includes(mode) || process.argv.length > (retryAfterRollback ? 4 : 3)) throw new Error("Usage: upgrade-model-policy.mjs [--check|--apply [--retry-after-rollback]|--rollback]");
 const root = process.env.RELEASE_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const appRoot = process.env.UBOT_APP_ROOT || "/opt/ai-project";
 const { default: dotenv } = await import(pathToFileURL(path.join(root, "node_modules/dotenv/lib/main.js")).href);
@@ -17,6 +18,6 @@ const policy = await import(pathToFileURL(path.join(root, "dist/services/model-p
 const db = new SharedDb(process.env.DB_PATH || path.join(appRoot, "data/shared/bot-shared.db"));
 try {
   const repository = new V3StateRepository(db, { stateEncryptionKey: key });
-  const result = mode === "--apply" ? policy.upgradeModelPolicy(repository, key) : mode === "--rollback" ? policy.rollbackModelPolicy(repository, key) : (policy.checkModelPolicyUpgrade(repository), { ready: true });
+  const result = mode === "--apply" ? policy.upgradeModelPolicy(repository, key, { retryAfterRollback }) : mode === "--rollback" ? policy.rollbackModelPolicy(repository, key) : (policy.checkModelPolicyUpgrade(repository), { ready: true });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } finally { db.close(); }

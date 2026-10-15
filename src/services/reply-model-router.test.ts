@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import OpenAI from "openai";
 import type { SystemModelConfig, SystemSettings } from "../types.js";
 import type { RuntimeAiService } from "./configured-ai-service.js";
 import { ReplyModelRouter, retryableModelFailure } from "./reply-model-router.js";
@@ -22,6 +23,14 @@ function fixture(overrides: Partial<SystemSettings> = {}) {
   return { router, settings, calls, behavior, execute, run };
 }
 const unavailable = () => Promise.reject(Object.assign(new Error("upstream unavailable"), { status: 503 }));
+
+test("SDK connection failures and nested transport causes reach the next model", async () => {
+  for (const error of [new OpenAI.APIConnectionError({}), new Error("provider failed", { cause: Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" }) })]) {
+    const f = fixture(); f.behavior.sol = () => Promise.reject(error);
+    assert.equal((await f.execute()).modelId, "gpt");
+    assert.deepEqual(f.calls, ["sol", "gpt"]);
+  }
+});
 
 test("routes primary first and uses configured backups once, silently", async () => {
   const f = fixture(); f.behavior.sol = unavailable; f.behavior.gpt = unavailable;

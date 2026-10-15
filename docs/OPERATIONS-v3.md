@@ -141,4 +141,6 @@ terminal recall actions.
 
 在新发布目录运行 `node scripts/upgrade-model-policy.mjs --check`，停止 Worker 后运行 `--apply`。环境支持 `RELEASE_ROOT`、`UBOT_APP_ROOT`、`DB_PATH`。操作在 SQLite 事务中加密备份系统配置及群模型，设置 Sol → GPT → DS、全部群跟随、生图权限为全员，并记录幂等标记。重复执行不重置用户后续设置；日志不输出密钥或模型内容。
 
+v3.0.40 起，若先前部署已经完整回滚，可显式运行 `--apply --retry-after-rollback` 重试。本选项仅识别已回滚标记，不会覆盖成功升级后的设置。启动健康检查应允许 NapCat 的重连间隔，确认 `/read/health` 返回 `ok: true` 后再完成部署。
+
 后台「系统设置 → 对话回复」调整默认与备用、单次与总超时；「群配置 → 回复」由超级管理员设置例外；「指令设置」修改权限。模型熔断按连接配置隔离，连续失败五次暂停三十秒；慢请求仅计入延迟指标。升级后检查三项服务、实际模型路由日志、群继承及指令权限。

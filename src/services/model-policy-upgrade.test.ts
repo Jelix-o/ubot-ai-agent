@@ -36,6 +36,9 @@ test("policy upgrade is atomic, encrypted, idempotent and preserves command copy
   assert.equal((await store.get()).commands.find(command => command.id === "image_generation")?.permission, "super_admin");
   assert.equal(repository.getGroup("g1")?.replyModelMode, "gpt"); assert.equal(repository.getGroup("g1")?.replyModelSource, undefined);
   assert.equal(rollbackModelPolicy(repository, key).restored, false); assert.equal(upgradeModelPolicy(repository, key).applied, false);
+  assert.equal(upgradeModelPolicy(repository, key, { retryAfterRollback: true }).applied, true);
+  assert.equal((await store.get()).selectedModelIds.reply, "sol");
+  assert.equal(upgradeModelPolicy(repository, key, { retryAfterRollback: true }).applied, false);
 });
 test("failed preflight leaves settings, groups and backup untouched", async t => {
   const { repository, db, store } = await fixture(t); const settings = repository.getSystemSettings()!;
