@@ -67,9 +67,11 @@ test("attempt timeout aborts the upstream and proceeds to a healthy model", asyn
   f.behavior.sol = signal => new Promise((_resolve, reject) => signal.addEventListener("abort", () => { aborted = true; reject(signal.reason); }, { once: true }));
   assert.equal((await f.execute()).modelId, "gpt"); assert.equal(aborted, true);
 });
-test("total budget is shared across attempts and HTML repair sessions", async () => {
+test("total budget is shared across attempts and HTML repair sessions", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const f = fixture(); f.settings.replyRouting!.chatTotalTimeoutMs = 15;
-  f.behavior.sol = signal => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  f.behavior.sol = signal => new Promise((_resolve, reject) => signal.addEventListener("abort", () => { now += 15; reject(signal.reason); }, { once: true }));
   await assert.rejects(() => f.execute()); assert.deepEqual(f.calls, ["sol"]);
   const session = await f.router.begin(group, "html");
   assert.equal((await session.run(async () => "first")).modelId, "sol");
