@@ -58,6 +58,7 @@ const releasePaths = [
   "scripts/deploy-linux-release.sh",
   "scripts/migrate-v3-state.mjs",
   "scripts/normalize-dotenv-bom.mjs",
+  "scripts/upgrade-model-policy.mjs",
   "scripts/verify-release-source.mjs",
 ];
 

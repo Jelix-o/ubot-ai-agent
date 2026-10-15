@@ -1,4 +1,6 @@
 import { withModelOperation } from "./model-telemetry.js";
+import { ReplyModelRouter } from "./reply-model-router.js";
+import type { GroupBotConfig } from "../types.js";
 import { logWarn } from "../logger.js";
 import type { SystemModelConfig, SystemModelPurpose } from "../types.js";
 import type { AiService } from "./ai-service.js";
@@ -44,6 +46,7 @@ export class ConfiguredModelUnavailableError extends Error {
 }
 
 export class ConfiguredAiService implements RuntimeAiService {
+  private auxiliaryRouter?: ReplyModelRouter;
   private readonly modelIds = new WeakMap<object, string>();
   private cachedService?: {
     key: string;
@@ -103,9 +106,19 @@ export class ConfiguredAiService implements RuntimeAiService {
     history: Parameters<AiService["evaluateReplyDesire"]>[1],
     bufferedMessages: Parameters<AiService["evaluateReplyDesire"]>[2],
     signal?: AbortSignal,
+    throwOnFailure = false,
+    group?: Pick<GroupBotConfig, "groupId" | "replyModelMode" | "replyModelSource">,
   ): ReturnType<AiService["evaluateReplyDesire"]> {
+    if (this.purpose === "reply" && !this.selectedModelId) {
+      try {
+        this.auxiliaryRouter ??= new ReplyModelRouter(this.systemSettingsStore, this.capabilityPolicy,
+          model => this.factory(model, this.capabilityPolicy?.getProviderCapabilityOverrides(normalizeProtocol(model.apiProtocol))));
+        const session = await this.auxiliaryRouter.begin(group ?? { groupId: "", replyModelSource: "global" }, "auxiliary", { signal });
+        return (await session.run((service, attemptSignal) => service.evaluateReplyDesire(skill, history, bufferedMessages, attemptSignal, true))).value;
+      } catch (error) { if (throwOnFailure) throw error; return "SKIP"; }
+    }
     const service = await this.resolveService();
-    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal), this.modelIds.get(service));
+    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal, throwOnFailure), this.modelIds.get(service));
   }
 
   async evaluateControlledMention(
@@ -146,8 +159,8 @@ export class ConfiguredAiService implements RuntimeAiService {
   private async resolveService(preferredPurpose?: SystemModelPurpose): Promise<RuntimeAiService> {
     const model = await this.getActiveModel(preferredPurpose);
     if (!model) {
-      if (this.requireSelectedModel && this.selectedModelId) {
-        throw new ConfiguredModelUnavailableError(this.selectedModelId);
+      if (this.requireSelectedModel) {
+        throw new ConfiguredModelUnavailableError(this.selectedModelId ?? "reply");
       }
       this.requireProviderChat("openai");
       return this.fallback;
@@ -180,6 +193,7 @@ export class ConfiguredAiService implements RuntimeAiService {
       this.cachedService = { key, service };
       return service;
     } catch (error) {
+      if (this.requireSelectedModel) throw error;
       logWarn("Configured AI model is invalid; falling back to environment model.", {
         purpose: this.purpose,
         model: model.model,
@@ -200,7 +214,7 @@ export class ConfiguredAiService implements RuntimeAiService {
   private async getActiveModel(preferredPurpose?: SystemModelPurpose): Promise<SystemModelConfig | undefined> {
     const settings = await this.systemSettingsStore.getInternal();
     if (this.selectedModelId) {
-      return settings.models.find((model) => model.id === this.selectedModelId && isUsableModel(model));
+      return settings.models.find((model) => model.id === this.selectedModelId && model.purpose === this.purpose && isUsableModel(model));
     }
     for (const purpose of this.resolvePurposeOrder(preferredPurpose)) {
       const selectedModelId = isSelectableModelPurpose(purpose)

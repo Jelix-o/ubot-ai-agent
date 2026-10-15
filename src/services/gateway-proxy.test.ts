@@ -87,3 +87,21 @@ test("call enforces its internal timeout when it is the only active handle", asy
 
   await assert.rejects(() => promise, /timed out/);
 });
+
+test("slow successes never trip the breaker and cancelled calls do not poison it", async () => {
+  const proxy = new GatewayProxy(undefined, undefined, { slowThresholdMs: 0, slowSampleMin: 1, tripAfterFailures: 1 });
+  for (let i = 0; i < 25; i++) await proxy.call(async () => { await sleep(1); return "ok"; });
+  assert.equal(proxy.stateName, "closed");
+  const controller = new AbortController();
+  const pending = proxy.call(async () => new Promise(() => undefined), { signal: controller.signal }); controller.abort();
+  await assert.rejects(() => pending); assert.equal(proxy.stateName, "closed");
+});
+
+test("only one half-open probe runs; a healthy probe clears old failures", async () => {
+  const proxy = new GatewayProxy(undefined, undefined, { tripAfterFailures: 1, openMs: 10 });
+  await assert.rejects(() => proxy.call(async () => { throw new Error("down"); })); await sleep(15);
+  let resolve!: (value: string) => void;
+  const probe = proxy.call(() => new Promise<string>(done => { resolve = done; }));
+  await assert.rejects(() => proxy.call(async () => "duplicate"), CircuitOpenError);
+  resolve("ok"); assert.equal(await probe, "ok"); assert.equal(proxy.stateName, "closed");
+});

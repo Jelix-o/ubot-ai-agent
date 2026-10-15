@@ -8,6 +8,17 @@ import type { GroupsConfigFile } from "../types.js";
 import { GroupConfigService } from "./group-config-service.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 
+test("old groups keep their model, new groups follow global, and overrides can resume following", async () => {
+  await withService({ groups: [{ groupId: "67890", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [], replyModelMode: "ds" }] }, async service => {
+    assert.equal((await service.getGroup("67890"))?.replyModelSource, "override");
+    await service.upsertGroupsFromNapcat([{ groupId: "100200" }]);
+    assert.equal((await service.getGroup("100200"))?.replyModelSource, "global");
+    assert.equal((await service.updateReplyModelMode("100200", "gpt")).replyModelSource, "override");
+    assert.equal((await service.updateGroupConfig("100200", { replyModelSource: "global" })).replyModelSource, "global");
+    assert.equal((await service.getGroup("67890"))?.replyModelMode, "ds");
+  });
+});
+
 async function withService<T>(
   data: GroupsConfigFile,
   run: (service: GroupConfigService) => Promise<T>,

@@ -180,7 +180,7 @@ test("SystemSettingsStore rejects tts purpose updates and strips tts models on r
   });
 });
 
-test("SystemSettingsStore permits command copy changes but not permission escalation", async () => {
+test("SystemSettingsStore persists command copy and permission changes", async () => {
   await withDir(async (dir) => {
     const store = new SystemSettingsStore(path.join(dir, "settings.json"));
     const before = await store.get();
@@ -195,7 +195,7 @@ test("SystemSettingsStore permits command copy changes but not permission escala
     const updated = next.commands.find((item) => item.id === "conversation");
     assert.equal(updated?.title, "Conversation");
     assert.equal(updated?.primary, "#chat");
-    assert.equal(updated?.permission, conversation.permission);
+    assert.equal(updated?.permission, "super_admin");
     assert.equal(next.commands.some((item) => item.id === "unknown"), false);
   });
 });
@@ -224,11 +224,11 @@ test("SystemSettingsStore supplies the member HTML preview command for legacy se
     });
     const retained = updated.commands.find((item) => item.id === "html_preview");
     assert.equal(retained?.primary, "#页面");
-    assert.equal(retained?.permission, "member");
+    assert.equal(retained?.permission, "super_admin");
   });
 });
 
-test("SystemSettingsStore upgrades legacy image generation commands to super-admin only", async () => {
+test("SystemSettingsStore preserves editable member permission for legacy image commands", async () => {
   await withDir(async (dir) => {
     const file = path.join(dir, "settings.json");
     await writeFile(file, JSON.stringify({
@@ -253,7 +253,7 @@ test("SystemSettingsStore upgrades legacy image generation commands to super-adm
     }, {
       primary: "#画图",
       aliases: ["#生图"],
-      permission: "super_admin",
+      permission: "member",
       enabled: true,
     });
   });

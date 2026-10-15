@@ -8,6 +8,7 @@ import { formatDateTime } from "../utils/format";
 const app = useAppStore();
 const commands = shallowRef<SystemCommandConfig[]>([]);
 const loading = shallowRef(false);
+const revision = shallowRef("");
 const saving = shallowRef(false);
 const query = shallowRef("");
 const permission = shallowRef("");
@@ -27,8 +28,9 @@ const activeCommand = computed(() => commands.value.find((item) => item.id === a
 async function load(): Promise<void> {
   loading.value = true;
   try {
-    const data = await api<{ commands: SystemCommandConfig[] }>("/api/commands");
+    const data = await api<{ commands: SystemCommandConfig[]; revision: string }>("/api/commands");
     commands.value = data.commands;
+    revision.value = data.revision;
     if (!activeId.value && data.commands[0]) activeId.value = data.commands[0].id;
   } catch (error) {
     app.showToast((error as Error).message || "指令配置加载失败", "error");
@@ -40,11 +42,12 @@ async function load(): Promise<void> {
 async function save(): Promise<void> {
   saving.value = true;
   try {
-    const data = await api<{ commands: SystemCommandConfig[] }>("/api/commands", {
+    const data = await api<{ commands: SystemCommandConfig[]; revision: string }>("/api/commands", {
       method: "PUT",
-      body: JSON.stringify({ commands: commands.value }),
+      body: JSON.stringify({ commands: commands.value, expectedRevision: revision.value }),
     });
     commands.value = data.commands;
+    revision.value = data.revision;
     app.showToast("指令配置已保存");
   } catch (error) {
     app.showToast((error as Error).message, "error");
@@ -54,11 +57,16 @@ async function save(): Promise<void> {
 }
 
 function permissionLabel(value: SystemCommandConfig["permission"]): string {
-  return ({ member: "成员", group_admin: "群管理员", super_admin: "超级管理员" } as const)[value];
+  return ({ member: "全员", group_admin: "群管理员", super_admin: "超级管理员" } as const)[value];
 }
 
 function splitAliases(value: string): string[] {
   return value.split(/[,\s，、]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function allowedPermissions(command: SystemCommandConfig): SystemCommandConfig["permission"][] {
+  const levels: SystemCommandConfig["permission"][] = ["member", "group_admin", "super_admin"];
+  return levels.slice(levels.indexOf(command.minimumPermission || "member"));
 }
 
 function selectCommand(command: SystemCommandConfig): void {
@@ -76,14 +84,14 @@ onMounted(() => {
       <div class="section-head">
         <div>
           <h2>指令配置</h2>
-          <p>查看与维护系统内置指令的名称、主命令、别名和开关。</p>
+          <p>查看与维护系统内置指令的名称、主命令、别名、权限和开关。</p>
         </div>
       </div>
       <div class="filter-bar command-toolbar">
         <input v-model="query" class="input" placeholder="搜索指令名称、主命令或别名" />
         <select v-model="permission" class="select">
           <option value="">全部权限</option>
-          <option value="member">成员</option>
+          <option value="member">全员</option>
           <option value="group_admin">群管理员</option>
           <option value="super_admin">超级管理员</option>
         </select>
@@ -124,7 +132,7 @@ onMounted(() => {
       <div class="section-head">
         <div>
           <h2>{{ readonly ? "指令详情" : "指令编辑" }}</h2>
-          <p>{{ readonly ? "当前账号可以查看指令配置，但不能修改。" : "只维护系统内置指令的名称、主命令、别名和开关。" }}</p>
+          <p>{{ readonly ? "当前账号可以查看指令配置，但不能修改。" : "维护内置指令的名称、别名、使用权限和开关。" }}</p>
         </div>
         <button class="ghost-btn" type="button" @click="activeId = ''">×</button>
       </div>
@@ -134,7 +142,7 @@ onMounted(() => {
           <label>指令名称<input v-model="activeCommand.title" class="input" :disabled="readonly" /></label>
           <label>主命令<input v-model="activeCommand.primary" class="input" :disabled="readonly" /></label>
           <label class="wide">别名<input class="input" :value="activeCommand.aliases.join('\n')" :disabled="readonly" placeholder="支持换行、逗号、空格" @input="activeCommand.aliases = splitAliases(($event.target as HTMLInputElement).value)" /></label>
-          <label>权限级别<input class="input" :value="permissionLabel(activeCommand.permission)" disabled /></label>
+          <label>使用权限<select v-model="activeCommand.permission" class="select" :disabled="readonly"><option v-for="level in allowedPermissions(activeCommand)" :key="level" :value="level">{{ permissionLabel(level) }}</option></select><small>最低权限：{{ permissionLabel(activeCommand.minimumPermission || 'member') }}；管理子操作仍遵守自身限制。</small></label>
           <label class="switch editor-switch"><input v-model="activeCommand.enabled" type="checkbox" :disabled="readonly" /> {{ activeCommand.enabled ? "已启用" : "已停用" }}</label>
           <label class="wide">帮助文案<textarea v-model="activeCommand.help" class="textarea" maxlength="400" :disabled="readonly" /></label>
         </div>

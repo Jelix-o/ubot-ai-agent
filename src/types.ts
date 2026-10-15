@@ -310,6 +310,7 @@ export interface GroupBotConfig {
   enabled?: boolean;
   currentSkillId: string;
   replyModelMode?: ReplyModelMode;
+  replyModelSource?: "global" | "override";
   participationMode?: ParticipationMode;
   allowedSkillIds: string[];
   switcherUserIds: string[];
@@ -484,6 +485,7 @@ export interface SystemCommandConfig {
   primary: string;
   aliases: string[];
   permission: "member" | "group_admin" | "super_admin";
+  minimumPermission?: "member" | "group_admin" | "super_admin";
   enabled: boolean;
   help: string;
   updatedAt: string;
@@ -496,7 +498,17 @@ export interface TokenCostControlSettings {
   modelHealthAutoProbeEnabled: boolean;
 }
 
+export interface ReplyRoutingSettings {
+  fallbackEnabled: boolean;
+  fallbackModelIds: string[];
+  chatAttemptTimeoutMs: number;
+  chatTotalTimeoutMs: number;
+  htmlAttemptTimeoutMs: number;
+  htmlTotalTimeoutMs: number;
+}
+
 export interface SystemSettings {
+  replyRouting?: ReplyRoutingSettings;
   onlineLookupEnabled: boolean;
   tokenCostControl: TokenCostControlSettings;
   defaultTriggerKeywords: Array<{

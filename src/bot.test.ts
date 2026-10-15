@@ -225,6 +225,7 @@ class FakeGroupConfigService {
   async updateReplyModelMode(groupId: string, mode: string): Promise<GroupBotConfig> {
     const group = this.requireGroup(groupId);
     group.replyModelMode = mode;
+    group.replyModelSource = "override";
     return cloneGroup(group);
   }
 
@@ -372,6 +373,40 @@ class FakeSystemSettingsStore {
     return this.get();
   }
 }
+
+test("only a super administrator can restore global model following while members can read status", async () => {
+  const { app, transport, groupConfigService, aiService } = createApp();
+  groupConfigService.superAdminUserIds.push("99999");
+  groupConfigService.groups[0]!.replyModelSource = "override";
+  const owner = createEvent("#模型 跟随", 20001); owner.sender!.role = "owner";
+  await app.handleGroupMessage(owner);
+  assert.equal(groupConfigService.groups[0]?.replyModelSource, "override");
+  assert.match(transport.sent.at(-1)?.text ?? "", /权限/);
+  await app.handleGroupMessage(createEvent("#模型 状态", 20001));
+  assert.match(transport.sent.at(-1)?.text ?? "", /当前群聊回复模型/);
+  await app.handleGroupMessage(createEvent("#模型 跟随", 99999));
+  assert.equal(groupConfigService.groups[0]?.replyModelSource, "global");
+  assert.match(transport.sent.at(-1)?.text ?? "", /已恢复跟随/);
+  assert.equal(aiService.calls.length, 0);
+});
+
+test("image permission covers renamed primary, aliases, help and disabled commands without chat fallthrough", async () => {
+  const command: SystemCommandConfig = { id: "image_generation", title: "图片", primary: "#绘图", aliases: ["/draw", "#生图"], permission: "super_admin", enabled: true, help: "", updatedAt: "" };
+  const settings = new FakeSystemSettingsStore([command]);
+  let generated = 0;
+  const { app, transport, aiService, conversationStore } = createApp({ systemSettingsStore: settings, imageGenerationService: { async generate() { generated++; return { stagedFile: "/tmp/test.png" }; }, async discard() {}, async cleanup() { return 0; } } as unknown as ImageGenerationRuntime });
+  for (const text of ["#绘图 test", "/draw test", "#生图 test"]) await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }]));
+  assert.equal(generated, 0);
+  assert.equal(transport.sent.length, 3);
+  assert.ok(transport.sent.every(message => message.text.includes("权限")));
+  await app.handleGroupMessage(createEvent("#功能"));
+  assert.doesNotMatch(transport.sent.at(-1)?.text ?? "", /画图：|#绘图|#生图/);
+  command.permission = "member"; command.enabled = false;
+  await app.handleGroupMessage(createEvent("/draw test"));
+  assert.equal(transport.sent.length, 4);
+  assert.equal(aiService.calls.length, 0);
+  assert.deepEqual(conversationStore.turnsByKey, {});
+});
 
 class FakeSkillService {
   constructor(private readonly skills: SkillDefinition[]) {}
@@ -1810,7 +1845,7 @@ test("#画图 explains missing prompts and ignores the retired per-group switch"
   assert.equal(enabled.transport.generatedImages.length, 1);
 });
 
-test("V3 image generation is silent for everyone except a bound super administrator", async () => {
+test("V3 image generation is available to members and administrators by default", async () => {
   let calls = 0;
   const imageGenerationService: ImageGenerationRuntime = {
     async generate(input) {
@@ -1850,14 +1885,14 @@ test("V3 image generation is silent for everyone except a bound super administra
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 普通成员" } }], 20003));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图 群管理员" } }], 20002));
-  assert.equal(calls, 0);
-  assert.equal(transport.sent.length, 0);
-  assert.equal(transport.generatedImages.length, 0);
+  assert.equal(calls, 2);
+  assert.equal(transport.sent.length, 2);
+  assert.equal(transport.generatedImages.length, 2);
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 超级管理员" } }], 20001));
-  assert.equal(calls, 1);
-  assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
-  assert.equal(transport.generatedImages.length, 1);
+  assert.equal(calls, 3);
+  assert.deepEqual(transport.sent.map((item) => item.text), Array(3).fill("正在生成图片，请稍候…"));
+  assert.equal(transport.generatedImages.length, 3);
 });
 
 test("#画图 reports the exact Unicode prompt overage before starting generation", async () => {
@@ -1883,7 +1918,7 @@ test("#画图 reports the exact Unicode prompt overage before starting generatio
   assert.equal(transport.sent[0]?.text, "提示词当前 5001 字，最多 5000 字，请删减 1 字");
 });
 
-test("image generation help is hidden from members and shown to super administrators", async () => {
+test("image generation help is visible to all members by default", async () => {
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
     currentSkillId: "assistant",
@@ -1895,9 +1930,9 @@ test("image generation help is hidden from members and shown to super administra
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能" } }], 20002));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能 画图" } }], 20002));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#功能 画图" } }], 20001));
-  assert.doesNotMatch(transport.sent[0]?.text ?? "", /画图|#画图|#生图/);
-  assert.match(transport.sent[1]?.text ?? "", /没找到“画图”/);
-  assert.match(transport.sent[2]?.text ?? "", /仅绑定超级管理员可用/);
+  assert.match(transport.sent[0]?.text ?? "", /画图|#画图|#生图/);
+  assert.match(transport.sent[1]?.text ?? "", /画图|生图/);
+  assert.match(transport.sent[2]?.text ?? "", /画图|生图/);
   assert.match(transport.sent[2]?.text ?? "", /最多 5000 字/);
 });
 
@@ -4766,6 +4801,7 @@ test("switches enabled configured reply model for authorized user", async () => 
       dailyReportTopUserCount: 3,
     },
   ]);
+  groupConfigService.superAdminUserIds = ["99999"];
   const { app, transport } = createApp({
     groupConfigService,
     systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [enabledReplyModel()]),
@@ -4793,6 +4829,7 @@ test("supports compact reply model commands", async () => {
       dailyReportTopUserCount: 3,
     },
   ]);
+  groupConfigService.superAdminUserIds = ["99999"];
   const { app, transport } = createApp({
     groupConfigService,
     systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [enabledReplyModel()]),
@@ -4825,6 +4862,7 @@ test("uses configured command primary and aliases at runtime", async () => {
       dailyReportTopUserCount: 3,
     },
   ]);
+  groupConfigService.superAdminUserIds = ["99999"];
   const { app, transport } = createApp({
     groupConfigService,
     systemSettingsStore: new FakeSystemSettingsStore([
@@ -5096,7 +5134,7 @@ test("model commands hot-reload an externally updated model through their config
       title: "模型",
       primary: "#模型",
       aliases: ["#ds"],
-      permission: "group_admin",
+      permission: "super_admin",
       enabled: true,
       help: "查看或切换当前群回复模型",
       updatedAt,
@@ -5146,6 +5184,7 @@ test("allows enabled configured reply model in switch list", async () => {
       holidayCountdownTime: "09:00",
     },
   ]);
+  groupConfigService.superAdminUserIds = ["99999"];
   const { app, transport } = createApp({
     groupConfigService,
     systemSettingsStore: new FakeSystemSettingsStore([], [{ keyword: "乘风", enabled: true }], [

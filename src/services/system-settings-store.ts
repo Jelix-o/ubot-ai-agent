@@ -13,6 +13,8 @@ import { stripUtf8Bom, writeJsonFileAtomic } from "../utils/json-file.js";
 import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
+import { isCommandPermission, minimumCommandPermission, normalizeCommandPermission, permissionAtLeast } from "./command-permissions.js";
+import type { ReplyRoutingSettings } from "../types.js";
 
 type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
   models?: Array<Partial<SystemModelConfig> & { apiKey?: unknown }>;
@@ -69,6 +71,10 @@ export class SystemSettingsStore {
   }
 
   private buildUpdate(current: SystemSettings, input: SystemSettingsUpdateInput): SystemSettings {
+    for (const command of input.commands ?? []) {
+      if (!isCommandPermission(command.permission)) throw new Error("invalid_command_permission");
+      if (!permissionAtLeast(command.permission, minimumCommandPermission(command.id))) throw new Error("command_permission_below_minimum");
+    }
     if (input.models !== undefined) {
       if (input.models.some((model) => (model as { purpose?: unknown }).purpose === "tts")) {
         throw new Error("voice_feature_retired");
@@ -92,6 +98,8 @@ export class SystemSettingsStore {
       commands: input.commands === undefined ? current.commands : input.commands,
       updatedAt: new Date().toISOString(),
     }, this.defaultModels);
+    if (input.replyRouting !== undefined) validateReplyRouting(input.replyRouting, nextModels);
+    if (input.selectedModelIds?.reply && !nextModels.some(model => model.id === input.selectedModelIds!.reply && model.purpose === "reply" && model.enabled && model.hasApiKey)) throw new Error("reply_model_not_approved");
     return next;
   }
 
@@ -240,6 +248,7 @@ function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { api
     tokenCostControl: defaultTokenCostControlSettings(),
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
     models: normalizeModels(defaultModels, []),
+    replyRouting: defaultReplyRouting(),
     removedDefaultModelIds: [],
     selectedModelIds: normalizeSelectedModelIds({}, normalizeModels(defaultModels, [])),
     commands: defaultCommands(now),
@@ -259,9 +268,10 @@ function normalizeSettings(
     tokenCostControl: normalizeTokenCostControl(value.tokenCostControl),
     defaultTriggerKeywords: normalizeTriggerKeywords(value.defaultTriggerKeywords),
     models,
+    replyRouting: normalizeReplyRouting(value.replyRouting),
     removedDefaultModelIds,
     selectedModelIds: normalizeSelectedModelIds(value.selectedModelIds, models),
-    commands: normalizeCommands(value.commands),
+    commands: normalizeCommands(value.commands, typeof value.updatedAt === "string" ? value.updatedAt : "1970-01-01T00:00:00.000Z"),
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : fallback.updatedAt,
   };
 }
@@ -273,6 +283,28 @@ export function defaultTokenCostControlSettings(): TokenCostControlSettings {
     scheduledReminderAiRewriteEnabled: false,
     modelHealthAutoProbeEnabled: false,
   };
+}
+
+export function defaultReplyRouting(): ReplyRoutingSettings {
+  return { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45_000, chatTotalTimeoutMs: 120_000, htmlAttemptTimeoutMs: 120_000, htmlTotalTimeoutMs: 300_000 };
+}
+
+function normalizeReplyRouting(value: Partial<ReplyRoutingSettings> | undefined): ReplyRoutingSettings {
+  const defaults = defaultReplyRouting();
+  const result = { ...defaults, ...value, fallbackEnabled: value?.fallbackEnabled !== false, fallbackModelIds: normalizeStringArray(value?.fallbackModelIds, 20, 80) };
+  for (const key of ["chatAttemptTimeoutMs", "chatTotalTimeoutMs", "htmlAttemptTimeoutMs", "htmlTotalTimeoutMs"] as const) {
+    result[key] = Number.isInteger(result[key]) && result[key] >= 1_000 && result[key] <= 600_000 ? result[key] : defaults[key];
+  }
+  return result;
+}
+
+function validateReplyRouting(value: ReplyRoutingSettings, models: SystemModelConfig[]): void {
+  if (typeof value.fallbackEnabled !== "boolean" || !Array.isArray(value.fallbackModelIds) || value.fallbackModelIds.length > 20 || new Set(value.fallbackModelIds).size !== value.fallbackModelIds.length) throw new Error("invalid_reply_routing");
+  for (const key of ["chatAttemptTimeoutMs", "chatTotalTimeoutMs", "htmlAttemptTimeoutMs", "htmlTotalTimeoutMs"] as const) {
+    if (!Number.isInteger(value[key]) || value[key] < 1_000 || value[key] > 600_000) throw new Error("invalid_reply_routing_timeout");
+  }
+  if (value.chatAttemptTimeoutMs > value.chatTotalTimeoutMs || value.htmlAttemptTimeoutMs > value.htmlTotalTimeoutMs) throw new Error("invalid_reply_routing_timeout");
+  if (value.fallbackModelIds.some(id => !models.some(model => model.id === id && model.purpose === "reply" && model.enabled && model.hasApiKey))) throw new Error("reply_model_not_approved");
 }
 
 function normalizeTokenCostControl(value: unknown): TokenCostControlSettings {
@@ -441,7 +473,7 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
   const isDefaultGptReply = id === "gpt" && purpose === "reply";
   const reasoningEffort = normalizeReasoningEffort(value.reasoningEffort);
   const maxCompletionTokens = normalizeOptionalInt(value.maxCompletionTokens, 64, 16_384);
-  const requestTimeoutMs = normalizeOptionalInt(value.requestTimeoutMs, 15_000, 300_000);
+  const requestTimeoutMs = normalizeOptionalInt(value.requestTimeoutMs, 1_000, 300_000);
   return {
     id,
     name,
@@ -550,8 +582,8 @@ function mergeModelApiKeyState(current: SystemModelConfig[], incoming: unknown):
   });
 }
 
-function normalizeCommands(value: unknown): SystemCommandConfig[] {
-  const defaults = defaultCommands(new Date().toISOString());
+function normalizeCommands(value: unknown, now = "1970-01-01T00:00:00.000Z"): SystemCommandConfig[] {
+  const defaults = defaultCommands(now);
   const defaultById = new Map(defaults.map((command) => [command.id, command]));
   const raw = Array.isArray(value) ? value : [];
   const byId = new Map<string, SystemCommandConfig>();
@@ -579,7 +611,7 @@ function normalizeCommand(value: Partial<SystemCommandConfig>, base: SystemComma
     title,
     primary,
     aliases: value.aliases === undefined ? base.aliases : normalizeStringArray(value.aliases, 12, 40),
-    permission: base.permission,
+    permission: normalizeCommandPermission(base.id, value.permission ?? base.permission),
     enabled: value.enabled !== false,
     help: typeof value.help === "string" ? value.help.trim().slice(0, 400) : base.help,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
@@ -598,9 +630,9 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "bt_search", title: "BT 资源搜索", primary: "#bt", aliases: ["/bt"], permission: "member", help: "搜索动漫、影视和成人资源，返回磁力与种子链接；支持 --fast、--full 和来源筛选" },
     { id: "conversation", title: "对话", primary: "#对话", aliases: ["#clear"], permission: "member", help: "清空或管理当前群对话上下文" },
     { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
-    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图"], permission: "super_admin", help: "根据文字提示生成一张图片" },
+    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图"], permission: "member", help: "根据文字提示生成一张图片" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
-    { id: "model", title: "模型", primary: "#模型", permission: "group_admin", help: "查看或切换当前群回复模型" },
+    { id: "model", title: "模型", primary: "#模型", permission: "super_admin", help: "查看模型状态；超级管理员可切换模型或恢复跟随统一默认" },
     { id: "mute", title: "静默模式", primary: "#闭嘴", aliases: ["#说话"], permission: "group_admin", help: "让机器人进入或退出静默模式" },
     { id: "live_chat", title: "实时对话", primary: "#实时对话", permission: "group_admin", help: "管理主动接话名单和倒计时" },
     { id: "daily_report", title: "日报", primary: "#日报", permission: "group_admin", help: "管理群聊日报" },

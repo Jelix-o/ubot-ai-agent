@@ -59,6 +59,7 @@ for release_path in \
   dist \
   scripts/configure-v3-network.mjs \
   scripts/configure-image-model.mjs \
+  scripts/upgrade-model-policy.mjs \
   scripts/deploy-linux-release.sh \
   scripts/normalize-dotenv-bom.mjs \
   scripts/migrate-v3-state.mjs \

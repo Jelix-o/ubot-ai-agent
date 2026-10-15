@@ -147,6 +147,7 @@ export function createCancellableTimeout(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onExternalAbort = (): void => controller.abort();
   externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+  if (externalSignal?.aborted) controller.abort(externalSignal.reason);
   return {
     controller,
     cleanup: () => {
@@ -258,10 +259,10 @@ export class AiService {
       ...(requestOptions.reasoningEffort ? { reasoningEffort: requestOptions.reasoningEffort } : {}),
     };
     this.staticHtmlRequestOptions = {
-      // Page generation has an independent budget: reply limits such as 600 or
-      // 4096 tokens are too small for complete animated HTML/SVG documents.
+      // Page generation has a larger default, bounded by an explicitly
+      // configured model output limit when one is provided.
       timeoutMs: STATIC_HTML_REQUEST_TIMEOUT_MS,
-      maxCompletionTokens: STATIC_HTML_MAX_COMPLETION_TOKENS,
+      maxCompletionTokens: requestOptions.maxCompletionTokens === undefined ? STATIC_HTML_MAX_COMPLETION_TOKENS : normalizeReplyMaxTokens(requestOptions.maxCompletionTokens),
     };
     this.client = new OpenAI({
       baseURL,
@@ -463,6 +464,7 @@ export class AiService {
         timeout: this.staticHtmlRequestOptions.timeoutMs,
       }) as OpenAI.Chat.Completions.ChatCompletion;
       const choice = completion.choices[0];
+      assertCompletionAllowed(choice);
       const text = choice?.message?.content?.trim();
       const finishReason = choice?.finish_reason;
       if (isStaticHtmlLengthFinishReason(finishReason)) {
@@ -488,6 +490,7 @@ export class AiService {
     history: ConversationTurn[],
     bufferedMessages: BufferedMessage[],
     signal?: AbortSignal,
+    throwOnFailure = false,
   ): Promise<"REPLY" | "SKIP"> { return withModelOperation("participation", undefined, async () => {
     const systemPrompt = buildReplyDesireSystemPrompt(skill);
     const historyText = history
@@ -516,15 +519,17 @@ export class AiService {
         temperature: 0.3,
         messages,
         max_tokens: 10,
-        ...(signal ? { signal } : {}),
-      });
+      }, { signal });
 
       const text = completion.choices[0]?.message?.content?.trim() ?? "";
-      if (text.includes("REPLY")) {
+      assertCompletionAllowed(completion.choices[0]);
+      if (/^\[?REPLY\]?$/.test(text)) {
         return "REPLY";
       }
+      if (throwOnFailure && !/^\[?SKIP\]?$/.test(text)) throw new Error("invalid JSON decision response");
       return "SKIP";
-    } catch {
+    } catch (error) {
+      if (throwOnFailure) throw error;
       return "SKIP";
     }
 
@@ -537,6 +542,7 @@ export class AiService {
     assistantReply: string;
     identityContext: AiIdentityContext;
     signal?: AbortSignal;
+    throwOnFailure?: boolean;
   }): Promise<ControlledMentionDecision> { return withModelOperation("participation", args.identityContext?.groupId, async () => {
     const identities = args.identityContext.manualIdentities ?? [];
     if (identities.length === 0) {
@@ -589,11 +595,12 @@ export class AiService {
         temperature: 0,
         messages,
         max_tokens: 120,
-        ...(args.signal ? { signal: args.signal } : {}),
-      });
+      }, { signal: args.signal });
       const text = completion.choices[0]?.message?.content?.trim() ?? "";
-      return parseControlledMentionDecision(text);
-    } catch {
+      assertCompletionAllowed(completion.choices[0]);
+      return parseControlledMentionDecision(text, args.throwOnFailure);
+    } catch (error) {
+      if (args.throwOnFailure) throw error;
       return { shouldMention: false, reason: "decision failed" };
     }
 
@@ -1047,6 +1054,7 @@ export class AiService {
       const completion = completionResult.completion;
       const model = completion.model ?? this.model;
       const message = completion.choices[0]?.message;
+      assertCompletionAllowed(completion.choices[0]);
       const calls = extractToolCalls(message);
       const requiredToolName = forceToolName;
       if (calls.length === 0) {
@@ -1154,6 +1162,7 @@ export class AiService {
     const response = await this.withReasoningEffort(async (reasoningEffort) =>
       this.chatCompletions.create(
         this.buildReplyRequest(messages, temperature, false, reasoningEffort, signal, tools, toolChoice) as any,
+        { signal },
       ) as Promise<OpenAI.Chat.Completions.ChatCompletion>,
     );
     return {
@@ -1205,6 +1214,7 @@ export class AiService {
   ): Promise<{ text: string; model: string }> {
     const stream = await this.chatCompletions.create(
       this.buildReplyRequest(messages, temperature, true, reasoningEffort, signal) as any,
+      { signal },
     ) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
 
     let text = "";
@@ -1214,6 +1224,7 @@ export class AiService {
         throw new Error("AI reply cancelled by request signal.");
       }
       model = chunk.model ?? model;
+      assertCompletionAllowed(chunk.choices[0]);
       const delta = chunk.choices[0]?.delta?.content;
       if (typeof delta === "string") {
         text += delta;
@@ -1236,7 +1247,9 @@ export class AiService {
   ): Promise<{ text: string; model: string }> {
     const completion = await this.chatCompletions.create(
       this.buildReplyRequest(messages, temperature, false, reasoningEffort, signal) as any,
+      { signal },
     ) as OpenAI.Chat.Completions.ChatCompletion;
+    assertCompletionAllowed(completion.choices[0]);
     const text = completion.choices[0]?.message?.content?.trim();
     if (!text) {
       throw new Error("AI response was empty in non-stream mode.");
@@ -1269,7 +1282,6 @@ export class AiService {
           tool_choice: { type: "function", function: { name: toolChoice } },
         } : { tool_choice: "auto" }),
       } : {}),
-      ...(signal ? { signal } : {}),
     };
   }
 }
@@ -1292,7 +1304,7 @@ function normalizeReplyTimeout(value: number | undefined): number {
   if (!Number.isFinite(value) || !value) {
     return DEFAULT_REPLY_REQUEST_TIMEOUT_MS;
   }
-  return Math.max(15_000, Math.min(MAX_REPLY_REQUEST_TIMEOUT_MS, Math.floor(value)));
+  return Math.max(1_000, Math.min(MAX_REPLY_REQUEST_TIMEOUT_MS, Math.floor(value)));
 }
 
 function normalizeReplyMaxTokens(value: number | undefined): number {
@@ -1580,14 +1592,21 @@ function extractJsonObject(text: string): string | null {
   return raw.slice(start, end + 1);
 }
 
-function parseControlledMentionDecision(raw: string): ControlledMentionDecision {
+function assertCompletionAllowed(choice: unknown): void {
+  const value = choice as { finish_reason?: string; message?: { refusal?: string }; delta?: { refusal?: string } } | undefined;
+  if (value?.finish_reason === "content_filter" || value?.message?.refusal || value?.delta?.refusal) throw new Error("AI content refusal.");
+}
+
+function parseControlledMentionDecision(raw: string, strict = false): ControlledMentionDecision {
   const jsonText = extractJsonObject(raw);
   if (!jsonText) {
+    if (strict) throw new Error("invalid JSON decision response");
     return { shouldMention: false, reason: "no json" };
   }
 
   try {
     const parsed = JSON.parse(jsonText) as Partial<ControlledMentionDecision>;
+    if (typeof parsed.shouldMention !== "boolean" || (parsed.shouldMention && (typeof parsed.target !== "string" || !parsed.target.trim()))) throw new Error("invalid JSON decision response");
     const target = typeof parsed.target === "string" ? parsed.target.trim() : undefined;
     const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : undefined;
     return {
@@ -1596,6 +1615,7 @@ function parseControlledMentionDecision(raw: string): ControlledMentionDecision 
       ...(reason ? { reason } : {}),
     };
   } catch {
+    if (strict) throw new Error("invalid JSON decision response");
     return { shouldMention: false, reason: "invalid json" };
   }
 }
