@@ -27,6 +27,7 @@ export function upgradeModelPolicy(repository: V3StateRepository, encryptionKey:
     const ciphertext = new StateCipher(encryptionKey).encrypt(backupKey, JSON.stringify({ settings, groups }));
     repository.saveDocument(backupType, backupKey, { ciphertext });
     repository.saveSystemSettings({ ...settings,
+      models: settings.models.map(model => model.id === "ds" && model.purpose === "reply" ? { ...model, model: "deepseek-flash" } : model),
       selectedModelIds: { ...settings.selectedModelIds, reply: "sol" },
       replyRouting: { ...defaultReplyRouting(), fallbackModelIds: ["gpt", "ds"] },
       commands: settings.commands.map(command => command.id === "image_generation" ? { ...command, permission: "member" } : command.id === "model" ? { ...command, permission: "super_admin" } : command),

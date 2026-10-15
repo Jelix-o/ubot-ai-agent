@@ -41,19 +41,19 @@ export function classifyUpstreamFailure(input: {
   if (/unauthori[sz]ed|forbidden|invalid api[-_ ]?key|api key|permission denied/.test(message)) {
     return "auth";
   }
-  if (/rate limit|too many requests|quota|429/.test(message)) {
+  if (/rate[_ -]limit|too many requests|quota|429/.test(message)) {
     return "rate_limit";
   }
   if (/timeout|timed out|abort|etimedout|504/.test(message)) {
     return "timeout";
   }
-  if (/fetch failed|network|connection error|econnreset|econnrefused|enotfound|eai_again|socket|dns/.test(message)) {
+  if (/fetch failed|network|connection[_ -]error|econnreset|econnrefused|enotfound|eai_again|socket|dns/.test(message)) {
     return "network";
   }
   if (/invalid json|unexpected token|parse|did not contain|empty audio|no audio/.test(message)) {
     return "format_error";
   }
-  if (/bad gateway|service unavailable|gateway|upstream|502|503|500/.test(message)) {
+  if (/bad gateway|service[_ -]unavailable|server[_ -]error|overload|temporar(?:y|ily)[_ -]unavailable|servers?.*busy|gateway|upstream|502|503|500/.test(message)) {
     return "unavailable";
   }
   return "unknown";

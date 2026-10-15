@@ -139,7 +139,7 @@ terminal recall actions.
 
 发布前使用当前密钥验证 Sol、GPT、DS 的真实对话和 GPT 视觉调用；有任一必需链路失败则保留旧服务。
 
-在新发布目录运行 `node scripts/upgrade-model-policy.mjs --check`，停止 Worker 后运行 `--apply`。环境支持 `RELEASE_ROOT`、`UBOT_APP_ROOT`、`DB_PATH`。操作在 SQLite 事务中加密备份系统配置及群模型，设置 Sol → GPT → DS、全部群跟随、生图权限为全员，并记录幂等标记。重复执行不重置用户后续设置；日志不输出密钥或模型内容。
+在新发布目录运行 `node scripts/upgrade-model-policy.mjs --check`，停止 Worker 后运行 `--apply`。环境支持 `RELEASE_ROOT`、`UBOT_APP_ROOT`、`DB_PATH`。操作在 SQLite 事务中加密备份系统配置及群模型，设置 Sol → GPT → DS、DS 上游模型为 `deepseek-flash`、全部群跟随、生图权限为全员，并记录幂等标记。重复执行不重置用户后续设置；日志不输出密钥或模型内容。回滚同时恢复 DS 的原上游模型名。
 
 v3.0.40 起，若先前部署已经完整回滚，可显式运行 `--apply --retry-after-rollback` 重试。本选项仅识别已回滚标记，不会覆盖成功升级后的设置。启动健康检查应允许 NapCat 的重连间隔，确认 `/read/health` 返回 `ok: true` 后再完成部署。
 
