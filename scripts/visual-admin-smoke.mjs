@@ -69,6 +69,7 @@ try {
   // Opt-in browser fixture: loopback connections and disposable credentials
   // let layout/save checks run without production data or upstream calls.
   if (process.argv.includes("--layout-fixture")) {
+    await groupConfigService.updateManualIdentity(GROUP_ID, "2458031445", { names: ["外包仔", "外包仙人"], note: "前端开发" });
     const now = new Date().toISOString();
     await settingsStore.update({
       models: [
@@ -127,6 +128,7 @@ try {
     memeLibraryService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
+    async listGroupMembers() { return [{ user_id: 2458031445, card: "外包仔", nickname: "原昵称", role: "member" }]; },
   });
   server.start();
   const raw = server.server;

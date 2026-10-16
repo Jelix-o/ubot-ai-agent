@@ -20,6 +20,7 @@ const privacyBusyUserId = shallowRef("");
 const query = shallowRef("");
 const pagination = reactive<Pagination>({ page: 1, pageSize: 24, total: 0, totalPages: 1 });
 const noteDraft = shallowRef("");
+const primaryNameDraft = shallowRef("");
 const aliasesDraft = shallowRef("");
 const viewMode = shallowRef<"grid" | "table">("grid");
 const roleFilter = shallowRef<"all" | "admin" | "member">("all");
@@ -152,7 +153,8 @@ async function refreshMembers(): Promise<void> {
 function beginEdit(member: MemberProfile): void {
   editingMember.value = member;
   noteDraft.value = member.note || "";
-  aliasesDraft.value = member.aliases.join(", ");
+  primaryNameDraft.value = member.aliases[0] || member.displayName;
+  aliasesDraft.value = member.aliases.slice(1).join(", ");
 }
 
 async function saveNoteModal(): Promise<void> {
@@ -164,7 +166,9 @@ async function saveNoteModal(): Promise<void> {
       .split(/[,，\s]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    const names = Array.from(new Set([member.displayName, ...rawAliases]));
+    const primaryName = primaryNameDraft.value.trim();
+    if (!primaryName) throw new Error("请填写主称呼");
+    const names = Array.from(new Set([primaryName, ...rawAliases]));
 
     const data = await api<{ member: MemberProfile }>(
       `/api/groups/${encodeURIComponent(app.groupId)}/members/${encodeURIComponent(member.userId)}/identity`,
@@ -178,7 +182,7 @@ async function saveNoteModal(): Promise<void> {
     );
     members.value = members.value.map((item) => item.userId === data.member.userId ? data.member : item);
     editingMember.value = null;
-    app.showToast("成员备注已保存");
+    app.showToast("成员称呼与备注已保存");
   } catch (error) {
     app.showToast((error as Error).message, "error");
   } finally {
@@ -476,9 +480,9 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
 
           <!-- Note & Aliases Section -->
           <div class="member-note-block" @click="beginEdit(member)">
-            <div class="note-content" :class="{ 'no-note': !member.note && !member.aliases.length }">
+            <div class="note-content" :class="{ 'no-note': !member.note && member.aliases.length < 2 }">
               <span v-if="member.note">{{ member.note }}</span>
-              <span v-else-if="member.aliases.length">别名: {{ member.aliases.join("、") }}</span>
+              <span v-else-if="member.aliases.length > 1">其他别名: {{ member.aliases.slice(1).join("、") }}</span>
               <span v-else>暂无备注身份 (点击添加)</span>
             </div>
             <button class="edit-note-btn" type="button" title="编辑备注">
@@ -571,7 +575,7 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
               <td>
                 <div class="table-note-cell">
                   <span v-if="member.note" class="text-note">{{ member.note }}</span>
-                  <span v-else-if="member.aliases.length" class="text-aliases">{{ member.aliases.join(", ") }}</span>
+                  <span v-else-if="member.aliases.length > 1" class="text-aliases">其他别名：{{ member.aliases.slice(1).join("、") }}</span>
                   <span v-else class="muted">-</span>
                 </div>
               </td>
@@ -629,8 +633,9 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
           <div><strong>{{ editingMember.displayName }}</strong><span class="role-badge" :class="roleClass(editingMember.role)">{{ roleLabel(editingMember.role) }}</span></div>
         </div>
         <div class="member-detail-row"><span>QQ 号</span><strong>{{ editingMember.userId }}</strong><button class="ghost-btn" type="button" @click="copyUserId(editingMember.userId)">复制</button></div>
+        <label class="member-detail-field">主称呼<input v-model="primaryNameDraft" class="input" placeholder="用于显示和识别这位成员" /><span>修改主称呼不会自动保留旧称呼。</span></label>
+        <label class="member-detail-field">其他别名<input v-model="aliasesDraft" class="input" placeholder="可留空；用逗号分隔其他称呼" /><span>只有这里明确保留的别名才继续识别。</span></label>
         <label class="member-detail-field">成员备注<input v-model="noteDraft" class="input" placeholder="例如：技术骨干、后端开发" /></label>
-        <label class="member-detail-field">别名 / 称呼<input v-model="aliasesDraft" class="input" placeholder="用逗号分隔多个称呼" /></label>
         <section class="member-memory-summary"><div><span>已沉淀记忆</span><strong>{{ editingMember.memoryCount || 0 }} 条</strong></div><span v-if="editingMember.memoryDisabled" class="tag danger">隐私退出</span><span v-else class="tag ok">记忆收集开启</span><button class="ghost-btn" type="button" @click="openMemories(editingMember)">打开成员记忆</button></section>
         <div class="member-privacy-control"><div><strong>隐私与记忆收集</strong><p class="muted">退出后停止为该成员新增记忆，已有记忆仍可单独管理。</p></div><button v-if="!editingMember.memoryDisabled" class="ghost-btn danger" type="button" :disabled="privacyBusyUserId === editingMember.userId" @click="setPrivacyOptOut(editingMember, true)">{{ privacyBusyUserId === editingMember.userId ? "处理中…" : "记录隐私退出" }}</button><button v-else class="ghost-btn" type="button" :disabled="privacyBusyUserId === editingMember.userId || !canReenablePrivacy" @click="setPrivacyOptOut(editingMember, false)">{{ canReenablePrivacy ? "重新启用收集" : "仅超级管理员可恢复" }}</button></div>
       </div>

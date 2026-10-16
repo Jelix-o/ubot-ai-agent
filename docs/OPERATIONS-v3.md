@@ -153,6 +153,14 @@ v3.0.40 起，若先前部署已经完整回滚，可显式运行 `--apply --ret
 
 界面复验可运行 `node scripts/run-node22.cjs scripts/visual-admin-smoke.mjs --layout-fixture --hold`，使用输出的本地地址和脚本内临时账号；样例包含 Sol、GPT、DS、长名称与停用模型。测试修改只保存在临时数据库，结束进程后清理。不要将此模式用于生产启动。
 
+## v3.0.46 成员称呼与查询修复
+
+成员管理抽屉分别设置主称呼、其他别名和成员备注。`names[0]` 是主称呼，其余是明确保留的别名；旧客户端提交 `names` 仍兼容。改名不改写历史画像，资料仍按 QQ 归属。删除旧别名后，其历史画像标题、群名片和聊天记录不会自动重新注册该别名。
+
+部署停写并完成持久目录备份后，在新发布目录运行 `node scripts/repair-member-name.mjs --check` 和 `--apply`。只修正群 `1044162764` 成员 `2458031445` 的精确旧名称数组；输出 `record_changed_or_missing` 或 `backup_already_exists` 时跳过并记录，不强制覆盖。修复与 `release-policy-backup/v3.0.46-member-names` 加密备份在同一事务提交，重复运行不覆盖后续修改。支持 `RELEASE_ROOT`、`UBOT_APP_ROOT`、`DB_PATH`，不输出备注或密钥。
+
+画像诊断增加 `memberQueryType`、`memberQueryResolutionSource`、`memberQueryUnresolvedReason`，结合 `targetUserIds` 和 `memorySubjectUserIds` 判断是否串人。称呼核对不读取记忆或模型；需要群名片时刷新目录最多等待 3 秒，失败或重名不猜测。模型与指令策略保持不变，继续遵守最多 105 秒的成人卡片撤回排空窗口。
+
 ## v3.0.43 成员画像查询
 
 本版无需数据库迁移或模型策略重置。明确的成员资料提问只通过真实 @、回复对象或后台人工身份表中的唯一别名确定目标，读取其已启用的 `member_profile`，不读取近期群聊证据。画像不存在或目标关闭记忆时，直接返回资料不足，不调用模型。

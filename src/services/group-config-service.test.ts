@@ -8,6 +8,19 @@ import type { GroupsConfigFile } from "../types.js";
 import { GroupConfigService } from "./group-config-service.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 
+test("manual names replace primary and aliases without resurrecting old names after directory refresh", async () => {
+  await withService({ groups: [{ groupId: "67890", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [], manualIdentities: [{ userIds: ["2458031445"], names: ["外包仔", "外包仙人"], note: "原备注" }] }] }, async service => {
+    await service.updateManualIdentity("67890", "2458031445", { names: ["外包仙人"], note: "描述性备注" });
+    assert.deepEqual((await service.getGroup("67890"))?.manualIdentities?.[0]?.names, ["外包仙人"]);
+    await service.upsertGroupsFromNapcat([{ groupId: "67890", groupName: "原群名片仍旧" }]);
+    assert.deepEqual((await service.getGroup("67890"))?.manualIdentities?.[0], { userIds: ["2458031445"], names: ["外包仙人"], note: "描述性备注" });
+    await service.updateManualIdentity("67890", "2458031445", { names: ["外包仙人", "外包仔"] });
+    assert.deepEqual((await service.getGroup("67890"))?.manualIdentities?.[0]?.names, ["外包仙人", "外包仔"]);
+    await service.updateManualIdentity("67890", "2458031445", { names: ["外包仙人"] });
+    assert.deepEqual((await service.getGroup("67890"))?.manualIdentities?.[0]?.names, ["外包仙人"]);
+  });
+});
+
 test("old groups keep their model, new groups follow global, and overrides can resume following", async () => {
   await withService({ groups: [{ groupId: "67890", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [], replyModelMode: "ds" }] }, async service => {
     assert.equal((await service.getGroup("67890"))?.replyModelSource, "override");

@@ -993,6 +993,27 @@ test("group administrators cannot list or delete HTML previews outside their gra
   assert.equal(crossGroupDelete.status, 403);
 });
 
+test("member identity API replaces names and keeps the primary after reload and platform refresh", async t => {
+  const { baseUrl } = await startFixture(t, { async listGroupMembers() { return [{ user_id: 2458031445, card: "外包仔", nickname: "平台旧昵称", role: "member" }]; } });
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const refresh = () => request(baseUrl, "/api/groups/67890/members/refresh", { method: "POST", headers, body: "{}" });
+  await refresh();
+  for (const names of [["外包仔", "外包仙人"], ["外包仙人"], ["外包仙人", "外包仔"], ["外包仙人"]]) {
+    const response = await request(baseUrl, "/api/groups/67890/members/2458031445/identity", { method: "PUT", headers, body: JSON.stringify({ names, note: "独立备注" }) });
+    assert.equal(response.status, 200);
+    const saved = await response.json() as { member: { displayName: string; aliases: string[] } };
+    assert.equal(saved.member.displayName, names[0]);
+    assert.deepEqual(saved.member.aliases, names);
+    await refresh();
+    const loaded = await (await request(baseUrl, "/api/groups/67890/members", { headers })).json() as { members: Array<{ userId: string; displayName: string; aliases: string[]; note: string }> };
+    const member = loaded.members.find(member => member.userId === "2458031445")!;
+    assert.equal(member.displayName, names[0]);
+    assert.deepEqual(member.aliases, names);
+    assert.equal(member.note, "独立备注");
+  }
+});
+
 test("member directory stays cache-only until refresh, then returns a cached NapCat snapshot", async (t) => {
   let upstreamCalls = 0;
   const { baseUrl } = await startFixture(t, {

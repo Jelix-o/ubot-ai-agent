@@ -59,6 +59,7 @@ const releasePaths = [
   "scripts/migrate-v3-state.mjs",
   "scripts/normalize-dotenv-bom.mjs",
   "scripts/upgrade-model-policy.mjs",
+  "scripts/repair-member-name.mjs",
   "scripts/verify-release-source.mjs",
 ];
 
