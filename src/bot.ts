@@ -172,6 +172,7 @@ const MSG_HEALTH_NO_PERMISSION = "你没有查看机器人健康检查的权限"
 const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的权限";
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
+const MSG_MEMBER_PROFILE_UNAVAILABLE = "当前没有可用于回答这位群友相关问题的已保存资料。";
 
 const ROAST_MODE_SCENARIO_INSTRUCTION = [
   "本轮触发了群管理后台配置的“嘴臭模式”。",
@@ -2695,6 +2696,17 @@ export class BotApplication {
       return;
     }
     const conversationStartedAt = Date.now();
+    const normalizedUserInput = userInput.trim() || "[图片消息]";
+    // Determine this before reading the causal branch. A profile request is
+    // intentionally isolated from prior conversation text even when it later
+    // resolves through an @, quoted message, or saved alias.
+    const profileQuestionIntent = isMemberProfileQueryRequest(normalizedUserInput);
+    const explicitProfileTargetUserIds = collectEvaluationTargetUserIds(messageContext.interactionTargets, this.botQq);
+    const profileAliasResolution = profileQuestionIntent && explicitProfileTargetUserIds.length === 0
+      ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
+      : { status: "none" as const };
+    const memberProfileQueryIntent = profileQuestionIntent &&
+      (explicitProfileTargetUserIds.length > 0 || profileAliasResolution.status !== "none");
     const sourceRowId = messageContext.sourceMessageId
       ? this.conversationContextRepository?.getSourceRowId?.(
         groupConfig.groupId,
@@ -2723,7 +2735,6 @@ export class BotApplication {
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
-    const normalizedUserInput = userInput.trim() || "[图片消息]";
     const knowledgeSessionKey = knowledgeContinuationKey(groupConfig.groupId, userId);
     let knowledgeSession = this.knowledgeContinuationSessions.get(knowledgeSessionKey);
     if (knowledgeSession && (
@@ -2767,7 +2778,7 @@ export class BotApplication {
     // incidental image must not turn that deterministic query into a vision
     // request. The same history is reused below for ordinary model replies.
     let causalHistory: ConversationContextTurn[] = [];
-    if (conversationRoute && this.conversationContextRepository) {
+    if (!memberProfileQueryIntent && conversationRoute && this.conversationContextRepository) {
       try {
         causalHistory = this.conversationContextRepository.getCausalTurnsBeforeTurn(
           conversationRoute.branchId,
@@ -2824,7 +2835,7 @@ export class BotApplication {
     }
 
     const imageInputCount = images.length + (messageContext.replyContext?.images?.length ?? 0);
-    if (imageInputCount > 0 && groupConfig.visionEnabled !== true) {
+    if (!memberProfileQueryIntent && imageInputCount > 0 && groupConfig.visionEnabled !== true) {
       const disabledText = "本群未开启图片理解，请联系群管理员在后台开启后再发送图片。";
       logInfo("Skipped image reply because vision is disabled for this group.", {
         groupId: groupConfig.groupId,
@@ -2841,8 +2852,9 @@ export class BotApplication {
       this.botQq,
     );
     const localTranscriptTargetRequest = isLocalTranscriptTargetRequest(normalizedUserInput);
+    const memberProfileQueryRequested = memberProfileQueryIntent;
     const savedAliasResolution = explicitEvaluationTargetUserIds.length === 0 &&
-      (isPersonEvaluationRequest(normalizedUserInput, true) || localTranscriptTargetRequest)
+      (isPersonEvaluationRequest(normalizedUserInput, true) || localTranscriptTargetRequest || memberProfileQueryRequested)
       ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
       : { status: "none" as const };
     if (savedAliasResolution.status === "resolved") {
@@ -2886,7 +2898,9 @@ export class BotApplication {
       normalizedUserInput,
       messageContext.interactionTargets.length > 0,
     ) || savedAliasResolution.status === "ambiguous";
+    const targetedMemberProfileRequested = memberProfileQueryRequested && evaluationTargetUserIds.length === 1;
     const targetedGroupEvidenceRequested =
+      !targetedMemberProfileRequested &&
       (personEvaluationRequested || localTranscriptTargetRequest) && evaluationTargetUserIds.length === 1;
     const explicitGroupEvaluationRequested = isExplicitGroupEvaluationRequest(normalizedUserInput);
     const ordinaryEvaluationFallback =
@@ -2896,10 +2910,12 @@ export class BotApplication {
       !explicitGroupEvaluationRequested;
     const requiresClarification =
       savedAliasResolution.status === "ambiguous" ||
-      (personEvaluationRequested && evaluationTargetUserIds.length > 1) ||
+      ((personEvaluationRequested || memberProfileQueryRequested) && evaluationTargetUserIds.length > 1) ||
       (personEvaluationRequested && explicitGroupEvaluationRequested && evaluationTargetUserIds.length !== 1);
     if (requiresClarification) {
-      const clarificationText = "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。";
+      const clarificationText = memberProfileQueryRequested
+        ? "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要查询的群友。"
+        : "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, clarificationText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, clarificationText, receipt ? [receipt] : []);
       const clarificationReason = savedAliasResolution.status === "ambiguous"
@@ -2911,11 +2927,15 @@ export class BotApplication {
         groupId: groupConfig.groupId,
         verifiedTargetCount: evaluationTargetUserIds.length,
         savedAliasStatus: savedAliasResolution.status,
+        memberProfileQueryIntent: profileQuestionIntent,
+        memberProfileQueryRequested,
+        targetUserIds: evaluationTargetUserIds,
+        memorySubjectUserIds: [],
         clarificationReason,
       });
       return;
     }
-    if (localTranscriptTargetRequest && groupConfig.ambientGroupContextEnabled === false) {
+    if (localTranscriptTargetRequest && !targetedMemberProfileRequested && groupConfig.ambientGroupContextEnabled === false) {
       const unavailableText = "本群未开启近期群聊上下文，无法根据以上聊天记录回答。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
@@ -2933,11 +2953,24 @@ export class BotApplication {
     const recentGroupEvidenceTriggered = targetedGroupEvidenceRequested;
     const targetPrivacyOptedOut = targetedGroupEvidenceRequested &&
       (groupConfig.memoryDisabledUserIds ?? []).includes(evaluationTargetUserIds[0]!);
-    if (targetPrivacyOptedOut) {
-      const unavailableText = "当前没有可用于回答这位群友相关问题的聊天记录。";
+    const memberProfileTargetPrivacyOptedOut = targetedMemberProfileRequested &&
+      (groupConfig.memoryDisabledUserIds ?? []).includes(evaluationTargetUserIds[0]!);
+    if (targetPrivacyOptedOut || memberProfileTargetPrivacyOptedOut) {
+      const unavailableText = memberProfileTargetPrivacyOptedOut
+        ? MSG_MEMBER_PROFILE_UNAVAILABLE
+        : "当前没有可用于回答这位群友相关问题的聊天记录。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, unavailableText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, unavailableText, receipt ? [receipt] : []);
-      logInfo("Skipped group evidence for a privacy-opted-out target.", { groupId: groupConfig.groupId });
+      logInfo(memberProfileTargetPrivacyOptedOut
+        ? "Skipped member profile query for a privacy-opted-out target."
+        : "Skipped group evidence for a privacy-opted-out target.", {
+        groupId: groupConfig.groupId,
+        memberProfileQueryIntent: profileQuestionIntent,
+        memberProfileQueryRequested,
+        savedAliasStatus: savedAliasResolution.status,
+        targetUserIds: evaluationTargetUserIds,
+        memorySubjectUserIds: [],
+      });
       return;
     }
     let recentGroupEvidence: NonNullable<AiIdentityContext["recentGroupEvidence"]> = [];
@@ -2972,13 +3005,19 @@ export class BotApplication {
     let ambientGroupContext: NonNullable<AiIdentityContext["ambientGroupContext"]> = [];
     let ambientGroupContextStatus:
       | "loaded"
+      | "member_profile_query"
       | "disabled"
       | "explicit_reply"
       | "targeted_group_evidence"
       | "missing_source"
       | "unavailable"
       | "read_failed";
-    if (groupConfig.ambientGroupContextEnabled === false) {
+    if (targetedMemberProfileRequested) {
+      // A member-profile query must be answered from approved durable profile
+      // data only. Do not mix in nearby messages or the quoted reply used to
+      // identify the target.
+      ambientGroupContextStatus = "member_profile_query";
+    } else if (groupConfig.ambientGroupContextEnabled === false) {
       ambientGroupContextStatus = "disabled";
     } else if (messageContext.replyMessageId) {
       ambientGroupContextStatus = "explicit_reply";
@@ -3015,7 +3054,7 @@ export class BotApplication {
     }
     const ambientGroupContextChars = formatRecentGroupEvidenceForMetrics(ambientGroupContext).length;
     // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
-    const atmosphere = this.atmosphereSummarizer
+    const atmosphere = !targetedMemberProfileRequested && this.atmosphereSummarizer
       ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
           groupConfig.groupId,
           this.groupTranscriptService.getRecentMessages(groupConfig.groupId, {
@@ -3044,23 +3083,33 @@ export class BotApplication {
       messageContext.replyContext?.text ?? "",
       ...messageContext.interactionTargets.flatMap((target) => target.names),
     ].join(" ");
-    const memoryIdentityTerms = collectMemoryIdentityTerms(promptGroupConfig, [userId, ...relatedUserIds]);
+    const memberProfileTargetUserId = targetedMemberProfileRequested ? evaluationTargetUserIds[0]! : undefined;
+    const memoryIdentityTerms = collectMemoryIdentityTerms(
+      promptGroupConfig,
+      memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds],
+    );
     const realtimeLookupStartedAt = Date.now();
     // 分级超时（计划 §2.4）：记忆检索 1.5s/2s、实时查询 8s/10s——超时跳过该层，
     // 不阻塞回复生成。
     const [retrievedGroupMemories, realtimeLookup] = await Promise.all([
       this.isCapabilityEnabled("explicit_memory")
         ? withTimeout(
-          this.groupMemoryStore?.listRelevantEnabled({
-          groupId: groupConfig.groupId,
-          currentUserId: userId,
-          relatedUserIds,
-          excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
-          queryText: memoryQueryText,
-          identityTerms: memoryIdentityTerms,
-          limit: 8,
-          maxChars: 3_200,
-          }) ?? Promise.resolve([]),
+          memberProfileTargetUserId
+            // The regular relevance ranking can prefer the speaker or a group
+            // fact and omit the target at its result limit. Profile queries
+            // instead read records and keep only this verified target's
+            // enabled profile, without the store's default listEnabled cap.
+            ? this.groupMemoryStore?.list(groupConfig.groupId) ?? Promise.resolve([])
+            : this.groupMemoryStore?.listRelevantEnabled({
+              groupId: groupConfig.groupId,
+              currentUserId: userId,
+              relatedUserIds,
+              excludedSubjectUserIds: groupConfig.memoryDisabledUserIds,
+              queryText: memoryQueryText,
+              identityTerms: memoryIdentityTerms,
+              limit: 8,
+              maxChars: 3_200,
+            }) ?? Promise.resolve([]),
           1_500,
         ).catch((error) => {
         logWarn("Memory retrieval timed out; skipping L1 layer.", {
@@ -3070,20 +3119,42 @@ export class BotApplication {
           return [];
         })
         : Promise.resolve([]),
-      this.resolveRealtimeLookup(groupConfig, normalizedUserInput),
+      targetedMemberProfileRequested
+        ? Promise.resolve(undefined)
+        : this.resolveRealtimeLookup(groupConfig, normalizedUserInput),
     ]);
     const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
-    const visibleSubjectUserIds = new Set([userId, ...relatedUserIds]);
+    const visibleSubjectUserIds = new Set(memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds]);
     const memoryDisabledUserIds = new Set(groupConfig.memoryDisabledUserIds ?? []);
     // Keep this second filter at the context boundary. It protects against a
     // future store implementation or a test double that forgets the opt-out
     // filter, and avoids injecting unrelated member profiles into a reply.
-    const groupMemories = retrievedGroupMemories.filter((memory) =>
-      !memory.subjectUserId || (
+    const groupMemories = retrievedGroupMemories.filter((memory) => {
+      if (memberProfileTargetUserId) {
+        return memory.type === "member_profile" &&
+          memory.groupId === groupConfig.groupId &&
+          memory.subjectUserId === memberProfileTargetUserId &&
+          memory.enabled &&
+          !memoryDisabledUserIds.has(memberProfileTargetUserId);
+      }
+      return !memory.subjectUserId || (
         visibleSubjectUserIds.has(memory.subjectUserId) &&
         !memoryDisabledUserIds.has(memory.subjectUserId)
-      ),
-    );
+      );
+    });
+    if (memberProfileTargetUserId && groupMemories.length === 0) {
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, MSG_MEMBER_PROFILE_UNAVAILABLE, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, MSG_MEMBER_PROFILE_UNAVAILABLE, receipt ? [receipt] : []);
+      logInfo("Skipped member profile query without an enabled approved profile.", {
+        groupId: groupConfig.groupId,
+        memberProfileQueryIntent: profileQuestionIntent,
+        memberProfileQueryRequested,
+        savedAliasStatus: savedAliasResolution.status,
+        targetUserIds: [memberProfileTargetUserId],
+        memorySubjectUserIds: [],
+      });
+      return;
+    }
     const memorySubjectUserIds = new Set(
       groupMemories
         .map((memory) => memory.subjectUserId)
@@ -3099,10 +3170,15 @@ export class BotApplication {
           memories: groupMemories,
         })
       : [];
-    const allImages = [
-      ...images,
-      ...(messageContext.replyContext?.images ?? []),
-    ];
+    const visibleMemberProfiles = memberProfileTargetUserId
+      ? memberProfiles.filter((profile) => profile.userId === memberProfileTargetUserId)
+      : memberProfiles;
+    const allImages = targetedMemberProfileRequested
+      ? []
+      : [
+        ...images,
+        ...(messageContext.replyContext?.images ?? []),
+      ];
     // 图片两阶段（计划 §4）：Stage1 本地化（NapCat 缓存 → 内部代理）→ data URL；
     // 失败进入分级话术（L1-L4），绝不说成"思考超时"。
     const visionEnabled = groupConfig.visionEnabled === true;
@@ -3123,7 +3199,7 @@ export class BotApplication {
     }
     // Referenced-message image metadata is also untrusted media input. Keep it
     // out of the model payload unless this group explicitly enabled vision.
-    const replyContextForAi = (() => {
+    const replyContextForAi = targetedMemberProfileRequested ? undefined : (() => {
       if (
         visionEnabled ||
         !messageContext.replyContext ||
@@ -3143,7 +3219,7 @@ export class BotApplication {
       ...(Object.keys(currentSpeaker).length > 0 ? { currentSpeaker } : {}),
       botUserId: this.botQq,
       manualIdentities: promptManualIdentities,
-      ...(memberProfiles.length > 0 ? { memberProfiles } : {}),
+      ...(visibleMemberProfiles.length > 0 ? { memberProfiles: visibleMemberProfiles } : {}),
       ...(groupMemories.length > 0 ? { groupMemories } : {}),
       ...(messageContext.interactionTargets.length > 0
         ? { interactionTargets: messageContext.interactionTargets }
@@ -3160,7 +3236,7 @@ export class BotApplication {
     };
     const replyArgs = {
       skill,
-      history,
+      history: targetedMemberProfileRequested ? [] : history,
       userInput: normalizedUserInput,
       images: resolvedImages,
       identityContext,
@@ -3258,8 +3334,8 @@ export class BotApplication {
       }
 
       const promptSources = {
-        causalHistory: history.map((turn) => turn.content).join("\n"),
-        explicitReference: messageContext.replyContext?.text ?? "",
+        causalHistory: replyArgs.history.map((turn) => turn.content).join("\n"),
+        explicitReference: replyContextForAi?.text ?? "",
         longTermMemory: groupMemories.map((memory) => memory.content).join("\n"),
         atmosphere: atmosphere?.summary ?? "",
         recentGroupEvidence: formatRecentGroupEvidenceForMetrics(recentGroupEvidence),
@@ -3279,6 +3355,11 @@ export class BotApplication {
         modelMs,
         totalMs: Date.now() - conversationStartedAt,
         memoryCount: groupMemories.length,
+        memberProfileQueryIntent: profileQuestionIntent,
+        memberProfileQueryRequested,
+        savedAliasStatus: savedAliasResolution.status,
+        targetUserIds: evaluationTargetUserIds,
+        memorySubjectUserIds: [...memorySubjectUserIds],
         recentGroupEvidenceTriggered,
         recentGroupEvidenceCount: recentGroupEvidence.length,
         recentGroupEvidenceTargetPrivacyOptedOut: targetPrivacyOptedOut,
@@ -3323,6 +3404,11 @@ export class BotApplication {
         modelMs: Date.now() - modelStartedAt,
         totalMs: Date.now() - conversationStartedAt,
         memoryCount: groupMemories.length,
+        memberProfileQueryIntent: profileQuestionIntent,
+        memberProfileQueryRequested,
+        savedAliasStatus: savedAliasResolution.status,
+        targetUserIds: evaluationTargetUserIds,
+        memorySubjectUserIds: [...memorySubjectUserIds],
         realtimeLookupKind: realtimeLookup?.kind,
         realtimeLookupStatus: realtimeLookup?.status,
         realtimeLookupMs,
@@ -5547,6 +5633,33 @@ function isExplicitGroupEvaluationRequest(text: string): boolean {
 function isLocalTranscriptTargetRequest(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim();
   return /(?:从|根据|结合|看)(?:(?:以上|上面|前面|刚才|这段|本段)(?:的)?(?:聊天|群聊|对话|发言|消息|内容|记录)?|(?:群聊|聊天记录|上文|上下文))(?:中|里)?(?:看|判断|分析|来说)?/u.test(normalized);
+}
+
+/**
+ * This intentionally recognizes only requests for saved member-profile facts.
+ * It must not turn an ordinary mention or a declarative sentence into a
+ * third-party profile lookup.
+ */
+function isMemberProfileQueryRequest(text: string): boolean {
+  const normalized = text.normalize("NFKC").replace(/\s+/g, "").trim();
+  if (!normalized) return false;
+  if (/(?:不知道|不清楚|不了解|不关心|不重要|告诉你|听说)/u.test(normalized) &&
+      !/(?:请|告诉我|介绍|说说|讲讲|想知道|想问)/u.test(normalized)) return false;
+
+  // Keep question terms tied to a profile field. A broad "contains 工作 and
+  // 什么" check would misclassify declarations such as “鸡哥的工作我什么都
+  // 不知道” and could expose a third-party profile without a real query.
+  const field = "(?:常用(?:的)?(?:词(?:语)?|用语)|常用语|口头禅|流行语|聊天风格|说话习惯|爱好|兴趣|职业|工作)";
+  const end = "(?:[（(](?:流行语|口头禅|常用语)[）)])?[?？!！。…]*$";
+  return [
+    `(?:最(?:爱|喜欢)|喜欢|爱|常)(?:说|用)(?:的)?(?:那些?|什么|哪些?|哪种)(?:词(?:语)?|话|口头禅|流行语)?(?:来)?(?:聊天|说话)?${end}`,
+    `(?:有|是|都有|会说|会用)(?:什么|哪些|啥|哪种)(?:的)?${field}${end}`,
+    `${field}(?:是|有|都有|包括|为)?(?:什么|哪些|哪种|咋样|怎么样|怎样|如何|吗|嘛|呢)${end}`,
+    `(?:做|干|从事)(?:什么|啥)(?:工作|职业)${end}`,
+    `(?:喜欢|爱)(?:做|玩)(?:什么|哪些|哪种)(?:游戏|运动|事情)?${end}`,
+    `(?:说说|讲讲|介绍(?:一下)?|告诉我|列(?:出|一下))[^。!?！？]{0,20}${field}(?:有哪些)?${end}`,
+    `${field}[?？]+$`,
+  ].some((pattern) => new RegExp(pattern, "u").test(normalized));
 }
 
 function isPersonEvaluationRequest(text: string, hasInteractionTarget: boolean): boolean {

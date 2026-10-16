@@ -40,6 +40,7 @@ import type {
   GroupMemory,
   KnowledgeBaseEntry,
   MessageImageInput,
+  MessageSegment,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
   ReferencedMessage,
@@ -3860,6 +3861,178 @@ test("does not read a local transcript when nearby group context is disabled", a
   assert.equal(ambientCalls, 0);
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent[0]?.text, "本群未开启近期群聊上下文，无法根据以上聊天记录回答。");
+});
+
+function createMemberProfileQueryFixture(groupOverrides: Partial<GroupBotConfig> = {}) {
+  const groupMemoryStore = new FakeGroupMemoryStore();
+  const profile = (id: string, subjectUserId: string, content: string): GroupMemory => ({
+    id, groupId: "67890", type: "member_profile", subjectUserId,
+    title: "已批准成员画像", content, confidence: 0.9, source: "admin", enabled: true,
+    createdAt: "2026-09-04T00:00:00.000Z", updatedAt: "2026-09-04T00:00:00.000Z",
+  });
+  groupMemoryStore.memories = [
+    profile("speaker", "1569671790", "提问者的画像，不应混入鸡哥的资料查询。"),
+    ...Array.from({ length: 25 }, (_, index) => profile(`other-${index}`, String(30000 + index), "无关成员画像。")),
+    profile("chicken", "1418509802", "他常用“已阅”、“冲鸭”、“工贼”、“大赚”和“小亏”；从事前端开发，喜欢跑步。"),
+  ];
+  const reads = { memory: 0, history: 0, evidence: 0, ambient: 0, persisted: 0 };
+  const list = groupMemoryStore.list.bind(groupMemoryStore);
+  groupMemoryStore.list = async (groupId) => { reads.memory++; return list(groupId); };
+  const realtimeLookupService = new FakeRealtimeLookupService();
+  const fixture = createApp({
+    groupConfigService: new FakeGroupConfigService([{
+      groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"],
+      switcherUserIds: [], liveChatUserIds: [], onlineLookupEnabled: true,
+      manualIdentities: [
+        { userIds: ["1569671790"], names: ["季博神"] },
+        { userIds: ["1418509802"], names: ["鸡哥"] },
+        { userIds: ["30000"], names: ["甲某", "同名"] },
+        { userIds: ["30001"], names: ["乙某", "同名"] },
+      ],
+      ...groupOverrides,
+    }]),
+    groupMemoryStore,
+    realtimeLookupService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [], [], {}, true),
+    conversationContextRepository: {
+      getSourceRowId: () => 99,
+      getCausalTurnsBeforeTurn: () => { reads.history++; return []; },
+      appendAssistantTurn: (() => { reads.persisted++; return { id: 101 }; }) as never,
+    },
+    recentGroupEvidenceService: {
+      list: () => { reads.evidence++; return []; },
+      listAmbient: () => { reads.ambient++; return []; },
+    },
+  });
+  return { ...fixture, reads, realtimeLookupService };
+}
+
+test("member profile query reproduces chicken wording with only its approved profile and no transcript reads", async () => {
+  const { app, aiService, transport, groupMemoryStore, reads, realtimeLookupService } = createMemberProfileQueryFixture();
+  transport.messagesById["9001"] = {
+    messageId: "9001", userId: "12345", userName: "会仙", text: "上次不可靠的回复", images: [],
+  };
+  const route: ConversationRoute = {
+    sourceRowId: 99, sourceMessageId: "8001", topicId: "profile", branchId: "profile",
+    routeReason: "explicit-reply", turnId: 100,
+  };
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "9001" } },
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "鸡哥最喜欢用的那些词语聊天（流行语）" } },
+  ], 1569671790, 67890, 8001), undefined, route);
+
+  assert.equal(aiService.calls.length, 1);
+  const call = aiService.calls[0]!;
+  assert.deepEqual(call.identityContext?.interactionTargets, [{ userId: "1418509802", names: ["鸡哥"], source: "alias" }]);
+  assert.deepEqual(call.identityContext?.groupMemories?.map(memory => memory.id), ["chicken"]);
+  assert.deepEqual(call.identityContext?.memberProfiles?.map(profile => profile.userId), ["1418509802"]);
+  assert.match(call.identityContext?.groupMemories?.[0]?.content ?? "", /已阅.*冲鸭.*工贼.*大赚.*小亏/);
+  assert.deepEqual(call.history, []);
+  assert.equal(call.identityContext?.replyContext, undefined);
+  assert.equal(call.identityContext?.recentGroupEvidenceRequested, undefined);
+  assert.equal(call.identityContext?.ambientGroupContext, undefined);
+  assert.deepEqual(groupMemoryStore.relevantCalls, []);
+  assert.deepEqual(reads, { memory: 1, history: 0, evidence: 0, ambient: 0, persisted: 1 });
+  assert.equal(realtimeLookupService.calls.length, 0);
+  assert.equal(transport.sent.length, 1);
+});
+
+test("member profile query recognizes language, style, interests and work questions through a unique alias", async () => {
+  const { app, aiService, reads } = createMemberProfileQueryFixture();
+  const questions = [
+    "鸡哥常用哪些词", "鸡哥常用语是什么", "鸡哥的口头禅是什么？", "鸡哥爱说什么", "鸡哥最喜欢用什么词",
+    "鸡哥聊天风格怎么样", "鸡哥说话习惯如何", "鸡哥有什么爱好", "鸡哥有哪些兴趣", "鸡哥做什么工作", "介绍一下鸡哥的爱好",
+  ];
+  for (const [index, text] of questions.entries()) {
+    await app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } }, { type: "text", data: { text } },
+    ], 1569671790, 67890, 8100 + index));
+  }
+  assert.equal(aiService.calls.length, questions.length);
+  for (const call of aiService.calls) {
+    assert.deepEqual(call.identityContext?.groupMemories?.map(memory => memory.subjectUserId), ["1418509802"]);
+    assert.equal(call.identityContext?.recentGroupEvidenceRequested, undefined);
+  }
+  assert.equal(reads.evidence + reads.ambient, 0);
+});
+
+test("member profile query accepts a real mention or reply without a saved alias and ignores attached images", async () => {
+  for (const visionEnabled of [false, true]) {
+    const { app, aiService, transport, reads } = createMemberProfileQueryFixture({ manualIdentities: [], visionEnabled });
+    transport.messagesById["9002"] = {
+      messageId: "9002", userId: "1418509802", userName: "群名片",
+      text: "不应注入的原消息", images: [{ file: "private-image.png" }],
+    };
+    const targets: MessageSegment[] = [
+      { type: "at", data: { qq: "1418509802" } },
+      { type: "reply", data: { id: "9002" } },
+    ];
+    for (const [index, target] of targets.entries()) {
+      await app.handleGroupMessage(createEvent([
+        target, { type: "at", data: { qq: "12345" } },
+        { type: "text", data: { text: "他常用哪些词？" } },
+        { type: "image", data: { file: "incidental.png" } },
+      ], 1569671790, 67890, 8200 + index));
+    }
+    assert.equal(aiService.calls.length, 2);
+    assert.deepEqual(aiService.calls.map(call => call.identityContext?.interactionTargets?.[0]?.source), ["mention", "reply"]);
+    for (const call of aiService.calls) {
+      assert.deepEqual(call.images, []);
+      assert.equal(call.identityContext?.replyContext, undefined);
+      assert.deepEqual(call.identityContext?.groupMemories?.map(memory => memory.id), ["chicken"]);
+    }
+    assert.equal(transport.imageResolutionCalls, 0);
+    assert.equal(reads.evidence + reads.ambient, 0);
+  }
+});
+
+test("member profile query refuses ambiguous aliases and multiple verified targets before memory or AI", async () => {
+  const { app, aiService, transport, reads } = createMemberProfileQueryFixture();
+  const messages: NapcatGroupMessageEvent["message"][] = [
+    [{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "同名有什么爱好" } }],
+    [{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "鸡哥和甲某有什么爱好" } }],
+    [{ type: "at", data: { qq: "12345" } }, { type: "at", data: { qq: "1418509802" } }, { type: "at", data: { qq: "30000" } }, { type: "text", data: { text: "有什么爱好" } }],
+  ];
+  for (const [index, message] of messages.entries()) await app.handleGroupMessage(createEvent(message, 1569671790, 67890, 8300 + index));
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(reads.memory + reads.evidence + reads.ambient, 0);
+  assert.equal(transport.sent.length, messages.length);
+  for (const sent of transport.sent) assert.match(sent.text, /唯一.*要查询的群友/);
+});
+
+test("member profile query returns a fixed conservative answer for absent, disabled or opted-out profiles", async () => {
+  for (const state of ["absent", "disabled", "privacy"] as const) {
+    const { app, aiService, transport, groupMemoryStore, reads } = createMemberProfileQueryFixture(
+      state === "privacy" ? { memoryDisabledUserIds: ["1418509802"] } : {},
+    );
+    if (state === "absent") groupMemoryStore.memories = groupMemoryStore.memories.filter(memory => memory.id !== "chicken");
+    if (state === "disabled") groupMemoryStore.memories.find(memory => memory.id === "chicken")!.enabled = false;
+    await app.handleGroupMessage(createEvent([
+      { type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "鸡哥的口头禅是什么" } },
+    ], 1569671790));
+    assert.equal(aiService.calls.length, 0, state);
+    assert.deepEqual(transport.sent.map(sent => sent.text), ["当前没有可用于回答这位群友相关问题的已保存资料。"]);
+    assert.equal(reads.evidence + reads.ambient, 0);
+    if (state === "privacy") assert.equal(reads.memory, 0);
+  }
+});
+
+test("member profile query does not resolve ordinary mentions, declarative text, typed QQ or unknown aliases", async () => {
+  const { app, aiService } = createMemberProfileQueryFixture();
+  const inputs = [
+    "鸡哥今天来了吗", "鸡哥的工作我什么都不知道", "鸡哥喜欢跑步作为爱好。", "我喜欢鸡哥的工作。",
+    "鸡哥的口头禅很多", "鸡哥喜欢用已阅", "我不知道鸡哥有什么爱好", "1418509802常用哪些词", "陌生人做什么工作", "流行语是什么？",
+  ];
+  for (const [index, text] of inputs.entries()) await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } }, { type: "text", data: { text } },
+  ], 1569671790, 67890, 8400 + index));
+  assert.equal(aiService.calls.length, inputs.length);
+  for (const call of aiService.calls) {
+    assert.equal(call.identityContext?.interactionTargets, undefined);
+    assert.equal(call.identityContext?.groupMemories?.some(memory => memory.subjectUserId !== "1569671790"), false);
+    assert.equal(call.identityContext?.recentGroupEvidenceRequested, undefined);
+  }
 });
 
 test("resolves a saved alias in natural person impression question '在你眼中xxx是个什么样的人'", async () => {

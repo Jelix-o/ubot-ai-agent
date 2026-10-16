@@ -384,6 +384,39 @@ test("buildSystemPrompt requires an insufficient-record answer when requested ev
   assert.match(prompt, /Do not invent prior remarks/);
 });
 
+test("buildSystemPrompt permits approved member profiles when recent evidence is empty", () => {
+  const prompt = buildSystemPrompt(skill, {
+    groupId: "1044162764",
+    currentUserId: "1569671790",
+    manualIdentities: [{ userIds: ["1418509802"], names: ["鸡哥"] }],
+    interactionTargets: [{ userId: "1418509802", names: ["鸡哥"], source: "alias" }],
+    recentGroupEvidenceRequested: true,
+    recentGroupEvidenceTargetUserId: "1418509802",
+    groupMemories: [
+      {
+        id: "mem-chicken",
+        groupId: "1044162764",
+        type: "member_profile",
+        subjectUserId: "1418509802",
+        title: "QQ群聊画像：鸡哥",
+        content: "他常用“已阅”、“冲鸭”、“工贼”、“大赚”和“小亏”等说法。",
+        confidence: 0.9,
+        source: "admin",
+        createdAt: "2026-09-04T00:00:00.000Z",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+        enabled: true,
+      },
+    ],
+  });
+
+  assert.match(prompt, /Administrator-approved long-term memory is stored background/);
+  assert.match(prompt, /鸡哥.*已阅.*冲鸭.*工贼.*大赚.*小亏/);
+  assert.match(prompt, /This only limits claims about recent original remarks or recent behavior/);
+  assert.match(prompt, /answer naturally from its stated content/);
+  assert.match(prompt, /不要因为没有近期聊天记录而否定该画像/);
+  assert.doesNotMatch(prompt, /memories, lookup results, atmosphere summaries/);
+});
+
 test("buildSystemPrompt warns against phonetic name rewrites for configured identities", () => {
   const prompt = buildSystemPrompt(skill, {
     groupId: "866209871",
