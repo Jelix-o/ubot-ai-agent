@@ -5,6 +5,15 @@ but it never automatically restores SQLite or replays QQ history after the V3
 cutover marker may have been written. This protects message causality and
 prevents accidental duplicate sends.
 
+## v3.0.43 member-profile query rollback
+
+This patch changes routing and prompt rules only, with no database schema or
+model-policy upgrade. Switching back to v3.0.42 keeps the same persisted member
+profiles, command permissions and model selection. Do not run the v3.0.39
+model-policy rollback for this patch. Preserve the adult-card recall drain
+window below before stopping Ingress, and do not rewind SQLite or replay outbox
+rows.
+
 ## v3.0.38 adult-card recall rollback
 
 Migration 20 is additive: it adds nullable recall-policy fields to `outbox`
