@@ -68,7 +68,8 @@ const capabilities = [
   { key: "opsAlertsEnabled", label: "运维告警", detail: "向当前群发送运行告警。" },
 ] as const;
 
-const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === (form.replyModelSource === "global" ? defaultReplyModelId.value : form.replyModelMode))?.label || form.replyModelMode || "-");
+const currentReplyModelId = computed(() => form.replyModelSource === "global" ? defaultReplyModelId.value : form.replyModelMode);
+const currentReplyModelLabel = computed(() => replyModels.value.find((model) => model.id === currentReplyModelId.value)?.label || currentReplyModelId.value || "尚未设置");
 const hasReplyModels = computed(() => replyModels.value.length > 0);
 const memberSelectOptions = computed(() => memberOptions.value.map((member) => ({
   value: member.userId,
@@ -490,7 +491,12 @@ watch(() => app.groupId, () => {
             <div class="field-grid">
               <label class="switch-line wide"><span><strong>显示并启用该群</strong><small>停用后机器人不再处理当前群的消息。</small></span><input v-model="form.enabled" :disabled="readonly" type="checkbox" /></label>
               <label class="switch-line wide"><span><strong>机器人静音</strong><small>保留群配置，暂停机器人发言。</small></span><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /></label>
-              <label>模型来源<select v-model="form.replyModelSource" class="select" :disabled="readonly || app.role !== 'super_admin'"><option value="global">跟随统一默认</option><option value="override">指定模型</option></select><small>实际生效：{{ currentReplyModelLabel }}</small></label><label v-if="form.replyModelSource !== 'global'">回复模型<select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels || app.role !== 'super_admin'"><option v-if="!hasReplyModels" value="">请先启用对话模型</option><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }}</option></select></label>
+              <section class="group-model-settings wide" aria-labelledby="group-model-title">
+                <div class="group-model-heading"><h3 id="group-model-title">群聊模型</h3><span v-if="app.role !== 'super_admin'" class="model-readonly-note">仅超级管理员可修改</span></div>
+                <div class="group-model-effective"><span>实际生效模型</span><strong>{{ currentReplyModelLabel }}</strong><code v-if="currentReplyModelId">{{ currentReplyModelId }}</code></div>
+                <div class="group-model-fields"><label>模型来源<select v-model="form.replyModelSource" class="select" :disabled="readonly || app.role !== 'super_admin'"><option value="global">跟随统一默认</option><option value="override">指定模型</option></select></label><label v-if="form.replyModelSource !== 'global'">指定模型<select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels || app.role !== 'super_admin'"><option v-if="!hasReplyModels" value="">请先启用对话模型</option><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }} · {{ model.id }}</option></select></label></div>
+                <p class="group-model-help">{{ form.replyModelSource === 'global' ? '统一默认更新后，本群自动跟随。' : '仅替换本群主模型，备用顺序和超时设置仍跟随系统配置。' }}</p>
+              </section>
               <label>参与方式<select v-model="form.participationMode" class="select" :disabled="readonly"><option value="mentions_only">仅在 @ / 引用时回复</option><option value="mentions_and_keywords">@ / 引用 + 关键词</option><option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option></select></label>
               <label>实时对话延迟<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /><small>单位为秒，仅指定成员低频参与时生效。</small></label>
               <label>当前人格<div class="fixed-persona">{{ form.currentSkillId || '尚未设置' }}</div><small>人格内容在「内容与表达」工作区维护。</small></label>
@@ -1631,6 +1637,17 @@ dd {
 .group-config-card h2,.config-summary h2 { margin:0; font-size:16px; }
 .field-grid { gap:20px; }
 .group-config-card label { font-size:13px; color:var(--text); }
+.group-model-settings { display:grid; gap:16px; min-width:0; padding:4px 0 22px; border-bottom:1px solid var(--line); }
+.group-model-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.group-model-heading h3 { margin:0; font-size:14px; font-weight:600; }
+.model-readonly-note,.group-model-help { margin:0; color:var(--muted); font-size:12px; font-weight:400; line-height:1.7; }
+.group-model-effective { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; padding:12px 14px; background:var(--surface-soft); border-radius:6px; font-size:12px; }
+.group-model-effective > span { color:var(--muted); }
+.group-model-effective strong { overflow-wrap:anywhere; font-weight:600; }
+.group-model-effective code { overflow-wrap:anywhere; color:var(--accent-strong); font:12px/1.6 var(--font-mono); }
+.group-model-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.group-model-fields label { min-width:0; }
+@media(max-width:1100px) { .group-model-fields { grid-template-columns:minmax(0,1fr); } }
 .field-grid small,.switch-line small { display:block; color:var(--muted); font-weight:400; font-size:12px; line-height:1.65; }
 .group-config-card .switch-line { display:flex; justify-content:space-between; align-items:center; padding:14px 0; border-bottom:1px solid var(--line); gap:20px; }
 .switch-line strong { font-weight:600; font-size:14px; }

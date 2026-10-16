@@ -142,8 +142,8 @@ onMounted(() => {
           <label>指令名称<input v-model="activeCommand.title" class="input" :disabled="readonly" /></label>
           <label>主命令<input v-model="activeCommand.primary" class="input" :disabled="readonly" /></label>
           <label class="wide">别名<input class="input" :value="activeCommand.aliases.join('\n')" :disabled="readonly" placeholder="支持换行、逗号、空格" @input="activeCommand.aliases = splitAliases(($event.target as HTMLInputElement).value)" /></label>
-          <label>使用权限<select v-model="activeCommand.permission" class="select" :disabled="readonly"><option v-for="level in allowedPermissions(activeCommand)" :key="level" :value="level">{{ permissionLabel(level) }}</option></select><small>最低权限：{{ permissionLabel(activeCommand.minimumPermission || 'member') }}；管理子操作仍遵守自身限制。</small></label>
-          <label class="switch editor-switch"><input v-model="activeCommand.enabled" type="checkbox" :disabled="readonly" /> {{ activeCommand.enabled ? "已启用" : "已停用" }}</label>
+          <label class="wide command-permission-field">使用权限<select v-model="activeCommand.permission" class="select" :disabled="readonly"><option v-for="level in allowedPermissions(activeCommand)" :key="level" :value="level">{{ permissionLabel(level) }}</option></select><small>最低权限：{{ permissionLabel(activeCommand.minimumPermission || 'member') }}。管理子操作仍遵守自身限制。</small></label>
+          <label class="wide switch editor-switch"><span>启用指令<small>{{ activeCommand.enabled ? "已启用，按所选权限开放使用。" : "已停用，群内不会触发。" }}</small></span><input v-model="activeCommand.enabled" type="checkbox" :disabled="readonly" /></label>
           <label class="wide">帮助文案<textarea v-model="activeCommand.help" class="textarea" maxlength="400" :disabled="readonly" /></label>
         </div>
         <div v-if="!readonly" class="editor-footer">
@@ -294,10 +294,10 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.editor-switch {
-  align-self: end;
-  min-height: 36px;
-}
+.form-grid .editor-switch { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:14px 0; border-block:1px solid var(--line); white-space:normal; }
+.form-grid small { color:var(--muted); font-size:12px; line-height:1.65; font-weight:400; }
+.editor-switch small { display:block; margin-top:5px; }
+.editor-switch input { flex-shrink:0; }
 
 .warn-box {
   border: 1px solid color-mix(in oklch, var(--warning) 40%, var(--line));
