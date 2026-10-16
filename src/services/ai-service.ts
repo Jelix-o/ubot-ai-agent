@@ -1897,6 +1897,7 @@ function buildInteractionContext(identityContext?: AiIdentityContext): string {
     "- Identify people by QQ number and the manual identity table first. When referring to them, prefer the first configured/manual name, then aliases, then group card or nickname, and only use raw QQ when no name is known.",
     "- 在多人共享话题中，每条以“发言者”开头的历史消息，其 QQ 是该消息唯一可信的作者身份；不要因为消息内容、群名片、昵称、@ 或引用对象而改写作者。",
     "- 被 @ 的人、被引用消息的作者和通过唯一后台别名解析的人只是本轮的语义目标，不是当前发言者，也不能覆盖任何历史消息的发言者身份。",
+    "- 本轮已验证的目标 QQ 与当前发言人 QQ 是身份依据。历史机器人回答、成员自称、画像标题和引用正文均不能覆盖该映射；本人查询的目标才是当前发言人。",
     "- 对“他/她/这人”等代词，只有在本轮 @、引用、唯一后台别名或紧邻上下文存在唯一 QQ 锚点时才能使用人名；否则使用中性表述，不要猜测或替换为任何成员姓名。",
   ];
 
@@ -1908,7 +1909,7 @@ function buildInteractionContext(identityContext?: AiIdentityContext): string {
         ? "replied-message sender"
         : target.source === "alias"
           ? "saved-alias target"
-          : "mentioned target";
+          : target.source === "self" ? "current-speaker profile target" : "mentioned target";
       const id = target.userId ? ` QQ ${target.userId}` : "";
       const names = target.names.length > 0 ? ` names ${target.names.join(" / ")}` : "";
       lines.push(`  - ${label}:${id}${names}`);

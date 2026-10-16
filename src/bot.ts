@@ -50,6 +50,7 @@ import {
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
+import { parseIdentityCheck, answerIdentityCheck, identityCheckNeedsDirectory, refreshIdentityDirectory, IDENTITY_UNCONFIRMED } from "./services/member-identity-query.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
 import type { SkillService } from "./services/skill-service.js";
@@ -2700,13 +2701,19 @@ export class BotApplication {
     // Determine this before reading the causal branch. A profile request is
     // intentionally isolated from prior conversation text even when it later
     // resolves through an @, quoted message, or saved alias.
-    const profileQuestionIntent = isMemberProfileQueryRequest(normalizedUserInput);
     const explicitProfileTargetUserIds = collectEvaluationTargetUserIds(messageContext.interactionTargets, this.botQq);
-    const profileAliasResolution = profileQuestionIntent && explicitProfileTargetUserIds.length === 0
+    const memberQueryText = normalizedUserInput.replace(/@(\d+)\b/gu, (token, id: string) =>
+      explicitProfileTargetUserIds.includes(id) ? "" : token).trim();
+    const profileQuestionIntent = isMemberProfileQueryRequest(memberQueryText);
+    const profileAliasResolution = profileQuestionIntent
       ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
       : { status: "none" as const };
-    const memberProfileQueryIntent = profileQuestionIntent &&
-      (explicitProfileTargetUserIds.length > 0 || profileAliasResolution.status !== "none");
+    const selfProfileQuery = profileQuestionIntent && /^(?:请(?:你)?|说说|讲讲|介绍(?:一下)?|告诉我)?(?:我|本人|自己)(?:的|常用|最|爱|喜欢|有|做|说话|聊天)/u.test(memberQueryText.replace(/\s+/gu, ""));
+    const memberProfileQueryIntent = profileQuestionIntent && (
+      selfProfileQuery || explicitProfileTargetUserIds.length > 0 || profileAliasResolution.status !== "none" ||
+      isUnresolvedMemberProfileQuery(memberQueryText)
+    );
+    const identityCheck = parseIdentityCheck(normalizedUserInput, groupConfig, messageContext.interactionTargets, this.botQq);
     const sourceRowId = messageContext.sourceMessageId
       ? this.conversationContextRepository?.getSourceRowId?.(
         groupConfig.groupId,
@@ -2735,6 +2742,28 @@ export class BotApplication {
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
+    if (identityCheck) {
+      let answer = { text: IDENTITY_UNCONFIRMED, targetIds: identityCheck.explicitIds, reason: "directory_unavailable" };
+      try {
+        const members = identityCheckNeedsDirectory(identityCheck, groupConfig)
+          ? await refreshIdentityDirectory(() => {
+            if (!this.transport.listGroupMembers) throw new Error("identity_directory_unavailable");
+            return this.transport.listGroupMembers(groupConfig.groupId, { refresh: true });
+          }) : [];
+        answer = answerIdentityCheck(identityCheck, groupConfig, members);
+      } catch (error) {
+        answer.reason = error instanceof Error && error.message === "identity_directory_timeout" ? "directory_timeout" : "directory_unavailable";
+      }
+      if (signal?.aborted) return;
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, answer.text, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, answer.text, receipt ? [receipt] : []);
+      logInfo("Completed verified member identity check.", {
+        groupId: groupConfig.groupId, memberQueryType: "identity_check", targetUserIds: answer.targetIds,
+        memberQueryResolutionSource: identityCheck.explicitIds.length ? "member_object" : "saved_alias",
+        memberQueryUnresolvedReason: answer.reason, memorySubjectUserIds: [],
+      });
+      return;
+    }
     const knowledgeSessionKey = knowledgeContinuationKey(groupConfig.groupId, userId);
     let knowledgeSession = this.knowledgeContinuationSessions.get(knowledgeSessionKey);
     if (knowledgeSession && (
@@ -2853,11 +2882,20 @@ export class BotApplication {
     );
     const localTranscriptTargetRequest = isLocalTranscriptTargetRequest(normalizedUserInput);
     const memberProfileQueryRequested = memberProfileQueryIntent;
-    const savedAliasResolution = explicitEvaluationTargetUserIds.length === 0 &&
+    const savedAliasResolution = memberProfileQueryRequested ? profileAliasResolution : explicitEvaluationTargetUserIds.length === 0 &&
       (isPersonEvaluationRequest(normalizedUserInput, true) || localTranscriptTargetRequest || memberProfileQueryRequested)
       ? resolveSavedAliasEvaluationTarget(groupConfig, normalizedUserInput)
       : { status: "none" as const };
-    if (savedAliasResolution.status === "resolved") {
+    const profileTargetConflict = memberProfileQueryRequested && (
+      (selfProfileQuery && (explicitEvaluationTargetUserIds.some(id => id !== userId) ||
+        (savedAliasResolution.status === "resolved" && savedAliasResolution.target.userId !== userId))) ||
+      (savedAliasResolution.status === "resolved" && explicitEvaluationTargetUserIds.length > 0 &&
+        explicitEvaluationTargetUserIds.some(id => id !== savedAliasResolution.target.userId))
+    );
+    if (memberProfileQueryRequested && selfProfileQuery) {
+      const names = groupConfig.manualIdentities?.find(identity => identity.userIds.includes(userId))?.names ?? [];
+      messageContext = { ...messageContext, interactionTargets: [{ userId, names, source: "self" }] };
+    } else if (savedAliasResolution.status === "resolved" && explicitEvaluationTargetUserIds.length === 0) {
       messageContext = {
         ...messageContext,
         interactionTargets: [savedAliasResolution.target],
@@ -2899,6 +2937,11 @@ export class BotApplication {
       messageContext.interactionTargets.length > 0,
     ) || savedAliasResolution.status === "ambiguous";
     const targetedMemberProfileRequested = memberProfileQueryRequested && evaluationTargetUserIds.length === 1;
+    const memberQueryDiagnostics = {
+      memberQueryType: memberProfileQueryRequested ? "member_profile" : "none",
+      memberQueryResolutionSource: selfProfileQuery ? "self" : explicitEvaluationTargetUserIds.length ? "member_object" : savedAliasResolution.status === "resolved" ? "saved_alias" : "none",
+      memberQueryUnresolvedReason: profileTargetConflict ? "target_conflict" : savedAliasResolution.status === "ambiguous" ? "ambiguous_saved_alias" : evaluationTargetUserIds.length > 1 ? "multiple_verified_targets" : memberProfileQueryRequested && !evaluationTargetUserIds.length ? "unknown_member_name" : undefined,
+    };
     const targetedGroupEvidenceRequested =
       !targetedMemberProfileRequested &&
       (personEvaluationRequested || localTranscriptTargetRequest) && evaluationTargetUserIds.length === 1;
@@ -2909,6 +2952,8 @@ export class BotApplication {
       savedAliasResolution.status === "none" &&
       !explicitGroupEvaluationRequested;
     const requiresClarification =
+      profileTargetConflict ||
+      (memberProfileQueryRequested && evaluationTargetUserIds.length === 0) ||
       savedAliasResolution.status === "ambiguous" ||
       ((personEvaluationRequested || memberProfileQueryRequested) && evaluationTargetUserIds.length > 1) ||
       (personEvaluationRequested && explicitGroupEvaluationRequested && evaluationTargetUserIds.length !== 1);
@@ -2918,7 +2963,7 @@ export class BotApplication {
         : "请使用一个已保存且唯一的群友别名，或者明确 @/回复一位要评价的群友。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, clarificationText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, clarificationText, receipt ? [receipt] : []);
-      const clarificationReason = savedAliasResolution.status === "ambiguous"
+      const clarificationReason = profileTargetConflict ? "target_conflict" : memberProfileQueryRequested && evaluationTargetUserIds.length === 0 && savedAliasResolution.status === "none" ? "unknown_member_name" : savedAliasResolution.status === "ambiguous"
         ? "ambiguous_saved_alias"
         : evaluationTargetUserIds.length > 1
           ? "multiple_verified_targets"
@@ -2932,6 +2977,7 @@ export class BotApplication {
         targetUserIds: evaluationTargetUserIds,
         memorySubjectUserIds: [],
         clarificationReason,
+        ...memberQueryDiagnostics,
       });
       return;
     }
@@ -2965,6 +3011,8 @@ export class BotApplication {
         ? "Skipped member profile query for a privacy-opted-out target."
         : "Skipped group evidence for a privacy-opted-out target.", {
         groupId: groupConfig.groupId,
+        ...memberQueryDiagnostics,
+        memberQueryUnresolvedReason: "privacy_disabled",
         memberProfileQueryIntent: profileQuestionIntent,
         memberProfileQueryRequested,
         savedAliasStatus: savedAliasResolution.status,
@@ -3147,6 +3195,8 @@ export class BotApplication {
       await this.persistAssistantContext(conversationRoute, MSG_MEMBER_PROFILE_UNAVAILABLE, receipt ? [receipt] : []);
       logInfo("Skipped member profile query without an enabled approved profile.", {
         groupId: groupConfig.groupId,
+        ...memberQueryDiagnostics,
+        memberQueryUnresolvedReason: "profile_unavailable",
         memberProfileQueryIntent: profileQuestionIntent,
         memberProfileQueryRequested,
         savedAliasStatus: savedAliasResolution.status,
@@ -3344,6 +3394,7 @@ export class BotApplication {
       };
 
       logInfo("Sent AI reply.", {
+        ...memberQueryDiagnostics,
         groupId: groupConfig.groupId,
         skillId: skill.id,
         model: reply.model,
@@ -3402,6 +3453,7 @@ export class BotApplication {
         failureKind,
         preparationMs,
         modelMs: Date.now() - modelStartedAt,
+        ...memberQueryDiagnostics,
         totalMs: Date.now() - conversationStartedAt,
         memoryCount: groupMemories.length,
         memberProfileQueryIntent: profileQuestionIntent,
@@ -5649,9 +5701,11 @@ function isMemberProfileQueryRequest(text: string): boolean {
   // Keep question terms tied to a profile field. A broad "contains 工作 and
   // 什么" check would misclassify declarations such as “鸡哥的工作我什么都
   // 不知道” and could expose a third-party profile without a real query.
-  const field = "(?:常用(?:的)?(?:词(?:语)?|用语)|常用语|口头禅|流行语|聊天风格|说话习惯|爱好|兴趣|职业|工作)";
+  const field = "(?:常用(?:的)?(?:词(?:语)?|用语)|常用语|口头禅|流行语|聊天习惯|聊天风格|说话习惯|爱好|兴趣|职业|工作)";
   const end = "(?:[（(](?:流行语|口头禅|常用语)[）)])?[?？!！。…]*$";
   return [
+    `^(?:的)?${field}${end}`,
+    `^(?!(?:我喜欢|我爱|例如|解释|什么是|讨论|研究|介绍词语))[^。!?！？的]{1,24}的${field}${end}`,
     `(?:最(?:爱|喜欢)|喜欢|爱|常)(?:说|用)(?:的)?(?:那些?|什么|哪些?|哪种)(?:词(?:语)?|话|口头禅|流行语)?(?:来)?(?:聊天|说话)?${end}`,
     `(?:有|是|都有|会说|会用)(?:什么|哪些|啥|哪种)(?:的)?${field}${end}`,
     `${field}(?:是|有|都有|包括|为)?(?:什么|哪些|哪种|咋样|怎么样|怎样|如何|吗|嘛|呢)${end}`,
@@ -5660,6 +5714,14 @@ function isMemberProfileQueryRequest(text: string): boolean {
     `(?:说说|讲讲|介绍(?:一下)?|告诉我|列(?:出|一下))[^。!?！？]{0,20}${field}(?:有哪些)?${end}`,
     `${field}[?？]+$`,
   ].some((pattern) => new RegExp(pattern, "u").test(normalized));
+}
+
+function isUnresolvedMemberProfileQuery(text: string): boolean {
+  const normalized = text.normalize("NFKC").replace(/\s+/gu, "");
+  // Typed QQ numbers do not verify a member. Generic vocabulary explanations
+  // stay ordinary chat and cannot read third-party profiles.
+  if (/\d{5,}/u.test(normalized) || /^(?:什么是|解释|科普|介绍一下(?:什么是)?|(?:常用语|常用词|口头禅|流行语|聊天习惯|聊天风格|说话习惯|爱好|兴趣|职业|工作)(?:是|有|指|包括|如何))/u.test(normalized)) return false;
+  return /^(?:请问|请|说说|讲讲|介绍(?:一下)?|告诉我)?[^，。!?！？]{1,24}(?:的(?:常用语|常用词(?:语)?|口头禅|流行语|聊天习惯|聊天风格|说话习惯|爱好|兴趣|工作|职业)|(?:做|干|从事)(?:什么|啥)(?:工作|职业)|(?:有|是)(?:哪些|什么)(?:爱好|兴趣)|(?:常用|爱说|喜欢用)(?:哪些|什么))/u.test(normalized);
 }
 
 function isPersonEvaluationRequest(text: string, hasInteractionTarget: boolean): boolean {

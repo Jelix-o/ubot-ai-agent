@@ -1,8 +1,8 @@
-# UBot V3.0.44
+# UBot V3.0.46
 
 UBot 是一个基于 `NapCat + OneBot + Node.js 22 + TypeScript + Vue` 的 QQ 群机器人和管理后台。唯一人格是会仙：她以自然、成熟的聊天方式参与对话，可协助联网查询、提醒、日报、节日倒计时、静态网页预览和受限图片生成；日常不主动谈身份标签，涉及现实可核验的信息时不会编造或承诺事实。
 
-项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.44.md](RELEASE-v3.0.44.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。BT 搜索依赖安装见 [assets/bt/README.md](assets/bt/README.md)。
+项目地址：[Jelix-o/ubot-ai-agent](https://github.com/Jelix-o/ubot-ai-agent)。本版发布说明见 [RELEASE-v3.0.46.md](RELEASE-v3.0.46.md)，生产运维见 [docs/OPERATIONS-v3.md](docs/OPERATIONS-v3.md)，一次性数据切换与故障边界分别见 [docs/MIGRATION-v3.md](docs/MIGRATION-v3.md) 和 [docs/ROLLBACK-v3.md](docs/ROLLBACK-v3.md)。BT 搜索依赖安装见 [assets/bt/README.md](assets/bt/README.md)。
 
 ## V3 架构
 
@@ -17,6 +17,8 @@ NapCat / OneBot
 Ingress、Worker、Admin 是独立进程。生产环境由 systemd 管理三个 unit，使用 `/opt/ai-project-releases/current` 原子切换软链接。
 
 ## 主要行为
+
+- **成员称呼与资料**：后台分别维护主称呼、其他别名和描述性备注；保存完整替换，不自动保留旧名。“鸡哥的常用语”等明确资料查询只读取核实目标的已启用画像，本人查询绑定发言人 QQ，冲突或重名先确认对象。称呼核对使用真实 QQ 映射和最多 3 秒的成员目录刷新，不调用模型猜测。
 
 - **资源搜索**：启用且非静默的群内，非黑名单成员可直接使用 `#bt <关键词> [anime|movie|adult]`，兼容 `/bt`，无需 @。默认完整搜索，前 5 条集中在一张 QQ 合并转发卡片，保留完整下载链接；执行超过 5 秒才提示进度。最终判定为成人类型的卡片首行会显示成人内容提示，并在成功送达约 90 秒后静默撤回。其他命令继续使用 `#`。
 

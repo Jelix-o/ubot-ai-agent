@@ -3874,6 +3874,8 @@ function createMemberProfileQueryFixture(groupOverrides: Partial<GroupBotConfig>
     profile("speaker", "1569671790", "提问者的画像，不应混入鸡哥的资料查询。"),
     ...Array.from({ length: 25 }, (_, index) => profile(`other-${index}`, String(30000 + index), "无关成员画像。")),
     profile("chicken", "1418509802", "他常用“已阅”、“冲鸭”、“工贼”、“大赚”和“小亏”；从事前端开发，喜欢跑步。"),
+    profile("contractor", "2458031445", "旧画像标题和旧称呼不能改变 QQ 归属；他聊天简短直接。"),
+    profile("yuumi", "429462108", "他经常说 AI 说的对。"),
   ];
   const reads = { memory: 0, history: 0, evidence: 0, ambient: 0, persisted: 0 };
   const list = groupMemoryStore.list.bind(groupMemoryStore);
@@ -3886,6 +3888,8 @@ function createMemberProfileQueryFixture(groupOverrides: Partial<GroupBotConfig>
       manualIdentities: [
         { userIds: ["1569671790"], names: ["季博神"] },
         { userIds: ["1418509802"], names: ["鸡哥"] },
+        { userIds: ["2458031445"], names: ["外包仙人", "外包仔"] },
+        { userIds: ["429462108"], names: ["悠米"] },
         { userIds: ["30000"], names: ["甲某", "同名"] },
         { userIds: ["30001"], names: ["乙某", "同名"] },
       ],
@@ -3942,6 +3946,7 @@ test("member profile query recognizes language, style, interests and work questi
   const { app, aiService, reads } = createMemberProfileQueryFixture();
   const questions = [
     "鸡哥常用哪些词", "鸡哥常用语是什么", "鸡哥的口头禅是什么？", "鸡哥爱说什么", "鸡哥最喜欢用什么词",
+    "鸡哥的常用语", "鸡哥的常用词", "鸡哥的聊天习惯", "鸡哥的聊天风格", "鸡哥的说话习惯", "鸡哥的爱好", "鸡哥的工作",
     "鸡哥聊天风格怎么样", "鸡哥说话习惯如何", "鸡哥有什么爱好", "鸡哥有哪些兴趣", "鸡哥做什么工作", "介绍一下鸡哥的爱好",
   ];
   for (const [index, text] of questions.entries()) {
@@ -4022,7 +4027,7 @@ test("member profile query does not resolve ordinary mentions, declarative text,
   const { app, aiService } = createMemberProfileQueryFixture();
   const inputs = [
     "鸡哥今天来了吗", "鸡哥的工作我什么都不知道", "鸡哥喜欢跑步作为爱好。", "我喜欢鸡哥的工作。",
-    "鸡哥的口头禅很多", "鸡哥喜欢用已阅", "我不知道鸡哥有什么爱好", "1418509802常用哪些词", "陌生人做什么工作", "流行语是什么？",
+    "鸡哥的口头禅很多", "鸡哥喜欢用已阅", "我不知道鸡哥有什么爱好", "1418509802常用哪些词", "流行语是什么？",
   ];
   for (const [index, text] of inputs.entries()) await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } }, { type: "text", data: { text } },
@@ -4033,6 +4038,71 @@ test("member profile query does not resolve ordinary mentions, declarative text,
     assert.equal(call.identityContext?.groupMemories?.some(memory => memory.subjectUserId !== "1569671790"), false);
     assert.equal(call.identityContext?.recentGroupEvidenceRequested, undefined);
   }
+});
+
+test("short profile queries keep the verified subject across speakers and ignore earlier bot claims", async () => {
+  const { app, aiService, transport, reads } = createMemberProfileQueryFixture();
+  transport.messagesById["9500"] = { messageId: "9500", userId: "12345", userName: "会仙", text: "鸡哥就是当前发言人，外包是职业。", images: [] };
+  const queries = [["外包仔的聊天习惯", "2458031445"], ["鸡哥的常用语", "1418509802"], ["悠米的常用语", "429462108"]];
+  for (const [index, [text, expected]] of queries.entries()) {
+    const route: ConversationRoute = { sourceRowId: 99, sourceMessageId: String(9600 + index), topicId: "shared", branchId: "shared", routeReason: "explicit-reply", turnId: 100 + index };
+    await app.handleGroupMessage(createEvent([
+      { type: "reply", data: { id: "9500" } }, { type: "at", data: { qq: "12345" } }, { type: "text", data: { text } },
+    ], 30000 + index, 67890, 9600 + index), undefined, route);
+    const call = aiService.calls[index]!;
+    assert.deepEqual(call.identityContext?.groupMemories?.map(memory => memory.subjectUserId), [expected]);
+    assert.deepEqual(call.history, []);
+    assert.equal(call.identityContext?.replyContext, undefined);
+  }
+  assert.equal(reads.history + reads.ambient + reads.evidence, 0);
+  assert.equal(transport.sent.length, 3);
+});
+
+test("profile requests clarify unknown aliases and conflicting real member objects without any data reads", async () => {
+  const { app, aiService, transport, reads } = createMemberProfileQueryFixture();
+  transport.messagesById["9700"] = { messageId: "9700", userId: "429462108", userName: "悠米", text: "我就是鸡哥", images: [] };
+  const messages: MessageSegment[][] = [
+    [{ type: "text", data: { text: "陌生人的常用语" } }],
+    [{ type: "text", data: { text: "陌生人做什么工作" } }],
+    [{ type: "at", data: { qq: "429462108" } }, { type: "text", data: { text: "鸡哥的常用语" } }],
+    [{ type: "reply", data: { id: "9700" } }, { type: "text", data: { text: "鸡哥的常用语" } }],
+    [{ type: "reply", data: { id: "9700" } }, { type: "at", data: { qq: "1418509802" } }, { type: "text", data: { text: "他的常用语" } }],
+    [{ type: "at", data: { qq: "429462108" } }, { type: "text", data: { text: "我的常用语" } }],
+  ];
+  for (const [index, message] of messages.entries()) await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } }, ...message,
+  ], 1569671790, 67890, 9750 + index));
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(reads.history + reads.memory + reads.evidence + reads.ambient, 0);
+  assert.equal(transport.sent.length, messages.length);
+});
+
+test("first person profile requests bind to the actual speaker QQ", async () => {
+  const { app, aiService } = createMemberProfileQueryFixture();
+  for (const [index, text] of ["我的常用语", "我有什么爱好", "介绍一下我的聊天习惯"].entries()) {
+    await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }], 1569671790, 67890, 9800 + index));
+    assert.deepEqual(aiService.calls[index]?.identityContext?.groupMemories?.map(memory => memory.id), ["speaker"]);
+    assert.equal(aiService.calls[index]?.identityContext?.interactionTargets?.[0]?.source, "self");
+  }
+});
+
+test("identity comparisons refresh real names and answer without a model, profiles or transcript", async () => {
+  const { app, aiService, transport, reads } = createMemberProfileQueryFixture();
+  let refresh: boolean | undefined;
+  transport.listGroupMembers = async (_groupId: string, options?: { refresh?: boolean }) => {
+    refresh = options?.refresh;
+    return [{ user_id: 1418509802, card: "成都林心如", nickname: "☉_☉" }];
+  };
+  for (const [index, text] of ["鸡哥是不是成都林心如", "鸡哥是不是悠米", "鸡哥是不是陌生人", "同名是不是成都林心如"].entries()) {
+    await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }], 1569671790, 67890, 9900 + index));
+  }
+  assert.equal(refresh, true);
+  assert.match(transport.sent[0]!.text, /^是同一位/);
+  assert.match(transport.sent[1]!.text, /^不是同一位/);
+  assert.match(transport.sent[2]!.text, /无法确认/);
+  assert.match(transport.sent[3]!.text, /无法确认/);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(reads.history + reads.memory + reads.ambient + reads.evidence, 0);
 });
 
 test("resolves a saved alias in natural person impression question '在你眼中xxx是个什么样的人'", async () => {

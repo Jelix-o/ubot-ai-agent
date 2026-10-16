@@ -1,5 +1,12 @@
 # UBot V3 Rollback Boundaries
 
+v3.0.46 keeps the existing `names` representation and requires no migration.
+Rollback switches the release while retaining persistent configuration, including
+the corrected primary name. A narrowly scoped encrypted backup is stored as
+`release-policy-backup/v3.0.46-member-names` if the targeted repair was applied.
+Do not restore all groups or rewrite profile text to undo a UI release. Continue
+to drain adult-card recall jobs for at most 105 seconds before stopping Ingress.
+
 V3 can restore release selection and service configuration before data cutover,
 but it never automatically restores SQLite or replays QQ history after the V3
 cutover marker may have been written. This protects message causality and

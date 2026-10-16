@@ -223,7 +223,7 @@ export interface GroupMemberProfile {
 export interface AiInteractionTarget {
   userId?: string;
   names: string[];
-  source: "mention" | "reply" | "alias";
+  source: "mention" | "reply" | "alias" | "self";
 }
 
 export interface AiReplyContext {
