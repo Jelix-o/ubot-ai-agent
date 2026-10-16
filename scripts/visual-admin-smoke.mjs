@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { AdminHttpServer } from "../dist/admin-http-server.js";
+import { AdminAuthService } from "../dist/services/admin-auth-service.js";
 import { SharedDb } from "../dist/shared/sqlite.js";
 import { AdminOperationLogService } from "../dist/services/admin-operation-log-service.js";
 import { AdminTaskStore } from "../dist/services/admin-task-store.js";
@@ -37,6 +38,8 @@ try {
       groupName: "UBot Test Group",
       enabled: true,
       currentSkillId: "huixian",
+      replyModelSource: "global",
+      replyModelMode: "gpt",
       allowedSkillIds: ["huixian"],
       switcherUserIds: ["99999"],
       liveChatUserIds: [],
@@ -63,6 +66,27 @@ try {
   const knowledgeBaseStore = new KnowledgeBaseStore(path.join(root, "retired-knowledge.json"), v3State);
   const taskStore = new AdminTaskStore(path.join(root, "retired-tasks.json"), v3State);
   const settingsStore = new SystemSettingsStore(path.join(root, "retired-settings.json"), [], undefined, v3State);
+  // Opt-in browser fixture: loopback connections and disposable credentials
+  // let layout/save checks run without production data or upstream calls.
+  if (process.argv.includes("--layout-fixture")) {
+    const now = new Date().toISOString();
+    await settingsStore.update({
+      models: [
+        ["sol", "Sol", "gpt-6.1-sol", "reply", true],
+        ["gpt", "GPT 视觉与复杂问题备用模型（长名称布局验证）", "gpt-test", "reply", true],
+        ["ds", "DeepSeek Flash", "deepseek-flash", "reply", true],
+        ["disabled", "已停用的备用连接", "disabled-model", "reply", false],
+        ["image", "图片生成模型", "image-test", "image", true],
+      ].map(([id, name, model, purpose, enabled]) => ({ id, name, shortName: id, model, purpose, enabled, apiKey: "layout-fixture-not-a-real-key", baseUrl: "http://127.0.0.1:63199/v1", createdAt: now, updatedAt: now })),
+      selectedModelIds: { reply: "sol", image: "image" },
+      replyRouting: { fallbackEnabled: true, fallbackModelIds: ["gpt", "ds"], chatAttemptTimeoutMs: 45000, chatTotalTimeoutMs: 120000, htmlAttemptTimeoutMs: 120000, htmlTotalTimeoutMs: 300000 },
+    });
+    const auth = new AdminAuthService(sharedDb, { bootstrap: { username: USERNAME, password: PASSWORD } });
+    await auth.ensureInitialized();
+    const invite = auth.createInvite({ role: "group_admin", groupIds: [GROUP_ID], expiresAt: Date.now() + 60000, actorAccountId: auth.listAccounts()[0].id });
+    const accepted = await auth.acceptInvite({ inviteToken: invite.token, username: "layout-operator", password: "layout-password-12" });
+    if (accepted.kind !== "authenticated") throw new Error("Layout operator fixture failed.");
+  }
   const operations = new AdminOperationLogService(path.join(root, "retired-operations.jsonl"), v3State);
   const characterProfileService = new CharacterProfileService(v3State);
   const memeLibraryService = new MemeLibraryService(path.join(root, "data"), v3State);
@@ -110,6 +134,8 @@ try {
   const address = raw.address();
   if (!address || typeof address === "string") throw new Error("Admin smoke server did not bind a TCP port.");
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  // Match browser Origin checks to the ephemeral listener, including its port.
+  server.options.publicBaseUrl = baseUrl;
 
   const login = await postJson(baseUrl, "/api/auth/password", {
     username: USERNAME,

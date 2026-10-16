@@ -82,8 +82,18 @@ const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
 };
 
 const routing = computed(() => settings.replyRouting!);
-const usableReplyModels = computed(() => settings.models.filter(model => model.purpose === "reply" && model.enabled && (model.hasApiKey || model.apiKey)));
-const timeoutFields = [{ key: "chatAttemptTimeoutMs", label: "聊天单次超时" }, { key: "chatTotalTimeoutMs", label: "聊天总预算" }, { key: "htmlAttemptTimeoutMs", label: "网页单次超时" }, { key: "htmlTotalTimeoutMs", label: "网页总预算" }] as const;
+function isUsableReplyModel(model?: SystemModelConfig): boolean { return Boolean(model?.purpose === "reply" && model.enabled && (model.hasApiKey || model.apiKey?.trim())); }
+const usableReplyModels = computed(() => settings.models.filter(isUsableReplyModel));
+const availableFallbackModels = computed(() => usableReplyModels.value.filter(model => !routing.value.fallbackModelIds.includes(model.id)));
+const replyModelById = (id?: string) => settings.models.find(model => model.id === id);
+const replyRoutePreview = computed(() => [...new Set([
+  settings.selectedModelIds.reply,
+  ...(routing.value.fallbackEnabled ? routing.value.fallbackModelIds : []),
+])].filter((id): id is string => Boolean(id) && isUsableReplyModel(replyModelById(id))));
+const timeoutRows = [
+  { label: "聊天", attemptKey: "chatAttemptTimeoutMs", totalKey: "chatTotalTimeoutMs" },
+  { label: "网页", attemptKey: "htmlAttemptTimeoutMs", totalKey: "htmlTotalTimeoutMs" },
+] as const;
 function moveReplyFallback(index: number, direction: number): void { const ids = routing.value.fallbackModelIds; const target = index + direction; if (target < 0 || target >= ids.length) return; [ids[index], ids[target]] = [ids[target]!, ids[index]!]; }
 function addReplyFallback(event: Event): void { const select = event.target as HTMLSelectElement; if (select.value && !routing.value.fallbackModelIds.includes(select.value)) routing.value.fallbackModelIds.push(select.value); select.value = ""; }
 const activePurposeMeta = computed(() => modelPurposeOptions.find((item) => item.value === activePurpose.value)!);
@@ -450,7 +460,7 @@ onMounted(() => {
 
 <template>
   <section class="page system-page">
-    <header class="page-heading"><div><h1>{{ activeTab === 'models' ? '模型配置' : '运行策略' }}</h1><p>{{ activeTab === 'models' ? '维护模型连接、使用范围和图片备用顺序。' : '管理自动查询、Token 控制与群启用状态。' }}</p></div><div class="heading-actions"><span v-if="dirty" class="dirty-hint">有未保存的更改</span><button class="btn" type="button" :disabled="loading || saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button></div></header>
+    <header class="page-heading"><div><h1>{{ activeTab === 'models' ? '模型配置' : '运行策略' }}</h1><p>{{ activeTab === 'models' ? '设置统一群聊模型、备用顺序与模型连接。' : '管理自动查询、Token 控制与群启用状态。' }}</p></div><div class="heading-actions"><span v-if="dirty" class="dirty-hint">有未保存的更改</span><button class="btn" type="button" :disabled="loading || saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button></div></header>
     <div v-if="loading" class="panel empty" aria-live="polite">正在加载系统配置…</div>
     <div v-else-if="loadError" class="panel empty" role="alert"><p>{{ loadError }}</p><button class="ghost-btn" type="button" @click="load">重试</button></div>
     <template v-else-if="activeTab === 'runtime'">
@@ -463,21 +473,69 @@ onMounted(() => {
     <section v-else class="panel models-panel">
       <div class="purpose-tabs" aria-label="模型用途"><button v-for="item in visiblePurposeOptions" :key="item.value" type="button" :class="{ active: activePurpose === item.value, failed: purposeHasFailure(item.value) }" :aria-current="activePurpose === item.value ? 'page' : undefined" @click="activePurpose = item.value">{{ item.label }}<span>{{ settings.models.filter(model => model.purpose === item.value).length }}</span></button></div>
       <p class="model-purpose-description">{{ activePurposeMeta.detail }}。</p>
-      <div v-if="activePurpose === 'reply'" class="reply-routing-settings">
-        <h3>统一群聊模型</h3><p class="muted">跟随默认的群使用下列主模型；个别群例外由超级管理员在群配置中设置。</p>
-        <label>默认主模型<select v-model="settings.selectedModelIds.reply" class="select"><option v-for="model in usableReplyModels" :key="model.id" :value="model.id">{{ model.name }} · {{ model.id }}</option></select></label>
-        <label class="policy-toggle"><span>失败后自动切换备用模型</span><input v-model="routing.fallbackEnabled" type="checkbox" /></label>
-        <div v-for="(id, index) in routing.fallbackModelIds" :key="id" class="routing-fallback-row"><span>{{ index + 1 }}. {{ settings.models.find(model => model.id === id)?.name || id }}</span><button class="link-btn" :disabled="index === 0" @click="moveReplyFallback(index, -1)">上移</button><button class="link-btn" :disabled="index === routing.fallbackModelIds.length - 1" @click="moveReplyFallback(index, 1)">下移</button><button class="link-btn danger" @click="routing.fallbackModelIds.splice(index, 1)">移除</button></div>
-        <label>添加备用<select class="select" @change="addReplyFallback"><option value="">选择备用模型</option><option v-for="model in usableReplyModels.filter(model => !routing.fallbackModelIds.includes(model.id))" :key="model.id" :value="model.id">{{ model.name }} · {{ model.id }}</option></select></label>
-        <div class="routing-timeouts"><label v-for="field in timeoutFields" :key="field.key">{{ field.label }}（秒）<input class="input" type="number" min="1" max="600" :value="routing[field.key] / 1000" @input="routing[field.key] = Number(($event.target as HTMLInputElement).value) * 1000" /></label></div>
-      </div>
-      <div class="model-toolbar"><button class="btn" type="button" @click="addModel">＋ 新增模型</button><div class="model-filters"><form @submit.prevent="setModelQuery"><input v-model="modelQuery" class="input" aria-label="搜索模型" placeholder="搜索名称、标识或模型名…" @change="setModelQuery" /></form><select v-model="modelStatus" class="select" aria-label="模型启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select><button class="ghost-btn" type="button" :disabled="testingAllModels" @click="testAllModels">{{ testingAllModels ? '检测中…' : '检测全部' }}</button></div></div>
+      <section v-if="activePurpose === 'reply'" class="reply-routing-settings" aria-labelledby="reply-routing-title">
+        <div class="section-intro"><h2 id="reply-routing-title">统一群聊模型</h2><p>跟随默认的群共用此设置；个别群例外可在群配置中指定。</p></div>
+        <div class="routing-layout">
+          <div class="routing-models">
+            <label class="routing-field">默认主模型
+              <select v-model="settings.selectedModelIds.reply" class="select">
+                <option v-if="settings.selectedModelIds.reply && !isUsableReplyModel(replyModelById(settings.selectedModelIds.reply))" :value="settings.selectedModelIds.reply" disabled>{{ replyModelById(settings.selectedModelIds.reply)?.name || settings.selectedModelIds.reply }} · {{ settings.selectedModelIds.reply }}（当前不可用）</option>
+                <option v-if="!settings.selectedModelIds.reply" value="" disabled>请选择已启用且配置密钥的模型</option>
+                <option v-for="model in usableReplyModels" :key="model.id" :value="model.id">{{ model.name }} · {{ model.id }}</option>
+              </select>
+            </label>
+            <label class="policy-toggle routing-toggle"><span><strong>自动降级</strong><small>主模型失败后，按备用顺序继续尝试。</small></span><input v-model="routing.fallbackEnabled" type="checkbox" /></label>
+            <div class="fallback-heading"><h3>备用顺序</h3><span class="routing-note">{{ routing.fallbackEnabled ? '按顺序尝试' : '已停用 · 保留顺序' }}</span></div>
+            <ol v-if="routing.fallbackModelIds.length" class="routing-fallback-list" :class="{ inactive: !routing.fallbackEnabled }" aria-label="备用模型顺序">
+              <li v-for="(id, index) in routing.fallbackModelIds" :key="`${id}-${index}`" class="routing-fallback-row">
+                <span class="fallback-number" aria-hidden="true">{{ index + 1 }}</span>
+                <div class="fallback-model"><strong>{{ replyModelById(id)?.name || '模型不可用' }}</strong><div class="fallback-meta"><code>{{ id }}</code><span v-if="!isUsableReplyModel(replyModelById(id))" class="fallback-unavailable">不可用，调用时跳过</span></div></div>
+                <div class="fallback-actions"><button class="link-btn" type="button" :aria-label="`上移备用模型 ${id}`" :disabled="index === 0" @click="moveReplyFallback(index, -1)">上移</button><button class="link-btn" type="button" :aria-label="`下移备用模型 ${id}`" :disabled="index === routing.fallbackModelIds.length - 1" @click="moveReplyFallback(index, 1)">下移</button><button class="link-btn danger" type="button" :aria-label="`移除备用模型 ${id}`" @click="routing.fallbackModelIds.splice(index, 1)">移除</button></div>
+              </li>
+            </ol>
+            <p v-else class="fallback-empty">尚未添加备用模型，主模型失败后将结束本次请求。</p>
+            <label class="routing-field">添加备用模型<select class="select" :disabled="!availableFallbackModels.length" @change="addReplyFallback"><option value="">{{ availableFallbackModels.length ? '选择模型加入备用列表' : '暂无可添加的模型' }}</option><option v-for="model in availableFallbackModels" :key="model.id" :value="model.id">{{ model.name }} · {{ model.id }}</option></select></label>
+          </div>
+          <section class="routing-timeouts" aria-labelledby="routing-timeout-title">
+            <div class="section-intro"><h3 id="routing-timeout-title">超时设置</h3><p>单位：秒。单次超时控制每个模型，总预算限制整次请求。</p></div>
+            <div class="timeout-matrix"><div class="timeout-matrix-head" aria-hidden="true"><span>请求类型</span><span>单次超时</span><span>总预算</span></div>
+              <div v-for="row in timeoutRows" :key="row.label" class="timeout-matrix-row"><strong>{{ row.label }}</strong><label><span class="timeout-mobile-label">单次超时</span><input class="input" type="number" min="1" max="600" :aria-label="`${row.label}单次超时（秒）`" :value="routing[row.attemptKey] / 1000" @input="routing[row.attemptKey] = Number(($event.target as HTMLInputElement).value) * 1000" /></label><label><span class="timeout-mobile-label">总预算</span><input class="input" type="number" min="1" max="600" :aria-label="`${row.label}总预算（秒）`" :value="routing[row.totalKey] / 1000" @input="routing[row.totalKey] = Number(($event.target as HTMLInputElement).value) * 1000" /></label></div>
+            </div>
+            <p class="routing-note">群指定模型共用这份备用列表与超时设置。</p>
+          </section>
+        </div>
+        <div class="routing-preview" aria-live="polite"><span class="routing-preview-label">统一默认调用顺序</span><ol v-if="replyRoutePreview.length"><li v-for="id in replyRoutePreview" :key="id"><code>{{ id }}</code></li></ol><span v-else>暂无可用模型</span><small>{{ routing.fallbackEnabled ? '已去重；实际调用还会按能力与策略筛选。' : '自动降级已关闭，仅尝试主模型。' }}</small></div>
+      </section>
+      <div class="model-connections-heading"><div class="section-intro"><h2>模型连接</h2><p>维护连接、密钥与启用状态。</p></div><button class="btn" type="button" @click="addModel">＋ 新增模型</button></div>
+      <div class="model-toolbar"><span class="routing-note">{{ activePurposeMeta.label }} · {{ activePurposeModels.length }} 个模型</span><div class="model-filters"><form @submit.prevent="setModelQuery"><input v-model="modelQuery" class="input" aria-label="搜索模型" placeholder="搜索名称、标识或模型名…" @change="setModelQuery" /></form><select v-model="modelStatus" class="select" aria-label="模型启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select><button class="ghost-btn" type="button" :disabled="testingAllModels" @click="testAllModels">{{ testingAllModels ? '检测中…' : '检测全部' }}</button></div></div>
       <div v-if="!filteredModels.length" class="empty compact">{{ activePurposeModels.length ? '没有匹配的模型。' : '此用途暂无模型，新增配置后保存即可使用。' }}</div>
       <div v-else class="model-table"><table><thead><tr><th>模型名称 / 标识</th><th>上游模型 / 连接</th><th>协议</th><th>{{ usageColumnLabel() }}</th><th>状态</th><th class="actions-cell">操作</th></tr></thead><tbody><tr v-for="model in filteredModels" :key="modelRowKey(model)" :class="{ disabled: !model.enabled }"><td><strong class="table-model-name">{{ model.name || '未命名模型' }}</strong><small class="muted">{{ model.shortName }} · {{ model.id }}</small></td><td><span>{{ model.model || '尚未设置' }}</span><small class="endpoint" :title="model.baseUrl">{{ model.baseUrl || '尚未设置连接' }}</small></td><td>{{ model.apiProtocol === 'anthropic' ? 'Anthropic' : 'OpenAI' }}</td><td><span v-if="isReplyModel(model)" class="tag" :class="{ danger: !model.enabled || !model.hasApiKey }">{{ model.enabled && model.hasApiKey ? (settings.selectedModelIds.reply === model.id ? '统一默认' : '可选 / 备用') : '不可用' }}</span><label v-else class="default-control"><input type="radio" name="default-model" :checked="settings.selectedModelIds[model.purpose] === model.id" :disabled="!model.enabled" @change="selectModel(model)" /> 默认</label></td><td><span class="status-dot" :class="{ on: model.enabled }">{{ model.enabled ? '已启用' : '已停用' }}</span><small v-if="modelHealthById[model.id]" class="health-text" :class="{ failed: modelHasFailure(model) }" :title="modelHealthLabel(model)">{{ modelHealthLabel(model) }}</small></td><td class="actions-cell"><div class="row-actions"><button class="link-btn" type="button" @click="editingModel = model">编辑</button><button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? '检测中' : '检测' }}</button><template v-if="model.purpose === 'image'"><button class="link-btn sort-button" type="button" :aria-label="'提高 ' + model.name + ' 的备用顺序'" :disabled="!canMoveImageModel(model,-1)" @click="moveImageModel(model,-1)">↑</button><button class="link-btn sort-button" type="button" :aria-label="'降低 ' + model.name + ' 的备用顺序'" :disabled="!canMoveImageModel(model,1)" @click="moveImageModel(model,1)">↓</button></template></div></td></tr></tbody></table></div>
       <footer class="model-list-footer"><span>共 {{ filteredModels.length }} 个模型</span><span>API Key 使用掩码显示，留空保留已保存的值。</span></footer>
     </section>
     <div v-if="!loading && !loadError" class="save-footer"><span class="muted">{{ dirty ? '更改尚未保存' : '配置已同步' }}</span><button class="btn" type="button" :disabled="saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button></div>
-    <AdminDialog v-if="editingModel" title="编辑模型" drawer description="修改暂存于当前页面，保存配置后生效。" :busy="saving" @close="editingModel = null"><fieldset class="model-edit-fields" :disabled="saving"><label>模型名称<input v-model="editingModel.name" class="input" placeholder="便于辨认的名称" /></label><div class="edit-field-pair"><label>简称<input v-model="editingModel.shortName" class="input" placeholder="简称" /></label><label>模型标识<input :value="editingModel.id" class="input" placeholder="reply-model" @input="updateModelId(editingModel, $event)" /></label></div><label>Base URL<input v-model="editingModel.baseUrl" class="input" placeholder="https://api.example.com/v1" /><small>服务商提供的 API 地址。</small></label><label>上游模型名<input v-model="editingModel.model" class="input" placeholder="model-name" /></label><label>API 协议<select v-model="editingModel.apiProtocol" class="select" :disabled="editingModel.purpose === 'image'"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label><template v-if="editingModel.purpose === 'reply'"><label class="policy-toggle"><span>支持图片理解</span><input v-model="editingModel.supportsVision" type="checkbox" /></label><label>请求超时（毫秒）<input v-model.number="editingModel.requestTimeoutMs" class="input" type="number" min="1000" max="300000" /></label><label>最大输出 Token<input v-model.number="editingModel.maxCompletionTokens" class="input" type="number" min="64" max="16384" /></label><label>推理强度<select v-model="editingModel.reasoningEffort" class="select"><option :value="undefined">不指定</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label></template><label>API Key<input v-model="editingModel.apiKey" class="input" type="password" autocomplete="new-password" :placeholder="editingModel.hasApiKey ? '已保存，留空保留' : '尚未设置'" /><small>{{ editingModel.hasApiKey ? '服务器已有密钥，此处不会显示原值。' : '填写服务商提供的密钥。' }}</small></label><label class="policy-toggle"><span><strong>启用模型</strong><small>停用后无法选择或调用该模型。</small></span><input v-model="editingModel.enabled" type="checkbox" /></label><label v-if="!isReplyModel(editingModel)" class="default-control"><input type="radio" name="drawer-default-model" :checked="settings.selectedModelIds[editingModel.purpose] === editingModel.id" :disabled="!editingModel.enabled" @change="selectModel(editingModel)" /> 设为此用途的默认模型</label><p v-if="isReplyModel(editingModel)" class="muted">启用且配置密钥的对话模型可在群配置中选择。</p><button class="ghost-btn danger delete-model" type="button" @click="removeModel(modelIndex(editingModel), editingModel)">删除模型配置</button></fieldset><template #footer><button class="ghost-btn" type="button" :disabled="saving" @click="editingModel = null">完成编辑</button><button class="btn" type="button" :disabled="saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button></template></AdminDialog>
+    <AdminDialog v-if="editingModel" title="编辑模型" drawer description="修改暂存于当前页面，保存配置后生效。" :busy="saving" @close="editingModel = null">
+      <fieldset class="model-edit-fields" :disabled="saving">
+        <section class="model-edit-section" aria-labelledby="model-connection-title"><h3 id="model-connection-title">基本连接</h3>
+          <label>模型名称<input v-model="editingModel.name" class="input" placeholder="便于辨认的名称" /></label>
+          <div class="edit-field-pair"><label>简称<input v-model="editingModel.shortName" class="input" placeholder="简称" /></label><label>模型标识<input :value="editingModel.id" class="input" placeholder="reply-model" @input="updateModelId(editingModel, $event)" /></label></div>
+          <label>Base URL<input v-model="editingModel.baseUrl" class="input" placeholder="https://api.example.com/v1" /><small>服务商提供的 API 地址。</small></label>
+          <label>上游模型名<input v-model="editingModel.model" class="input" placeholder="model-name" /></label>
+          <label>API 协议<select v-model="editingModel.apiProtocol" class="select" :disabled="editingModel.purpose === 'image'"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+        </section>
+        <section v-if="editingModel.purpose === 'reply'" class="model-edit-section" aria-labelledby="model-parameters-title"><h3 id="model-parameters-title">调用参数</h3>
+          <label class="policy-toggle"><span><strong>支持图片理解</strong><small>仅支持视觉的模型会参与看图请求。</small></span><input v-model="editingModel.supportsVision" type="checkbox" /></label>
+          <div class="edit-field-pair"><label>请求超时（毫秒）<input v-model.number="editingModel.requestTimeoutMs" class="input" type="number" min="1000" max="300000" /></label><label>最大输出 Token<input v-model.number="editingModel.maxCompletionTokens" class="input" type="number" min="64" max="16384" /></label></div>
+          <label>推理强度<select v-model="editingModel.reasoningEffort" class="select"><option :value="undefined">不指定</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>
+        </section>
+        <section class="model-edit-section" aria-labelledby="model-access-title"><h3 id="model-access-title">密钥与启用</h3>
+          <label>API Key<input v-model="editingModel.apiKey" class="input" type="password" autocomplete="new-password" :placeholder="editingModel.hasApiKey ? '已保存，留空保留' : '尚未设置'" /><small>{{ editingModel.hasApiKey ? '服务器已有密钥，此处不会显示原值。' : '填写服务商提供的密钥。' }}</small></label>
+          <label class="policy-toggle"><span><strong>启用模型</strong><small>停用后无法选择或调用该模型。</small></span><input v-model="editingModel.enabled" type="checkbox" /></label>
+          <label v-if="!isReplyModel(editingModel)" class="default-control"><input type="radio" name="drawer-default-model" :checked="settings.selectedModelIds[editingModel.purpose] === editingModel.id" :disabled="!editingModel.enabled" @change="selectModel(editingModel)" /> 设为此用途的默认模型</label><p v-else class="muted">启用且配置密钥的对话模型可在群配置中选择。</p>
+        </section>
+        <button class="ghost-btn danger delete-model" type="button" @click="removeModel(modelIndex(editingModel), editingModel)">删除模型配置</button>
+      </fieldset>
+      <template #footer><button class="ghost-btn" type="button" :disabled="saving" @click="editingModel = null">完成编辑</button><button class="btn" type="button" :disabled="saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button></template>
+    </AdminDialog>
   </section>
 </template>
 
@@ -510,18 +568,19 @@ onMounted(() => {
 .purpose-tabs button.failed { color:var(--danger); }
 .purpose-tabs span { background:var(--surface-soft); color:var(--muted); font-size:11px; padding:2px 6px; border-radius:5px; }
 .model-purpose-description { margin:18px 24px 0; font-size:12px; color:var(--muted); line-height:1.6; }
-.model-toolbar { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:20px 24px; }
+.model-connections-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:24px 24px 0; }
+.model-toolbar { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:18px 24px; }
 .model-filters { display:flex; align-items:center; gap:10px; }
 .model-filters form { width:250px; }
 .model-filters .select { width:115px; }
-.model-table { overflow:auto; padding:0 24px; }
+.model-table { overflow:auto; margin:0 24px; }
 .model-table table { width:100%; min-width:860px; border-collapse:collapse; font-size:12px; }
 .model-table th { text-align:left; padding:13px 14px; color:var(--muted); background:var(--surface-soft); border-bottom:1px solid var(--line); font-weight:550; }
 .model-table td { border-bottom:1px solid var(--line); padding:17px 14px; }
 .model-table tbody tr:hover { background:var(--surface-soft); }
 .model-table tr.disabled { color:var(--muted); }
 .model-table small { display:block; margin-top:5px; font-size:11px; }
-.table-model-name { display:block; font-size:13px; font-weight:600; }
+.table-model-name { display:block; min-width:120px; max-width:240px; overflow-wrap:anywhere; font-size:13px; font-weight:600; }
 .endpoint { overflow:hidden; text-overflow:ellipsis; max-width:210px; white-space:nowrap; color:var(--muted); }
 .default-control { display:flex; align-items:center; gap:7px; font-size:12px; white-space:nowrap; }
 .status-dot { display:flex; align-items:center; gap:6px; white-space:nowrap; }
@@ -536,8 +595,11 @@ onMounted(() => {
 .actions-cell { min-width:110px; }
 .model-list-footer { display:flex; gap:12px; justify-content:space-between; padding:20px 24px; color:var(--muted); font-size:12px; }
 .save-footer { display:flex; justify-content:space-between; align-items:center; gap:15px; font-size:12px; }
-.model-edit-fields { display:grid; gap:22px; padding:0; border:0; min-width:0; }
-.model-edit-fields > label,.edit-field-pair label { display:grid; gap:8px; font-size:13px; font-weight:550; }
+.model-edit-fields { display:grid; gap:24px; padding:0; margin:0; border:0; min-width:0; }
+.model-edit-section { display:grid; gap:18px; min-width:0; }
+.model-edit-section + .model-edit-section { padding-top:24px; border-top:1px solid var(--line); }
+.model-edit-section h3 { margin:0; font-size:14px; font-weight:650; }
+.model-edit-section > label,.edit-field-pair label { display:grid; gap:8px; min-width:0; font-size:13px; font-weight:550; }
 .model-edit-fields small { color:var(--muted); font-size:12px; font-weight:400; line-height:1.6; }
 .edit-field-pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 .model-edit-fields .policy-toggle { display:flex; }
@@ -547,9 +609,45 @@ onMounted(() => {
 @media(max-width:1100px) { .model-toolbar { flex-wrap:wrap; } .model-filters { flex:1; justify-content:flex-end; } .model-filters form { flex:1; max-width:320px; } .group-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:800px) { .runtime-layout { grid-template-columns:1fr; } .page-heading { flex-direction:column; gap:14px; } .heading-actions { justify-content:space-between; width:100%; } }
 @media(max-width:600px) { .page-heading h1 { font-size:24px; } .policy-card,.groups-panel { padding:18px; } .purpose-tabs { gap:8px; padding:0 16px; } .model-toolbar { padding:18px 16px; align-items:stretch; } .model-filters { flex-wrap:wrap; gap:8px; width:100%; justify-content:space-between; } .model-filters form { flex:1 1 100%; max-width:none; } .model-filters .select { flex:1; } .model-table { padding:0 16px; } .group-list { grid-template-columns:1fr; } .model-list-footer { padding:18px 16px; flex-direction:column; } .keyword-row { gap:8px; } .edit-field-pair { grid-template-columns:1fr; } }
-.reply-routing-settings { margin: 20px 0 28px; padding-bottom: 24px; border-bottom: 1px solid var(--border); display: grid; gap: 14px; }
-.routing-fallback-row { display: flex; align-items: center; gap: 16px; }
-.routing-fallback-row span { flex: 1; }
-.routing-timeouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-@media (max-width: 600px) { .routing-timeouts { grid-template-columns: 1fr; } }
+.reply-routing-settings { padding:24px; border-bottom:1px solid var(--line); display:grid; gap:24px; }
+.routing-layout { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:32px; align-items:start; }
+.routing-models { display:grid; gap:16px; min-width:0; }
+.routing-field { display:grid; gap:8px; min-width:0; font-size:13px; font-weight:550; }
+.routing-toggle { padding:2px 0 16px; }
+.routing-toggle input { flex-shrink:0; }
+.fallback-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.fallback-heading h3,.routing-timeouts h3 { margin:0; font-size:14px; font-weight:600; }
+.routing-note { margin:0; color:var(--muted); font-size:12px; line-height:1.6; font-weight:400; }
+.routing-fallback-list { list-style:none; padding:0; margin:0; border-block:1px solid var(--line); }
+.routing-fallback-row { display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:12px; padding:14px 0; }
+.routing-fallback-row + .routing-fallback-row { border-top:1px solid var(--line); }
+.fallback-number { align-self:start; display:grid; place-items:center; width:24px; height:24px; border-radius:5px; background:var(--surface-soft); color:var(--muted); font:12px/1 var(--font-mono); }
+.fallback-model { min-width:0; }
+.fallback-model strong { display:block; overflow-wrap:anywhere; font-size:13px; font-weight:550; line-height:1.5; }
+.fallback-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px; }
+.fallback-meta code,.routing-preview code { font:12px/1.5 var(--font-mono); overflow-wrap:anywhere; }
+.fallback-meta code { color:var(--muted); }
+.fallback-unavailable { color:var(--warning); font-size:11px; }
+.fallback-actions { display:flex; align-items:center; gap:12px; }
+.fallback-actions button { min-height:32px; }
+.link-btn:disabled { color:var(--subtle); cursor:not-allowed; }
+.routing-fallback-list.inactive .fallback-model,.routing-fallback-list.inactive .fallback-number { color:var(--muted); }
+.fallback-empty { margin:0; padding:16px; border-radius:6px; background:var(--surface-soft); color:var(--muted); font-size:12px; line-height:1.7; }
+.routing-timeouts { display:grid; gap:18px; min-width:0; padding-left:32px; border-left:1px solid var(--line); }
+.routing-timeouts .section-intro p { font-size:12px; }
+.timeout-matrix-head,.timeout-matrix-row { display:grid; grid-template-columns:60px repeat(2,minmax(0,1fr)); align-items:center; gap:12px; }
+.timeout-matrix-head { padding-bottom:10px; color:var(--muted); font-size:12px; }
+.timeout-matrix-row { border-top:1px solid var(--line); padding:14px 0; }
+.timeout-matrix-row strong { font-size:13px; font-weight:550; }
+.timeout-matrix-row label { min-width:0; }
+.timeout-matrix-row .input { font-variant-numeric:tabular-nums; }
+.timeout-mobile-label { display:none; }
+.routing-preview { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; background:var(--surface-soft); border-radius:6px; padding:14px 16px; font-size:12px; }
+.routing-preview-label { color:var(--muted); }
+.routing-preview ol { display:flex; align-items:center; flex-wrap:wrap; gap:8px; list-style:none; margin:0; padding:0; }
+.routing-preview li { display:flex; align-items:center; gap:8px; color:var(--accent-strong); }
+.routing-preview li + li::before { content:'→'; color:var(--subtle); }
+.routing-preview small { margin-left:auto; color:var(--muted); font-size:11px; line-height:1.6; }
+@media(max-width:999px) { .routing-layout { grid-template-columns:minmax(0,1fr); gap:24px; } .routing-timeouts { padding:24px 0 0; border-left:0; border-top:1px solid var(--line); } }
+@media(max-width:600px) { .reply-routing-settings { padding:20px 16px; gap:20px; } .purpose-tabs { flex-wrap:wrap; } .model-connections-heading { padding:20px 16px 0; flex-wrap:wrap; } .model-table { margin:0 16px; padding:0; } .fallback-actions { gap:12px; grid-column:2/-1; justify-self:start; } .routing-fallback-row { grid-template-columns:24px minmax(0,1fr); gap:4px 12px; } .routing-preview small { margin-left:0; width:100%; } }
 </style>

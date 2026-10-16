@@ -5,6 +5,14 @@ but it never automatically restores SQLite or replays QQ history after the V3
 cutover marker may have been written. This protects message causality and
 prevents accidental duplicate sends.
 
+## v3.0.44 settings layout rollback
+
+This patch changes the admin UI only, with no API, database or model-policy
+migration. Switch back to v3.0.43 while preserving the same persistent data and
+configuration. Do not run the v3.0.39 model-policy rollback, rewind SQLite or
+replay outbox rows. Stop Worker first and leave Ingress running for pending
+adult-card recalls to drain (up to 105 seconds) before switching releases.
+
 ## v3.0.43 member-profile query rollback
 
 This patch changes routing and prompt rules only, with no database schema or
