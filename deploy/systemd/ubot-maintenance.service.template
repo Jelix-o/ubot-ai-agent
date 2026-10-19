@@ -1,7 +1,9 @@
 [Unit]
 Description=UBot V3 retention maintenance
-After=network-online.target
+After=network-online.target ubot.target
 Wants=network-online.target
+PartOf=ubot.target
+Requisite=ubot.target
 
 [Service]
 Type=oneshot

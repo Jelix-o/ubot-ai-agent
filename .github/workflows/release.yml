@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a matching final tag after all verification jobs pass"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -291,7 +297,11 @@ jobs:
     needs: [release-artifact-review]
     # Candidate tags receive package and artifact gates, but only a final tag
     # may generate the formal release metadata used by the write-only job.
-    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' && github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    if: >-
+      vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' &&
+      github.ref_type == 'tag' &&
+      !contains(github.ref_name, '-') &&
+      (github.event_name == 'push' || inputs.publish == true)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -334,11 +344,17 @@ jobs:
   github-release:
     name: Publish GitHub Release
     needs: [release-artifact-review, release-metadata]
-    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' && github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    if: >-
+      vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' &&
+      github.ref_type == 'tag' &&
+      !contains(github.ref_name, '-') &&
+      (github.event_name == 'push' || inputs.publish == true)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+    environment:
+      name: production-release
     steps:
       - name: Download reviewed release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

@@ -61,7 +61,7 @@ test("V3 Linux deployer verifies assets, migrates once, and atomically selects c
   assert.match(deployer, /mv -Tf .*CURRENT_LINK/);
   assert.match(deployer, /systemctl disable "\$LEGACY_SERVICE"/);
   assert.match(deployer, /systemctl start ubot\.target/);
-  assert.match(deployer, /systemctl start ubot-maintenance\.timer/);
+  assert.match(deployer, /systemctl start "\$MAINTENANCE_TIMER"/);
   assert.match(deployer, /PREVIEW_NGINX_CONFIG="\/etc\/nginx\/sites-available\/preview-9958"/);
   assert.match(deployer, /PREVIEW_NGINX_INCLUDE="\/etc\/nginx\/ubot-preview-static\.conf"/);
   assert.match(deployer, /PREVIEW_NGINX_ENABLED_LINK="\/etc\/nginx\/sites-enabled\/preview-9958"/);
@@ -98,12 +98,52 @@ test("V3 Linux deployer verifies assets, migrates once, and atomically selects c
   assert.match(deployer, /wait_for_ingress_read_api_health\(\)/);
   assert.match(deployer, /wait_for_admin_auth_boundary\(\)/);
   assert.match(deployer, /verify_service_restart_counts_stable\(\)/);
+  assert.match(deployer, /reset_runtime_service_failures\(\)/);
+  assert.match(deployer, /systemctl reset-failed "\$\{RUNTIME_SERVICES\[@\]\}"/);
+  assert.match(deployer, /\$service restarted while starting the new release/);
+  assert.match(deployer, /quiesce_maintenance_writer\(\)/);
+  assert.match(deployer, /quiesce_cloudflare_allowlist_updater\(\)/);
+  assert.match(deployer, /systemctl stop "\$MAINTENANCE_TIMER"/);
+  assert.match(deployer, /systemctl stop "\$MAINTENANCE_SERVICE"/);
+  assert.match(deployer, /systemctl stop "\$CLOUDFLARE_ALLOWLIST_TIMER"/);
+  assert.match(deployer, /systemctl stop "\$CLOUDFLARE_ALLOWLIST_SERVICE"/);
+  assert.match(deployer, /wait_for_unit_inactive "\$MAINTENANCE_SERVICE"/);
+  assert.match(deployer, /UBot runtime credential group must not contain another supplementary member/);
+  assert.match(deployer, /UBot runtime credential group must not be another account's primary group/);
+  assert.match(deployer, /getent passwd \| awk -F: -v gid="\$group_gid"/);
   assert.match(deployer, /curl_config="\$\(mktemp "\$\{TMPDIR\}\/ubot-ingress-read-health\.XXXXXX"\)"/);
   assert.match(deployer, /--config "\$curl_config"/);
   assert.doesNotMatch(deployer, /-H "Authorization: Bearer \$INGRESS_READ_API_TOKEN"/);
   assert.match(deployer, /expectedStatus === "listener" \|\| parsed\.ok === true/);
   assert.match(deployer, /typeof parsed\.ok === "boolean"/);
   assert.match(deployer, /NRestarts/);
+});
+
+test("V3 deployer quiesces the independent maintenance writer before state changes", () => {
+  const stopWriters = deployer.indexOf("# Stop all writers before backing up SQLite or reading legacy JSON files.");
+  const quiesce = deployer.indexOf("if ! quiesce_maintenance_writer; then", stopWriters);
+  const backup = deployer.indexOf("backup_unit_files\n", quiesce);
+  const targetStop = deployer.indexOf('sudo systemctl stop ubot.target', quiesce);
+  const maintenanceStart = deployer.lastIndexOf('sudo systemctl start "$MAINTENANCE_TIMER"');
+  const cloudflareTimerStart = deployer.lastIndexOf('sudo systemctl start "$CLOUDFLARE_ALLOWLIST_TIMER"');
+  const connectedHealth = deployer.lastIndexOf("wait_for_ingress_read_api_health\n");
+
+  assert.ok(quiesce > stopWriters && backup > quiesce, "maintenance must be stopped before backup or SQLite migration");
+  assert.ok(targetStop > quiesce, "maintenance timer/service must stop before the target is stopped");
+  assert.ok(maintenanceStart > connectedHealth, "maintenance timer must start only after connected health checks");
+  assert.ok(cloudflareTimerStart > connectedHealth, "Cloudflare updater must restart only after deployment health checks");
+  assert.match(deployer, /old_maintenance_timer_active/);
+  assert.match(deployer, /old_cloudflare_timer_active/);
+  assert.match(deployer, /Cloudflare allow-list timer was not restored/);
+  assert.match(deployer, /The interrupted maintenance job was not resumed automatically/);
+  assert.match(deployer, /contain_cloudflare_allowlist_updater\(\)/);
+  assert.match(deployer, /systemctl mask --now "\$CLOUDFLARE_ALLOWLIST_SERVICE" "\$CLOUDFLARE_ALLOWLIST_TIMER"/);
+  assert.match(deployer, /cloudflare_updater_resume_blocked=1/);
+  assert.match(deployer, /Cloudflare allow-list updater unit was not confirmed masked/);
+  assert.match(deployer, /Skipped Nginx rollback because the Cloudflare allow-list updater might still write its include/);
+  assert.match(deployer, /Cloudflare allow-list units remain masked after rollback/);
+  assert.match(maintenanceUnit, /PartOf=ubot\.target/);
+  assert.match(maintenanceUnit, /Requisite=ubot\.target/);
 });
 
 test("V3 Linux deployer rejects inaccessible mutable state before stopping writers", () => {
@@ -157,7 +197,7 @@ test("V3 deployer enforces the runtime identity, preview boundary, and post-star
   assert.match(deployer, /restore_preview_location \|\|/);
   assert.match(deployer, /network_args\+=\(--html-preview-root "\$PREVIEW_ROOT"\)/);
   assert.match(deployer, /systemctl enable ubot\.target ubot-maintenance\.timer ubot-cloudflare-allowlist\.timer/);
-  assert.match(deployer, /systemctl start ubot-cloudflare-allowlist\.timer/);
+  assert.match(deployer, /systemctl start "\$CLOUDFLARE_ALLOWLIST_TIMER"/);
 
   const networkConfiguration = deployer.lastIndexOf('"$NODE_BIN" "$STAGING_DIR/scripts/configure-v3-network.mjs"');
   const identityMigration = deployer.lastIndexOf("migrate_runtime_identity_after_backup\n");
@@ -218,6 +258,10 @@ test("Node runtime reuse validates root, payload, and active link before activat
   assert.match(nodeRuntimeInstaller, /assert_root_owned_directory "\$current" "Node runtime path component"/);
   assert.match(nodeRuntimeInstaller, /assert_runtime_payload\(\)/);
   assert.match(nodeRuntimeInstaller, /if \[\[ -e "\$target_dir" \|\| -L "\$target_dir" \]\]; then\s+assert_runtime_payload/s);
+  assert.match(nodeRuntimeInstaller, /assert_runtime_provenance "\$target_dir"/);
+  assert.match(nodeRuntimeInstaller, /Existing Node runtime lacks a verified provenance receipt/);
+  assert.match(nodeRuntimeInstaller, /write_runtime_provenance "\$install_target"/);
+  assert.match(nodeRuntimeInstaller, /sha256=%s/);
   assert.match(nodeRuntimeInstaller, /Existing Node runtime does not match requested version/);
   assert.match(nodeRuntimeInstaller, /if \[\[ ! -L "\$node_link" \|\| "\$\(readlink "\$node_link"\)" != "node-v\$VERSION" \]\]; then/);
   assert.match(nodeRuntimeInstaller, /Refusing unexpected Node 22 link/);
@@ -268,6 +312,10 @@ test("root deployment and Cloudflare helpers refuse mutable bootstrap sources", 
   assert.match(nodeRuntimeInstaller, /must be owned by root:root/);
   assert.match(nodeRuntimeInstaller, /must not be writable by group or other users/);
   assert.match(nodeRuntimeInstaller, /must not contain symbolic links/);
+  assert.match(nodeRuntimeInstaller, /9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa/);
+  assert.match(nodeRuntimeInstaller, /0f3550d58d45e5d3cf7103d9e3f69937f09fe82fb5dd474c66a5d816fa58c9ee/);
+  assert.match(nodeRuntimeInstaller, /No approved pinned Node runtime digest exists/);
+  assert.doesNotMatch(nodeRuntimeInstaller, /SHASUMS256\.txt/);
   assert.match(nodeRuntimeInstaller, /TMPDIR="\/tmp"/);
   assert.match(nodeRuntimeInstaller, /unset BASH_ENV ENV CDPATH NODE_OPTIONS NODE_PATH TAR_OPTIONS/);
   assert.match(cloudflareAllowlistUpdater, /TMPDIR="\/tmp"/);
@@ -420,11 +468,15 @@ test("formal release publication is gated to the matching final tag and CI", () 
   assert.match(releaseWorkflow, /secret-scan:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
   assert.match(releaseWorkflow, /package-windows:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
   assert.match(releaseWorkflow, /package-linux:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
-  assert.match(releaseWorkflow, /github-release:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
+  assert.match(releaseWorkflow, /workflow_dispatch:\s+inputs:\s+publish:/);
+  assert.match(releaseWorkflow, /publish:[\s\S]*?default: false[\s\S]*?type: boolean/);
+  assert.match(releaseWorkflow, /github-release:[\s\S]*?vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
+  assert.match(releaseWorkflow, /github-release:[\s\S]*?inputs\.publish == true/);
   assert.match(releaseWorkflow, /needs: \[package-windows, package-linux\]/);
   assert.match(releaseWorkflow, /!contains\(github\.ref_name, '-'\)/);
   assert.match(releaseWorkflow, /permissions:\s+contents: read/);
   assert.match(releaseWorkflow, /github-release:[\s\S]*?permissions:\s+contents: write/);
+  assert.match(releaseWorkflow, /github-release:[\s\S]*?environment:\s+name: production-release/);
   assert.match(releaseWorkflow, /release-artifact-review:[\s\S]*?validate-release-archive\.mjs/);
   assert.match(releaseWorkflow, /release-artifact-review:[\s\S]*?validate-release-zip\.mjs/);
   assert.match(releaseWorkflow, /release-artifact-review:[\s\S]*?--no-same-owner --no-same-permissions --delay-directory-restore/);
@@ -438,6 +490,13 @@ test("formal release publication is gated to the matching final tag and CI", () 
   assert.match(releaseWorkflow, /vars\.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY/);
   assert.match(ciWorkflow, /vars\.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY/);
   assert.doesNotMatch(readFileSync(path.resolve("package.json"), "utf8"), /release:github/);
+  const retainedPublisher = readFileSync(path.resolve("scripts", "publish-github-release.ps1"), "utf8");
+  const legacyVerifier = readFileSync(path.resolve("scripts", "verify-v1.0.2-local.ps1"), "utf8");
+  assert.match(retainedPublisher, /permanently read-only/);
+  assert.match(retainedPublisher, /formal GitHub Release publication is CI-only/);
+  assert.doesNotMatch(retainedPublisher, /Invoke-RestMethod/);
+  assert.doesNotMatch(retainedPublisher, /GITHUB_TOKEN|GH_TOKEN/);
+  assert.doesNotMatch(legacyVerifier, /ForbiddenSecret/);
 });
 
 test("continuous integration validates the complete suite on Windows and Linux", () => {

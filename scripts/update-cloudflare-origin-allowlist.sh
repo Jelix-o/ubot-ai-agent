@@ -237,4 +237,3 @@ if ! systemctl reload nginx; then
   echo "Nginx reload failed after refreshing Cloudflare allow-lists; previous files were restored." >&2
   exit 1
 fi
-

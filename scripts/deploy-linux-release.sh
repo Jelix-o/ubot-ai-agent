@@ -140,6 +140,10 @@ PREVIEW_ROOT_EXISTED_BEFORE=0
 PREVIEW_RELOCATED=0
 RUNTIME_SERVICES=(ubot-ingress.service ubot-worker.service ubot-admin.service)
 SERVICE_RESTART_COUNTS=()
+MAINTENANCE_SERVICE="ubot-maintenance.service"
+MAINTENANCE_TIMER="ubot-maintenance.timer"
+CLOUDFLARE_ALLOWLIST_SERVICE="ubot-cloudflare-allowlist.service"
+CLOUDFLARE_ALLOWLIST_TIMER="ubot-cloudflare-allowlist.timer"
 ENABLEMENT_UNITS=(ubot.target ubot-maintenance.timer ubot-cloudflare-allowlist.timer)
 UNIT_WAS_ENABLED=()
 BT_RUNTIME_PRESENT=0
@@ -189,10 +193,18 @@ old_current_target=""
 old_legacy_active=0
 old_target_active=0
 old_napcat_active=0
+old_maintenance_timer_active=0
+old_maintenance_service_active=0
+old_cloudflare_timer_active=0
+old_cloudflare_service_active=0
 existing_cutover_before_deploy=0
 cutover_may_have_started=0
 rollback_armed=0
 napcat_restart_attempted=0
+maintenance_writer_quiesced=0
+cloudflare_updater_quiesced=0
+cloudflare_updater_masked=0
+cloudflare_updater_resume_blocked=0
 
 require_command() {
   command -v "$1" >/dev/null || {
@@ -591,11 +603,12 @@ ensure_runtime_account() {
   if ! getent passwd "$RUNTIME_USER" >/dev/null; then
     useradd --system --gid "$RUNTIME_GROUP" --home-dir /nonexistent --shell /usr/sbin/nologin "$RUNTIME_USER"
   fi
-  local account_entry account_name account_uid account_gid account_home account_shell group_entry group_gid lock_status
+  local account_entry account_name account_uid account_gid account_home account_shell group_entry group_gid group_members lock_status member primary_members
+  local -a supplementary_members
   account_entry="$(getent passwd "$RUNTIME_USER")"
   IFS=: read -r account_name _ account_uid account_gid _ account_home account_shell <<< "$account_entry"
   group_entry="$(getent group "$RUNTIME_GROUP")"
-  IFS=: read -r _ _ group_gid _ <<< "$group_entry"
+  IFS=: read -r _ _ group_gid group_members <<< "$group_entry"
   if [[ "$account_name" != "$RUNTIME_USER" || ! "$account_uid" =~ ^[0-9]+$ || ! "$account_gid" =~ ^[0-9]+$ ||
       ! "$group_gid" =~ ^[0-9]+$ || "$account_uid" -eq 0 || "$account_uid" -ge 1000 ||
       "$account_gid" != "$group_gid" || "$account_home" != "/nonexistent" ||
@@ -613,6 +626,21 @@ ensure_runtime_account() {
       fail_cutover_preflight "UBot runtime account must not belong to privileged group: $prohibited_group"
     fi
   done
+  # The persistent dotenv is root:ubot 0640. Reject a pre-existing shared
+  # group so no other login account can read production credentials through
+  # the group ACL, including an account that uses ubot as its primary GID.
+  IFS=',' read -r -a supplementary_members <<< "$group_members"
+  for member in "${supplementary_members[@]}"; do
+    if [[ -n "$member" && "$member" != "$RUNTIME_USER" ]]; then
+      fail_cutover_preflight "UBot runtime credential group must not contain another supplementary member."
+    fi
+  done
+  primary_members="$(getent passwd | awk -F: -v gid="$group_gid" '$4 == gid { print $1 }')"
+  while IFS= read -r member; do
+    if [[ -n "$member" && "$member" != "$RUNTIME_USER" ]]; then
+      fail_cutover_preflight "UBot runtime credential group must not be another account's primary group."
+    fi
+  done <<< "$primary_members"
 }
 
 lock_root_controlled_directory() {
@@ -1290,6 +1318,63 @@ is_active() {
   [[ "$(systemctl is-active "$1" 2>/dev/null || true)" == "active" ]]
 }
 
+wait_for_unit_inactive() {
+  local unit="$1" attempt state
+  for ((attempt = 1; attempt <= 30; attempt += 1)); do
+    state="$(systemctl show "$unit" -p ActiveState --value 2>/dev/null || true)"
+    if [[ -z "$state" || "$state" == "inactive" || "$state" == "failed" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Timed out waiting for $unit to stop (last state: $state)." >&2
+  return 1
+}
+
+quiesce_maintenance_writer() {
+  # The timer is independent from ubot.target. Stop scheduling first, then
+  # terminate a job that may already hold the SQLite write lock.
+  sudo systemctl stop "$MAINTENANCE_TIMER" 2>/dev/null || true
+  sudo systemctl stop "$MAINTENANCE_SERVICE" 2>/dev/null || true
+  wait_for_unit_inactive "$MAINTENANCE_SERVICE"
+  wait_for_unit_inactive "$MAINTENANCE_TIMER"
+}
+
+quiesce_cloudflare_allowlist_updater() {
+  # This root timer atomically writes the UBot Nginx includes. Pause it while
+  # deployment or rollback changes related vhost configuration.
+  sudo systemctl stop "$CLOUDFLARE_ALLOWLIST_TIMER" 2>/dev/null || true
+  sudo systemctl stop "$CLOUDFLARE_ALLOWLIST_SERVICE" 2>/dev/null || true
+  wait_for_unit_inactive "$CLOUDFLARE_ALLOWLIST_SERVICE"
+  wait_for_unit_inactive "$CLOUDFLARE_ALLOWLIST_TIMER"
+}
+
+contain_cloudflare_allowlist_updater() {
+  # A failed stop leaves a root-owned writer racing rollback's Nginx restore.
+  # Prevent any later activation and make the containment visible to the
+  # operator. A masked unit is deliberately not auto-unmasked by rollback.
+  sudo systemctl disable --now "$CLOUDFLARE_ALLOWLIST_TIMER" 2>/dev/null || true
+  if ! sudo systemctl mask --now "$CLOUDFLARE_ALLOWLIST_SERVICE" "$CLOUDFLARE_ALLOWLIST_TIMER"; then
+    echo "Could not mask the Cloudflare allow-list updater units." >&2
+    return 1
+  fi
+  local unit unit_state
+  for unit in "$CLOUDFLARE_ALLOWLIST_SERVICE" "$CLOUDFLARE_ALLOWLIST_TIMER"; do
+    unit_state="$(sudo systemctl is-enabled "$unit" 2>/dev/null || true)"
+    if [[ "$unit_state" != "masked" ]]; then
+      echo "Cloudflare allow-list updater unit was not confirmed masked: $unit" >&2
+      return 1
+    fi
+  done
+  cloudflare_updater_masked=1
+  wait_for_unit_inactive "$CLOUDFLARE_ALLOWLIST_SERVICE" &&
+    wait_for_unit_inactive "$CLOUDFLARE_ALLOWLIST_TIMER"
+}
+
+reset_runtime_service_failures() {
+  sudo systemctl reset-failed "${RUNTIME_SERVICES[@]}"
+}
+
 capture_service_restart_counts() {
   SERVICE_RESTART_COUNTS=()
   local service count
@@ -1297,6 +1382,10 @@ capture_service_restart_counts() {
     count="$(systemctl show "$service" -p NRestarts --value)"
     if [[ ! "$count" =~ ^[0-9]+$ ]]; then
       echo "Could not read restart count for $service." >&2
+      return 1
+    fi
+    if [[ "$count" != "0" ]]; then
+      echo "$service restarted while starting the new release." >&2
       return 1
     fi
     SERVICE_RESTART_COUNTS+=("$count")
@@ -1331,6 +1420,10 @@ restore_unit_enablement() {
   local index unit
   for index in "${!ENABLEMENT_UNITS[@]}"; do
     unit="${ENABLEMENT_UNITS[$index]}"
+    if [[ "$unit" == "$CLOUDFLARE_ALLOWLIST_TIMER" && "$cloudflare_updater_resume_blocked" -eq 1 ]]; then
+      sudo systemctl disable --now "$unit" >/dev/null 2>&1 || true
+      continue
+    fi
     if [[ "${UNIT_WAS_ENABLED[$index]:-0}" -eq 1 ]]; then
       sudo systemctl enable "$unit" >/dev/null 2>&1 || true
     else
@@ -1592,10 +1685,29 @@ rollback() {
   fi
 
   echo "Deployment failed; restoring release selection and service configuration." >&2
+  maintenance_writer_quiesced=0
+  cloudflare_updater_quiesced=0
+  if quiesce_maintenance_writer; then
+    maintenance_writer_quiesced=1
+  else
+    echo "Could not confirm the maintenance writer is stopped; SQLite policy restoration and service restart are disabled." >&2
+  fi
+  if quiesce_cloudflare_allowlist_updater; then
+    cloudflare_updater_quiesced=1
+  else
+    cloudflare_updater_resume_blocked=1
+    if contain_cloudflare_allowlist_updater; then
+      cloudflare_updater_quiesced=1
+      echo "Cloudflare allow-list updater required emergency containment and remains masked; inspect and unmask it manually after rollback." >&2
+    else
+      if [[ "$cloudflare_updater_masked" -eq 1 ]]; then
+        echo "Cloudflare allow-list updater remains masked but did not stop; do not restore Nginx automatically." >&2
+      else
+        echo "Could not mask or stop the Cloudflare allow-list updater; automatic restart remains blocked and do not restore Nginx automatically." >&2
+      fi
+    fi
+  fi
   sudo systemctl stop ubot.target 2>/dev/null || true
-  # Never leave the root-owned Cloudflare updater pointing at an older release
-  # during rollback. Old releases predate the root-owned release boundary.
-  sudo systemctl disable --now ubot-cloudflare-allowlist.timer 2>/dev/null || true
   restore_napcat_config
   if [[ "$napcat_restart_attempted" -eq 1 && "$old_napcat_active" -eq 1 ]]; then
     restart_napcat_container || echo "NapCat restart after configuration restore failed; inspect $NAPCAT_CONTAINER manually." >&2
@@ -1603,10 +1715,16 @@ rollback() {
   restore_preview_location || true
   restore_persistent_env
   restore_runtime_identity || echo "Runtime ownership restore failed; keep services stopped and inspect $BACKUP_DIR/runtime-identity.before.json." >&2
-  restore_preview_nginx_files
+  if [[ "$cloudflare_updater_quiesced" -eq 1 ]]; then
+    restore_preview_nginx_files
+  else
+    echo "Skipped Nginx rollback because the Cloudflare allow-list updater might still write its include; restore from $BACKUP_DIR manually after containment." >&2
+  fi
   restore_unit_files
   local policy_restored=1
-  if [[ -f "$BACKUP_DIR/capability-policy.json" ]]; then
+  if [[ "$maintenance_writer_quiesced" -ne 1 ]]; then
+    policy_restored=0
+  elif [[ -f "$BACKUP_DIR/capability-policy.json" ]]; then
     if ! node "$DEPLOY_SCRIPT_DIR/bt-capability-policy.mjs" restore "$DB_PATH" "$BACKUP_DIR/capability-policy.json"; then
       policy_restored=0
       echo "Capability policy restore failed; keep the previous services stopped and restore the saved policy before restarting." >&2
@@ -1623,19 +1741,48 @@ rollback() {
   # V3 makes SQLite the state authority. Starting the legacy service after the
   # cutover would silently resume JSON writes, so only an operator may do that
   # as part of the documented disaster-recovery procedure.
-  if [[ "$cutover_may_have_started" -eq 0 && "$old_legacy_active" -eq 1 ]]; then
-    sudo systemctl start "$LEGACY_SERVICE" || true
+  local runtime_restored=0
+  if [[ "$cutover_may_have_started" -eq 0 && "$old_legacy_active" -eq 1 && "$maintenance_writer_quiesced" -eq 1 ]]; then
+    if sudo systemctl start "$LEGACY_SERVICE"; then
+      runtime_restored=1
+    else
+      echo "Legacy service did not restart during rollback; leave maintenance disabled." >&2
+    fi
   fi
-  if [[ "$cutover_may_have_started" -eq 0 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 ]]; then
-    sudo systemctl start ubot.target || true
+  if [[ "$cutover_may_have_started" -eq 0 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 && "$maintenance_writer_quiesced" -eq 1 ]]; then
+    if sudo systemctl start ubot.target; then
+      runtime_restored=1
+    else
+      echo "Previous V3 target did not restart during rollback; leave maintenance disabled." >&2
+    fi
   fi
   # An additive upgrade starts from an already cut-over V3 database. Its
   # migrations are transactional and old V3 code remains compatible with
   # extra tables, so restart the previous target after configuration rollback.
-  if [[ "$cutover_may_have_started" -eq 1 && "$existing_cutover_before_deploy" -eq 1 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 ]]; then
-    sudo systemctl start ubot.target || true
+  if [[ "$cutover_may_have_started" -eq 1 && "$existing_cutover_before_deploy" -eq 1 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 && "$maintenance_writer_quiesced" -eq 1 ]]; then
+    if sudo systemctl start ubot.target; then
+      runtime_restored=1
+    else
+      echo "Previous V3 target did not restart during rollback; leave maintenance disabled." >&2
+    fi
   elif [[ "$cutover_may_have_started" -eq 1 ]]; then
     echo "V3 state migration may have changed SQLite. Release, unit, Nginx, dotenv, and NapCat configuration were restored. Do not restart the legacy service; use README.md#recovery for manual recovery." >&2
+  fi
+  if [[ "$runtime_restored" -eq 1 && "$old_maintenance_timer_active" -eq 1 && "$maintenance_writer_quiesced" -eq 1 && "$policy_restored" -eq 1 ]]; then
+    sudo systemctl start "$MAINTENANCE_TIMER" || echo "Maintenance timer was not restored; inspect it after rollback." >&2
+  fi
+  if [[ "$old_maintenance_service_active" -eq 1 ]]; then
+    echo "The interrupted maintenance job was not resumed automatically; the restored timer will run the next scheduled maintenance cycle." >&2
+  fi
+  if [[ "$old_cloudflare_timer_active" -eq 1 && "$cloudflare_updater_quiesced" -eq 1 && "$cloudflare_updater_resume_blocked" -eq 0 ]]; then
+    sudo systemctl start "$CLOUDFLARE_ALLOWLIST_TIMER" || echo "Cloudflare allow-list timer was not restored; inspect it after rollback." >&2
+  fi
+  if [[ "$old_cloudflare_service_active" -eq 1 && "$cloudflare_updater_resume_blocked" -eq 0 ]]; then
+    echo "The interrupted Cloudflare allow-list update was not resumed automatically; the restored timer will run the next scheduled cycle." >&2
+  elif [[ "$cloudflare_updater_resume_blocked" -eq 1 && "$cloudflare_updater_masked" -eq 1 ]]; then
+    echo "Cloudflare allow-list units remain masked after rollback; resolve the failed stop and unmask them manually before resuming updates." >&2
+  elif [[ "$cloudflare_updater_resume_blocked" -eq 1 ]]; then
+    echo "Cloudflare allow-list automatic restart remains blocked after rollback; contain the updater manually before resuming updates." >&2
   fi
   exit "$exit_code"
 }
@@ -1699,12 +1846,26 @@ elif [[ -e "$CURRENT_LINK" ]]; then
 fi
 if is_active "$LEGACY_SERVICE"; then old_legacy_active=1; fi
 if is_active ubot.target; then old_target_active=1; fi
+if is_active "$MAINTENANCE_TIMER"; then old_maintenance_timer_active=1; fi
+if is_active "$MAINTENANCE_SERVICE"; then old_maintenance_service_active=1; fi
+if is_active "$CLOUDFLARE_ALLOWLIST_TIMER"; then old_cloudflare_timer_active=1; fi
+if is_active "$CLOUDFLARE_ALLOWLIST_SERVICE"; then old_cloudflare_service_active=1; fi
 capture_unit_enablement
 
 # Stop all writers before backing up SQLite or reading legacy JSON files.
 # Arm rollback first: failure to stop the second legacy writer must still
 # restore a target that was already stopped by the first command.
 rollback_armed=1
+if ! quiesce_maintenance_writer; then
+  echo "Cannot safely stop the independent maintenance writer before SQLite backup." >&2
+  exit 1
+fi
+if ! quiesce_cloudflare_allowlist_updater; then
+  echo "Cannot safely stop the Cloudflare allow-list updater before Nginx and release changes." >&2
+  exit 1
+fi
+maintenance_writer_quiesced=1
+cloudflare_updater_quiesced=1
 if [[ "$old_target_active" -eq 1 ]]; then sudo systemctl stop ubot.target; fi
 if [[ "$old_legacy_active" -eq 1 ]]; then sudo systemctl stop "$LEGACY_SERVICE"; fi
 
@@ -1871,9 +2032,8 @@ sudo systemctl daemon-reload
 # Disable preserves the old unit file for manual disaster recovery.
 sudo systemctl disable "$LEGACY_SERVICE" >/dev/null 2>&1 || true
 sudo systemctl enable ubot.target ubot-maintenance.timer ubot-cloudflare-allowlist.timer
+reset_runtime_service_failures
 sudo systemctl start ubot.target
-sudo systemctl start ubot-maintenance.timer
-sudo systemctl start ubot-cloudflare-allowlist.timer
 sudo systemctl reload nginx
 
 for service in "${RUNTIME_SERVICES[@]}"; do
@@ -1896,6 +2056,11 @@ restart_napcat_container
 wait_for_ingress_read_api_health
 wait_for_admin_auth_boundary
 verify_service_restart_counts_stable
+
+# Start the independent SQLite retention scheduler only after every service,
+# the authenticated read API, and the post-restart checks are healthy.
+sudo systemctl start "$MAINTENANCE_TIMER"
+sudo systemctl start "$CLOUDFLARE_ALLOWLIST_TIMER"
 
 rollback_armed=0
 trap - ERR

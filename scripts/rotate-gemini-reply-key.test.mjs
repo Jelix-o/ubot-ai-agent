@@ -50,6 +50,11 @@ test("Gemini key rotation reads only stdin and preserves sol as default with Gem
   });
   db.close();
 
+  const unchanged = await runRotation({ appRoot, replacement: "old-test-key" });
+  assert.notEqual(unchanged.code, 0);
+  assert.match(unchanged.stderr, /must differ from the currently configured key/u);
+  assert.doesNotMatch(`${unchanged.stdout}\n${unchanged.stderr}`, /old-test-key/u);
+
   const result = await runRotation({ appRoot, replacement });
   assert.equal(result.code, 0, result.stderr);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(replacement, "u"));

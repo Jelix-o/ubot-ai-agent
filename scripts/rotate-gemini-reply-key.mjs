@@ -43,6 +43,9 @@ try {
   if (!gemini || gemini.purpose !== "reply") {
     throw new Error("The reply model named gemini is not configured.");
   }
+  if (gemini.apiKey === replacementKey) {
+    throw new Error("Replacement Gemini key must differ from the currently configured key.");
+  }
 
   const now = new Date().toISOString();
   const models = current.models.map((model) => model.id === "gemini"

@@ -89,6 +89,19 @@ archive_name="node-v$VERSION-linux-$ARCH.tar.xz"
 base_url="https://nodejs.org/dist/v$VERSION"
 target_dir="$RUNTIME_ROOT/node-v$VERSION"
 node_link="$RUNTIME_ROOT/node22"
+runtime_provenance_name=".ubot-node-runtime-provenance"
+
+# The installer must not trust a checksum downloaded from the same network
+# location as the archive. These digests are reviewed into the root-controlled
+# release bootstrap for the supported Node 22 runtime and architectures.
+case "$VERSION:$ARCH" in
+  "22.22.1:x64") expected_sha256="9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa" ;;
+  "22.22.1:arm64") expected_sha256="0f3550d58d45e5d3cf7103d9e3f69937f09fe82fb5dd474c66a5d816fa58c9ee" ;;
+  *)
+    echo "No approved pinned Node runtime digest exists for version $VERSION and architecture $ARCH." >&2
+    exit 2
+    ;;
+esac
 
 if [[ ! "$RUNTIME_ROOT" =~ ^/opt/[A-Za-z0-9._/-]+$ ]] || [[ "$RUNTIME_ROOT" == *"//"* ]] ||
    [[ "$RUNTIME_ROOT" == *"/./"* ]] || [[ "$RUNTIME_ROOT" == *"/../"* ]] || [[ "$RUNTIME_ROOT" == */.. ]]; then
@@ -167,6 +180,34 @@ assert_runtime_payload() {
   fi
 }
 
+expected_runtime_provenance() {
+  printf 'version=%s\narchitecture=%s\narchive=%s\nsha256=%s' \
+    "$VERSION" "$ARCH" "$archive_name" "$expected_sha256"
+}
+
+assert_runtime_provenance() {
+  local directory="$1"
+  local provenance_file actual_provenance
+  provenance_file="$directory/$runtime_provenance_name"
+  if [[ ! -f "$provenance_file" || -L "$provenance_file" ]]; then
+    fail_runtime_safety_check "Existing Node runtime lacks a verified provenance receipt; remove $directory and reinstall it from the approved archive."
+  fi
+  assert_root_owned_regular_file "$provenance_file" "Node runtime provenance receipt"
+  actual_provenance="$(<"$provenance_file")"
+  if [[ "$actual_provenance" != "$(expected_runtime_provenance)" ]]; then
+    fail_runtime_safety_check "Node runtime provenance receipt does not match the approved archive digest: $provenance_file"
+  fi
+}
+
+write_runtime_provenance() {
+  local directory="$1"
+  local provenance_file="$directory/$runtime_provenance_name"
+  expected_runtime_provenance > "$provenance_file"
+  chown root:root "$provenance_file"
+  chmod 0644 "$provenance_file"
+  assert_runtime_provenance "$directory"
+}
+
 activate_node22_link() {
   if [[ -e "$node_link" || -L "$node_link" ]]; then
     if [[ ! -L "$node_link" || "$(readlink "$node_link")" != "node-v$VERSION" ]]; then
@@ -182,6 +223,10 @@ activate_node22_link() {
 ensure_secure_runtime_root
 if [[ -e "$target_dir" || -L "$target_dir" ]]; then
   assert_runtime_payload
+  # Runtimes installed before digest pinning have no locally verifiable
+  # provenance. Refuse to activate them; an operator must replace the entire
+  # directory with a freshly verified archive instead of trusting its version.
+  assert_runtime_provenance "$target_dir"
   if [[ "$("$target_dir/bin/node" --version)" != "v$VERSION" ]]; then
     fail_runtime_safety_check "Existing Node runtime does not match requested version: $target_dir"
   fi
@@ -194,13 +239,6 @@ cleanup() {
   rm -rf "$temporary_root"
 }
 trap cleanup EXIT
-
-curl --fail --silent --show-error --location "$base_url/SHASUMS256.txt" -o "$temporary_root/SHASUMS256.txt"
-expected_sha256="$(awk -v archive="$archive_name" '$2 == archive { print $1; exit }' "$temporary_root/SHASUMS256.txt")"
-if [[ ! "$expected_sha256" =~ ^[A-Fa-f0-9]{64}$ ]]; then
-  echo "Could not find a valid official checksum for $archive_name." >&2
-  exit 1
-fi
 
 curl --fail --silent --show-error --location "$base_url/$archive_name" -o "$temporary_root/$archive_name"
 actual_sha256="$(sha256sum "$temporary_root/$archive_name" | awk '{ print $1 }')"
@@ -222,10 +260,12 @@ mv "$extracted_dir" "$install_target"
 chmod -R a+rX "$install_target"
 chown -R root:root "$install_target"
 chmod -R go-w "$install_target"
+write_runtime_provenance "$install_target"
 if [[ -e "$target_dir" || -L "$target_dir" ]]; then
   echo "Refusing to replace an existing unexpected Node runtime: $target_dir" >&2
   exit 1
 fi
 mv -T "$install_target" "$target_dir"
 assert_runtime_payload
+assert_runtime_provenance "$target_dir"
 activate_node22_link

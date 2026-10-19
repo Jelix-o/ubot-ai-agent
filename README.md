@@ -252,8 +252,8 @@ Origin hardening 只安装并影响 UBot 的两个 Nginx vhost：`/etc/nginx/sit
 
 1. 同一正式 Release 下载匹配 tar.gz 和 `.sha256`，核对摘要。以 root 拥有、无符号链接且不可被组或其他用户写入的临时 bootstrap 目录解包；不得从旧的可写 `current` 目录运行特权安装脚本。
 2. 在 Cloudflare 中完成所有已代理源站的 Origin CA 预检并切换为 Full (strict)。将两个已配对、覆盖正确域名的证书和私钥放入 `/etc/ssl/cloudflare/`；确认 `nginx -t`。这一步先于来源限制，避免切换中断其他已代理站点。
-3. 先以 root 从已校验的 bootstrap 目录安装并校验独立 Node 22 运行时；再运行 UBot Origin hardening。该步骤创建 root 定时 CIDR 更新器并只限制两个 UBot vhost。不得将 Cloudflare 临时令牌保存到 `.env`、环境文件或命令历史。
-4. 部署器创建受限 `ubot` 服务账户、固定运行时与只读 release，迁移预览目录并以原子方式更新配置、unit、Nginx 和 `current`。它在停止服务前备份状态，失败时恢复旧 release、unit、Nginx 和持久配置。
+3. 先以 root 从已校验的 bootstrap 目录安装并校验独立 Node 22 运行时；再运行 UBot Origin hardening。安装器写入 root 所有的来源凭据；没有该凭据的旧运行时目录会被拒绝，必须停服务后以已校验归档完整替换。该步骤创建 root 定时 CIDR 更新器并只限制两个 UBot vhost。不得将 Cloudflare 临时令牌保存到 `.env`、环境文件或命令历史。
+4. 部署器创建受限 `ubot` 服务账户、固定运行时与只读 release，迁移预览目录并以原子方式更新配置、unit、Nginx 和 `current`。它在停止服务前先停 SQLite 维护与 Cloudflare 更新器；失败时恢复旧 release、unit、Nginx 和持久配置。若 Cloudflare 更新器无法停止，部署器会尝试确认将其 masked；无论确认结果如何，都会阻止自动恢复并将 Nginx 恢复交给人工处置，避免并发写入。
 
 ```bash
 sudo bash /secure/bootstrap/ubot-3.0.49-linux/scripts/install-node22-runtime.sh 22.22.1
@@ -349,7 +349,7 @@ node scripts/run-node22.cjs scripts/public-docs.mjs release-notes
 
 生成忽略目录 `.codex_tmp/release-notes.md`，版本、标记或检查失败会停止。只有匹配 `v<version>` 的 GitHub Actions 工作流能创建正式 Release：提交历史密钥扫描、Node 22 全量测试、后台视觉冒烟、双平台打包、产物校验和精确产物扫描均成功后才获得写入 Release 的最小权限。本地没有绕过这些门禁的发布命令。
 
-凭据事件的历史净化和旧标签／Release 重建期间，Release 工作流默认停用：除非仓库管理员在 Actions Variables 中将 `UBOT_RELEASE_PIPELINE_ENABLED` 精确设为 `true`，所有 Release 作业都会跳过。只有凭据轮换、历史重写、旧 Release 重建、协作者重新克隆及恢复演练均已完成并有审批记录后，才可开启该变量。
+凭据事件的历史净化和旧标签／Release 重建期间，Release 工作流默认停用：除非仓库管理员在 Actions Variables 中将 `UBOT_RELEASE_PIPELINE_ENABLED` 精确设为 `true`，所有 Release 作业都会跳过。手工触发默认只验证；正式发布还需 `publish=true` 与受保护的 `production-release` Environment 审批。只有凭据轮换、历史重写、旧 Release 重建、协作者重新克隆及恢复演练均已完成并有审批记录后，才可开启该变量。历史 v3.0.18--v3.0.44 标签内嵌旧的可写工作流，重写前必须在 GitHub 侧停用 tag 触发工作流；新变量不能保护旧标签。
 
 发布说明只记录功能、兼容和验证结果，示例使用“成员甲／成员乙”、`<USER_ID>`、`<GROUP_ID>`、`<BOT_QQ>`；不公开真实称呼、备注、账号、群号、画像、聊天原文和线上定点修复对象。自动检查拦截编号与聊天摘录格式，无法识别所有自然语言姓名，发布前仍需人工复核。报错只输出文件、行号、规则，不回显敏感值。
 
@@ -368,9 +368,10 @@ node scripts/run-node22.cjs scripts/public-docs.mjs release-notes
 - 部署器先验证 Read API 监听与鉴权边界，再重启 NapCat，随后才要求已连接的健康状态；失败恢复旧 release、unit、Nginx 和持久配置。
 - 退休嘴臭模式：旧配置写入返回 `410 roast_mode_retired`，群配置存量在可审计的单一事务中清理，损坏记录会整体回滚。
 - Linux 生产固定独立校验的 Node 22、受限 `ubot` 账户和只读 release；预览文件迁至 `/var/lib/ubot-preview`，服务使用严格 systemd 隔离。
+- 已有 Node 22 目录必须具备 root 所有的归档摘要来源凭据才能重用；历史目录需要停机后从已校验归档完整替换，不接受仅凭版本号的复用。
 - 两个 UBot 域名支持 Cloudflare Origin CA、Full (strict)、可信来源限制和原子 CIDR 更新；其他同机站点及全局防火墙保持不变。
 - CI、发布和打包增加类型检查、BT 与后台冒烟、生产依赖审计及密钥扫描门禁；Actions 固定到 commit SHA，并由 Dependabot 跟踪更新。
-- Release 工作流在历史净化完成前默认失效关闭，必须由仓库管理员显式启用后才会执行任何打包或发布作业。
+- Release 工作流在历史净化完成前默认失效关闭，必须由仓库管理员显式启用后才会执行任何打包或发布作业；手工发布还要求显式 `publish=true` 和受保护 Environment 审批。
 
 升级会保留现有模型、权限与持久配置。完整发布前需完成 Node 22 测试、后台冒烟、BT 离线回归、密钥扫描、双平台包校验和隔离恢复演练；回滚前排空成人卡片撤回最多 105 秒。
 <!-- release-notes:end -->
