@@ -115,7 +115,7 @@ function Resolve-UbotNodeRuntime {
   # PATH can contain multiple Node installations. Evaluate each concrete path
   # rather than passing a command array into a string parameter, then select
   # the first runtime that satisfies the Node 22 + paired npm contract.
-  $pathCommands = @(Get-Command "node" -CommandType Application -ErrorAction SilentlyContinue)
+  $pathCommands = @(Get-Command "node" -CommandType Application -All -ErrorAction SilentlyContinue)
   foreach ($pathCommand in $pathCommands) {
     if (-not $pathCommand.Path) {
       continue

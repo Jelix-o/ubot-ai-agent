@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { deflateRawSync } from "node:zlib";
@@ -24,8 +24,10 @@ const sourceMetadata = await lstat(sourceRoot);
 if (!sourceMetadata.isDirectory() || sourceMetadata.isSymbolicLink()) {
   throw new Error("Release ZIP source must be a real directory.");
 }
+const sourceRootRealPath = await realpath(sourceRoot);
 
 const files = [];
+const portablePaths = new Map();
 await collectFiles(sourceRoot, "");
 if (files.length === 0) {
   throw new Error("Release ZIP source must not be empty.");
@@ -36,7 +38,7 @@ let offset = 0;
 const localRecords = [];
 const centralRecords = [];
 for (const file of files) {
-  const content = await readFile(file.absolutePath);
+  const content = await readVerifiedFile(file);
   totalUncompressedBytes += content.length;
   if (totalUncompressedBytes > MAX_UNCOMPRESSED_BYTES) {
     throw new Error("Release ZIP source exceeds the uncompressed size limit.");
@@ -121,12 +123,14 @@ try {
 process.stdout.write(`${JSON.stringify({ archivePath: destination, entries: files.length, uncompressedBytes: totalUncompressedBytes })}\n`);
 
 async function collectFiles(directory, relativePath) {
+  await verifyDirectory(directory);
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
   for (const entry of entries) {
     const absolutePath = path.join(directory, entry.name);
     const nextRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
     const archiveEntryPath = normalizeArchivePath(nextRelativePath);
+    registerPortablePath(archiveEntryPath);
     const metadata = await lstat(absolutePath);
     if (metadata.isSymbolicLink()) {
       throw new Error(`Release ZIP source contains a symbolic link: ${archiveEntryPath}.`);
@@ -141,8 +145,66 @@ async function collectFiles(directory, relativePath) {
     if (files.length >= MAX_ENTRIES) {
       throw new Error("Release ZIP source exceeds the entry-count limit.");
     }
-    files.push({ absolutePath, archivePath: archiveEntryPath, modifiedAt: metadata.mtime });
+    await verifyContainedPath(absolutePath, metadata, "file");
+    files.push({ absolutePath, archivePath: archiveEntryPath, modifiedAt: metadata.mtime, metadata });
   }
+}
+
+async function verifyDirectory(directory) {
+  await verifySourceRoot();
+  const metadata = await lstat(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("Release ZIP source contains an unsupported directory entry.");
+  }
+  await verifyContainedPath(directory, metadata, "directory");
+}
+
+async function verifySourceRoot() {
+  const metadata = await lstat(sourceRoot);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || !sameFileIdentity(sourceMetadata, metadata)) {
+    throw new Error("Release ZIP source root changed while packaging.");
+  }
+  if (await realpath(sourceRoot) !== sourceRootRealPath) {
+    throw new Error("Release ZIP source root changed while packaging.");
+  }
+}
+
+async function verifyContainedPath(absolutePath, metadata, kind) {
+  if ((kind === "file" && !metadata.isFile()) || (kind === "directory" && !metadata.isDirectory()) || metadata.isSymbolicLink()) {
+    throw new Error("Release ZIP source contains an unsupported entry.");
+  }
+  const resolvedPath = await realpath(absolutePath);
+  if (resolvedPath !== sourceRootRealPath && !resolvedPath.startsWith(`${sourceRootRealPath}${path.sep}`)) {
+    throw new Error("Release ZIP source resolves outside its root.");
+  }
+}
+
+async function readVerifiedFile(file) {
+  await verifySourceRoot();
+  const currentMetadata = await lstat(file.absolutePath);
+  await verifyContainedPath(file.absolutePath, currentMetadata, "file");
+  if (!sameFileIdentity(file.metadata, currentMetadata)) {
+    throw new Error(`Release ZIP source file changed while packaging: ${file.archivePath}.`);
+  }
+
+  const handle = await open(file.absolutePath, "r");
+  try {
+    const openedMetadata = await handle.stat();
+    if (!openedMetadata.isFile() || !sameFileIdentity(file.metadata, openedMetadata)) {
+      throw new Error(`Release ZIP source file changed while packaging: ${file.archivePath}.`);
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+function sameFileIdentity(expected, actual) {
+  return expected.dev === actual.dev &&
+    expected.ino === actual.ino &&
+    expected.mode === actual.mode &&
+    expected.size === actual.size &&
+    expected.mtimeMs === actual.mtimeMs;
 }
 
 function normalizeArchivePath(value) {
@@ -154,7 +216,23 @@ function normalizeArchivePath(value) {
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
     throw new Error("Release ZIP source contains an unsafe path.");
   }
+  if (segments.some((segment) => segment.endsWith(".") || isWindowsReservedName(segment))) {
+    throw new Error("Release ZIP source contains a Windows-reserved path.");
+  }
   return normalized;
+}
+
+function registerPortablePath(archivePath) {
+  const canonicalPath = archivePath.toLowerCase();
+  const existingPath = portablePaths.get(canonicalPath);
+  if (existingPath) {
+    throw new Error(`Release ZIP source contains a case-insensitive path collision: ${existingPath} and ${archivePath}.`);
+  }
+  portablePaths.set(canonicalPath, archivePath);
+}
+
+function isWindowsReservedName(segment) {
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(segment);
 }
 
 function toDosDateTime(date) {

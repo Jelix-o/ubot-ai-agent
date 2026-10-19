@@ -408,7 +408,7 @@ test("V3 release source verification restricts artifacts to the audited runtime 
 
 test("Windows packager selects one compatible Node runtime when PATH has multiple installations", () => {
   const windowsPackager = readFileSync(path.resolve("scripts", "package-win.ps1"), "utf8");
-  assert.match(windowsPackager, /Get-Command "node" -CommandType Application -ErrorAction SilentlyContinue/);
+  assert.match(windowsPackager, /Get-Command "node" -CommandType Application -All -ErrorAction SilentlyContinue/);
   assert.match(windowsPackager, /foreach \(\$pathCommand in \$pathCommands\)/);
   assert.match(windowsPackager, /Get-UbotNodeRuntime \(\[string\]\$pathCommand\.Path\)/);
   assert.match(windowsPackager, /\$versionLines = @\(& \$NodePath --version 2>\$null\)/);
