@@ -139,6 +139,7 @@ test("V3 deployer quiesces the independent maintenance writer before state chang
   assert.match(deployer, /contain_cloudflare_allowlist_updater\(\)/);
   assert.match(deployer, /systemctl mask --now "\$CLOUDFLARE_ALLOWLIST_SERVICE" "\$CLOUDFLARE_ALLOWLIST_TIMER"/);
   assert.match(deployer, /cloudflare_updater_resume_blocked=1/);
+  assert.match(deployer, /if \[\[ "\$unit" == "\$CLOUDFLARE_ALLOWLIST_TIMER" && "\$cloudflare_updater_resume_blocked" -eq 1 \]\]; then\s+sudo systemctl disable --now "\$unit"[^\n]*\s+continue/s);
   assert.match(deployer, /Cloudflare allow-list updater unit was not confirmed masked/);
   assert.match(deployer, /Skipped Nginx rollback because the Cloudflare allow-list updater might still write its include/);
   assert.match(deployer, /Cloudflare allow-list units remain masked after rollback/);
@@ -260,6 +261,12 @@ test("Node runtime reuse validates root, payload, and active link before activat
   assert.match(nodeRuntimeInstaller, /if \[\[ -e "\$target_dir" \|\| -L "\$target_dir" \]\]; then\s+assert_runtime_payload/s);
   assert.match(nodeRuntimeInstaller, /assert_runtime_provenance "\$target_dir"/);
   assert.match(nodeRuntimeInstaller, /Existing Node runtime lacks a verified provenance receipt/);
+  assert.match(nodeRuntimeInstaller, /archive_cache_dir="\$RUNTIME_ROOT\/verified-archives"/);
+  assert.match(nodeRuntimeInstaller, /assert_verified_archive "\$verified_archive_path"/);
+  assert.match(nodeRuntimeInstaller, /cache_verified_archive "\$temporary_root\/\$archive_name"/);
+  assert.match(nodeRuntimeInstaller, /assert_runtime_matches_verified_archive/);
+  assert.match(nodeRuntimeInstaller, /diff -qr --no-dereference --exclude="\$runtime_provenance_name"/);
+  assert.match(nodeRuntimeInstaller, /payload does not exactly match the archive with the approved fixed digest/);
   assert.match(nodeRuntimeInstaller, /write_runtime_provenance "\$install_target"/);
   assert.match(nodeRuntimeInstaller, /sha256=%s/);
   assert.match(nodeRuntimeInstaller, /Existing Node runtime does not match requested version/);
@@ -361,7 +368,7 @@ test("V3 infrastructure keeps process ownership and network exposure narrow", ()
   assert.match(maintenanceUnit, /User=ubot/);
   assert.match(maintenanceUnit, /ExecStart=\/opt\/ubot-runtime\/node22\/bin\/node/);
   assert.match(maintenanceUnit, /migrate-v3-state\.mjs --maintenance --execute/);
-  assert.match(maintenanceTimer, /Description=Run UBot V3 retention maintenance hourly/);
+  assert.match(maintenanceTimer, /Description=Run UBot v4\.0 retention maintenance hourly/);
   assert.match(maintenanceTimer, /OnCalendar=\*-\*-\* \*:17:00 UTC/);
   assert.match(networkConfigurator, /172\.21\.0\.1:6199/);
   assert.match(networkConfigurator, /approvedNapcatUrlPath/);
@@ -431,7 +438,6 @@ test("V3 release source verification restricts artifacts to the audited runtime 
     assert.match(source, /public-docs\.mjs/);
   }
   for (const releaseFile of [
-    "scripts/rotate-gemini-reply-key.mjs",
     "scripts/install-node22-runtime.sh",
     "scripts/update-cloudflare-origin-allowlist.sh",
     "scripts/install-cloudflare-origin-hardening.sh",
@@ -470,8 +476,10 @@ test("formal release publication is gated to the matching final tag and CI", () 
   assert.match(releaseWorkflow, /package-linux:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
   assert.match(releaseWorkflow, /workflow_dispatch:\s+inputs:\s+publish:/);
   assert.match(releaseWorkflow, /publish:[\s\S]*?default: false[\s\S]*?type: boolean/);
+  assert.match(releaseWorkflow, /release-metadata:[\s\S]*?github\.event_name == 'workflow_dispatch'[\s\S]*?inputs\.publish == true/);
   assert.match(releaseWorkflow, /github-release:[\s\S]*?vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
-  assert.match(releaseWorkflow, /github-release:[\s\S]*?inputs\.publish == true/);
+  assert.match(releaseWorkflow, /github-release:[\s\S]*?github\.event_name == 'workflow_dispatch'[\s\S]*?inputs\.publish == true/);
+  assert.doesNotMatch(releaseWorkflow, /github\.event_name == 'push'\s*\|\|\s*inputs\.publish == true/);
   assert.match(releaseWorkflow, /needs: \[package-windows, package-linux\]/);
   assert.match(releaseWorkflow, /!contains\(github\.ref_name, '-'\)/);
   assert.match(releaseWorkflow, /permissions:\s+contents: read/);
@@ -497,6 +505,8 @@ test("formal release publication is gated to the matching final tag and CI", () 
   assert.doesNotMatch(retainedPublisher, /Invoke-RestMethod/);
   assert.doesNotMatch(retainedPublisher, /GITHUB_TOKEN|GH_TOKEN/);
   assert.doesNotMatch(legacyVerifier, /ForbiddenSecret/);
+  assert.doesNotMatch(legacyVerifier, /\[string\]\$[A-Za-z]*Secret/);
+  assert.match(legacyVerifier, /\[string\]\$ExpectedSha256/);
 });
 
 test("continuous integration validates the complete suite on Windows and Linux", () => {

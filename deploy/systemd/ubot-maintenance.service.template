@@ -1,5 +1,5 @@
 [Unit]
-Description=UBot V3 retention maintenance
+Description=UBot v4.0 retention maintenance
 After=network-online.target ubot.target
 Wants=network-online.target
 PartOf=ubot.target

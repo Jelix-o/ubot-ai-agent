@@ -1,5 +1,5 @@
 [Unit]
-Description=UBot V3 ingress (NapCat reverse WebSocket and Outbox sender)
+Description=UBot v4.0 ingress (NapCat reverse WebSocket and Outbox sender)
 After=network-online.target
 Wants=network-online.target
 PartOf=ubot.target

@@ -58,8 +58,9 @@ zero is not evidence that a body is safe.
 
 The current local helper is intentionally dry-run only, and the automated
 Release workflow is fail-closed behind the repository variable
-`UBOT_RELEASE_PIPELINE_ENABLED`. A manual dispatch defaults to verification;
-publication additionally requires `publish=true` and a protected
+`UBOT_RELEASE_PIPELINE_ENABLED`. Tag pushes and a manual dispatch with its
+default input only verify and build; publication requires a manual dispatch on
+the matching final tag with `publish=true` and a protected
 `production-release` GitHub Environment configured by a repository
 administrator. Neither is authorization to bypass the above sequence. The
 v3.0.18--v3.0.44 bodies and asset mappings remain pending secure export and

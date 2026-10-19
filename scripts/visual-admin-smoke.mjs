@@ -304,11 +304,12 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
   const desktop = await desktopContext.newPage();
   const browserErrors = [];
   let authenticated = false;
+  let expectedAuthRejections = false;
   desktop.on("pageerror", (error) => {
     if (authenticated) browserErrors.push(`pageerror: ${error.message}`);
   });
   desktop.on("console", (message) => {
-    if (authenticated && message.type() === "error") browserErrors.push(`console: ${message.text()}`);
+    if (authenticated && !expectedAuthRejections && message.type() === "error") browserErrors.push(`console: ${message.text()}`);
   });
 
   try {
@@ -336,6 +337,41 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await desktop.locator(".model-table").getByText("GPT 视觉与复杂问题备用模型（长名称布局验证）", { exact: true }).waitFor();
     await assertNoHorizontalOverflow(desktop, "desktop settings");
     await desktop.screenshot({ path: path.join(screenshotDir, "settings-desktop.png"), fullPage: true });
+
+    const sibling = await desktopContext.newPage();
+    await sibling.goto(`${baseUrl}/settings?tab=models`, { waitUntil: "networkidle" });
+    const before = await desktop.evaluate(async () => (await fetch("/api/session")).json());
+    const other = await sibling.evaluate(async () => (await fetch("/api/session")).json());
+    if (before.csrfToken !== other.csrfToken) throw new Error("Sibling tab rotated CSRF.");
+    await sibling.close();
+
+    const timeoutInput = desktop.getByRole("spinbutton", { name: "聊天单次超时（秒）", exact: true });
+    await timeoutInput.fill("46");
+    sharedDb.db.prepare("UPDATE admin_sessions SET reauth_verified_at = ?, csrf_token_hash = 'legacy-digest'").run(Date.now() - 11 * 60000);
+    expectedAuthRejections = true;
+    await desktop.getByRole("button", { name: "保存配置", exact: true }).first().click();
+    const dialog = desktop.getByRole("dialog", { name: "验证当前密码" });
+    await dialog.waitFor();
+    if (await timeoutInput.inputValue() !== "46") throw new Error("Step-up lost form contents.");
+    await dialog.getByLabel("当前密码").fill("wrong-password");
+    await dialog.getByRole("button", { name: "验证并继续" }).click();
+    await dialog.getByRole("alert").getByText("当前密码不正确。").waitFor();
+    if (await dialog.getByLabel("当前密码").inputValue()) throw new Error("Failed step-up retained password.");
+    if (!desktop.url().includes("/settings")) throw new Error("Wrong step-up password logged out the user.");
+    await dialog.getByRole("button", { name: "取消操作" }).click();
+    await dialog.waitFor({ state: "detached" });
+    const stored = JSON.parse(sharedDb.db.prepare("SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'").get().settings_json);
+    if (stored.replyRouting.chatAttemptTimeoutMs !== 45000) throw new Error("Cancelled step-up submitted a write.");
+    await desktop.getByRole("button", { name: "保存配置", exact: true }).first().click();
+    await dialog.waitFor();
+    await dialog.getByLabel("当前密码").fill(PASSWORD);
+    const saved = desktop.waitForResponse(response => response.url().endsWith("/api/system-settings") && response.request().method() === "PATCH" && response.status() === 200);
+    await dialog.getByRole("button", { name: "验证并继续" }).click();
+    await saved;
+    await dialog.waitFor({ state: "detached" });
+    expectedAuthRejections = false;
+    await desktop.reload({ waitUntil: "networkidle" });
+    if (await timeoutInput.inputValue() !== "46") throw new Error("Session refresh lost saved form contents.");
 
     await desktop.setViewportSize({ width: 390, height: 844 });
     await desktop.goto(`${baseUrl}/`, { waitUntil: "networkidle" });

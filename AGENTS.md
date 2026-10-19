@@ -28,11 +28,11 @@
 - **邮箱**：`yinzhixiu@qq.com`
 - **GitHub 仓库**：`https://github.com/Jelix-o/ubot-ai-agent`
 - **Release 流程**：
-  1. 更新 `package.json`、锁文件与 `README.md` 的本版更新标记区域；运行 `node scripts/run-node22.cjs scripts/public-docs.mjs release-notes` 生成发布说明；
-  2. 本地执行全量测试 `node scripts/run-node22.cjs scripts/test.cjs` 与冒烟测试 `node scripts/run-node22.cjs scripts/visual-admin-smoke.mjs`；
+  1. 更新 `package.json`、锁文件与 `README.md` 的本版更新标记区域；运行 `node scripts/run-node22.cjs scripts/public-docs.mjs release-notes` 生成发布说明。只有已获批准的发布计划明确要求时，才随版本保留 `RELEASE-v<version>.md`；
+  2. 本地执行 `npm run verify`、`npm run smoke:admin` 与 `npm run package:all`；
   3. 提交并打标签 `git tag -a v<version> -m "UBot v<version>"` 并推送到 GitHub；
-  4. GitHub Actions 会自动校验统一手册、构建双平台发布物，并从 README 提取本版说明创建正式 GitHub Release。
+  4. 标签推送只触发 GitHub Actions 校验和双平台构建。正式 GitHub Release 只能在匹配标签上手动触发工作流、显式设定 `publish=true`，并通过受保护的 `production-release` Environment 审批后创建。
 
-- 使用、指令、部署与恢复说明统一维护在 README；不新增逐版本 Markdown。
+- 使用、指令、部署与恢复说明统一维护在 README；除已批准的发布计划外不新增逐版本 Markdown。
 - 公开文档和 Release 禁止包含真实群聊成员称呼、备注、QQ、群号、画像、聊天原文或定点修复对象。示例使用成员甲／成员乙及 `<USER_ID>`、`<GROUP_ID>`、`<BOT_QQ>`。
 - 发布前必须运行文档检查并人工复核姓名与案例；检查失败不得绕过。旧 Release 脱敏原文仅备份在仓库外私有目录。

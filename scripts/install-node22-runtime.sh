@@ -32,7 +32,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-for command in curl tar sha256sum install ln mv mktemp awk rm chmod chown mkdir stat readlink find dirname; do
+for command in curl tar sha256sum install ln mv mktemp awk rm chmod chown mkdir stat readlink find dirname diff; do
   command -v "$command" >/dev/null || {
     echo "Required command is missing: $command" >&2
     exit 2
@@ -90,6 +90,8 @@ base_url="https://nodejs.org/dist/v$VERSION"
 target_dir="$RUNTIME_ROOT/node-v$VERSION"
 node_link="$RUNTIME_ROOT/node22"
 runtime_provenance_name=".ubot-node-runtime-provenance"
+archive_cache_dir="$RUNTIME_ROOT/verified-archives"
+verified_archive_path="$archive_cache_dir/$archive_name"
 
 # The installer must not trust a checksum downloaded from the same network
 # location as the archive. These digests are reviewed into the root-controlled
@@ -166,6 +168,15 @@ ensure_secure_runtime_root() {
   chmod 0755 "$RUNTIME_ROOT"
 }
 
+ensure_secure_archive_cache() {
+  if [[ -e "$archive_cache_dir" || -L "$archive_cache_dir" ]]; then
+    assert_root_owned_directory "$archive_cache_dir" "Verified Node archive cache"
+  else
+    install -d -m 0755 "$archive_cache_dir"
+  fi
+  chmod 0755 "$archive_cache_dir"
+}
+
 assert_runtime_payload() {
   local unsafe_entry
   assert_root_owned_directory "$target_dir" "Node runtime directory"
@@ -199,6 +210,52 @@ assert_runtime_provenance() {
   fi
 }
 
+assert_verified_archive() {
+  local archive="$1"
+  local actual_sha256
+  assert_root_owned_regular_file "$archive" "Verified Node runtime archive"
+  actual_sha256="$(sha256sum "$archive" | awk '{ print $1 }')"
+  if [[ "${actual_sha256,,}" != "${expected_sha256,,}" ]]; then
+    fail_runtime_safety_check "Verified Node runtime archive checksum does not match the approved fixed digest: $archive"
+  fi
+}
+
+cache_verified_archive() {
+  local source_archive="$1"
+  local temporary_archive
+  ensure_secure_archive_cache
+  if [[ -e "$verified_archive_path" || -L "$verified_archive_path" ]]; then
+    assert_verified_archive "$verified_archive_path"
+    return
+  fi
+  temporary_archive="$archive_cache_dir/.${archive_name}.$$"
+  rm -f -- "$temporary_archive"
+  install -m 0644 "$source_archive" "$temporary_archive"
+  assert_verified_archive "$temporary_archive"
+  if [[ -e "$verified_archive_path" || -L "$verified_archive_path" ]]; then
+    rm -f -- "$temporary_archive"
+    assert_verified_archive "$verified_archive_path"
+    return
+  fi
+  mv -T "$temporary_archive" "$verified_archive_path"
+  assert_verified_archive "$verified_archive_path"
+}
+
+assert_runtime_matches_verified_archive() {
+  local verification_root expected_tree
+  verification_root="$(mktemp -d "$TMPDIR/ubot-node22-verify.XXXXXX")"
+  if ! tar -xJf "$verified_archive_path" -C "$verification_root"; then
+    rm -rf -- "$verification_root"
+    fail_runtime_safety_check "Could not extract the verified Node runtime archive for an integrity comparison."
+  fi
+  expected_tree="$verification_root/node-v$VERSION-linux-$ARCH"
+  if [[ ! -d "$expected_tree" ]] || ! diff -qr --no-dereference --exclude="$runtime_provenance_name" -- "$expected_tree" "$target_dir" >/dev/null; then
+    rm -rf -- "$verification_root"
+    fail_runtime_safety_check "Node runtime payload does not exactly match the archive with the approved fixed digest: $target_dir"
+  fi
+  rm -rf -- "$verification_root"
+}
+
 write_runtime_provenance() {
   local directory="$1"
   local provenance_file="$directory/$runtime_provenance_name"
@@ -227,6 +284,9 @@ if [[ -e "$target_dir" || -L "$target_dir" ]]; then
   # provenance. Refuse to activate them; an operator must replace the entire
   # directory with a freshly verified archive instead of trusting its version.
   assert_runtime_provenance "$target_dir"
+  ensure_secure_archive_cache
+  assert_verified_archive "$verified_archive_path"
+  assert_runtime_matches_verified_archive
   if [[ "$("$target_dir/bin/node" --version)" != "v$VERSION" ]]; then
     fail_runtime_safety_check "Existing Node runtime does not match requested version: $target_dir"
   fi
@@ -246,6 +306,8 @@ if [[ "${actual_sha256,,}" != "${expected_sha256,,}" ]]; then
   echo "Node runtime checksum verification failed." >&2
   exit 1
 fi
+
+cache_verified_archive "$temporary_root/$archive_name"
 
 tar -xJf "$temporary_root/$archive_name" -C "$temporary_root"
 extracted_dir="$temporary_root/node-v$VERSION-linux-$ARCH"
@@ -268,4 +330,6 @@ fi
 mv -T "$install_target" "$target_dir"
 assert_runtime_payload
 assert_runtime_provenance "$target_dir"
+assert_verified_archive "$verified_archive_path"
+assert_runtime_matches_verified_archive
 activate_node22_link

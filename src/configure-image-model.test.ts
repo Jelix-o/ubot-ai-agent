@@ -30,7 +30,7 @@ test("image model configuration stores only encrypted key material and is idempo
       liveChatUserIds: [],
     });
     const store = new SystemSettingsStore("unused.json", [], undefined, repository);
-    await store.update({ models: ["gpt", "ds", "gemini", "astra"].map(replyModel) });
+    await store.update({ models: ["gpt", "ds", "sol", "astra"].map(replyModel) });
   } finally {
     initial.close();
   }

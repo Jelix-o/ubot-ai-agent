@@ -1,5 +1,5 @@
 [Unit]
-Description=UBot V3 worker (conversation, schedules and model orchestration)
+Description=UBot v4.0 worker (conversation, schedules and model orchestration)
 After=network-online.target ubot-ingress.service
 Wants=network-online.target
 PartOf=ubot.target

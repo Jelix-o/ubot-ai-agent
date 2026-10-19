@@ -1201,7 +1201,7 @@ prepare_release_bundle_preflight() {
     scripts/deploy-linux-release.sh scripts/migrate-v3-state.mjs scripts/normalize-dotenv-bom.mjs \
     scripts/configure-v3-network.mjs scripts/verify-release-source.mjs scripts/validate-release-archive.mjs \
     scripts/install-node22-runtime.sh scripts/update-cloudflare-origin-allowlist.sh \
-    scripts/install-cloudflare-origin-hardening.sh scripts/verify-nginx-vhost-ownership.mjs scripts/rotate-gemini-reply-key.mjs \
+    scripts/install-cloudflare-origin-hardening.sh scripts/verify-nginx-vhost-ownership.mjs \
     deploy/systemd/ubot-ingress.service.template deploy/systemd/ubot-worker.service.template \
     deploy/systemd/ubot-admin.service.template deploy/systemd/ubot.target.template \
     deploy/systemd/ubot-maintenance.service.template deploy/systemd/ubot-maintenance.timer.template \

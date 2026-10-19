@@ -10,6 +10,7 @@ import type { GroupBotConfig, GroupsConfigFile, SkillDefinition, SystemSettings 
 import type { GroupMemory, KnowledgeBaseEntry, KnowledgePack, ScheduledReminderTask } from "../types.js";
 import type { SharedDb } from "../shared/sqlite.js";
 import { validateV3CapabilityPolicy } from "./capability-policy-service.js";
+import { isRetiredModel, isRetiredModelId, removeRetiredGroupModel, removeRetiredModels, RETIRED_GEMINI_MODEL_IDS } from "./retired-models.js";
 
 const CIPHER_VERSION = "v1";
 const STATE_CUTOVER_META_KEY = "state_cutover";
@@ -383,6 +384,53 @@ export class V3StateRepository {
         now,
       );
       return { applied: true, groupsUpdated };
+    });
+  }
+
+  retireGeminiOnce(now = Date.now()): { applied: boolean; modelIds: string[]; groupsUpdated: number; secretsDeleted: number } {
+    return this.withImmediateTransaction(() => {
+      const marker = "gemini_retired_v4_0_0";
+      if (this.getMeta(marker) === "complete") return { applied: false, modelIds: [], groupsUpdated: 0, secretsDeleted: 0 };
+      const row = this.sharedDb.db.prepare("SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'")
+        .get() as { settings_json: string } | undefined;
+      const settings = row ? parseJson<SystemSettings>(row.settings_json) : undefined;
+      if (row && (!settings || !Array.isArray(settings.models) || !isRecord(settings.selectedModelIds) ||
+          Object.values(settings.selectedModelIds).some(id => typeof id !== "string") ||
+          settings.models.some(model => !isRecord(model) || !isNonEmptyString(model.id) || !isNonEmptyString(model.model)) ||
+          (settings.replyRouting && (!isRecord(settings.replyRouting) || !isStringArray(settings.replyRouting.fallbackModelIds))) ||
+          (settings.removedDefaultModelIds !== undefined && !isStringArray(settings.removedDefaultModelIds)))) {
+        throw new Error("invalid_v3_system_settings_for_gemini_retirement");
+      }
+      const retiredIds = new Set<string>(RETIRED_GEMINI_MODEL_IDS);
+      for (const model of settings?.models ?? []) if (isRetiredModel(model)) retiredIds.add(model.id);
+      const secretRows = this.sharedDb.db.prepare("SELECT secret_key FROM v3_system_secrets WHERE secret_key LIKE 'model:%:api_key'")
+        .all() as Array<{ secret_key: string }>;
+      for (const secret of secretRows) {
+        const id = secret.secret_key.slice(6, -8);
+        if (isRetiredModelId(id)) retiredIds.add(id);
+      }
+      const groups = (this.sharedDb.db.prepare("SELECT group_id, config_json FROM v3_groups ORDER BY group_id").all() as Array<{ group_id: string; config_json: string }>).map(groupRow => {
+        const group = parseJson<unknown>(groupRow.config_json);
+        if (!isStoredGroupBotConfig(group, groupRow.group_id)) throw new Error("invalid_v3_group_config_for_gemini_retirement");
+        return { groupRow, group };
+      });
+      if (settings) this.sharedDb.db.prepare("UPDATE v3_system_settings SET settings_json = ?, updated_at = ? WHERE settings_key = 'default'")
+        .run(JSON.stringify(removeRetiredModels(settings)), now);
+      let groupsUpdated = 0;
+      const update = this.sharedDb.db.prepare("UPDATE v3_groups SET config_json = ?, updated_at = ? WHERE group_id = ?");
+      for (const { groupRow, group } of groups) {
+        const next = removeRetiredGroupModel(group, retiredIds);
+        if (next === group) continue;
+        update.run(JSON.stringify(next), now, groupRow.group_id);
+        groupsUpdated += 1;
+      }
+      const deleteSecret = this.sharedDb.db.prepare("DELETE FROM v3_system_secrets WHERE secret_key = ?");
+      let secretsDeleted = 0;
+      for (const id of retiredIds) secretsDeleted += Number(deleteSecret.run(`model:${id}:api_key`).changes);
+      const result = { applied: true, modelIds: [...retiredIds].sort(), groupsUpdated, secretsDeleted };
+      this.recordMaintenanceRun("retire-gemini-v4.0.0", result, now);
+      this.setMeta(marker, "complete", now);
+      return result;
     });
   }
 
@@ -1320,7 +1368,7 @@ function normalizeReleaseProfileRevision(value: unknown): string {
  * retired runtime switch through a JSON payload.
  */
 function removeRetiredSystemSettingsFields<T extends SystemSettings>(settings: T): T {
-  const safe = structuredClone(settings) as T & Record<string, unknown>;
+  const safe = removeRetiredModels(settings) as T & Record<string, unknown>;
   // The QQ-number administration command is not a V3 capability. Remove an
   // imported command record as well as the authorization fields so a future
   // runtime cannot accidentally make it configurable again.
@@ -1369,7 +1417,7 @@ function retireLegacyQqAdminFields(group: GroupBotConfig): GroupBotConfig {
 }
 
 function removeRetiredGroupFields(group: GroupBotConfig): GroupBotConfig {
-  return retireLegacyQqAdminFields(removeRoastModeUserIds(group));
+  return retireLegacyQqAdminFields(removeRoastModeUserIds(removeRetiredGroupModel(group)));
 }
 
 function removeRoastModeUserIds(group: GroupBotConfig): GroupBotConfig {

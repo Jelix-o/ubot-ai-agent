@@ -56,7 +56,6 @@ const releasePaths = [
   "scripts/install-node22-runtime.sh",
   "scripts/migrate-v3-state.mjs",
   "scripts/normalize-dotenv-bom.mjs",
-  "scripts/rotate-gemini-reply-key.mjs",
   "scripts/update-cloudflare-origin-allowlist.sh",
   "scripts/upgrade-model-policy.mjs",
   "scripts/repair-member-name.mjs",

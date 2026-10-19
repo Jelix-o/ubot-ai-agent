@@ -86,7 +86,6 @@ for release_path in \
   scripts/update-cloudflare-origin-allowlist.sh \
   scripts/install-cloudflare-origin-hardening.sh \
   scripts/verify-nginx-vhost-ownership.mjs \
-  scripts/rotate-gemini-reply-key.mjs \
   scripts/upgrade-model-policy.mjs \
   scripts/repair-member-name.mjs \
   scripts/deploy-linux-release.sh \

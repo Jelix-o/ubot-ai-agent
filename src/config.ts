@@ -2,6 +2,7 @@ import path from "node:path";
 import dotenv from "dotenv";
 
 import type { AppConfig } from "./types.js";
+import { isRetiredModelId } from "./services/retired-models.js";
 
 dotenv.config();
 
@@ -28,6 +29,7 @@ export function loadConfig(): AppConfig {
   const openAiBaseUrl = requireEnv("OPENAI_BASE_URL");
   const openAiApiKey = requireEnv("OPENAI_API_KEY");
   const openAiModel = requireEnv("OPENAI_MODEL");
+  if (isRetiredModelId(openAiModel)) throw new Error("model_retired");
   const napcatWsUrl =
     napcatMode === "forward"
       ? requireEnv("NAPCAT_WS_URL")

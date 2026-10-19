@@ -34,6 +34,7 @@ const DEFAULT_V3_PROVIDER_CAPABILITIES = {
 };
 const HUIXIAN_RELEASE_PROFILE_REVISION = "immersive-natural-v3.0.3";
 const HUIXIAN_RELEASE_PROFILE_CHANGED_BY = "release:3.0.3:huixian-immersive";
+const { isRetiredModel, removeRetiredGroupModel } = await import(new URL("../dist/services/retired-models.js", import.meta.url));
 
 const args = parseArgs(process.argv.slice(2));
 const appRoot = path.resolve(args.appRoot ?? process.env.UBOT_APP_ROOT ?? process.cwd());
@@ -171,6 +172,7 @@ async function runExistingCutoverUpgrade() {
     repository.requireCutover();
     const now = Date.now();
     const upgrade = repository.runAtomically(() => ({
+      geminiRetirement: repository.retireGeminiOnce(now),
       retiredQqAdministration: repository.retireLegacyQqAdministration(),
       roastModeRetirement: repository.retireRoastModeForExistingGroupsOnce(now),
       groupVisionEnabled: repository.enableVisionForExistingGroupsOnce(now),
@@ -430,6 +432,8 @@ function importAllState({ repository, sharedDb, parsed, sources, huixianProfile,
   };
 
   const groups = normalizeGroupsFile(parsed.get("groups"));
+  const retiredIds = new Set((parsed.get("system-settings")?.models ?? []).filter(isRetiredModel).map(model => model.id));
+  groups.groups = groups.groups.map(group => removeRetiredGroupModel(group, retiredIds));
   repository.saveGroups(groups, now);
   result.groups = groups.groups.length;
   result.roastModeRetirement = repository.retireRoastModeForExistingGroupsOnce(now);
@@ -451,6 +455,7 @@ function importAllState({ repository, sharedDb, parsed, sources, huixianProfile,
     repository.saveSystemSettings(settings, now);
     result.settings = true;
   }
+  result.geminiRetirement = repository.retireGeminiOnce(now);
 
   const memories = Array.isArray(parsed.get("group-memory")?.memories)
     ? parsed.get("group-memory").memories

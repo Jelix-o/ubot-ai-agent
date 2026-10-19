@@ -19,6 +19,7 @@ import AppAnalyticsView from "./views/AnalyticsView.vue";
 import AppBulkConfigView from "./views/BulkConfigView.vue";
 import { workspaces } from "./workspaces";
 import { allowContextChange } from "./composables/useUnsavedChanges";
+import { cancelAuthRecovery } from "./services/api";
 
 export const routes = [
   { path: "/login", name: "login", component: AppLoginView, meta: { title: "后台登录", subtitle: "使用管理员账号进入 UBot 控制台" } },
@@ -47,6 +48,10 @@ for (const route of routes) Object.assign(route.meta, { workspace: workspaces.fi
 export const router = createRouter({
   history: createWebHistory(),
   routes,
+});
+
+router.afterEach((to, from, failure) => {
+  if (!failure && from.name && to.fullPath !== from.fullPath) cancelAuthRecovery();
 });
 
 router.beforeEach(async (to, from) => {

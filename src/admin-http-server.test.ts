@@ -696,6 +696,29 @@ test("command permissions expose server floors, persist changes and reject stale
   assert.equal((await put([{ ...image, permission: "member" }], after.revision)).status, 200);
 });
 
+test("configuration APIs reject retired Gemini IDs and upstream aliases before saving", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const settings = await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string };
+  for (const patch of [
+    { models: [{ id: "gemini", model: "gemini-3" }] },
+    { models: [{ id: "custom-alias", model: "google/gemini-3" }] },
+    { selectedModelIds: { summary: "gemini-38-flash" } },
+    { replyRouting: { fallbackModelIds: ["gemini"] } },
+  ]) {
+    const rejected = await request(baseUrl, "/api/system-settings", { method: "PATCH", headers, body: JSON.stringify({ expectedRevision: settings.revision, patch }) });
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json() as { error: string }).error, "model_retired");
+  }
+  const group = await (await request(baseUrl, "/api/groups/67890/config", { headers })).json() as { revision: string };
+  const rejected = await request(baseUrl, "/api/groups/67890/config", { method: "PATCH", headers, body: JSON.stringify({ expectedRevision: group.revision, patch: { replyModelMode: "gemini" } }) });
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json() as { error: string }).error, "model_retired");
+  const after = await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string };
+  assert.equal(after.revision, settings.revision);
+});
+
 test("model policy requires current revisions even through legacy PUT and supports restoring global inheritance", async (t) => {
   const { baseUrl } = await startFixture(t);
   const auth = await login(baseUrl);
@@ -933,7 +956,7 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     body: image,
   });
   assert.equal(hostileUploadOrigin.status, 403);
-  assert.equal((await hostileUploadOrigin.json() as { error: string }).error, "csrf_required");
+  assert.equal((await hostileUploadOrigin.json() as { error: string }).error, "invalid_origin");
 
   const uploadedResponse = await request(
     baseUrl,

@@ -3,6 +3,14 @@ import test from "node:test";
 
 import { loadConfig } from "./config.js";
 
+test("startup refuses a retired Gemini environment model", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env = { ...originalEnv, INGRESS_READ_API_TOKEN: "fixture-token", OPENAI_BASE_URL: "https://example.test/v1", OPENAI_API_KEY: "fixture-key", OPENAI_MODEL: "models/gemini-3" };
+    assert.throws(() => loadConfig(), /model_retired/);
+  } finally { process.env = originalEnv; }
+});
+
 test("profile AI environment variables are not part of the V3 runtime configuration", () => {
   const originalEnv = { ...process.env };
   try {

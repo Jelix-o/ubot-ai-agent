@@ -135,6 +135,7 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
       model.apiProtocol !== "anthropic",
     );
     const selectedId = settings.selectedModelIds.image;
+    if (selectedId === "") throw new ImageGenerationError("not_configured");
     const candidates = selectedId
       ? [
           ...enabled.filter((model) => model.id === selectedId),

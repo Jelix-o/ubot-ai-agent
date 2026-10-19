@@ -23,6 +23,7 @@ import {
 } from "./admin-http-utils.js";
 import { logInfo, logWarn } from "./logger.js";
 import { GroupConfigValidationError, normalizeGroupConfigPatch } from "./services/group-config-service.js";
+import { isRetiredModelId } from "./services/retired-models.js";
 import type { TransportHealthStatus } from "./bot.js";
 import type { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import type { AdminTaskStore } from "./services/admin-task-store.js";
@@ -434,10 +435,15 @@ export class AdminHttpServer {
         return;
       }
 
-      if (pathname.startsWith("/api/") && session && isStateChangingMethod(req.method) &&
-        (!this.isTrustedRequestOrigin(req) || !this.isValidCsrf(req, session))) {
-        this.sendJson(res, { error: "csrf_required" }, 403);
-        return;
+      if (pathname.startsWith("/api/") && session && isStateChangingMethod(req.method)) {
+        if (!this.isTrustedRequestOrigin(req)) {
+          this.sendJson(res, { error: "invalid_origin" }, 403);
+          return;
+        }
+        if (!this.isValidCsrf(req, session)) {
+          this.sendJson(res, { error: "csrf_required" }, 403);
+          return;
+        }
       }
 
       if (!pathname.startsWith("/api/") && req.method === "GET") {
@@ -483,7 +489,7 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/api/session") {
-      const csrfToken = this.auth.rotateCsrfToken(session as AdminAuthSession);
+      const csrfToken = this.auth.getCsrfToken(session as AdminAuthSession);
       this.sendJson(res, this.publicSession({ ...session, csrfToken }));
       return;
     }
@@ -1095,6 +1101,7 @@ export class AdminHttpServer {
           if (!fields.length || fields.some(f => !copyFields.includes(f))) throw new BulkError("invalid_copy_fields");
           patch = Object.fromEntries(fields.map(f => [f, (source as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined));
           if (!Object.keys(patch ?? {}).length) throw new BulkError("empty_copy_fields");
+          if (isRetiredModelId(patch?.replyModelMode)) throw new BulkError("model_retired");
           if (typeof patch?.replyModelMode === "string" && !await this.isApprovedReplyModel(patch.replyModelMode)) throw new BulkError("reply_model_not_approved");
           ids = ids.filter(id => id !== sourceId);
         } else if (resource === "memes" && action === "tags") {
@@ -2186,6 +2193,9 @@ export class AdminHttpServer {
         }
         const guardModelUpdate = req.method === "PATCH" || "replyModelMode" in body || "replyModelSource" in body;
         if (guardModelUpdate && (typeof rawBody.expectedRevision !== "string" || rawBody.expectedRevision !== revision(existing))) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
+        if (isRetiredModelId(body.replyModelMode)) {
+          this.sendJson(res, { error: "model_retired" }, 400); return;
+        }
         if (typeof body.replyModelMode === "string" && !(await this.isApprovedReplyModel(body.replyModelMode))) {
           this.sendJson(res, { error: "reply_model_not_approved" }, 400); return;
         }
@@ -2199,6 +2209,9 @@ export class AdminHttpServer {
         if (session.role === "group_admin" && "memoryDisabledUserIds" in body && !("memoryDisabledUserIds" in update)) {
           this.sendJson(res, { error: "privacy_opt_out_reenable_requires_super_admin" }, 403);
           return;
+        }
+        if (session.role === "group_admin" && isRetiredModelId(update.replyModelMode)) {
+          this.sendJson(res, { error: "model_retired" }, 400); return;
         }
         if (session.role === "group_admin" && typeof update.replyModelMode === "string" &&
           !(await this.isApprovedReplyModel(update.replyModelMode))) {
@@ -2277,6 +2290,7 @@ export class AdminHttpServer {
           "invalid_models",
           "invalid_model_config",
           "invalid_model_id",
+          "model_retired",
           "duplicate_model_id",
           "invalid_model_purpose",
           "invalid_image_model_protocol",

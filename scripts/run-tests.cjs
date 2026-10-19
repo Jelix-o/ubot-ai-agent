@@ -54,7 +54,7 @@ function run(label, args) {
 
 run("compiled service tests", ["--test", "--experimental-test-isolation=none", ...tests]);
 run("QQ member-profile batch tests", ["--test", "scripts/qq-member-profile-batch.test.mjs"]);
-run("Gemini reply-key rotation tests", ["--test", "scripts/rotate-gemini-reply-key.test.mjs"]);
+run("admin authentication recovery tests", ["--import", "tsx", "--test", "scripts/admin-api.test.mjs"]);
 run("secret scan tests", ["--test", "scripts/secret-scan.test.mjs"]);
 run("release ZIP writer tests", ["--test", "scripts/create-release-zip.test.mjs"]);
 run("historical release inventory tests", ["--test", "scripts/historical-release-inventory.test.mjs"]);

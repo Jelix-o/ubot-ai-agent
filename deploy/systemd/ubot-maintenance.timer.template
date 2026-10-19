@@ -1,5 +1,5 @@
 [Unit]
-Description=Run UBot V3 retention maintenance hourly
+Description=Run UBot v4.0 retention maintenance hourly
 
 [Timer]
 OnCalendar=*-*-* *:17:00 UTC

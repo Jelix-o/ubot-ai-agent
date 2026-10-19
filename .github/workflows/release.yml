@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish a matching final tag after all verification jobs pass"
+        description: "After verification, publish a matching final tag through the protected production environment"
         required: false
         default: false
         type: boolean
@@ -295,13 +295,14 @@ jobs:
   release-metadata:
     name: Validate release metadata
     needs: [release-artifact-review]
-    # Candidate tags receive package and artifact gates, but only a final tag
-    # may generate the formal release metadata used by the write-only job.
+    # Tag pushes and the default manual dispatch only verify a candidate. A
+    # formal Release requires an explicit manual request on the final tag.
     if: >-
       vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' &&
       github.ref_type == 'tag' &&
       !contains(github.ref_name, '-') &&
-      (github.event_name == 'push' || inputs.publish == true)
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -348,7 +349,8 @@ jobs:
       vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' &&
       github.ref_type == 'tag' &&
       !contains(github.ref_name, '-') &&
-      (github.event_name == 'push' || inputs.publish == true)
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "./AppIcon.vue";
 import AdminDialog from "./AdminDialog.vue";
+import ReauthDialog from "./ReauthDialog.vue";
 import { confirmation, resolveConfirmation } from "../composables/useConfirm";
 import { allowContextChange } from "../composables/useUnsavedChanges";
 import { dispatchGroupChanged, dispatchRefreshCurrent } from "../composables/useRefreshEvents";
@@ -11,6 +12,7 @@ import { workspaces } from "../workspaces";
 import { api, queryString, type GlobalSearchResult } from "../services/api";
 import { useAppStore } from "../stores/app";
 const app = useAppStore(), route = useRoute(), router = useRouter();
+const version = __UBOT_VERSION__;
 const mobileNavOpen = shallowRef(false), collapsed = shallowRef(localStorage.getItem("ubot-nav-collapsed") === "true");
 const themeOpen = shallowRef(false), userOpen = shallowRef(false), commandOpen = shallowRef(false);
 const commandQuery = shallowRef(""), searchResults = shallowRef<GlobalSearchResult[]>([]), searchLoading = shallowRef(false);
@@ -37,11 +39,12 @@ watch(() => route.fullPath,() => { mobileNavOpen.value = false; closeFloating();
 watch(commandQuery,async (value,_,cleanup) => { const q = value.trim(); searchResults.value = []; if (!q) return; const controller = new AbortController(); cleanup(() => controller.abort()); searchLoading.value = true; try { const data = await api<{results:GlobalSearchResult[]}>(`/api/search${queryString({q,groupId:app.groupId})}`,{signal:controller.signal}); searchResults.value = data.results; } catch(error) { if (!controller.signal.aborted) app.showToast((error as Error).message,"error"); } finally { if (!controller.signal.aborted) searchLoading.value = false; } });
 </script>
 <template>
+  <ReauthDialog />
   <RouterView v-if="isLogin" />
   <div v-else class="app-shell" :class="{ 'nav-collapsed': collapsed }">
     <a href="#page-content" class="skip-link">跳到页面内容</a>
     <aside class="sidebar" :class="{open:mobileNavOpen}" aria-label="工作区导航">
-      <a class="brand" href="/" @click.prevent="go('/')"><span class="brand-mark">UB</span><div class="brand-copy"><strong>UBot</strong><small>群聊运营控制台</small></div></a>
+      <a class="brand" href="/" @click.prevent="go('/')"><span class="brand-mark">UB</span><div class="brand-copy"><strong>UBot v{{ version }}</strong><small>群聊运营控制台</small></div></a>
       <div class="nav-caption">工作区</div>
       <nav class="nav-list"><RouterLink v-for="item in navigation" :key="item.id" :to="{path:item.items[0].path,query:app.groupId ? {group:app.groupId} : {}}" class="nav-item" :class="{active:workspace?.id===item.id}" :title="item.title" @click="mobileNavOpen=false"><AppIcon :name="item.icon" :size="19"/><span>{{item.title}}</span></RouterLink></nav>
       <footer class="sidebar-footer"><div class="side-account"><span class="avatar">{{app.username.slice(0,1).toUpperCase()}}</span><div><strong>{{app.username}}</strong><small>{{roleLabel}}</small></div></div><button class="collapse-btn" type="button" :aria-label="collapsed ? '展开侧栏' : '折叠侧栏'" @click="collapsed=!collapsed">{{collapsed ? '›' : '‹'}}<span>折叠侧栏</span></button></footer>

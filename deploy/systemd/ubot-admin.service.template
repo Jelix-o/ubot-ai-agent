@@ -1,5 +1,5 @@
 [Unit]
-Description=UBot V3 admin HTTP server
+Description=UBot v4.0 admin HTTP server
 After=network-online.target ubot-ingress.service
 Wants=network-online.target
 PartOf=ubot.target

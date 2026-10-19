@@ -217,6 +217,7 @@ export class ConfiguredAiService implements RuntimeAiService {
       return settings.models.find((model) => model.id === this.selectedModelId && model.purpose === this.purpose && isUsableModel(model));
     }
     for (const purpose of this.resolvePurposeOrder(preferredPurpose)) {
+      if (settings.selectedModelIds[purpose] === "") throw new Error("model_not_configured");
       const selectedModelId = isSelectableModelPurpose(purpose)
         ? settings.selectedModelIds[purpose]
         : undefined;

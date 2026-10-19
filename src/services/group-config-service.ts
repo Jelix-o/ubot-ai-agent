@@ -5,6 +5,7 @@ import { DAILY_REPORT_MAX_TOP_USERS, normalizeDailyReportTopUserCount } from "..
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
+import { isRetiredModelId, removeRetiredGroupModel } from "./retired-models.js";
 
 const HUIXIAN_PERSONA_ID = "huixian";
 
@@ -587,6 +588,7 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 }
 
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
+  group = removeRetiredGroupModel(group);
   const legacy = group as GroupBotConfig & Record<string, unknown>;
   const {
     voiceReplyEnabled: _voiceReplyEnabled,
@@ -643,6 +645,7 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
     throw new GroupConfigValidationError("invalid_group_config");
   }
   const legacyInput = input as Record<string, unknown>;
+  if (isRetiredModelId(input.replyModelMode)) throw new GroupConfigValidationError("model_retired");
   if ("voiceReplyEnabled" in legacyInput || "defaultVoiceReplyEnabled" in legacyInput) {
     throw new GroupConfigValidationError("voice_feature_retired");
   }
