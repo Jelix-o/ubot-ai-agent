@@ -13,7 +13,7 @@ function Get-NodeExecutablePath {
     return (Resolve-Path -LiteralPath $Candidate).Path
   }
 
-  $command = Get-Command $Candidate -CommandType Application -ErrorAction SilentlyContinue
+  $command = Get-Command $Candidate -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($null -ne $command -and $command.Path) {
     return $command.Path
   }
@@ -24,8 +24,13 @@ function Get-NodeExecutablePath {
 function Get-NodeMajorVersion {
   param([Parameter(Mandatory = $true)][string]$NodePath)
 
-  $version = & $NodePath --version 2>$null | Select-Object -First 1
-  if ($LASTEXITCODE -ne 0 -or $null -eq $version) {
+  # Do not pipe native output through Select-Object before reading
+  # $LASTEXITCODE: Windows PowerShell can report a pipeline-side failure even
+  # when the Node executable produced a valid version line.
+  $versionLines = @(& $NodePath --version 2>$null)
+  $nodeExitCode = $LASTEXITCODE
+  $version = $versionLines | Select-Object -First 1
+  if ($nodeExitCode -ne 0 -or $null -eq $version) {
     return $null
   }
 
@@ -107,9 +112,18 @@ function Resolve-UbotNodeRuntime {
     }
   }
 
-  $fromPath = Get-UbotNodeRuntime "node"
-  if ($null -ne $fromPath) {
-    return $fromPath
+  # PATH can contain multiple Node installations. Evaluate each concrete path
+  # rather than passing a command array into a string parameter, then select
+  # the first runtime that satisfies the Node 22 + paired npm contract.
+  $pathCommands = @(Get-Command "node" -CommandType Application -ErrorAction SilentlyContinue)
+  foreach ($pathCommand in $pathCommands) {
+    if (-not $pathCommand.Path) {
+      continue
+    }
+    $fromPath = Get-UbotNodeRuntime ([string]$pathCommand.Path)
+    if ($null -ne $fromPath) {
+      return $fromPath
+    }
   }
 
   throw "Node.js 22 or newer with its paired npm CLI is required to package a Windows release. Set UBOT_NODE to an absolute Node executable if necessary."
@@ -294,8 +308,7 @@ try {
   Pop-Location
 }
 
-$archiveInputs = Get-ChildItem -LiteralPath $bundleDir -Force
-Compress-Archive -Path $archiveInputs.FullName -DestinationPath $zipPath -Force
+Invoke-UbotNode "scripts/create-release-zip.mjs" $bundleDir $zipPath
 $hash = Get-Sha256Hex -LiteralPath $zipPath
 $assetName = Split-Path -Leaf $zipPath
 Set-Content -LiteralPath $checksumPath -Value "$hash *$assetName" -Encoding ASCII -NoNewline

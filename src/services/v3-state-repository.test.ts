@@ -271,7 +271,7 @@ test("V3 roast-mode retirement removes persisted fields atomically and only once
     assert.equal(Object.hasOwn(JSON.parse(stored.config_json), "roastModeUserIds"), false);
     assert.deepEqual(JSON.parse(stored.config_json).switcherUserIds, ["90003"]);
     assert.equal(Object.hasOwn(repository.getGroup("10001") ?? {}, "roastModeUserIds"), false);
-    assert.equal(repository.getMeta("group_roast_mode_retired_v3_0_47"), "complete");
+    assert.equal(repository.getMeta("group_roast_mode_retired_v3_0_49"), "complete");
     assert.deepEqual(repository.retireRoastModeForExistingGroupsOnce(1_800_000_010_000), {
       applied: false,
       groupsUpdated: 0,
@@ -309,7 +309,7 @@ test("V3 roast-mode retirement validates every config before changing a valid ro
     );
     const stored = db.db.prepare("SELECT config_json FROM v3_groups WHERE group_id = '10001'").get() as { config_json: string };
     assert.equal(stored.config_json, originalRoastRow.config_json);
-    assert.equal(repository.getMeta("group_roast_mode_retired_v3_0_47"), undefined);
+    assert.equal(repository.getMeta("group_roast_mode_retired_v3_0_49"), undefined);
   });
 });
 
@@ -341,7 +341,7 @@ test("V3 roast-mode retirement rejects a config whose groupId does not match its
     );
     const stored = db.db.prepare("SELECT config_json FROM v3_groups WHERE group_id = '10001'").get() as { config_json: string };
     assert.equal(stored.config_json, originalRoastRow.config_json);
-    assert.equal(repository.getMeta("group_roast_mode_retired_v3_0_47"), undefined);
+    assert.equal(repository.getMeta("group_roast_mode_retired_v3_0_49"), undefined);
   });
 });
 

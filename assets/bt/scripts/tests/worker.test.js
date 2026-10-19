@@ -3,10 +3,14 @@ const assert = require('assert');
 const path = require('path');
 const { createRuntime } = require('../lib/runtime');
 
+const fakeWorker = path.resolve(__dirname, 'helpers', 'fake-curl-cffi-worker.js');
+
 async function main() {
   const runtime = createRuntime({
     workspaceRoot: '/root/.hermes',
-    scriptDir: path.resolve(__dirname, '..')
+    scriptDir: path.resolve(__dirname, '..'),
+    curlCffiWorkerCommand: process.execPath,
+    curlCffiWorkerScript: fakeWorker
   });
 
   const first = await runtime.fetchUrl('https://httpbin.org/cookies/set/bt_worker/yes', {

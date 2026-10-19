@@ -17,7 +17,7 @@ const STATE_CUTOVER_VERSION = "v3";
 const HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY = "huixian_release_profile_revision";
 const GROUP_VISION_ENABLED_MIGRATION_META_KEY = "group_vision_enabled_v3_0_18";
 const GROUP_VISION_ENABLED_MIGRATION_VERSION = "complete";
-const GROUP_ROAST_MODE_RETIREMENT_MIGRATION_META_KEY = "group_roast_mode_retired_v3_0_47";
+const GROUP_ROAST_MODE_RETIREMENT_MIGRATION_META_KEY = "group_roast_mode_retired_v3_0_49";
 const GROUP_ROAST_MODE_RETIREMENT_MIGRATION_VERSION = "complete";
 
 export interface V3CapabilityPolicy {
@@ -1373,8 +1373,8 @@ function removeRetiredGroupFields(group: GroupBotConfig): GroupBotConfig {
 }
 
 function removeRoastModeUserIds(group: GroupBotConfig): GroupBotConfig {
-  const legacy = group as GroupBotConfig & { roastModeUserIds?: unknown };
-  const { roastModeUserIds: _roastModeUserIds, ...withoutRoastMode } = legacy;
+  const withoutRoastMode = { ...group } as GroupBotConfig & Record<string, unknown>;
+  delete withoutRoastMode.roastModeUserIds;
   return withoutRoastMode;
 }
 

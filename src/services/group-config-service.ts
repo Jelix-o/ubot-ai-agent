@@ -587,17 +587,13 @@ function normalizeGroupsConfigFile(data: GroupsConfigFile): GroupsConfigFile {
 }
 
 function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
-  const legacy = group as GroupBotConfig & {
-    voiceReplyEnabled?: unknown;
-    defaultVoiceReplyEnabled?: unknown;
-    roastModeUserIds?: unknown;
-  };
+  const legacy = group as GroupBotConfig & Record<string, unknown>;
   const {
     voiceReplyEnabled: _voiceReplyEnabled,
     defaultVoiceReplyEnabled: _defaultVoiceReplyEnabled,
-    roastModeUserIds: _roastModeUserIds,
     ...rest
   } = legacy;
+  delete rest.roastModeUserIds;
   return {
     ...rest,
     groupId: String(group.groupId || "").trim(),

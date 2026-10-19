@@ -13,12 +13,17 @@ permissions:
 # repository Actions variables before publishing a completed headquarters
 # ledger; the matching Ed25519 private key stays offline.
 env:
+  # Release remains fail-closed while the credential incident is remediated and
+  # historical tags/Releases are rebuilt. A repository administrator must set
+  # this Actions variable to the literal string "true" after that work is signed off.
+  UBOT_RELEASE_PIPELINE_ENABLED: ${{ vars.UBOT_RELEASE_PIPELINE_ENABLED }}
   UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY }}
   UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID }}
 
 jobs:
   secret-scan:
     name: Secret scan
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,6 +41,7 @@ jobs:
 
   verify:
     name: Verify (${{ matrix.os }})
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -67,6 +73,7 @@ jobs:
   admin-visual-smoke:
     name: Admin visual smoke
     needs: [verify, secret-scan]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -101,6 +108,7 @@ jobs:
   package-windows:
     name: Package Windows
     needs: [verify, secret-scan, admin-visual-smoke]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -156,6 +164,7 @@ jobs:
   package-linux:
     name: Package Linux
     needs: [verify, secret-scan, admin-visual-smoke]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -207,6 +216,7 @@ jobs:
   release-artifact-review:
     name: Review release artifacts
     needs: [package-windows, package-linux]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -281,7 +291,7 @@ jobs:
     needs: [release-artifact-review]
     # Candidate tags receive package and artifact gates, but only a final tag
     # may generate the formal release metadata used by the write-only job.
-    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' && github.ref_type == 'tag' && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -324,7 +334,7 @@ jobs:
   github-release:
     name: Publish GitHub Release
     needs: [release-artifact-review, release-metadata]
-    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' && github.ref_type == 'tag' && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

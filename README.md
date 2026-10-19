@@ -256,11 +256,11 @@ Origin hardening 只安装并影响 UBot 的两个 Nginx vhost：`/etc/nginx/sit
 4. 部署器创建受限 `ubot` 服务账户、固定运行时与只读 release，迁移预览目录并以原子方式更新配置、unit、Nginx 和 `current`。它在停止服务前备份状态，失败时恢复旧 release、unit、Nginx 和持久配置。
 
 ```bash
-sudo bash /secure/bootstrap/ubot-3.0.47-linux/scripts/install-node22-runtime.sh 22.22.1
+sudo bash /secure/bootstrap/ubot-3.0.49-linux/scripts/install-node22-runtime.sh 22.22.1
 sudo env UBOT_CLOUDFLARE_STRICT_READY=1 \
-  bash /secure/bootstrap/ubot-3.0.47-linux/scripts/install-cloudflare-origin-hardening.sh
-sudo bash /secure/bootstrap/ubot-3.0.47-linux/scripts/deploy-linux-release.sh \
-  3.0.47 /secure/bootstrap/ubot-3.0.47-linux.tar.gz
+  bash /secure/bootstrap/ubot-3.0.49-linux/scripts/install-cloudflare-origin-hardening.sh
+sudo bash /secure/bootstrap/ubot-3.0.49-linux/scripts/deploy-linux-release.sh \
+  3.0.49 /secure/bootstrap/ubot-3.0.49-linux.tar.gz
 ```
 
 部署器验证正式资产、路径、权限、SQLite、Node 22、Origin hardening 和证书，备份持久状态、执行迁移，原子更新批准的 `network.websocketClients.0.url`、专用预览配置和 units，再切 `current` 并启动三项服务。它会为 Read API 配置独立 token，并轮询 Read API 的 JSON 健康结果、Admin 鉴权边界和三项服务重启计数；任一检查失败即回滚。已切换 V3 的升级不重导旧 JSON。`.env` 存在 UTF-8 BOM 时先逐字节受限备份，仅移除 BOM 并保留权限。
@@ -291,7 +291,7 @@ npm run migrate:v3 -- --execute
 
 导入群配置、设置、批准显式记忆、知识、任务、报告、审计与健康历史。记忆仅接受 `admin`、`explicit_command`、`explicit_request`。旧候选、自动画像、人格、对话进入七天加密回滚归档，不作为运行输入；标记后停止读写旧 JSON。
 
-现有 V3 正式升级执行 `--execute --allow-existing-cutover`，只应用新增迁移、清理与授权能力变更。打包人格的一次性修订有审计、幂等标记，不覆盖管理员后续修改。v3.0.47 在单一 SQLite 事务中从全部群配置移除已退休的 `roastModeUserIds`；遇到损坏配置整批回滚，不启动部分结果。核对账本达到当前版本、`v3_state_meta` 标记存在后启动三项服务。
+现有 V3 正式升级执行 `--execute --allow-existing-cutover`，只应用新增迁移、清理与授权能力变更。打包人格的一次性修订有审计、幂等标记，不覆盖管理员后续修改。v3.0.49 在单一 SQLite 事务中从全部群配置移除已退休的 `roastModeUserIds`；遇到损坏配置整批回滚，不启动部分结果。核对账本达到当前版本、`v3_state_meta` 标记存在后启动三项服务。
 
 `ubot-maintenance.timer` 每小时清理按 Ingress 接收时间计算的七天原始群消息、附件元数据、过期加密归档、30 天网页、租约和孤儿文件。事件时间不延长留存，日报保留结果。撤回表只存交付标识与时间，不存搜索词或卡片，终态按消息保留周期清理。
 
@@ -349,6 +349,8 @@ node scripts/run-node22.cjs scripts/public-docs.mjs release-notes
 
 生成忽略目录 `.codex_tmp/release-notes.md`，版本、标记或检查失败会停止。只有匹配 `v<version>` 的 GitHub Actions 工作流能创建正式 Release：提交历史密钥扫描、Node 22 全量测试、后台视觉冒烟、双平台打包、产物校验和精确产物扫描均成功后才获得写入 Release 的最小权限。本地没有绕过这些门禁的发布命令。
 
+凭据事件的历史净化和旧标签／Release 重建期间，Release 工作流默认停用：除非仓库管理员在 Actions Variables 中将 `UBOT_RELEASE_PIPELINE_ENABLED` 精确设为 `true`，所有 Release 作业都会跳过。只有凭据轮换、历史重写、旧 Release 重建、协作者重新克隆及恢复演练均已完成并有审批记录后，才可开启该变量。
+
 发布说明只记录功能、兼容和验证结果，示例使用“成员甲／成员乙”、`<USER_ID>`、`<GROUP_ID>`、`<BOT_QQ>`；不公开真实称呼、备注、账号、群号、画像、聊天原文和线上定点修复对象。自动检查拦截编号与聊天摘录格式，无法识别所有自然语言姓名，发布前仍需人工复核。报错只输出文件、行号、规则，不回显敏感值。
 
 历史 Release 可单独脱敏；旧 Git 历史和旧发布包不会随文案修改改变。发生凭据事件时先在发行方吊销和轮换，再用仅从标准输入读取的 `scripts/rotate-gemini-reply-key.mjs` 更新 Gemini 回退模型；默认回复模型必须保持 `sol`。历史净化、标签/Release 重建、备份清理和协作者重新克隆属于单独的受控变更。生产数据和凭据通过私有渠道维护。
@@ -357,16 +359,18 @@ node scripts/run-node22.cjs scripts/public-docs.mjs release-notes
 ## 本版更新
 
 <!-- release-notes:start -->
-### v3.0.47
+### v3.0.49
 
-安全与可靠性整合发布，保留 v3.0.46 的成员称呼、身份隔离和画像隐私修复。
+安全与可靠性整合发布，保留 v3.0.48 的日报、生图诊断、成员称呼、身份隔离和画像隐私修复。
 
 - Ingress Read API 新增独立 Bearer token、1 MiB 请求上限及超时控制；Admin 启动失败会传递到服务管理器，可信反代才使用单值真实 IP。
 - Worker 统一管理 SQLite 生命周期，Ingress 出站改为单飞；消费者失败按 5、10、20、30 秒退避，成功后重置。
+- 部署器先验证 Read API 监听与鉴权边界，再重启 NapCat，随后才要求已连接的健康状态；失败恢复旧 release、unit、Nginx 和持久配置。
 - 退休嘴臭模式：旧配置写入返回 `410 roast_mode_retired`，群配置存量在可审计的单一事务中清理，损坏记录会整体回滚。
 - Linux 生产固定独立校验的 Node 22、受限 `ubot` 账户和只读 release；预览文件迁至 `/var/lib/ubot-preview`，服务使用严格 systemd 隔离。
 - 两个 UBot 域名支持 Cloudflare Origin CA、Full (strict)、可信来源限制和原子 CIDR 更新；其他同机站点及全局防火墙保持不变。
 - CI、发布和打包增加类型检查、BT 与后台冒烟、生产依赖审计及密钥扫描门禁；Actions 固定到 commit SHA，并由 Dependabot 跟踪更新。
+- Release 工作流在历史净化完成前默认失效关闭，必须由仓库管理员显式启用后才会执行任何打包或发布作业。
 
 升级会保留现有模型、权限与持久配置。完整发布前需完成 Node 22 测试、后台冒烟、BT 离线回归、密钥扫描、双平台包校验和隔离恢复演练；回滚前排空成人卡片撤回最多 105 秒。
 <!-- release-notes:end -->

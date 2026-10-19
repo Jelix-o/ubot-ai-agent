@@ -108,6 +108,12 @@ function createRuntime(options = {}) {
   const cacheDir = chooseWritableTarget(cacheDirCandidates);
   const userAgent = options.userAgent || DEFAULT_USER_AGENT;
   const pythonExecutable = choosePythonExecutable(skillRoot);
+  // Tests can replace the subprocess protocol without requiring curl_cffi or
+  // public network access. Production keeps the bundled Python helpers.
+  const curlCffiFetchCommand = options.curlCffiFetchCommand || pythonExecutable;
+  const curlCffiFetchScript = options.curlCffiFetchScript || path.join(scriptDir, 'curl_cffi_fetch.py');
+  const curlCffiWorkerCommand = options.curlCffiWorkerCommand || pythonExecutable;
+  const curlCffiWorkerScript = options.curlCffiWorkerScript || path.join(scriptDir, 'curl_cffi_worker.py');
   let curlCffiWorker = null;
   let curlCffiWorkerReady = null;
   let curlCffiRequestId = 0;
@@ -168,8 +174,7 @@ function createRuntime(options = {}) {
   function ensureCurlCffiWorker() {
     if (curlCffiWorker && curlCffiWorkerReady) return curlCffiWorkerReady;
 
-    const workerPath = path.join(scriptDir, 'curl_cffi_worker.py');
-    const child = spawn(pythonExecutable, [workerPath], {
+    const child = spawn(curlCffiWorkerCommand, [curlCffiWorkerScript], {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -587,9 +592,9 @@ function createRuntime(options = {}) {
       const timeoutMs = requestOptions.timeoutMs || DEFAULT_TIMEOUT_MS;
       const timeoutSec = String(Math.max(1, Math.ceil(timeoutMs / 1000)));
       const body = await runFile(
-        pythonExecutable,
+        curlCffiFetchCommand,
         [
-          path.join(scriptDir, 'curl_cffi_fetch.py'),
+          curlCffiFetchScript,
           url,
           requestOptions.referer || '',
           requestOptions.resolveIp || '',

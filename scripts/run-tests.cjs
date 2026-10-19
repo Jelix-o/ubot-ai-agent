@@ -56,6 +56,7 @@ run("compiled service tests", ["--test", "--experimental-test-isolation=none", .
 run("QQ member-profile batch tests", ["--test", "scripts/qq-member-profile-batch.test.mjs"]);
 run("Gemini reply-key rotation tests", ["--test", "scripts/rotate-gemini-reply-key.test.mjs"]);
 run("secret scan tests", ["--test", "scripts/secret-scan.test.mjs"]);
+run("release ZIP writer tests", ["--test", "scripts/create-release-zip.test.mjs"]);
 
 const btTests = findTests("assets/bt/scripts/tests");
 if (btTests.length === 0) {

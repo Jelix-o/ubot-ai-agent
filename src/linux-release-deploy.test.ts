@@ -400,12 +400,27 @@ test("V3 release source verification restricts artifacts to the audited runtime 
   assert.match(linuxPackager, /secret-scan\.mjs --source "\$VERIFY_DIR"/);
   assert.match(windowsPackager, /Invoke-UbotNode "scripts\/secret-scan\.mjs" "--source" \$verifyDir/);
   assert.match(windowsPackager, /Invoke-UbotNode "scripts\/validate-release-zip\.mjs" \$zipPath/);
+  assert.match(windowsPackager, /Invoke-UbotNode "scripts\/create-release-zip\.mjs" \$bundleDir \$zipPath/);
   for (const source of [verifier, linuxPackager, windowsPackager]) {
     assert.doesNotMatch(source, /set-gemini-key-and-model\.mjs/);
   }
 });
 
+test("Windows packager selects one compatible Node runtime when PATH has multiple installations", () => {
+  const windowsPackager = readFileSync(path.resolve("scripts", "package-win.ps1"), "utf8");
+  assert.match(windowsPackager, /Get-Command "node" -CommandType Application -ErrorAction SilentlyContinue/);
+  assert.match(windowsPackager, /foreach \(\$pathCommand in \$pathCommands\)/);
+  assert.match(windowsPackager, /Get-UbotNodeRuntime \(\[string\]\$pathCommand\.Path\)/);
+  assert.match(windowsPackager, /\$versionLines = @\(& \$NodePath --version 2>\$null\)/);
+  assert.match(windowsPackager, /\$nodeExitCode = \$LASTEXITCODE/);
+});
+
 test("formal release publication is gated to the matching final tag and CI", () => {
+  assert.match(releaseWorkflow, /UBOT_RELEASE_PIPELINE_ENABLED: \$\{\{ vars\.UBOT_RELEASE_PIPELINE_ENABLED \}\}/);
+  assert.match(releaseWorkflow, /secret-scan:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
+  assert.match(releaseWorkflow, /package-windows:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
+  assert.match(releaseWorkflow, /package-linux:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
+  assert.match(releaseWorkflow, /github-release:[\s\S]*?if: vars\.UBOT_RELEASE_PIPELINE_ENABLED == 'true'/);
   assert.match(releaseWorkflow, /needs: \[package-windows, package-linux\]/);
   assert.match(releaseWorkflow, /!contains\(github\.ref_name, '-'\)/);
   assert.match(releaseWorkflow, /permissions:\s+contents: read/);

@@ -3,10 +3,14 @@ const assert = require('assert');
 const path = require('path');
 const { createRuntime } = require('../lib/runtime');
 
+const fakeFetch = path.resolve(__dirname, 'helpers', 'fake-curl-cffi-fetch.js');
+
 async function main() {
   const runtime = createRuntime({
     workspaceRoot: '/root/.hermes',
-    scriptDir: path.resolve(__dirname, '..')
+    scriptDir: path.resolve(__dirname, '..'),
+    curlCffiFetchCommand: process.execPath,
+    curlCffiFetchScript: fakeFetch
   });
 
   const failed = await runtime.fetchUrl('https://example.com/definitely-not-found-bt-test', {
