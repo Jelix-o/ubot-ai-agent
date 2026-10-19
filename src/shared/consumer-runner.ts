@@ -20,6 +20,8 @@ export interface ConsumerRunnerOptions {
   pollIntervalMs?: number;
   batchSize?: number;
   maxConcurrentKeys?: number;
+  /** Defaults to the production retry schedule's 5-second first delay. */
+  initialKeyBackoffMs?: number;
   maxKeyBackoffMs?: number;
   onEmpty?: () => void;
 }
@@ -44,6 +46,7 @@ export interface IngressMessageRowLike {
 interface KeyState {
   queue: IngressMessageRowLike[];
   backoffUntil: number;
+  retryDelayMs: number;
 }
 
 export class ConsumerRunner {
@@ -56,8 +59,10 @@ export class ConsumerRunner {
   private readonly maxConcurrentKeys: number;
   private readonly batchSize: number;
   private readonly onEmpty?: () => void;
+  private readonly activeTasks = new Set<Promise<void>>();
   private stopped = false;
-  private pollInFlight = false;
+  private pollInFlight?: Promise<void>;
+  private stopPromise?: Promise<void>;
 
   constructor(
     private readonly db: SharedDb,
@@ -66,8 +71,11 @@ export class ConsumerRunner {
   ) {
     this.batchSize = options.batchSize ?? 100;
     this.maxConcurrentKeys = options.maxConcurrentKeys ?? 8;
-    this.maxKeyBackoffMs = options.maxKeyBackoffMs ?? 30_000;
-    this.defaultKeyBackoffMs = options.maxKeyBackoffMs ? Math.floor(options.maxKeyBackoffMs / 2) : 5_000;
+    this.maxKeyBackoffMs = Math.max(1, options.maxKeyBackoffMs ?? 30_000);
+    this.defaultKeyBackoffMs = Math.min(
+      Math.max(1, options.initialKeyBackoffMs ?? 5_000),
+      this.maxKeyBackoffMs,
+    );
     this.onEmpty = options.onEmpty;
     const pollIntervalMs = options.pollIntervalMs ?? 500;
     this.pollTimer = setInterval(() => {
@@ -77,15 +85,20 @@ export class ConsumerRunner {
     // （部署阻断：worker 启动即死，消息永远不被消费）。
     this.retryTimer = setInterval(() => {
       this.dispatchAll();
-    }, 250);
+    }, Math.min(250, Math.max(1, this.defaultKeyBackoffMs)));
     this.retryTimer.unref();
     void this.poll();
   }
 
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
     this.stopped = true;
     clearInterval(this.pollTimer);
     clearInterval(this.retryTimer);
+    this.stopPromise = this.waitForIdle();
+    return this.stopPromise;
   }
 
   /** Total messages queued across all keys (指标 #5 per_key_queue_depth). */
@@ -97,16 +110,34 @@ export class ConsumerRunner {
     return total;
   }
 
-  private async poll(): Promise<void> {
-    if (this.stopped || this.pollInFlight) {
-      return;
+  private poll(): Promise<void> {
+    if (this.stopped) {
+      return Promise.resolve();
     }
-    this.pollInFlight = true;
+    if (this.pollInFlight) {
+      return this.pollInFlight;
+    }
+    const poll = this.pollOnce();
+    this.pollInFlight = poll;
+    void poll.then(
+      () => this.finishPoll(poll),
+      () => this.finishPoll(poll),
+    );
+    return poll;
+  }
+
+  private async pollOnce(): Promise<void> {
     try {
       const rows = this.db.pollMessages(this.consumerKey, this.batchSize);
       let queuedAny = false;
       for (const row of rows) {
+        if (this.stopped) {
+          return;
+        }
         const key = await this.options.keyOf(row);
+        if (this.stopped) {
+          return;
+        }
         if (this.db.isConsumerMessageCompleted(this.consumerKey, row.id)) {
           continue;
         }
@@ -116,7 +147,10 @@ export class ConsumerRunner {
           this.db.completeConsumerMessage(this.consumerKey, row.id);
           continue;
         }
-        const state = this.keys.get(key) ?? (this.keys.set(key, { queue: [], backoffUntil: 0 }), this.keys.get(key)!);
+        const state = this.keys.get(key) ?? (
+          this.keys.set(key, { queue: [], backoffUntil: 0, retryDelayMs: 0 }),
+          this.keys.get(key)!
+        );
         // 防重复入队（历史副本兜底）：同一消息已在队列中则跳过。
         if (!state.queue.some((queued) => queued.id === row.id)) {
           state.queue.push(row);
@@ -134,8 +168,12 @@ export class ConsumerRunner {
         consumer: this.consumerKey,
         error: error instanceof Error ? error.message : String(error),
       });
-    } finally {
-      this.pollInFlight = false;
+    }
+  }
+
+  private finishPoll(poll: Promise<void>): void {
+    if (this.pollInFlight === poll) {
+      this.pollInFlight = undefined;
     }
   }
 
@@ -157,15 +195,38 @@ export class ConsumerRunner {
     if (state.backoffUntil > now) {
       return;
     }
-    state.backoffUntil = 0;
-
     const message = state.queue[0]!;
     this.busyKeys.add(key);
+    const task = this.runTask(key, message);
+    this.activeTasks.add(task);
+    void task.then(
+      () => this.finishTask(key, task),
+      (error) => {
+        logError("Consumer task rejected unexpectedly; retaining message for retry.", {
+          consumer: this.consumerKey,
+          key,
+          messageId: message.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.finishTask(key, task);
+      },
+    );
+  }
 
-    void this.runTask(key, message).finally(() => {
-      this.busyKeys.delete(key);
-      this.dispatch(key);
-    });
+  private finishTask(key: string, task: Promise<void>): void {
+    this.activeTasks.delete(task);
+    this.busyKeys.delete(key);
+    this.dispatch(key);
+  }
+
+  private async waitForIdle(): Promise<void> {
+    while (this.pollInFlight || this.activeTasks.size > 0) {
+      const pending = [
+        ...(this.pollInFlight ? [this.pollInFlight] : []),
+        ...this.activeTasks,
+      ];
+      await Promise.allSettled(pending);
+    }
   }
 
   private async runTask(key: string, message: IngressMessageRowLike): Promise<void> {
@@ -179,6 +240,8 @@ export class ConsumerRunner {
       const state = this.keys.get(key);
       if (state && state.queue[0]?.id === message.id) {
         state.queue.shift();
+        state.backoffUntil = 0;
+        state.retryDelayMs = 0;
       }
       this.db.completeConsumerMessage(this.consumerKey, message.id);
     };
@@ -201,16 +264,17 @@ export class ConsumerRunner {
       if (state) {
         // Keep the message at the head. It is neither re-polled into the queue
         // nor acknowledged, and a process restart will recover it from SQLite.
-        state.backoffUntil = Date.now() + this.nextBackoff(state);
+        const retryDelayMs = this.nextBackoff(state);
+        state.retryDelayMs = retryDelayMs;
+        state.backoffUntil = Date.now() + retryDelayMs;
       }
     }
   }
 
   private nextBackoff(state: KeyState): number {
-    if (state.backoffUntil === 0) {
+    if (state.retryDelayMs === 0) {
       return this.defaultKeyBackoffMs;
     }
-    const elapsedBackoff = state.backoffUntil - Date.now();
-    return Math.min(this.maxKeyBackoffMs, Math.max(this.defaultKeyBackoffMs, elapsedBackoff * 2));
+    return Math.min(this.maxKeyBackoffMs, state.retryDelayMs * 2);
   }
 }

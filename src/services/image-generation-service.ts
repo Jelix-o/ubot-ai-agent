@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { logWarn } from "../logger.js";
 import type { SystemModelConfig } from "../types.js";
-import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
+import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
 import type { RuntimeCapabilityPolicy } from "./capability-policy-service.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
@@ -42,6 +42,20 @@ export interface ImageGenerationRuntime {
   cleanup(now?: number): Promise<number>;
 }
 
+/** Safe diagnostic fields only; never retain upstream messages or request bodies. */
+export interface ImageGenerationDiagnostics {
+  modelId?: string;
+  model?: string;
+  statusCode?: number;
+  upstreamCode?: string;
+  upstreamType?: string;
+  moderationStage?: "input" | "output" | "unknown";
+  moderationCategories?: string[];
+  requestId?: string;
+  upstreamRequestId?: string;
+  failureKind?: UpstreamFailureKind | "content_blocked";
+}
+
 export class ImageGenerationError extends Error {
   constructor(
     public readonly code:
@@ -50,11 +64,13 @@ export class ImageGenerationError extends Error {
       | "not_configured"
       | "provider_disabled"
       | "cooldown"
+      | "content_blocked"
       | "upstream_rejected"
       | "upstream_unavailable"
       | "invalid_image_response",
     message: string = code,
     public readonly retryAfterSeconds?: number,
+    public readonly diagnostics?: ImageGenerationDiagnostics,
   ) {
     super(message);
     this.name = "ImageGenerationError";
@@ -66,6 +82,7 @@ class ImageUpstreamError extends Error {
     message: string,
     readonly retryable: boolean,
     readonly statusCode?: number,
+    readonly diagnostics?: ImageGenerationDiagnostics,
   ) {
     super(message);
     this.name = "ImageUpstreamError";
@@ -134,6 +151,7 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     await input.onStarted?.();
 
     let lastRetryableError: unknown;
+    let lastDiagnostics: ImageGenerationDiagnostics | undefined;
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index]!;
       try {
@@ -153,14 +171,21 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
         };
       } catch (error) {
         if (input.signal?.aborted) throw error;
+        const diagnostics = {
+          ...(error instanceof ImageUpstreamError || error instanceof ImageGenerationError ? error.diagnostics : {}),
+          modelId: candidate.id,
+          model: candidate.model,
+        };
         if (!(error instanceof ImageUpstreamError) || !error.retryable) {
-          if (error instanceof ImageGenerationError) throw error;
-          throw new ImageGenerationError("upstream_rejected", error instanceof Error ? error.message : "upstream_rejected");
+          if (error instanceof ImageGenerationError) {
+            throw new ImageGenerationError(error.code, error.message, error.retryAfterSeconds, diagnostics);
+          }
+          throw new ImageGenerationError("upstream_rejected", error instanceof Error ? error.message : "upstream_rejected", undefined, diagnostics);
         }
         lastRetryableError = error;
+        lastDiagnostics = diagnostics;
         logWarn("Image generation upstream failed; trying the next configured image model.", {
-          modelId: candidate.id,
-          statusCode: error.statusCode,
+          ...diagnostics,
           fallbackAvailable: index + 1 < candidates.length,
         });
       }
@@ -168,6 +193,8 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     throw new ImageGenerationError(
       "upstream_unavailable",
       lastRetryableError instanceof Error ? lastRetryableError.message : "upstream_unavailable",
+      undefined,
+      lastDiagnostics,
     );
   }); }
 
@@ -275,10 +302,19 @@ export async function requestGeneratedImage(
       signal: controller.signal,
     });
     if (!response.ok) {
-      const detail = (await response.text()).slice(0, 1_000);
-      const kind = classifyUpstreamFailure({ statusCode: response.status, message: detail });
-      const retryable = kind === "rate_limit" || kind === "unavailable" || kind === "timeout" || kind === "network";
-      throw new ImageUpstreamError(`image_upstream_http_${response.status}`, retryable, response.status);
+      const detail = (await response.text()).slice(0, 16_384);
+      const { diagnostics, message } = readUpstreamDiagnostics(response, detail);
+      // A gateway may include words like "upstream" or "unavailable" in a
+      // policy error. Stable provider codes must win over generic text matching.
+      if (diagnostics.upstreamCode === "moderation_blocked" || diagnostics.upstreamCode === "content_policy_violation") {
+        throw new ImageGenerationError("content_blocked", "content_blocked", undefined, {
+          ...diagnostics, moderationStage: diagnostics.moderationStage ?? "unknown", failureKind: "content_blocked",
+        });
+      }
+      const kind = classifyUpstreamFailure({ statusCode: response.status, message });
+      const retryable = diagnostics.upstreamType !== "image_generation_user_error" &&
+        (kind === "rate_limit" || kind === "unavailable" || kind === "timeout" || kind === "network");
+      throw new ImageUpstreamError(`image_upstream_http_${response.status}`, retryable, response.status, { ...diagnostics, failureKind: kind });
     }
     const contentLength = Number(response.headers.get("content-length"));
     if (Number.isFinite(contentLength) && contentLength > Math.ceil(IMAGE_GENERATION_MAX_BYTES * 4 / 3) + 1_000_000) {
@@ -306,11 +342,13 @@ export async function requestGeneratedImage(
   } catch (error) {
     if (error instanceof ImageGenerationError || error instanceof ImageUpstreamError) throw error;
     if (options.signal?.aborted) throw error;
-    if (timedOut) throw new ImageUpstreamError("image_upstream_timeout", true);
+    if (timedOut) throw new ImageUpstreamError("image_upstream_timeout", true, undefined, { failureKind: "timeout" });
     const kind = classifyUpstreamFailure({ error });
     throw new ImageUpstreamError(
       "image_upstream_network_error",
       kind === "network" || kind === "timeout" || kind === "unavailable" || kind === "rate_limit",
+      undefined,
+      { failureKind: kind },
     );
   } finally {
     if (options.signal?.aborted) telemetryStatus = "cancelled";
@@ -330,6 +368,42 @@ export function isSupportedGeneratedImage(data: Buffer): boolean {
 
 function imageGenerationEndpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/images/generations`;
+}
+
+function readUpstreamDiagnostics(response: Response, detail: string): {
+  diagnostics: ImageGenerationDiagnostics;
+  message: string;
+} {
+  let payload: Record<string, unknown> = {};
+  try { payload = JSON.parse(detail); } catch { /* Non-JSON proxy errors still use HTTP/text classification. */ }
+  const error = asRecord(asRecord(payload).error);
+  const moderation = asRecord(error.moderation_details);
+  const stage = moderation.moderation_stage;
+  const message = typeof error.message === "string" ? error.message : detail;
+  const upstreamRequestId = diagnosticToken(error.request_id) ?? diagnosticToken(asRecord(payload).request_id) ??
+    diagnosticToken(message.match(/\brequest\s+id\s*[:=]?\s*([a-z0-9_-]{1,160})/i)?.[1]);
+  return {
+    message,
+    diagnostics: {
+      statusCode: response.status,
+      upstreamCode: diagnosticToken(error.code),
+      upstreamType: diagnosticToken(error.type),
+      requestId: diagnosticToken(response.headers.get("x-request-id") ?? response.headers.get("request-id")),
+      upstreamRequestId,
+      ...(stage === "input" || stage === "output" || stage === "unknown" ? { moderationStage: stage } : {}),
+      ...(Array.isArray(moderation.categories) ? {
+        moderationCategories: moderation.categories.slice(0, 8).map(diagnosticToken).filter((value): value is string => Boolean(value)),
+      } : {}),
+    },
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function diagnosticToken(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z0-9_:-][a-z0-9_.:-]{0,159}$/i.test(value) ? value : undefined;
 }
 
 function readBase64Image(payload: unknown): string {

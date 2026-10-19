@@ -4,7 +4,6 @@ import { computed, onMounted, reactive, shallowRef, watch } from "vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { confirmAction } from "../composables/useConfirm";
 import { useContentBulk } from "../composables/useContentBulk";
-import AdminDialog from "../components/AdminDialog.vue";
 import BulkPreviewDialog from "../components/BulkPreviewDialog.vue";
 import ContentBulkBar from "../components/ContentBulkBar.vue";
 import { api, queryString, type HtmlPreviewMetadata, type HtmlPreviewStatus, type Pagination } from "../services/api";
@@ -130,7 +129,8 @@ function allVisibleSelected(): boolean {
   return selectable.length > 0 && selectable.every((item) => selectedIds.value.has(item.id));
 }
 
-function onBulkAction(action: "delete"): void {
+function onBulkAction(action: "enable" | "disable" | "delete" | "tags"): void {
+  if (action !== "delete") return;
   void prepareBulk(action);
 }
 

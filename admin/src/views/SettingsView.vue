@@ -429,11 +429,6 @@ function modelHasFailure(model: SystemModelConfig): boolean {
   return model.enabled && Boolean(health && !health.ok && !health.skipped);
 }
 
-function modelHasPassed(model: SystemModelConfig): boolean {
-  const health = modelHealthById.value[model.id];
-  return model.enabled && Boolean(health?.ok && !health.skipped);
-}
-
 function modelHealthLabel(model: SystemModelConfig): string {
   const health = modelHealthById.value[model.id];
   if (!health) return "";

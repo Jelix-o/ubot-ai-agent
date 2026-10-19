@@ -315,7 +315,6 @@ export interface GroupBotConfig {
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
-  roastModeUserIds?: string[];
   manualIdentities?: GroupManualIdentity[];
   liveChatDelaySeconds?: number;
   liveChatDelayMinutes?: number;
@@ -530,6 +529,8 @@ export interface AppConfig {
   napcatReverseWsPort: number;
   napcatReverseWsPath: string;
   ingressReadApiPort: number;
+  /** Shared bearer token for the localhost ingress read API. */
+  ingressReadApiToken: string;
   openAiBaseUrl: string;
   openAiApiKey: string;
   openAiModel: string;

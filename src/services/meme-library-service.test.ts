@@ -20,7 +20,7 @@ import {
 } from "./meme-library-service.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 const PNG = Buffer.concat([
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
   Buffer.from("seed-png"),

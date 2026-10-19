@@ -63,7 +63,7 @@ npm run dev
 | `NAPCAT_ACCESS_TOKEN` | OneBot 鉴权；非本地 Ingress 监听必须设置 |
 | `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL` | 初始回复模型连接，后续在后台维护 |
 | `ADMIN_HTTP_ENABLED`、`ADMIN_HTTP_HOST`、`ADMIN_HTTP_PORT` | 生产为 `true`、`127.0.0.1`、`6200` |
-| `INGRESS_READ_API_PORT` | 内部读接口，生产为 `6198`、仅本机访问 |
+| `INGRESS_READ_API_PORT`、`INGRESS_READ_API_TOKEN` | 内部读接口；生产为 `6198`、仅本机访问，并使用独立的至少 32 随机字节 Bearer token |
 | `ADMIN_USERNAME`、`ADMIN_PASSWORD` | 账户表为空时创建首个超管，密码至少 12 位 |
 | `UBOT_STATE_ENCRYPTION_KEY` | 恰好 32 字节主密钥，以 64 位十六进制或 base64url 编码 |
 | `HTML_PREVIEW_PUBLIC_BASE_URL`、`HTML_PREVIEW_ROOT` | 独立预览域与持久页面目录 |
@@ -134,14 +134,15 @@ npm run dev
 sudo apt-get update
 sudo apt-get install -y python3-venv
 sudo node scripts/install-bt-deps.mjs --runtime-root /opt/ai-project/bt-runtime --python python3
-sudo chown -R ubuntu:ubuntu /opt/ai-project/bt-runtime
+sudo chown -R root:root /opt/ai-project/bt-runtime
+sudo chmod -R a+rX,go-w /opt/ai-project/bt-runtime
 ```
 
 ```powershell
 node scripts/install-bt-deps.mjs --runtime-root D:\UBot\bt-runtime --python python
 ```
 
-模板运行用户为 `ubuntu`，其他安装使用对应服务用户。虚拟环境和浏览器放在应用持久目录，适配 `ProtectHome=yes`，不放 `/root` 或 `/home`。持久 `.env` 示例：
+Linux 生产运行用户为无登录、无 sudo、无 Docker 组权限的 `ubot`。BT 依赖树由 root 维护且只读；虚拟环境和浏览器放在应用持久目录，适配 `ProtectHome=yes`，不放 `/root` 或 `/home`。持久 `.env` 示例：
 
 ```dotenv
 UBOT_BT_PYTHON=/opt/ai-project/bt-runtime/venv/bin/python
@@ -154,7 +155,7 @@ Windows 使用 `venv\Scripts\python.exe` 和对应浏览器路径。可直连时
 `data/bt/` 保存缓存、站点状态、Cookie 与 `browser-state/`，供运行用户写入，建议 `0700`。默认从实际持久 `data/` 相邻目录寻找 `bt-runtime/`，兼容软链接。发布包排除虚拟环境、浏览器、Cookie 和缓存。
 
 ```bash
-sudo -u ubuntu env PLAYWRIGHT_BROWSERS_PATH=/opt/ai-project/bt-runtime/browsers \
+sudo -u ubot env PLAYWRIGHT_BROWSERS_PATH=/opt/ai-project/bt-runtime/browsers \
   /opt/ai-project/bt-runtime/venv/bin/python -c "from scrapling.fetchers import StealthyFetcher; import curl_cffi; print('ready')"
 ```
 
@@ -227,57 +228,54 @@ npm run admin:reset-password -- --username <account> --data-dir /opt/ai-project
 
 | 路径 | 用途 |
 | --- | --- |
-| `/opt/ai-project/.env` | 持久配置与密钥，`0600` |
-| `/opt/ai-project/data` | SQLite、加密归档、缓存和生成页面 |
-| `/opt/ai-project/bt-runtime` | Python 虚拟环境与浏览器 |
+| `/opt/ai-project/.env` | 持久配置与密钥，`root:ubot 0640` |
+| `/opt/ai-project/data` | SQLite、加密归档、缓存；仅 `ubot` 可写 |
+| `/var/lib/ubot-preview` | 预览静态页面；仅 `ubot` 可写，不是 release 子目录 |
+| `/opt/ai-project/bt-runtime` | Python 虚拟环境与浏览器；root 维护、服务仅读 |
 | `/opt/ai-project/release-backups` | 部署前受限备份 |
-| `/opt/ai-project-releases/<version>` | 独立发布目录 |
+| `/opt/ai-project-releases/<version>` | root 拥有的只读独立发布目录 |
 | `/opt/ai-project-releases/current` | 当前版本软链接 |
 
 旧 `config/`、`skills/` 仅首次迁移输入，不链接到 V3 运行目录。旧 `ai-project.service` 保留用于人工灾难恢复，切换后禁用，不与 `ubot.target` 并行。
 
-现有 Docker NapCat 连 `ws://172.21.0.1:6199/onebot/ws`，Ingress 监听 Docker 网关。`6198`、`6200` 仅 loopback。NapCat 文件路径由操作者本地提供，公开示例用 `/opt/napcat/config/onebot11_<BOT_QQ>.json`，不得提交真实账号。
+现有 Docker NapCat 连 `ws://172.21.0.1:6199/onebot/ws`，Ingress 监听 Docker 网关。`6198`、`6200` 仅 loopback；Ingress Read API 在所有非 loopback 检查上要求独立 Bearer token，健康检查仍供本机使用。NapCat 文件路径由操作者本地提供，公开示例用 `/opt/napcat/config/onebot11_<BOT_QQ>.json`，不得提交真实账号。
 
 ### 独立网页预览域
 
-示例后台 `bot.9958.uk`，预览 `preview.9958.uk`。预览只提供静态内容，不代理 `6200`，不共享后台 Cookie 或 API。页面目录必须在持久 `data/` 下，不在版本目录；Worker 写入，Nginx 只读取 token 的页面文件。
+示例后台 `bot.9958.uk`，预览 `preview.9958.uk`。预览只提供静态内容，不代理 `6200`，不共享后台 Cookie 或 API。页面目录固定为 `/var/lib/ubot-preview`，不是版本目录；Worker 写入，Nginx 只读取 token 的页面文件。
 
-部署器只安装 `/etc/nginx/sites-available/preview-9958`、`/etc/nginx/ubot-preview-static.conf` 及 enabled 软链接。提前安装匹配域名的 Cloudflare Origin 或受管证书，传入 `/etc/` 下证书和密钥路径；证书、私钥匹配及 `nginx -t` 必须先通过。Certbot 示例：
+两个 UBot 域名使用 Cloudflare Origin CA 证书，分别置于 `/etc/ssl/cloudflare/`，私钥由 `root:root` 持有并为 `0600` 或 `0640`。安装与部署预检会拒绝已经失效或七天内到期的证书。在 Cloudflare 控制台将整个 `9958.uk` Zone 的所有已代理域名完成有效源站证书预检后，才将 Zone 切换到 **Full (strict)**。该变更需要最小 Zone SSL/Origin CA/设置权限和变更窗口，令牌不写入服务器或仓库。
 
-```bash
-sudo certbot certonly --nginx -d preview.9958.uk
-export UBOT_PREVIEW_CERT_PATH=/etc/letsencrypt/live/preview.9958.uk/fullchain.pem
-export UBOT_PREVIEW_KEY_PATH=/etc/letsencrypt/live/preview.9958.uk/privkey.pem
-```
-
-保留 `/var/www/certbot` 和 `/.well-known/acme-challenge/` 的 HTTP-01 续期路径。预览仅允许 GET／HEAD、token 路径，禁止目录与软链接遍历，返回 no-store、noindex、nosniff、CSP、sandbox 和 referrer 保护；删除后 404。部署器不改既有应用站点、Cloudflare SSL 模式或防火墙。
+Origin hardening 只安装并影响 UBot 的两个 Nginx vhost：`/etc/nginx/sites-available/bot-9958`、`/etc/nginx/sites-available/preview-9958` 和专用 include。root 定时任务从 Cloudflare 验证并原子更新 CIDR include；更新、`nginx -t` 或 reload 失败时保留上一次有效配置。两站只接受 Cloudflare 源地址，并仅对可信 Cloudflare 请求恢复真实访客 IP；同机其他站点与 GCP 全局防火墙不在此改动范围。预览仅允许 GET／HEAD、token 路径，禁止目录与软链接遍历，返回 no-store、noindex、nosniff、CSP、sandbox 和 referrer 保护；删除后 404。
 
 ### 正式部署步骤
 
-1. 同一正式 Release 下载匹配 tar.gz 和 `.sha256`，核对摘要，使用包内对应部署脚本。
-2. 检查磁盘、服务和权限；部署用户需能原子替换 `.env`、本地 NapCat JSON，读写数据库、备份及页面目录，并有管理指定服务和预览 Nginx 的现有 sudo 权限。
-3. 停止 Worker 新任务，Ingress 留到最后一张成人卡片撤回完成，最多等 105 秒。确认备份与证书后部署。
-4. 本地填写真实 NapCat 和证书路径，运行：
+1. 同一正式 Release 下载匹配 tar.gz 和 `.sha256`，核对摘要。以 root 拥有、无符号链接且不可被组或其他用户写入的临时 bootstrap 目录解包；不得从旧的可写 `current` 目录运行特权安装脚本。
+2. 在 Cloudflare 中完成所有已代理源站的 Origin CA 预检并切换为 Full (strict)。将两个已配对、覆盖正确域名的证书和私钥放入 `/etc/ssl/cloudflare/`；确认 `nginx -t`。这一步先于来源限制，避免切换中断其他已代理站点。
+3. 先以 root 从已校验的 bootstrap 目录安装并校验独立 Node 22 运行时；再运行 UBot Origin hardening。安装器写入 root 所有的来源凭据；没有该凭据的旧运行时目录会被拒绝，必须停服务后以已校验归档完整替换。该步骤创建 root 定时 CIDR 更新器并只限制两个 UBot vhost。不得将 Cloudflare 临时令牌保存到 `.env`、环境文件或命令历史。
+4. 部署器创建受限 `ubot` 服务账户、固定运行时与只读 release，迁移预览目录并以原子方式更新配置、unit、Nginx 和 `current`。它在停止服务前先停 SQLite 维护与 Cloudflare 更新器；失败时恢复旧 release、unit、Nginx 和持久配置。若 Cloudflare 更新器无法停止，部署器会尝试确认将其 masked；无论确认结果如何，都会阻止自动恢复并将 Nginx 恢复交给人工处置，避免并发写入。
 
 ```bash
-UBOT_NAPCAT_CONFIG='/opt/napcat/config/onebot11_<BOT_QQ>.json' \
-UBOT_PREVIEW_CERT_PATH=/etc/letsencrypt/live/preview.9958.uk/fullchain.pem \
-UBOT_PREVIEW_KEY_PATH=/etc/letsencrypt/live/preview.9958.uk/privkey.pem \
-bash scripts/deploy-linux-release.sh 3.0.46 ubot-3.0.46-linux.tar.gz
+sudo bash /secure/bootstrap/ubot-3.0.49-linux/scripts/install-node22-runtime.sh 22.22.1
+sudo env UBOT_CLOUDFLARE_STRICT_READY=1 \
+  bash /secure/bootstrap/ubot-3.0.49-linux/scripts/install-cloudflare-origin-hardening.sh
+sudo bash /secure/bootstrap/ubot-3.0.49-linux/scripts/deploy-linux-release.sh \
+  3.0.49 /secure/bootstrap/ubot-3.0.49-linux.tar.gz
 ```
 
-部署器验证正式资产、路径、权限、SQLite 和证书，备份持久状态、安装依赖、执行迁移，原子更新批准的 `network.websocketClients.0.url`、专用预览配置和 units，再切 `current` 并启动三项服务。已切换 V3 的升级不重导旧 JSON。`.env` 存在 UTF-8 BOM 时先逐字节受限备份，仅移除 BOM 并保留权限。
+部署器验证正式资产、路径、权限、SQLite、Node 22、Origin hardening 和证书，备份持久状态、执行迁移，原子更新批准的 `network.websocketClients.0.url`、专用预览配置和 units，再切 `current` 并启动三项服务。它会为 Read API 配置独立 token，并轮询 Read API 的 JSON 健康结果、Admin 鉴权边界和三项服务重启计数；任一检查失败即回滚。已切换 V3 的升级不重导旧 JSON。`.env` 存在 UTF-8 BOM 时先逐字节受限备份，仅移除 BOM 并保留权限。
 
 NapCat 不监听宿主 JSON 替换；部署器在 V3 active 检查后重启原运行的 `napcat` 容器（`UBOT_NAPCAT_CONTAINER` 可指定批准名称），等待 Docker running。恢复配置时也需受控重启，以重新加载 URL。
 
 ```bash
 systemctl status ubot-ingress ubot-worker ubot-admin --no-pager
-systemctl list-timers ubot-maintenance.timer
+systemctl list-timers ubot-maintenance.timer ubot-cloudflare-allowlist.timer
+systemctl show ubot-ingress ubot-worker ubot-admin -p NRestarts --no-pager
 curl -I http://127.0.0.1:6200/api/health
 curl -I https://preview.9958.uk/p/not-a-valid-token/
 ```
 
-未登录 health 返回 401 是预期，无效预览应 404 且没有 Set-Cookie。允许 NapCat 正常重连间隔，以受认证内部 `/read/health` 确认 `ok: true`。HTTPS 登录后在测试群检查 @、回复机器人、网页、生图和 BT，核对配置保留。
+未登录 Admin health 返回 401 是预期，无效预览应 404 且没有 Set-Cookie。允许 NapCat 正常重连间隔；部署器会使用不回显的 Read API token 确认 `/read/health` 为 `ok: true`。HTTPS 登录后在测试群检查 @、回复机器人、网页、生图和 BT，核对配置保留；经 Cloudflare 访问应正常，直连源站应被拒绝。
 
 Windows 包先运行 `install-deps.cmd`，准备持久配置并迁移后用 `run.cmd`。默认启动三个角色，`BOT_ROLE` 可选角色；已迁移 V3 的数据不能交给 legacy。
 
@@ -293,7 +291,7 @@ npm run migrate:v3 -- --execute
 
 导入群配置、设置、批准显式记忆、知识、任务、报告、审计与健康历史。记忆仅接受 `admin`、`explicit_command`、`explicit_request`。旧候选、自动画像、人格、对话进入七天加密回滚归档，不作为运行输入；标记后停止读写旧 JSON。
 
-现有 V3 正式升级执行 `--execute --allow-existing-cutover`，只应用新增迁移、清理与授权能力变更。打包人格的一次性修订有审计、幂等标记，不覆盖管理员后续修改。核对账本达到当前版本、`v3_state_meta` 标记存在后启动三项服务。
+现有 V3 正式升级执行 `--execute --allow-existing-cutover`，只应用新增迁移、清理与授权能力变更。打包人格的一次性修订有审计、幂等标记，不覆盖管理员后续修改。v3.0.49 在单一 SQLite 事务中从全部群配置移除已退休的 `roastModeUserIds`；遇到损坏配置整批回滚，不启动部分结果。核对账本达到当前版本、`v3_state_meta` 标记存在后启动三项服务。
 
 `ubot-maintenance.timer` 每小时清理按 Ingress 接收时间计算的七天原始群消息、附件元数据、过期加密归档、30 天网页、租约和孤儿文件。事件时间不延长留存，日报保留结果。撤回表只存交付标识与时间，不存搜索词或卡片，终态按消息保留周期清理。
 
@@ -321,6 +319,7 @@ npm run migrate:v3 -- --execute
 - 回退 v3.0.33 或更早：全服务停写，用新版 `bt-capability-policy.mjs restore <DB_PATH> <POLICY_BACKUP>` 恢复旧能力策略后切程序，避免旧版不识别 `bt_search`。恢复失败保持停止。
 - 撤销模型策略升级：排空后停新版服务，保留新目录并执行 `node scripts/upgrade-model-policy.mjs --rollback`，恢复加密备份的系统模型、权限、群选择和 DS 名，再选旧版。普通界面修复回滚不运行该操作。
 - v3.0.43／v3.0.44／v3.0.46 画像和界面修复无新迁移，切回兼容程序并保留配置、称呼和画像，不整体回退群或重写画像。
+- V3 兼容层至少保留至 `2027-01-31`。删除前必须在隔离环境以受限备份完成恢复演练，记录备份、耗时、SQLite 完整性、三项服务健康、NapCat 重连、结论和批准人；不得让旧程序误指向 V3 数据目录。
 
 ### 故障排查
 
@@ -333,13 +332,14 @@ BT 先以运行用户验证 Python、浏览器和代理，部分站失败不影�
 
 ```bash
 node scripts/run-node22.cjs scripts/public-docs.mjs check
+node scripts/run-node22.cjs scripts/typecheck.cjs
 node scripts/run-node22.cjs scripts/test.cjs
 node scripts/run-node22.cjs scripts/visual-admin-smoke.mjs
 node scripts/run-node22.cjs scripts/rollback-smoke.mjs
 npm run package:all
 ```
 
-全量测试包含文档检查。后台布局样例 `scripts/visual-admin-smoke.mjs --layout-fixture --hold` 只用临时数据库，不用于生产。打包显式白名单，排除测试、运行数据、虚拟环境、Cookie 和私有备份，校验解包内容及生产依赖安装。
+全量测试包含统一服务端/Vue 类型检查、文档检查、BT 回归、后台视觉冒烟和密钥扫描。后台布局样例 `scripts/visual-admin-smoke.mjs --layout-fixture --hold` 只用临时数据库，不用于生产。CI、打包和正式发布前均运行 Gitleaks；打包显式白名单，排除测试、运行数据、虚拟环境、Cookie 和私有备份，校验解包内容及生产依赖安装。
 
 新版本更新 `package.json`、锁文件与下方标记中的版本和更新内容，直接维护统一手册，不新增逐版本 Markdown。运行：
 
@@ -347,24 +347,31 @@ npm run package:all
 node scripts/run-node22.cjs scripts/public-docs.mjs release-notes
 ```
 
-生成忽略目录 `.codex_tmp/release-notes.md`，版本、标记或检查失败会停止。Actions 仅在匹配 `v<version>` 的正式 tag、Node 22 测试与双平台校验通过后，用生成文案创建正式 Release。本地 `npm run release:github` 同样要求精确 tag，`-ReleaseNotesPath` 自定义文案也需校验，可用 `-DryRun` 检查。
+生成忽略目录 `.codex_tmp/release-notes.md`，版本、标记或检查失败会停止。只有匹配 `v<version>` 的 GitHub Actions 工作流能创建正式 Release：提交历史密钥扫描、Node 22 全量测试、后台视觉冒烟、双平台打包、产物校验和精确产物扫描均成功后才获得写入 Release 的最小权限。本地没有绕过这些门禁的发布命令。
+
+凭据事件的历史净化和旧标签／Release 重建期间，Release 工作流默认停用：除非仓库管理员在 Actions Variables 中将 `UBOT_RELEASE_PIPELINE_ENABLED` 精确设为 `true`，所有 Release 作业都会跳过。手工触发默认只验证；正式发布还需 `publish=true` 与受保护的 `production-release` Environment 审批。只有凭据轮换、历史重写、旧 Release 重建、协作者重新克隆及恢复演练均已完成并有审批记录后，才可开启该变量。历史 v3.0.18--v3.0.44 标签内嵌旧的可写工作流，重写前必须在 GitHub 侧停用 tag 触发工作流；新变量不能保护旧标签。
 
 发布说明只记录功能、兼容和验证结果，示例使用“成员甲／成员乙”、`<USER_ID>`、`<GROUP_ID>`、`<BOT_QQ>`；不公开真实称呼、备注、账号、群号、画像、聊天原文和线上定点修复对象。自动检查拦截编号与聊天摘录格式，无法识别所有自然语言姓名，发布前仍需人工复核。报错只输出文件、行号、规则，不回显敏感值。
 
-历史 Release 可单独脱敏；旧 Git 历史和旧发布包不会随文案修改改变。生产数据和凭据通过私有渠道维护。
+历史 Release 可单独脱敏；旧 Git 历史和旧发布包不会随文案修改改变。发生凭据事件时先在发行方吊销和轮换，再用仅从标准输入读取的 `scripts/rotate-gemini-reply-key.mjs` 更新 Gemini 回退模型；默认回复模型必须保持 `sol`。历史净化、标签/Release 重建、备份清理和协作者重新克隆属于单独的受控变更。生产数据和凭据通过私有渠道维护。
 
 <a id="changes"></a>
 ## 本版更新
 
 <!-- release-notes:start -->
-### v3.0.46
+### v3.0.49
 
-修复成员主称呼保存与资料查询，避免旧称呼重新出现或回答串人。
+安全与可靠性整合发布，保留 v3.0.48 的日报、生图诊断、成员称呼、身份隔离和画像隐私修复。
 
-- 主称呼、其他别名和描述性备注分开维护；保存完整替换，目录刷新不恢复已删除别名。
-- 支持明确资料项的省略问句、本人查询和称呼核对，重名、多目标与冲突先澄清。
-- 画像查询只用核实目标的批准画像，隔离提问者、旧回答和附近聊天；缺失或隐私关闭直接保守回答。
-- 称呼核对使用真实身份映射，刷新最多 3 秒；增加不含正文的查询诊断。
+- Ingress Read API 新增独立 Bearer token、1 MiB 请求上限及超时控制；Admin 启动失败会传递到服务管理器，可信反代才使用单值真实 IP。
+- Worker 统一管理 SQLite 生命周期，Ingress 出站改为单飞；消费者失败按 5、10、20、30 秒退避，成功后重置。
+- 部署器先验证 Read API 监听与鉴权边界，再重启 NapCat，随后才要求已连接的健康状态；失败恢复旧 release、unit、Nginx 和持久配置。
+- 退休嘴臭模式：旧配置写入返回 `410 roast_mode_retired`，群配置存量在可审计的单一事务中清理，损坏记录会整体回滚。
+- Linux 生产固定独立校验的 Node 22、受限 `ubot` 账户和只读 release；预览文件迁至 `/var/lib/ubot-preview`，服务使用严格 systemd 隔离。
+- 已有 Node 22 目录必须具备 root 所有的归档摘要来源凭据才能重用；历史目录需要停机后从已校验归档完整替换，不接受仅凭版本号的复用。
+- 两个 UBot 域名支持 Cloudflare Origin CA、Full (strict)、可信来源限制和原子 CIDR 更新；其他同机站点及全局防火墙保持不变。
+- CI、发布和打包增加类型检查、BT 与后台冒烟、生产依赖审计及密钥扫描门禁；Actions 固定到 commit SHA，并由 Dependabot 跟踪更新。
+- Release 工作流在历史净化完成前默认失效关闭，必须由仓库管理员显式启用后才会执行任何打包或发布作业；手工发布还要求显式 `publish=true` 和受保护 Environment 审批。
 
-本版无数据库迁移，保留模型、权限与持久配置。回滚前排空成人卡片撤回最多 105 秒。Node 22 全量测试、后台冒烟、BT 离线回归及双平台发布包校验已通过。
+升级会保留现有模型、权限与持久配置。完整发布前需完成 Node 22 测试、后台冒烟、BT 离线回归、密钥扫描、双平台包校验和隔离恢复演练；回滚前排空成人卡片撤回最多 105 秒。
 <!-- release-notes:end -->

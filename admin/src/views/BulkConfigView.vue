@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
-import AdminDialog from "../components/AdminDialog.vue";
 import BulkPreviewDialog from "../components/BulkPreviewDialog.vue";
 import { api } from "../services/api";
 import { useAppStore } from "../stores/app";

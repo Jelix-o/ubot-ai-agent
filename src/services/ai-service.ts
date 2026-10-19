@@ -1174,7 +1174,7 @@ export class AiService {
   ): Promise<{ completion: OpenAI.Chat.Completions.ChatCompletion; reasoningEffort?: ReasoningEffort }> {
     const response = await this.withReasoningEffort(async (reasoningEffort) =>
       this.chatCompletions.create(
-        this.buildReplyRequest(messages, temperature, false, reasoningEffort, signal, tools, toolChoice) as any,
+        this.buildReplyRequest(messages, temperature, false, reasoningEffort, tools, toolChoice) as any,
         { signal },
       ) as Promise<OpenAI.Chat.Completions.ChatCompletion>,
     );
@@ -1226,7 +1226,7 @@ export class AiService {
     signal?: AbortSignal,
   ): Promise<{ text: string; model: string }> {
     const stream = await this.chatCompletions.create(
-      this.buildReplyRequest(messages, temperature, true, reasoningEffort, signal) as any,
+      this.buildReplyRequest(messages, temperature, true, reasoningEffort) as any,
       { signal },
     ) as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
 
@@ -1259,7 +1259,7 @@ export class AiService {
     signal?: AbortSignal,
   ): Promise<{ text: string; model: string }> {
     const completion = await this.chatCompletions.create(
-      this.buildReplyRequest(messages, temperature, false, reasoningEffort, signal) as any,
+      this.buildReplyRequest(messages, temperature, false, reasoningEffort) as any,
       { signal },
     ) as OpenAI.Chat.Completions.ChatCompletion;
     assertCompletionAllowed(completion.choices[0]);
@@ -1275,7 +1275,6 @@ export class AiService {
     temperature: number,
     stream: boolean,
     reasoningEffort?: ReasoningEffort,
-    signal?: AbortSignal,
     tools?: readonly AiToolDefinition[],
     toolChoice?: string,
   ): Record<string, unknown> {

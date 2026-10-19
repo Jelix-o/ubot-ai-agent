@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { GroupsConfigFile } from "../types.js";
-import { GroupConfigService } from "./group-config-service.js";
+import { GroupConfigService, GroupConfigValidationError } from "./group-config-service.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 
 test("manual names replace primary and aliases without resurrecting old names after directory refresh", async () => {
@@ -30,6 +30,32 @@ test("old groups keep their model, new groups follow global, and overrides can r
     assert.equal((await service.updateGroupConfig("100200", { replyModelSource: "global" })).replyModelSource, "global");
     assert.equal((await service.getGroup("67890"))?.replyModelMode, "ds");
   });
+});
+
+test("daily report count accepts 1 through 20, survives reload and preserves other groups", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "group-report-count-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const filePath = path.join(root, "groups.json");
+  const group = { groupId: "67890", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [] };
+  await writeFile(filePath, JSON.stringify({ groups: [
+    { ...group, dailyReportTopUserCount: 3 },
+    { ...group, groupId: "100200", dailyReportTopUserCount: 5 },
+    { ...group, groupId: "300400" },
+  ] }));
+  const service = new GroupConfigService(filePath);
+  assert.equal((await service.getGroup("67890"))?.dailyReportTopUserCount, 3);
+  assert.equal((await service.getGroup("300400"))?.dailyReportTopUserCount, 5);
+  for (const count of [1, 6, 20]) {
+    assert.equal((await service.updateGroupConfig("67890", { dailyReportTopUserCount: count })).dailyReportTopUserCount, count);
+    assert.equal((await new GroupConfigService(filePath).getGroup("67890"))?.dailyReportTopUserCount, count);
+  }
+  for (const count of [0, -1, 21, 1.5, NaN, Infinity]) {
+    await assert.rejects(service.updateGroupConfig("67890", { dailyReportTopUserCount: count }),
+      (error: unknown) => error instanceof GroupConfigValidationError && error.code === "invalid_group_config");
+    assert.equal((await new GroupConfigService(filePath).getGroup("67890"))?.dailyReportTopUserCount, 20);
+  }
+  assert.equal((await service.getGroup("100200"))?.dailyReportTopUserCount, 5);
+  assert.equal((await service.getGroup("300400"))?.dailyReportTopUserCount, 5);
 });
 
 async function withService<T>(
@@ -115,8 +141,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
           allowedSkillIds: ["assistant"],
           switcherUserIds: [],
           liveChatUserIds: [],
-          roastModeUserIds: ["20003", "bad", "20003", " 20004 "],
           blacklistedUserIds: ["20001", "bad", "20001", " 20002 "],
+          ...({ roastModeUserIds: ["20003"] } as Record<string, unknown>),
         },
         {
           groupId: "67891",
@@ -129,9 +155,8 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
     },
     async (service) => {
       assert.deepEqual((await service.getGroup("67890"))?.blacklistedUserIds, ["20001", "20002"]);
-      assert.deepEqual((await service.getGroup("67890"))?.roastModeUserIds, ["20003", "20004"]);
       assert.deepEqual((await service.getGroup("67891"))?.blacklistedUserIds, []);
-      assert.deepEqual((await service.getGroup("67891"))?.roastModeUserIds, []);
+      assert.equal(Object.hasOwn((await service.getGroup("67890")) ?? {}, "roastModeUserIds"), false);
       assert.equal((await service.getGroup("67890"))?.replyModelMode, "gpt");
       assert.equal((await service.getGroup("67890"))?.dailyReportEnabled, false);
       assert.equal((await service.getGroup("67890"))?.holidayCountdownEnabled, false);
@@ -232,7 +257,6 @@ test("group config updates full editable config with validation", async () => {
         allowedSkillIds: ["zxp", "zxp", "assistant"],
         switcherUserIds: ["10001", "10001"],
         liveChatUserIds: ["20001"],
-        roastModeUserIds: ["20002", "20002"],
         manualIdentities: [{ userIds: ["20001"], names: ["Tester"], note: "note" }],
         liveChatDelaySeconds: 30,
         dailyReportEnabled: false,
@@ -259,7 +283,6 @@ test("group config updates full editable config with validation", async () => {
       assert.deepEqual(updated.allowedSkillIds, ["huixian"]);
       assert.deepEqual(updated.switcherUserIds, ["10001"]);
       assert.deepEqual(updated.liveChatUserIds, ["20001"]);
-      assert.deepEqual(updated.roastModeUserIds, ["20002"]);
       assert.equal(updated.liveChatDelaySeconds, 30);
       assert.equal(updated.dailyReportEnabled, false);
       assert.equal(updated.dailyReportTime, "18:05");
@@ -299,8 +322,8 @@ test("group config updates full editable config with validation", async () => {
         { code: "invalid_user_ids" },
       );
       await assert.rejects(
-        () => service.updateGroupConfig("67890", { roastModeUserIds: ["bad"] }),
-        { code: "invalid_user_ids" },
+        () => service.updateGroupConfig("67890", { roastModeUserIds: ["20002"] } as never),
+        { code: "roast_mode_retired", statusCode: 410 },
       );
       await assert.rejects(
         () => service.updateGroupConfig("67890", { replyModelMode: "../bad" }),

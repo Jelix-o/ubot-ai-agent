@@ -10,7 +10,7 @@ import { SystemSettingsStore } from "./system-settings-store.js";
 import type { SystemSettingsShadowWriter } from "./system-settings-sqlite-shadow-repository.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 function model(id: string, purpose: "reply" | "summary" | "knowledge" | "image" | "custom", apiKey = `${id}-key`) {
   return {

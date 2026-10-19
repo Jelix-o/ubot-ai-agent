@@ -171,7 +171,8 @@ function allVisibleSelected(): boolean {
   return items.value.length > 0 && items.value.every((item) => selectedIds.value.has(item.id));
 }
 
-function onBulkAction(action: "enable" | "disable" | "delete"): void {
+function onBulkAction(action: "enable" | "disable" | "delete" | "tags"): void {
+  if (action === "tags") return;
   void prepareBulk(action);
 }
 

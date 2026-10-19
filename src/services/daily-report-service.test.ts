@@ -10,7 +10,7 @@ import { DailyReportService } from "./daily-report-service.js";
 import { DailyReportStore } from "./daily-report-store.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 const baseGroupConfig: GroupBotConfig = {
   groupId: "67890",
@@ -234,7 +234,7 @@ test("daily report layout is concise and includes model-generated after-work qui
     assert.match(report, /活跃人数 2 人/);
     assert.match(report, /最热时段/);
     assert.match(report, /发言 TOP5/);
-    assert.match(report, /1\. 老张 2 条/);
+    assert.match(report, /1\. 老张（u2） 2 条/);
     assert.doesNotMatch(report, /今日最高光/);
     assert.doesNotMatch(report, /晨间开场/);
     assert.doesNotMatch(report, /白天收尾/);
@@ -243,7 +243,7 @@ test("daily report layout is concise and includes model-generated after-work qui
   }
 });
 
-test("daily report resolves numeric stored names from current group card then nickname", async () => {
+test("daily report uses configured primary names then QQ nicknames with QQ identifiers", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "daily-report-member-name-test-"));
   const storePath = path.join(tempDir, "daily-report-store.json");
 
@@ -271,15 +271,18 @@ test("daily report resolves numeric stored names from current group card then ni
       timestamp: "2026-04-15T11:00:00",
     });
 
-    const report = await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), {
+    const report = await service.buildReport({ ...baseGroupConfig, manualIdentities: [
+      { userIds: ["10001"], names: ["系统主称呼", "其他别名"] },
+    ] }, new Date("2026-04-15T17:59:00"), {
       members: [
         { user_id: 10001, card: "当前群名片", nickname: "当前昵称" },
-        { user_id: 10002, card: "", nickname: "当前QQ昵称" },
+        { user_id: 10002, card: "另一群名片", nickname: "当前QQ昵称" },
       ],
     });
 
-    assert.match(report, /当前群名片 1 条/);
-    assert.match(report, /当前QQ昵称 1 条/);
+    assert.match(report, /系统主称呼（10001） 1 条/);
+    assert.match(report, /当前QQ昵称（10002） 1 条/);
+    assert.doesNotMatch(report, /当前群名片|另一群名片|其他别名|消息时昵称/);
     assert.doesNotMatch(report, /1\. 10001 1 条|2\. 10001 1 条/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -306,9 +309,47 @@ test("daily report keeps stored sender snapshot when member lookup is unavailabl
     const report = await service.buildReport(baseGroupConfig, new Date("2026-04-15T17:59:00"), {
       members: [],
     });
-    assert.match(report, /消息时群名片 1 条/);
+    assert.match(report, /消息时群名片（10001） 1 条/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("daily report renders requested ranks up to 20 without changing stored messages", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "daily-report-top20-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new DailyReportStore(path.join(root, "reports.json"));
+  const service = new DailyReportService(store, { async generateBroadcastQuip() { return "unused"; } } as never);
+  for (let index = 1; index <= 22; index++) {
+    await service.recordMessage({ groupId: "67890", userId: String(10000 + index), userName: "同名成员", text: "hello",
+      timestamp: `2026-04-15T10:${String(index).padStart(2, "0")}:00` });
+  }
+  for (const [configured, expected] of [[1, 1], [6, 6], [20, 20], [21, 20], [undefined, 5]] as const) {
+    const report = await service.buildReport({ ...baseGroupConfig, dailyReportTopUserCount: configured }, new Date("2026-04-15T17:59:00"), { useAiQuip: false });
+    assert.match(report, new RegExp(`发言 TOP${expected}\\n`));
+    assert.equal(report.split("\n").filter(line => /^\d+\. /.test(line)).length, expected);
+    assert.match(report, /1\. 同名成员（10022） 1 条/);
+    if (expected > 1) assert.match(report, /2\. 同名成员（10021） 1 条/);
+  }
+  assert.equal((await store.getMessages("67890", "2026-04-15"))[0]?.userName, "同名成员");
+});
+
+test("daily report identities are group-specific and resolve without a member directory", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "daily-report-identities-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const service = new DailyReportService(new DailyReportStore(path.join(root, "reports.json")), {} as never);
+  for (const groupId of ["67890", "100200"]) {
+    for (const userId of ["10001", "10002", "10003"]) {
+      await service.recordMessage({ groupId, userId, userName: userId, text: "hello", timestamp: "2026-04-15T10:00:00" });
+    }
+    const primary = groupId === "67890" ? "甲群称呼" : "乙群称呼";
+    const report = await service.buildReport({ ...baseGroupConfig, groupId, manualIdentities: [
+      { userIds: ["10001", "10002"], names: [primary, "不显示的别名"] },
+    ] }, new Date("2026-04-15T17:59:00"), { useAiQuip: false, members: [] });
+    assert.ok(report.includes(`${primary}（10001）`));
+    assert.ok(report.includes(`${primary}（10002）`));
+    assert.match(report, /3\. 10003 1 条/);
+    assert.doesNotMatch(report, /不显示的别名|10003（10003）/);
   }
 });
 

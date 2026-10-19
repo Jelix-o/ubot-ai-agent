@@ -8,7 +8,7 @@
  * silently fall back to a stale JSON authority.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -40,6 +40,8 @@ const appRoot = path.resolve(args.appRoot ?? process.env.UBOT_APP_ROOT ?? proces
 dotenv.config({ path: path.join(appRoot, ".env"), override: false });
 const dataDir = path.resolve(args.dataDir ?? path.join(appRoot, "data"));
 const configDir = path.resolve(path.join(appRoot, "config"));
+const managedPreviewRoot = path.resolve(process.env.UBOT_MANAGED_PREVIEW_ROOT ?? "/var/lib/ubot-preview");
+const releaseRoot = path.resolve(process.env.UBOT_RELEASE_ROOT ?? "/opt/ai-project-releases");
 const dbPath = path.join(dataDir, "shared", "bot-shared.db");
 const rollbackDir = path.join(dataDir, "v3-rollback");
 const huixianProfilePath = path.resolve(
@@ -170,6 +172,7 @@ async function runExistingCutoverUpgrade() {
     const now = Date.now();
     const upgrade = repository.runAtomically(() => ({
       retiredQqAdministration: repository.retireLegacyQqAdministration(),
+      roastModeRetirement: repository.retireRoastModeForExistingGroupsOnce(now),
       groupVisionEnabled: repository.enableVisionForExistingGroupsOnce(now),
       huixianProfileRevision: repository.applyHuixianReleaseProfile({
         revision: HUIXIAN_RELEASE_PROFILE_REVISION,
@@ -321,16 +324,29 @@ async function runMaintenance() {
 }
 
 /**
- * Preview publication metadata is authoritative in SQLite, while its static
- * files live in the persistent data tree. Keep this dependency here rather
- * than teaching the generic repository about filesystem ownership.
+ * Preview publication metadata is authoritative in SQLite. Static files may
+ * live beneath persistent data during a legacy deployment or at the dedicated
+ * managed preview root after the hardened production migration.
  */
 async function cleanupHtmlPreviews(sharedDb, now) {
   const configuredRoot = process.env.HTML_PREVIEW_ROOT?.trim();
+  if (configuredRoot && (!path.isAbsolute(configuredRoot) || configuredRoot.includes("\0") || configuredRoot !== path.resolve(configuredRoot))) {
+    throw new Error("HTML_PREVIEW_ROOT must be a normalized absolute path for maintenance.");
+  }
   const previewRoot = path.resolve(configuredRoot || path.join(dataDir, "generated-pages"));
-  const relative = path.relative(dataDir, previewRoot);
-  if (!relative || relative === "." || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("HTML_PREVIEW_ROOT must remain under the persistent data directory for maintenance.");
+  if (isWithinOrEqual(releaseRoot, previewRoot)) {
+    throw new Error("HTML_PREVIEW_ROOT must never point into the release directory.");
+  }
+  if (previewRoot !== managedPreviewRoot && !isStrictChildPath(dataDir, previewRoot)) {
+    throw new Error("HTML_PREVIEW_ROOT must be the managed preview root or a child of persistent data for maintenance.");
+  }
+  try {
+    const metadata = await lstat(previewRoot);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("HTML_PREVIEW_ROOT must be a real directory when it exists.");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
   const publicBaseUrl = process.env.HTML_PREVIEW_PUBLIC_BASE_URL?.trim() || "https://preview.9958.uk";
   const { HtmlPreviewService } = await loadCompiledHtmlPreviewModules();
@@ -340,6 +356,15 @@ async function cleanupHtmlPreviews(sharedDb, now) {
     publicBaseUrl,
   });
   return service.cleanup(now);
+}
+
+function isStrictChildPath(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return Boolean(relative) && relative !== "." && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isWithinOrEqual(root, candidate) {
+  return path.resolve(root) === path.resolve(candidate) || isStrictChildPath(root, candidate);
 }
 
 async function buildPreflightReport(sources) {
@@ -407,6 +432,7 @@ function importAllState({ repository, sharedDb, parsed, sources, huixianProfile,
   const groups = normalizeGroupsFile(parsed.get("groups"));
   repository.saveGroups(groups, now);
   result.groups = groups.groups.length;
+  result.roastModeRetirement = repository.retireRoastModeForExistingGroupsOnce(now);
   result.groupVisionEnabled = repository.enableVisionForExistingGroupsOnce(now);
   const knownKnowledgePackGroupIds = new Set();
   const ensureKnowledgePack = (groupId) => {

@@ -21,7 +21,6 @@ export interface GroupConfig {
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
-  roastModeUserIds?: string[];
   manualIdentities?: Array<{ userIds: string[]; names: string[]; note?: string }>;
   liveChatDelaySeconds?: number;
   dailyReportEnabled?: boolean;

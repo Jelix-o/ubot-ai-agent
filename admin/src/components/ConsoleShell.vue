@@ -18,7 +18,6 @@ const isLogin = computed(() => route.name === "login");
 const pages = computed(() => routes.filter(item => item.name && item.name !== "login" && item.meta.navigation !== false && (!item.meta.superOnly || app.role === "super_admin")));
 const navigation = computed(() => workspaces.map(workspace => ({ ...workspace, items: pages.value.filter(page => workspace.pages.includes(String(page.name))) })).filter(workspace => workspace.items.length));
 const workspace = computed(() => navigation.value.find(item => item.id === route.meta.workspace));
-const title = computed(() => route.name === "settings" ? route.query.tab === "runtime" ? "运行策略" : "模型配置" : String(route.meta.title || "UBot"));
 const roleLabel = computed(() => app.role === "super_admin" ? "超级管理员" : "群管理员");
 const tabs = computed(() => (workspace.value?.items || []).flatMap(item => item.name === "settings" ? [{ path: "/settings", title: "模型", query: { tab: "models" } }, { path: "/settings", title: "运行策略", query: { tab: "runtime" } }] : [{ path: item.path, title: String(item.meta.title), query: {} as Record<string,string> }]));
 const matchingPages = computed(() => pages.value.filter(item => `${item.meta.title} ${item.meta.subtitle}`.toLowerCase().includes(commandQuery.value.trim().toLowerCase())));

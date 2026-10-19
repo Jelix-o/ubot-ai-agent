@@ -44,10 +44,14 @@ export async function main(): Promise<void> {
     throw new Error("UBOT_STATE_ENCRYPTION_KEY is required when ADMIN_HTTP_ENABLED=true.");
   }
 
-  const readClient = new IngressReadApiClient(`http://127.0.0.1:${config.ingressReadApiPort}`);
+  const readClient = new IngressReadApiClient(
+    `http://127.0.0.1:${config.ingressReadApiPort}`,
+    config.ingressReadApiToken,
+  );
   const sharedDb = openSharedDb(config.dataDir);
   setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
+  v3State?.retireRoastModeForExistingGroupsOnce();
   const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const groupConfigService = new GroupConfigService(
     config.groupsConfigPath,
@@ -119,7 +123,7 @@ export async function main(): Promise<void> {
     sharedDb,
   });
 
-  server.start();
+  await server.start();
   logInfo("Admin HTTP server started.", {
     host: config.adminHttpHost,
     port: config.adminHttpPort,

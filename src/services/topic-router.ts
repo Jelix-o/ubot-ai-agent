@@ -261,14 +261,6 @@ export function charJaccard(left: string, right: string): number {
   return shared / union;
 }
 
-function toVector(terms: string[]): Map<string, number> {
-  const vector = new Map<string, number>();
-  for (const term of terms) {
-    vector.set(term, (vector.get(term) ?? 0) + 1);
-  }
-  return vector;
-}
-
 /** |A ∩ B| / min(|A|, |B|) — how much of the smaller keyword set is shared. */
 export function overlapCoefficient(left: string[], right: string[]): number {
   if (left.length === 0 || right.length === 0) {

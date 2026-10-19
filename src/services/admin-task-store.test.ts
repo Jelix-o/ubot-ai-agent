@@ -9,7 +9,7 @@ import { SharedDb } from "../shared/sqlite.js";
 import { AdminTaskStore } from "./admin-task-store.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 async function withStore<T>(run: (store: AdminTaskStore) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-task-store-"));

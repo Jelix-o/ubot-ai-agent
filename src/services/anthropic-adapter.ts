@@ -6,7 +6,6 @@ import {
   type ProviderCapabilitiesCarrier,
 } from "./ai-provider.js";
 
-type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type ChatCompletion = OpenAI.Chat.Completions.ChatCompletion;
 type ChatCompletionCreateParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming;
 

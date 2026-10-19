@@ -2,7 +2,7 @@ import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  root: __dirname,
+  root: import.meta.dirname,
   plugins: [vue()],
   build: {
     outDir: "../dist/admin",

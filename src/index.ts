@@ -1,4 +1,4 @@
-import { logError, logInfo } from "./logger.js";
+import { logError } from "./logger.js";
 
 /**
  * Process launcher. `npm start` / `node dist/index.js` now dispatches on the
