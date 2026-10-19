@@ -545,7 +545,7 @@ watch(() => app.groupId, () => {
             <h4>基础参数</h4>
             <label>日报时间<input v-model="form.dailyReportTime" class="input" type="time" :disabled="readonly" /></label>
             <label>节日倒计时<input v-model="form.holidayCountdownTime" class="input" type="time" :disabled="readonly" /></label>
-            <label>日报人数<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" :disabled="readonly" /></label>
+            <label>日报人数（1–20人）<input v-model.number="form.dailyReportTopUserCount" class="input" type="number" min="1" max="20" step="1" :disabled="readonly" /></label>
             <label>使用时区<input class="input" :value="scheduleTimezone" disabled /></label>
           </section>
 

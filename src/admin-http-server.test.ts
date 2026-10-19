@@ -1177,6 +1177,36 @@ test("group configuration patches require the current revision and return the ne
   assert.equal(saved.ambientGroupContextEnabled, !current.ambientGroupContextEnabled);
 });
 
+test("group configuration API persists daily report counts through 20 and rejects invalid counts", async t => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const read = async () => {
+    const response = await request(baseUrl, "/api/groups/67890/config", { headers });
+    assert.equal(response.status, 200);
+    return await response.json() as { revision: string; dailyReportTopUserCount: number };
+  };
+  for (const count of [1, 6, 20]) {
+    const before = await read();
+    const response = await request(baseUrl, "/api/groups/67890/config", {
+      method: "PATCH", headers,
+      body: JSON.stringify({ expectedRevision: before.revision, patch: { dailyReportTopUserCount: count } }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await read()).dailyReportTopUserCount, count);
+  }
+  const saved = await read();
+  for (const count of [0, -1, 21, 1.5, null, "invalid"]) {
+    const response = await request(baseUrl, "/api/groups/67890/config", {
+      method: "PATCH", headers,
+      body: JSON.stringify({ expectedRevision: saved.revision, patch: { dailyReportTopUserCount: count } }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json() as { error: string }).error, "invalid_group_config");
+    assert.deepEqual(await read(), saved);
+  }
+});
+
 test("bulk APIs enforce group scope and return an asynchronous task with item results", async (t) => {
   const { baseUrl, memories } = await startFixture(t);
   const superAdmin = await login(baseUrl);

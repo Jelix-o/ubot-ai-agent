@@ -15,6 +15,8 @@ import { StaticHtmlOutputTruncatedError, type AiToolRuntime } from "./services/a
 import type { AdminOperationLogEntry } from "./services/admin-operation-log-service.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
+import { DailyReportService } from "./services/daily-report-service.js";
+import { DailyReportStore } from "./services/daily-report-store.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
@@ -24,7 +26,7 @@ import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
-import type { ImageGenerationRuntime } from "./services/image-generation-service.js";
+import { ImageGenerationError, type ImageGenerationRuntime } from "./services/image-generation-service.js";
 import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-service.js";
 import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
 import { BT_ADULT_CONTENT_WARNING } from "./services/bt-search-renderer.js";
@@ -1935,6 +1937,39 @@ test("image generation help is visible to all members by default", async () => {
   assert.match(transport.sent[1]?.text ?? "", /画图|生图/);
   assert.match(transport.sent[2]?.text ?? "", /画图|生图/);
   assert.match(transport.sent[2]?.text ?? "", /最多 5000 字/);
+});
+
+test("image failures distinguish moderation from temporary outages and log diagnostic fields", async t => {
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (line: string) => warnings.push(line));
+  for (const code of ["content_blocked", "upstream_unavailable"] as const) {
+    const { app, transport } = createApp({ imageGenerationService: {
+      async generate(input) {
+        await input.onStarted?.();
+        throw new ImageGenerationError(code, code, undefined, {
+          modelId: "primary", model: "image-model", statusCode: code === "content_blocked" ? 400 : 503,
+          upstreamCode: code === "content_blocked" ? "moderation_blocked" : "server_error",
+          moderationStage: code === "content_blocked" ? "output" : undefined,
+          requestId: "diagnostic-request-id",
+        });
+      },
+      async discard() {},
+      async cleanup() { return 0; },
+    } });
+    t.after(() => app.stop());
+    await app.handleGroupMessage(createEvent("#生图 private prompt"));
+    assert.deepEqual(transport.sent.map(message => message.text), [
+      "正在生成图片，请稍候…",
+      code === "content_blocked" ? "本次图片未通过上游内容审核，请调整描述后重试" : "图片生成失败，请稍后再试",
+    ]);
+    assert.equal(transport.generatedImages.length, 0);
+  }
+  const log = warnings.find(line => line.includes('"upstreamCode":"moderation_blocked"')) ?? "";
+  assert.match(log, /"modelId":"primary"/);
+  assert.match(log, /"statusCode":400/);
+  assert.match(log, /"moderationStage":"output"/);
+  assert.match(log, /"requestId":"diagnostic-request-id"/);
+  assert.doesNotMatch(warnings.join("\n"), /private prompt/);
 });
 
 test("HTML preview sticks to the silent ds fallback after a transient GPT failure", async () => {
@@ -7108,6 +7143,45 @@ test("manages daily report settings through commands", async () => {
   assert.match(transport.sent[0]?.text ?? "", /19:30/);
   assert.match(transport.sent[1]?.text ?? "", /关闭/);
   assert.match(transport.sent[2]?.text ?? "", /19:30/);
+});
+
+test("manual and scheduled reports share the configured 20-person ranking and identity display", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "bot-daily-report-ranking-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const service = new DailyReportService(new DailyReportStore(path.join(root, "reports.json")), {} as never);
+  const now = new Date(2026, 9, 19, 18, 0, 0);
+  const groupConfig: GroupBotConfig = {
+    groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"], switcherUserIds: ["99999"], liveChatUserIds: [],
+    dailyReportEnabled: true, dailyReportTime: "18:00", dailyReportDateRule: "all", dailyReportTopUserCount: 20,
+    manualIdentities: [{ userIds: ["20001"], names: ["系统主称呼", "其他别名"] }],
+  };
+  for (let index = 1; index <= 22; index++) {
+    await service.recordMessage({ groupId: "67890", userId: String(20000 + index), userName: "消息时名称", text: "hello", timestamp: now.toISOString() });
+  }
+  await service.recordMessage({ groupId: "67890", userId: "20001", userName: "旧称呼", text: "hello again", timestamp: now.toISOString() });
+  const { app, transport } = createApp({
+    groupConfigService: new FakeGroupConfigService([groupConfig]), dailyReportService: service as never,
+  });
+  t.after(() => app.stop());
+  transport.memberDirectoryByGroup["67890"] = [
+    { user_id: 20001, nickname: "QQ昵称", card: "群名片" },
+    { user_id: 20002, nickname: "同名昵称", card: "另一群名片" },
+    { user_id: 20003, nickname: "同名昵称", card: "第三群名片" },
+  ];
+  await withMockedNow(now.getTime(), async () => {
+    await app.handleGroupMessage(createEvent("#日报 发送", 99999));
+    await (app as unknown as { runDailyReportTick(now: Date): Promise<void> }).runDailyReportTick(now);
+    await (app as unknown as { runDailyReportTick(now: Date): Promise<void> }).runDailyReportTick(now);
+  });
+  const reports = transport.sent.filter(message => message.text.includes("发言 TOP20"));
+  assert.equal(reports.length, 2, "manual delivery must not suppress the scheduled run; repeated ticks must not duplicate it");
+  for (const { text } of reports) {
+    assert.equal(text.split("\n").filter(line => /^\d+\. /.test(line)).length, 20);
+    assert.match(text, /1\. 系统主称呼（20001） 2 条/);
+    assert.match(text, /同名昵称（20002）/);
+    assert.match(text, /同名昵称（20003）/);
+    assert.doesNotMatch(text, /群名片|其他别名/);
+  }
 });
 
 test("sends scheduled daily report once tick condition is met", async () => {

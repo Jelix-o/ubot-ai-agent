@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { GroupsConfigFile } from "../types.js";
-import { GroupConfigService } from "./group-config-service.js";
+import { GroupConfigService, GroupConfigValidationError } from "./group-config-service.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 
 test("manual names replace primary and aliases without resurrecting old names after directory refresh", async () => {
@@ -30,6 +30,32 @@ test("old groups keep their model, new groups follow global, and overrides can r
     assert.equal((await service.updateGroupConfig("100200", { replyModelSource: "global" })).replyModelSource, "global");
     assert.equal((await service.getGroup("67890"))?.replyModelMode, "ds");
   });
+});
+
+test("daily report count accepts 1 through 20, survives reload and preserves other groups", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "group-report-count-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const filePath = path.join(root, "groups.json");
+  const group = { groupId: "67890", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [] };
+  await writeFile(filePath, JSON.stringify({ groups: [
+    { ...group, dailyReportTopUserCount: 3 },
+    { ...group, groupId: "100200", dailyReportTopUserCount: 5 },
+    { ...group, groupId: "300400" },
+  ] }));
+  const service = new GroupConfigService(filePath);
+  assert.equal((await service.getGroup("67890"))?.dailyReportTopUserCount, 3);
+  assert.equal((await service.getGroup("300400"))?.dailyReportTopUserCount, 5);
+  for (const count of [1, 6, 20]) {
+    assert.equal((await service.updateGroupConfig("67890", { dailyReportTopUserCount: count })).dailyReportTopUserCount, count);
+    assert.equal((await new GroupConfigService(filePath).getGroup("67890"))?.dailyReportTopUserCount, count);
+  }
+  for (const count of [0, -1, 21, 1.5, NaN, Infinity]) {
+    await assert.rejects(service.updateGroupConfig("67890", { dailyReportTopUserCount: count }),
+      (error: unknown) => error instanceof GroupConfigValidationError && error.code === "invalid_group_config");
+    assert.equal((await new GroupConfigService(filePath).getGroup("67890"))?.dailyReportTopUserCount, 20);
+  }
+  assert.equal((await service.getGroup("100200"))?.dailyReportTopUserCount, 5);
+  assert.equal((await service.getGroup("300400"))?.dailyReportTopUserCount, 5);
 });
 
 async function withService<T>(

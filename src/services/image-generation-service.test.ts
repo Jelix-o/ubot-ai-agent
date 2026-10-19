@@ -138,6 +138,100 @@ test("an upstream timeout switches to the next configured image model", async (t
   assert.equal(calls, 2);
 });
 
+test("structured moderation errors take priority over transient wording and retain safe diagnostics", async (t) => {
+  for (const statusCode of [400, 502]) {
+    let calls = 0;
+    const fixture = await makeFixture(t, async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: {
+        code: "moderation_blocked",
+        type: "image_generation_user_error",
+        message: "Upstream unavailable: request ID 87920751-7b8b-4501-80c6-b6b5255c1a51. echoed primary-key and private prompt",
+        moderation_details: { moderation_stage: "output", categories: ["sexual"] },
+      } }), { status: statusCode, headers: { "x-request-id": "gateway-request-id" } });
+    });
+    await assert.rejects(
+      fixture.service.generate({ groupId: "100", userId: "200", prompt: "private prompt" }),
+      (error: unknown) => {
+        assert.ok(error instanceof ImageGenerationError);
+        assert.equal(error.code, "content_blocked");
+        assert.deepEqual(error.diagnostics, {
+          modelId: "primary", model: "image-primary", statusCode,
+          upstreamCode: "moderation_blocked", upstreamType: "image_generation_user_error",
+          moderationStage: "output", moderationCategories: ["sexual"],
+          requestId: "gateway-request-id", upstreamRequestId: "87920751-7b8b-4501-80c6-b6b5255c1a51",
+          failureKind: "content_blocked",
+        });
+        assert.doesNotMatch(JSON.stringify(error), /primary-key|private prompt|echoed/);
+        return true;
+      },
+    );
+    assert.equal(calls, 1, "a moderation rejection must not retry or switch models");
+  }
+});
+
+test("gateway moderation errors without details retain their request id and mark the stage unknown", async t => {
+  let calls = 0;
+  const fixture = await makeFixture(t, async () => {
+    calls += 1;
+    return jsonResponse(400, { error: {
+      type: "image_generation_user_error", code: "moderation_blocked",
+      message: "Request was rejected. Include the request ID 87920751-7b8b-4501-80c6-b6b5255c1a51. safety_violations=[sexual].",
+    } });
+  });
+  await assert.rejects(fixture.service.generate({ groupId: "100", userId: "200", prompt: "draw" }), (error: unknown) => {
+    assert.ok(error instanceof ImageGenerationError);
+    assert.equal(error.code, "content_blocked");
+    assert.equal(error.diagnostics?.moderationStage, "unknown");
+    assert.equal(error.diagnostics?.upstreamRequestId, "87920751-7b8b-4501-80c6-b6b5255c1a51");
+    return true;
+  });
+  assert.equal(calls, 1);
+});
+
+test("user-correctable image errors do not fall back and proxy errors retain HTTP diagnostics", async (t) => {
+  for (const body of [
+    JSON.stringify({ error: { type: "image_generation_user_error", code: "invalid_prompt", message: "Upstream temporarily unavailable" } }),
+    "<html>Invalid request</html>",
+    "null",
+  ]) {
+    let calls = 0;
+    const fixture = await makeFixture(t, async () => {
+      calls += 1;
+      return new Response(body, { status: 400, headers: { "x-request-id": "request-400" } });
+    });
+    await assert.rejects(fixture.service.generate({ groupId: "100", userId: "200", prompt: "draw" }), (error: unknown) => {
+      assert.ok(error instanceof ImageGenerationError);
+      assert.equal(error.code, "upstream_rejected");
+      assert.equal(error.diagnostics?.statusCode, 400);
+      assert.equal(error.diagnostics?.requestId, "request-400");
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test("rate limits fall back while exhausted transient failures preserve the last upstream diagnostics", async (t) => {
+  const urls: string[] = [];
+  const fixture = await makeFixture(t, async url => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({ error: { code: "rate_limit_exceeded", type: "rate_limit_error" } }), {
+      status: 429, headers: { "x-request-id": `request-${urls.length}` },
+    });
+  });
+  await assert.rejects(fixture.service.generate({ groupId: "100", userId: "200", prompt: "draw" }), (error: unknown) => {
+    assert.ok(error instanceof ImageGenerationError);
+    assert.equal(error.code, "upstream_unavailable");
+    assert.equal(error.diagnostics?.modelId, "backup");
+    assert.equal(error.diagnostics?.statusCode, 429);
+    assert.equal(error.diagnostics?.upstreamCode, "rate_limit_exceeded");
+    assert.equal(error.diagnostics?.requestId, "request-2");
+    assert.equal(error.diagnostics?.failureKind, "rate_limit");
+    return true;
+  });
+  assert.equal(urls.length, 2);
+});
+
 test("successful image generation applies a per-group per-user cooldown", async (t) => {
   let now = 10_000;
   let calls = 0;

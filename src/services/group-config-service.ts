@@ -1,6 +1,7 @@
 import type { GroupBotConfig, GroupManualIdentity, GroupsConfigFile, ParticipationMode, ReplyModelMode, ScheduleDateRule } from "../types.js";
 import { logWarn } from "../logger.js";
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import { DAILY_REPORT_MAX_TOP_USERS, normalizeDailyReportTopUserCount } from "../utils/daily-report-config.js";
 import type { GroupConfigShadowWriter } from "./group-config-sqlite-shadow-repository.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
@@ -691,6 +692,9 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   }
   if ("dailyReportTopUserCount" in input) {
     next.dailyReportTopUserCount = normalizePositiveInteger(input.dailyReportTopUserCount, "invalid_group_config");
+    if (next.dailyReportTopUserCount > DAILY_REPORT_MAX_TOP_USERS) {
+      throw new GroupConfigValidationError("invalid_group_config");
+    }
   }
   if ("holidayCountdownEnabled" in input) {
     next.holidayCountdownEnabled = normalizeBoolean(input.holidayCountdownEnabled, "invalid_group_config");
@@ -1015,14 +1019,6 @@ function normalizeDelayMinutes(value: number | undefined): number {
 function normalizeDailyReportTime(value: string | undefined): string {
   const normalized = value?.trim() ?? "17:59";
   return /^([01]?\d|2[0-3]):([0-5]\d)$/.test(normalized) ? normalized : "17:59";
-}
-
-function normalizeDailyReportTopUserCount(value: number | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return 5;
-  }
-
-  return Math.max(1, Math.min(5, Math.floor(value)));
 }
 
 function normalizeHolidayCountdownTime(value: string | undefined): string {

@@ -2,6 +2,7 @@ import { withModelOperation } from "./model-telemetry.js";
 import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 import type { ChatSummaryRequest } from "../utils/chat-summary-request.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
+import { normalizeDailyReportTopUserCount } from "../utils/daily-report-config.js";
 import type { AiService } from "./ai-service.js";
 import type { DailyReportMessageRecord, DailyReportOutputRecord } from "./daily-report-store.js";
 import { DailyReportStore } from "./daily-report-store.js";
@@ -87,7 +88,7 @@ export class DailyReportService {
   ): Promise<string> { return withModelOperation('report', groupConfig.groupId, async () => {
     const dayKey = toLocalDateKey(now);
     const messages = await this.store.getMessages(groupConfig.groupId, dayKey);
-    const topUserCount = normalizeTopUserCount(groupConfig.dailyReportTopUserCount);
+    const topUserCount = normalizeDailyReportTopUserCount(groupConfig.dailyReportTopUserCount);
     const header = buildBroadcastHeader(now);
     const quip = options.useAiQuip === false
       ? buildFallbackBroadcastQuip("daily_report_evening")
@@ -106,7 +107,7 @@ export class DailyReportService {
       ].join("\n");
     }
 
-    const stats = buildDailyStats(messages, topUserCount, buildMemberNameDirectory(options.members));
+    const stats = buildDailyStats(messages, topUserCount, buildReportNameDirectory(groupConfig, options.members));
 
     const lines = [
       header,
@@ -116,7 +117,9 @@ export class DailyReportService {
       `最热时段 ${stats.peakHourLabel}`,
       `发言 TOP${topUserCount}`,
       ...stats.topUsers.map((user, index) => {
-        return `${index + 1}. ${user.userName} ${user.messageCount} 条`;
+        const name = user.userName.trim();
+        const label = name && name !== user.userId ? `${name}（${user.userId}）` : user.userId;
+        return `${index + 1}. ${label} ${user.messageCount} 条`;
       }),
     ];
 
@@ -689,14 +692,6 @@ function pickPeakHourLabel(counter: Map<number, number>): string {
   return `${`${bestHour}`.padStart(2, "0")}:00-${`${bestHour}`.padStart(2, "0")}:59，共 ${bestCount} 条`;
 }
 
-function normalizeTopUserCount(value: number | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return 5;
-  }
-
-  return Math.max(1, Math.min(5, Math.floor(value)));
-}
-
 function parseScheduleMinute(value: string | undefined): number {
   const normalized = (value ?? "17:59").trim();
   const matched = normalized.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
@@ -738,6 +733,25 @@ function pickBetterUserName(current: string, incoming: string, fallback: string)
   }
 
   return currentName;
+}
+
+// Report names follow the current group's explicit identity configuration. Keep
+// chat summaries on their existing name resolution and avoid matching by alias.
+function buildReportNameDirectory(
+  groupConfig: GroupBotConfig,
+  members: readonly NapcatGroupMember[] | undefined,
+): Map<string, string> {
+  const directory = new Map<string, string>();
+  for (const member of members ?? []) {
+    const nickname = member.nickname?.trim();
+    if (nickname) directory.set(String(member.user_id), nickname);
+  }
+  for (const identity of groupConfig.manualIdentities ?? []) {
+    const primaryName = identity.names[0]?.trim();
+    if (!primaryName) continue;
+    for (const userId of identity.userIds) directory.set(userId, primaryName);
+  }
+  return directory;
 }
 
 function buildMemberNameDirectory(

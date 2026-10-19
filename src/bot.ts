@@ -1544,8 +1544,11 @@ export class BotApplication {
         userId,
         errorCode: error instanceof ImageGenerationError ? error.code : "unknown",
         errorName: error instanceof Error ? error.name : typeof error,
+        ...(error instanceof ImageGenerationError ? error.diagnostics : {}),
       });
-      await this.sendText(groupId, "图片生成失败，请稍后再试");
+      await this.sendText(groupId, error instanceof ImageGenerationError && error.code === "content_blocked"
+        ? "本次图片未通过上游内容审核，请调整描述后重试"
+        : "图片生成失败，请稍后再试");
     }
   }
 
