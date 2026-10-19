@@ -499,14 +499,13 @@ test("formal release publication is gated to the matching final tag and CI", () 
   assert.match(ciWorkflow, /vars\.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY/);
   assert.doesNotMatch(readFileSync(path.resolve("package.json"), "utf8"), /release:github/);
   const retainedPublisher = readFileSync(path.resolve("scripts", "publish-github-release.ps1"), "utf8");
-  const legacyVerifier = readFileSync(path.resolve("scripts", "verify-v1.0.2-local.ps1"), "utf8");
   assert.match(retainedPublisher, /permanently read-only/);
   assert.match(retainedPublisher, /formal GitHub Release publication is CI-only/);
   assert.doesNotMatch(retainedPublisher, /Invoke-RestMethod/);
   assert.doesNotMatch(retainedPublisher, /GITHUB_TOKEN|GH_TOKEN/);
-  assert.doesNotMatch(legacyVerifier, /ForbiddenSecret/);
-  assert.doesNotMatch(legacyVerifier, /\[string\]\$[A-Za-z]*Secret/);
-  assert.match(legacyVerifier, /\[string\]\$ExpectedSha256/);
+  assert.match(retainedPublisher, /Formal GitHub Release tag must match package\.json exactly/);
+  assert.match(retainedPublisher, /Current checkout must be the exact \$Tag commit before publishing a formal release/);
+  assert.match(retainedPublisher, /verify-release-assets\.mjs/);
 });
 
 test("continuous integration validates the complete suite on Windows and Linux", () => {
