@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import btReleaseFiles from "./bt-release-files.cjs";
+import { checkDocumentation } from "./public-docs.mjs";
 
 const [rootArg, ...optionArgs] = process.argv.slice(2);
 const root = path.resolve(rootArg ?? process.cwd());
@@ -26,13 +27,10 @@ if (!version) {
 const allowedRootNames = new Set([
   ".env.example",
   ".env.server-2022.example",
-  "COMMANDS.md",
   "README.md",
-  `RELEASE-v${version}.md`,
   "assets",
   "deploy",
   "dist",
-  "docs",
   "package-lock.json",
   "package.json",
   "scripts",
@@ -44,8 +42,6 @@ const requiredPaths = [
   "package.json",
   "package-lock.json",
   "README.md",
-  "COMMANDS.md",
-  `RELEASE-v${version}.md`,
   "dist/index.js",
   "dist/forward-message.js",
   "dist/napcat-action-errors.js",
@@ -66,6 +62,7 @@ const requiredPaths = [
   "scripts/normalize-dotenv-bom.mjs",
   "scripts/migrate-v3-state.mjs",
   "scripts/verify-release-source.mjs",
+  "scripts/public-docs.mjs",
   "deploy/systemd/ubot-ingress.service.template",
   "deploy/systemd/ubot-worker.service.template",
   "deploy/systemd/ubot-admin.service.template",
@@ -75,10 +72,6 @@ const requiredPaths = [
   "deploy/nginx/bot.9958.uk.conf",
   "deploy/nginx/preview.9958.uk.conf",
   "deploy/nginx/ubot-preview-static.conf",
-  "docs/OPERATIONS-v3.md",
-  "docs/ADMIN-RECOVERY-v3.md",
-  "docs/MIGRATION-v3.md",
-  "docs/ROLLBACK-v3.md",
 ];
 // Every non-dist file is enumerated deliberately.  A release is a portable
 // binary artifact, not a source checkout: accepting a broad `scripts/`,
@@ -88,9 +81,7 @@ const approvedStaticFiles = new Set([
   ...btReleaseFiles,
   ".env.example",
   ".env.server-2022.example",
-  "COMMANDS.md",
   "README.md",
-  `RELEASE-v${version}.md`,
   "package-lock.json",
   "package.json",
   "run.cmd",
@@ -103,10 +94,6 @@ const approvedStaticFiles = new Set([
   "assets/private-enterprises-2026-headquarters-evidence.json",
   "assets/private-enterprises-2026-headquarters-review.md",
   "assets/blacklisted-at-meme.jpg",
-  "docs/OPERATIONS-v3.md",
-  "docs/ADMIN-RECOVERY-v3.md",
-  "docs/MIGRATION-v3.md",
-  "docs/ROLLBACK-v3.md",
   "scripts/configure-v3-network.mjs",
   "scripts/configure-image-model.mjs",
   "scripts/upgrade-model-policy.mjs",
@@ -115,6 +102,7 @@ const approvedStaticFiles = new Set([
   "scripts/normalize-dotenv-bom.mjs",
   "scripts/migrate-v3-state.mjs",
   "scripts/verify-release-source.mjs",
+  "scripts/public-docs.mjs",
   "deploy/nginx/bot.9958.uk.conf",
   "deploy/nginx/preview.9958.uk.conf",
   "deploy/nginx/ubot-preview-static.conf",
@@ -153,7 +141,7 @@ const forbiddenFileNames = new Set([
 const rootEntries = await readdir(root, { withFileTypes: true });
 const unexpected = rootEntries
   .map((entry) => entry.name)
-  .filter((name) => !allowedRootNames.has(name) && !/^RELEASE-v[0-9A-Za-z._-]+\.md$/.test(name))
+  .filter((name) => !allowedRootNames.has(name))
   .sort();
 const forbidden = rootEntries
   .map((entry) => entry.name)
@@ -181,6 +169,7 @@ if (unexpected.length || forbidden.length || missing.length || leakedFiles.lengt
   process.exit(1);
 }
 
+await checkDocumentation(root);
 await validatePrivateEnterpriseRankingAssets();
 
 process.stdout.write(`${JSON.stringify({ root, version, requiredPaths }, null, 2)}\n`);

@@ -35,6 +35,9 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Check public documentation
+        run: node scripts/public-docs.mjs check
+
       - name: Install dependencies
         run: npm ci
 
@@ -55,6 +58,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+
+      - name: Check public documentation
+        run: node scripts/public-docs.mjs check
 
       - name: Install dependencies
         run: npm ci
@@ -92,6 +98,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+
+      - name: Check public documentation
+        run: node scripts/public-docs.mjs check
 
       - name: Install dependencies
         run: npm ci
@@ -142,7 +151,7 @@ jobs:
             echo "Only a final semantic version can create a formal GitHub Release: $VERSION" >&2
             exit 1
           fi
-          test -f "RELEASE-v$VERSION.md"
+          node scripts/public-docs.mjs release-notes
           if [ "$GITHUB_REF_TYPE" != "tag" ] || [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
             echo "Formal release must run from the matching v$VERSION tag." >&2
             exit 1
@@ -163,7 +172,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: UBot V${{ steps.version.outputs.value }}
-          body_path: RELEASE-v${{ steps.version.outputs.value }}.md
+          body_path: .codex_tmp/release-notes.md
           prerelease: false
           files: |
             release/ubot-${{ steps.version.outputs.value }}-win.zip

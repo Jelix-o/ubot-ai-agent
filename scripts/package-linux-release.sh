@@ -52,8 +52,6 @@ for release_path in \
   package.json \
   package-lock.json \
   README.md \
-  COMMANDS.md \
-  "RELEASE-v$VERSION.md" \
   .env.example \
   .env.server-2022.example \
   dist \
@@ -65,6 +63,7 @@ for release_path in \
   scripts/normalize-dotenv-bom.mjs \
   scripts/migrate-v3-state.mjs \
   scripts/verify-release-source.mjs \
+  scripts/public-docs.mjs \
   deploy/nginx/bot.9958.uk.conf \
   deploy/nginx/preview.9958.uk.conf \
   deploy/nginx/ubot-preview-static.conf \
@@ -74,10 +73,6 @@ for release_path in \
   deploy/systemd/ubot.target.template \
   deploy/systemd/ubot-maintenance.service.template \
   deploy/systemd/ubot-maintenance.timer.template \
-  docs/OPERATIONS-v3.md \
-  docs/ADMIN-RECOVERY-v3.md \
-  docs/MIGRATION-v3.md \
-  docs/ROLLBACK-v3.md \
   assets/huixian-profile.json \
   assets/private-enterprises-2026.json \
   assets/private-enterprises-2026-audit.json \

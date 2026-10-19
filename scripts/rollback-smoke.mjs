@@ -12,10 +12,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const [deployer, rollbackDocs, operationsDocs] = await Promise.all([
+const [deployer, handbook] = await Promise.all([
   readFile(path.join(root, "scripts", "deploy-linux-release.sh"), "utf8"),
-  readFile(path.join(root, "docs", "ROLLBACK-v3.md"), "utf8"),
-  readFile(path.join(root, "docs", "OPERATIONS-v3.md"), "utf8"),
+  readFile(path.join(root, "README.md"), "utf8"),
 ]);
 
 const requiredDeployerMarkers = [
@@ -46,11 +45,11 @@ for (const forbidden of [
 }
 
 for (const requiredDocumentation of [
-  "never automatically restores SQLite",
-  "Do not run an old release against the V3 `data/` directory",
-  "never retry historical pending/sending Outbox rows automatically",
+  "不自动恢复 SQLite",
+  "已迁移 V3 的数据不能交给 legacy",
+  "禁止自动重试历史 pending／sending／投递未知 Outbox",
 ]) {
-  if (!`${rollbackDocs}\n${operationsDocs}`.includes(requiredDocumentation)) {
+  if (!handbook.includes(requiredDocumentation)) {
     throw new Error(`V3 rollback documentation is missing: ${requiredDocumentation}`);
   }
 }

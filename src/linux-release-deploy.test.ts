@@ -173,11 +173,9 @@ test("V3 release source verification restricts artifacts to the audited runtime 
     assert.match(windowsPackager, pathPattern);
     assert.match(deployer, pathPattern);
   }
-  for (const document of ["MIGRATION-v3.md", "ROLLBACK-v3.md"]) {
-    const pathPattern = new RegExp(`docs/${document.replace(".", "\\.")}`);
-    assert.match(verifier, pathPattern);
-    assert.match(linuxPackager, pathPattern);
-    assert.match(windowsPackager, pathPattern);
+  for (const source of [verifier, linuxPackager, windowsPackager]) {
+    assert.match(source, /README\.md/);
+    assert.match(source, /public-docs\.mjs/);
   }
 });
 

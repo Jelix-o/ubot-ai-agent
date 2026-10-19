@@ -23,6 +23,8 @@
     "package:linux": "node scripts/run-bash.cjs scripts/package-linux-release.sh",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1",
     "package:all": "npm run package:win && npm run package:linux && node scripts/verify-release-assets.mjs",
+    "docs:check": "node scripts/run-node22.cjs scripts/public-docs.mjs check",
+    "release:notes": "node scripts/run-node22.cjs scripts/public-docs.mjs release-notes",
     "verify:release": "node scripts/verify-release-assets.mjs",
     "release:github": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1"
   },

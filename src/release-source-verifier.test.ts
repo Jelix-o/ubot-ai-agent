@@ -27,9 +27,7 @@ const releasePaths = [
   ...createRequire(import.meta.url)(path.join(projectRoot, "scripts/bt-release-files.cjs")) as string[],
   ".env.example",
   ".env.server-2022.example",
-  "COMMANDS.md",
   "README.md",
-  `RELEASE-v${releaseVersion}.md`,
   "package-lock.json",
   "package.json",
   "assets/blacklisted-at-meme.jpg",
@@ -49,10 +47,6 @@ const releasePaths = [
   "deploy/systemd/ubot-maintenance.timer.template",
   "deploy/systemd/ubot-worker.service.template",
   "deploy/systemd/ubot.target.template",
-  "docs/ADMIN-RECOVERY-v3.md",
-  "docs/MIGRATION-v3.md",
-  "docs/OPERATIONS-v3.md",
-  "docs/ROLLBACK-v3.md",
   "scripts/configure-image-model.mjs",
   "scripts/configure-v3-network.mjs",
   "scripts/deploy-linux-release.sh",
@@ -61,6 +55,7 @@ const releasePaths = [
   "scripts/upgrade-model-policy.mjs",
   "scripts/repair-member-name.mjs",
   "scripts/verify-release-source.mjs",
+  "scripts/public-docs.mjs",
 ];
 
 function sha256(value: unknown): string {

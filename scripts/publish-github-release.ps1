@@ -28,7 +28,7 @@ if ($Tag -ne "v$version") {
   throw "Formal GitHub Release tag must match package.json exactly: v$version"
 }
 if ([string]::IsNullOrWhiteSpace($Name)) { $Name = "UBot V$version" }
-if ([string]::IsNullOrWhiteSpace($ReleaseNotesPath)) { $ReleaseNotesPath = "RELEASE-v$version.md" }
+# Release text is generated from the handbook; custom text uses the same privacy gate.
 if ($AssetPath.Count -eq 0) {
   $AssetPath = @(
     "release/ubot-$version-win.zip",
@@ -56,6 +56,18 @@ try {
   Pop-Location
 }
 
+Push-Location $projectRoot
+try {
+  $documentationArgs = @("scripts/public-docs.mjs", "release-notes", "--title", $Name)
+  if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
+    $documentationArgs += @("--input", $ReleaseNotesPath)
+  }
+  & node scripts/run-node22.cjs @documentationArgs
+  if ($LASTEXITCODE -ne 0) { throw "Public release documentation validation failed." }
+} finally {
+  Pop-Location
+}
+$ReleaseNotesPath = ".codex_tmp/release-notes.md"
 $notesFullPath = Join-Path $projectRoot $ReleaseNotesPath
 if (-not (Test-Path -LiteralPath $notesFullPath)) {
   throw "Release notes not found: $ReleaseNotesPath"

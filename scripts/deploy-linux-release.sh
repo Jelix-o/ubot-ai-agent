@@ -856,7 +856,7 @@ rollback() {
   if [[ "$cutover_may_have_started" -eq 1 && "$existing_cutover_before_deploy" -eq 1 && "$old_target_active" -eq 1 && "$policy_restored" -eq 1 ]]; then
     sudo systemctl start ubot.target || true
   elif [[ "$cutover_may_have_started" -eq 1 ]]; then
-    echo "V3 state migration may have changed SQLite. Release, unit, Nginx, dotenv, and NapCat configuration were restored. Do not restart the legacy service; use docs/OPERATIONS-v3.md for manual recovery." >&2
+    echo "V3 state migration may have changed SQLite. Release, unit, Nginx, dotenv, and NapCat configuration were restored. Do not restart the legacy service; use README.md#recovery for manual recovery." >&2
   fi
   exit "$exit_code"
 }
