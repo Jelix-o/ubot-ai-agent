@@ -229,4 +229,3 @@ fi
 mv -T "$install_target" "$target_dir"
 assert_runtime_payload
 activate_node22_link
-

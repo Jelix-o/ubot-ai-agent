@@ -9,7 +9,6 @@ if (( EUID != 0 )); then
   echo "Run this updater as root." >&2
   exit 2
 fi
-
 # This root timer must not inherit an interactive PATH. The service and this
 # script intentionally use the distribution's Nginx binary by absolute path.
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"

@@ -8,4 +8,3 @@ Unit=ubot-cloudflare-allowlist.service
 
 [Install]
 WantedBy=timers.target
-

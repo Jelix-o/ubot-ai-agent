@@ -22,4 +22,3 @@ ProtectKernelTunables=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/etc/nginx /run/nginx.pid /var/log/nginx/access.log /var/log/nginx/error.log
-

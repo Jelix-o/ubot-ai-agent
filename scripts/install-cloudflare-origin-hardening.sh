@@ -400,4 +400,3 @@ if ! systemctl reload nginx; then
 fi
 
 printf 'UBot Cloudflare origin hardening installed. Backup: %s\n' "$BACKUP_DIR"
-
