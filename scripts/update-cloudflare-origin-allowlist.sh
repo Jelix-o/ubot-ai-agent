@@ -35,7 +35,6 @@ if [[ ! -x "$NODE_BIN" ]]; then
   echo "Required Node 22 runtime is missing or not executable: $NODE_BIN" >&2
   exit 2
 fi
-
 fail_source_safety_check() {
   echo "Cloudflare allow-list updater bootstrap safety check failed: $1" >&2
   exit 2
