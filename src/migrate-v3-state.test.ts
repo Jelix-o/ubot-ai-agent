@@ -8,7 +8,7 @@ import test from "node:test";
 import { SharedDb } from "./shared/sqlite.js";
 import { StateCipher, V3StateRepository } from "./services/v3-state-repository.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 test("V3 cutover excludes daily-report raw messages older than seven days", (t) => {
   const appRoot = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-cutover-"));

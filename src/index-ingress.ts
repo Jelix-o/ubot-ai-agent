@@ -166,24 +166,28 @@ export class IngressApp {
   private readonly maintenanceTimer: NodeJS.Timeout;
   private readonly messageRecalls: MessageRecallService;
   private readonly v3State: ReturnType<typeof resolveV3RuntimeState>;
+  private emitterInFlight?: Promise<void>;
+  private stopPromise?: Promise<void>;
 
   constructor(
     private readonly options: IngressOptions,
     transport?: MessageTransport,
   ) {
+    const config = loadConfig();
     this.sharedDb = openSharedDb(this.options.dataDir);
     this.v3State = this.options.stateEncryptionKey
       ? resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey)
       : undefined;
+    this.v3State?.retireRoastModeForExistingGroupsOnce();
     this.metrics = new Metrics(this.options.metricsDir, {
       processName: "ingress",
       flushIntervalMs: 30_000,
     });
     this.transport = transport ?? new NapCatReverseServer({
-      host: loadConfig().napcatReverseWsHost,
-      port: loadConfig().napcatReverseWsPort,
-      path: loadConfig().napcatReverseWsPath,
-      accessToken: loadConfig().napcatAccessToken,
+      host: config.napcatReverseWsHost,
+      port: config.napcatReverseWsPort,
+      path: config.napcatReverseWsPath,
+      accessToken: config.napcatAccessToken,
     });
 
     if (typeof this.transport.sendGroupMessage !== "function") {
@@ -209,7 +213,7 @@ export class IngressApp {
     }
 
     this.emitterTimer = setInterval(() => {
-      void this.runEmitter();
+      void this.runEmitterSafely();
     }, EMITTER_POLL_MS);
     this.emitterTimer.unref();
 
@@ -219,35 +223,72 @@ export class IngressApp {
     this.maintenanceTimer.unref();
 
     // Localhost read API so the worker can use NapCat read actions.
-    this.readApi = new IngressReadApi(this.transport, loadConfig().ingressReadApiPort);
-    this.readApi.start();
+    this.readApi = new IngressReadApi(
+      this.transport,
+      config.ingressReadApiPort,
+      config.ingressReadApiToken,
+    );
   }
 
   private readonly readApi: IngressReadApi;
 
   async start(): Promise<void> {
-    const withStart = this.transport as MessageTransport & { start?: () => void };
-    if (typeof withStart.start === "function") {
-      withStart.start();
+    try {
+      await this.readApi.start();
+      const withStart = this.transport as MessageTransport & { start?: () => void | Promise<void> };
+      if (typeof withStart.start === "function") {
+        await withStart.start();
+      }
+      this.messageRecalls.start();
+      logInfo("Ingress started.", {
+        botQq: this.options.botQq,
+        dataDir: this.options.dataDir,
+      });
+    } catch (error) {
+      await this.stop().catch((cleanupError) => {
+        logWarn("Ingress startup cleanup failed.", {
+          error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+      });
+      throw error;
     }
-    this.messageRecalls.start();
-    logInfo("Ingress started.", {
-      botQq: this.options.botQq,
-      dataDir: this.options.dataDir,
-    });
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (!this.stopPromise) {
+      this.stopPromise = this.stopInternal();
+    }
+    return this.stopPromise;
+  }
+
+  private async stopInternal(): Promise<void> {
     clearInterval(this.emitterTimer);
     clearInterval(this.maintenanceTimer);
-    await this.messageRecalls.stop();
-    this.metrics.stop();
-    this.readApi.close();
-    this.sharedDb.close();
-    const withClose = this.transport as MessageTransport & { close?: () => void };
-    if (typeof withClose.close === "function") {
-      withClose.close();
+    let cleanupError: unknown;
+    const recordCleanupError = (error: unknown) => {
+      cleanupError ??= error;
+    };
+
+    await this.emitterInFlight?.catch(recordCleanupError);
+    await this.messageRecalls.stop().catch(recordCleanupError);
+    try {
+      this.metrics.stop();
+    } catch (error) {
+      recordCleanupError(error);
     }
+    await this.readApi.close().catch(recordCleanupError);
+    const withClose = this.transport as MessageTransport & { close?: () => void };
+    try {
+      if (typeof withClose.close === "function") {
+        withClose.close();
+      }
+    } catch (error) {
+      recordCleanupError(error);
+    } finally {
+      // All ingress work has stopped before the shared connection is closed.
+      this.sharedDb.close();
+    }
+    if (cleanupError) throw cleanupError;
     logInfo("Ingress stopped.");
   }
 
@@ -394,6 +435,32 @@ export class IngressApp {
 
   // ---- emitter (sends worker replies through the reverse WS action channel) ----
 
+  /**
+   * The poll interval is intentionally shorter than a slow NapCat action.
+   * Keep one complete claim-and-delivery pass in flight so a newly queued row
+   * cannot begin sending alongside an earlier batch.
+   */
+  private async runEmitterSafely(): Promise<void> {
+    if (this.emitterInFlight) {
+      this.metrics.inc("outbox_emitter_overlap_skipped");
+      return;
+    }
+    const run = this.runEmitter();
+    this.emitterInFlight = run;
+    try {
+      await run;
+    } catch (error) {
+      this.metrics.inc("outbox_emitter_failed");
+      logWarn("Outbox emitter pass failed before row delivery.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      if (this.emitterInFlight === run) {
+        this.emitterInFlight = undefined;
+      }
+    }
+  }
+
   private async runEmitter(): Promise<void> {
     // 原子领取：每行先标记 sending，杜绝同一 outbox 双投递（计划 §6 红线）。
     const rows = this.sharedDb.claimOutbox(EMITTER_BATCH_SIZE);
@@ -450,13 +517,6 @@ export class IngressApp {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref();
-  });
-}
-
 export async function main(): Promise<void> {
   const config = loadConfig();
   // Ingress does not otherwise read application state, but it is still a V3
@@ -465,7 +525,7 @@ export async function main(): Promise<void> {
   // through the other roles.
   const startupDb = openSharedDb(config.dataDir);
   try {
-    resolveV3RuntimeState(startupDb, config.stateEncryptionKey);
+    resolveV3RuntimeState(startupDb, config.stateEncryptionKey)?.retireRoastModeForExistingGroupsOnce();
   } finally {
     startupDb.close();
   }

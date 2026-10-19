@@ -7,7 +7,7 @@ import { SharedDb } from "../shared/sqlite.js";
 import { StateCipher, V3StateRepository } from "./v3-state-repository.js";
 import { repairMemberName } from "./member-name-repair.js";
 
-const key = "0123456789abcdef".repeat(4);
+const key = "0".repeat(64);
 function fixture(t: test.TestContext) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "member-name-repair-"));
   const db = new SharedDb(path.join(dir, "state.db"));

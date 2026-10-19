@@ -47,7 +47,7 @@ import { extractImagesFromMessage, parseGroupMessage } from "./utils/message-par
 import { MessageRecallService } from "./message-recall-service.js";
 
 type NapCatRuntime = MessageTransport & {
-  start(): void;
+  start(): void | Promise<void>;
   on(event: "groupMessage", listener: (event: NapcatGroupMessageEvent) => void): unknown;
   on(event: "groupRecall", listener: (event: unknown) => void): unknown;
 };
@@ -299,10 +299,10 @@ async function startLegacyBot(): Promise<BotApplication> {
   });
 
   app.start();
-  napcatRuntime.start();
+  await napcatRuntime.start();
   messageRecalls.start();
   activeLegacyMessageRecalls = messageRecalls;
-  adminHttpServer?.start();
+  await adminHttpServer?.start();
   logInfo("NapCat QQ skill bot started.", {
     mode: config.napcatMode,
   });

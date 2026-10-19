@@ -5,7 +5,6 @@ import path from "node:path";
 import type { SharedDb } from "../shared/sqlite.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
 import {
-  HTML_PREVIEW_RETENTION_MS,
   HtmlPreviewRepository,
   isHtmlPreviewToken,
   type HtmlPreviewClaim,

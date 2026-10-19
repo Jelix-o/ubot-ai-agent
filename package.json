@@ -15,34 +15,46 @@
     "build:admin": "node scripts/run-node22.cjs node_modules/vite/bin/vite.js build --config admin/vite.config.ts",
     "build:server": "node scripts/run-node22.cjs node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "test": "node scripts/test.cjs",
+    "typecheck:server": "node scripts/run-node22.cjs node_modules/typescript/lib/tsc.js --noEmit -p tsconfig.json",
+    "typecheck:admin": "node scripts/run-node22.cjs node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p admin/tsconfig.json",
+    "typecheck": "node scripts/typecheck.cjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "secret:scan": "node scripts/run-node22.cjs scripts/secret-scan.mjs",
+    "browser:install": "node scripts/run-node22.cjs node_modules/playwright/cli.js install chromium",
+    "smoke:admin": "node scripts/run-node22.cjs scripts/visual-admin-smoke.mjs --browser",
+    "verify": "node scripts/verify.cjs",
     "migrate:context": "node scripts/run-node22.cjs scripts/migrate-context-isolation.mjs",
     "migrate:participation": "node scripts/run-node22.cjs scripts/migrate-participation-mode.mjs",
     "migrate:v3": "node scripts/run-node22.cjs scripts/migrate-v3-state.mjs",
     "maintenance:v3": "node scripts/run-node22.cjs scripts/migrate-v3-state.mjs --maintenance --execute",
     "admin:reset-password": "node scripts/run-node22.cjs scripts/reset-admin-password.mjs",
-    "package:linux": "node scripts/run-bash.cjs scripts/package-linux-release.sh",
+    "package:linux": "node scripts/run-node22.cjs scripts/run-bash.cjs scripts/package-linux-release.sh",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1",
-    "package:all": "npm run package:win && npm run package:linux && node scripts/verify-release-assets.mjs",
+    "package:all": "npm run secret:scan && npm run audit:prod && npm run verify && npm run smoke:admin && npm run package:win && npm run package:linux && node scripts/verify-release-assets.mjs",
     "docs:check": "node scripts/run-node22.cjs scripts/public-docs.mjs check",
     "release:notes": "node scripts/run-node22.cjs scripts/public-docs.mjs release-notes",
-    "verify:release": "node scripts/verify-release-assets.mjs",
-    "release:github": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-release.ps1"
+    "verify:release": "node scripts/verify-release-assets.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
     "dotenv": "^16.4.5",
     "openai": "^4.104.0",
     "pinia": "^3.0.4",
-    "vue": "^3.5.35",
+    "vue": "^3.5.44",
     "vue-router": "^4.6.4",
-    "ws": "^8.21.0"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
-    "@types/ws": "^8.18.1",
-    "@vitejs/plugin-vue": "^6.0.7",
-    "tsx": "^4.20.6",
+    "@types/node": "^24.19.2",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "playwright": "^1.64.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "vite": "^8.0.16"
+    "vite": "^8.3.4",
+    "vue-tsc": "^3.3.13"
+  },
+  "overrides": {
+    "form-data": "4.0.6"
   }
 }

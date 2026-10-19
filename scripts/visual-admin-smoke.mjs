@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,12 +17,17 @@ import { loadPrivateEnterpriseRanking } from "../dist/services/private-enterpris
 import { SystemSettingsStore } from "../dist/services/system-settings-store.js";
 import { V3StateRepository } from "../dist/services/v3-state-repository.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 const GROUP_ID = "866209871";
 const USERNAME = "smoke-admin";
 const PASSWORD = "smoke-password";
+const runBrowserSmoke = process.argv.includes("--browser");
+const useLayoutFixture = runBrowserSmoke || process.argv.includes("--layout-fixture");
 
 const root = await mkdtemp(path.join(os.tmpdir(), "ubot-v3-admin-smoke-"));
+const visualArtifactDir = process.env.UBOT_VISUAL_ARTIFACT_DIR?.trim()
+  ? path.resolve(process.env.UBOT_VISUAL_ARTIFACT_DIR)
+  : path.join(root, "visual-admin-smoke");
 let server;
 let sharedDb;
 
@@ -66,9 +71,9 @@ try {
   const knowledgeBaseStore = new KnowledgeBaseStore(path.join(root, "retired-knowledge.json"), v3State);
   const taskStore = new AdminTaskStore(path.join(root, "retired-tasks.json"), v3State);
   const settingsStore = new SystemSettingsStore(path.join(root, "retired-settings.json"), [], undefined, v3State);
-  // Opt-in browser fixture: loopback connections and disposable credentials
-  // let layout/save checks run without production data or upstream calls.
-  if (process.argv.includes("--layout-fixture")) {
+  // Browser checks use loopback connections and disposable credentials so
+  // layout/save checks run without production data or upstream calls.
+  if (useLayoutFixture) {
     await groupConfigService.updateManualIdentity(GROUP_ID, "2458031445", { names: ["外包仔", "外包仙人"], note: "前端开发" });
     const now = new Date().toISOString();
     await settingsStore.update({
@@ -130,14 +135,17 @@ try {
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
     async listGroupMembers() { return [{ user_id: 2458031445, card: "外包仔", nickname: "原昵称", role: "member" }]; },
   });
-  server.start();
+  await server.start();
   const raw = server.server;
-  await waitForListening(raw);
   const address = raw.address();
   if (!address || typeof address === "string") throw new Error("Admin smoke server did not bind a TCP port.");
   const baseUrl = `http://127.0.0.1:${address.port}`;
   // Match browser Origin checks to the ephemeral listener, including its port.
   server.options.publicBaseUrl = baseUrl;
+
+  if (runBrowserSmoke) {
+    await verifyBrowserExperience(baseUrl, visualArtifactDir);
+  }
 
   const login = await postJson(baseUrl, "/api/auth/password", {
     username: USERNAME,
@@ -278,16 +286,88 @@ async function requestJson(baseUrl, pathname, method, body, headers = {}) {
   return { response, data: await response.json().catch(() => ({})) };
 }
 
-function waitForListening(server) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Admin smoke server did not start within 10 seconds.")), 10_000);
-    server.once("listening", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-    server.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
+async function verifyBrowserExperience(baseUrl, screenshotDir) {
+  let chromium;
+  try {
+    ({ chromium } = await import("playwright"));
+  } catch (error) {
+    throw new Error(`Playwright is required for the Admin browser smoke test. Run npm run browser:install. ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  await mkdir(screenshotDir, { recursive: true });
+  const browser = await chromium.launch({ headless: true });
+  const desktopContext = await browser.newContext({
+    viewport: { width: 1440, height: 960 },
+    deviceScaleFactor: 1,
+    locale: "zh-CN",
   });
+  const desktop = await desktopContext.newPage();
+  const browserErrors = [];
+  let authenticated = false;
+  desktop.on("pageerror", (error) => {
+    if (authenticated) browserErrors.push(`pageerror: ${error.message}`);
+  });
+  desktop.on("console", (message) => {
+    if (authenticated && message.type() === "error") browserErrors.push(`console: ${message.text()}`);
+  });
+
+  try {
+    await desktop.goto(`${baseUrl}/login`, { waitUntil: "networkidle" });
+    await desktop.getByRole("heading", { name: "后台登录" }).waitFor();
+    await desktop.screenshot({ path: path.join(screenshotDir, "login-desktop.png"), fullPage: true });
+
+    await desktop.getByLabel("账号").fill(USERNAME);
+    await desktop.getByLabel("密码").fill(PASSWORD);
+    await Promise.all([
+      desktop.waitForURL((url) => url.pathname === "/"),
+      desktop.getByRole("button", { name: "登录控制台" }).click(),
+    ]);
+    // The initial unauthenticated route may intentionally receive a 401 while
+    // Vue resolves the login route. From this point forward, errors are real
+    // authenticated-console regressions and fail the visual smoke test.
+    authenticated = true;
+    await desktop.locator(".app-shell").waitFor();
+    await desktop.getByText("已配置群", { exact: true }).waitFor();
+    await assertNoHorizontalOverflow(desktop, "desktop overview");
+    await desktop.screenshot({ path: path.join(screenshotDir, "overview-desktop.png"), fullPage: true });
+
+    await desktop.goto(`${baseUrl}/settings?tab=models`, { waitUntil: "networkidle" });
+    await desktop.locator(".models-panel").waitFor();
+    await desktop.locator(".model-table").getByText("GPT 视觉与复杂问题备用模型（长名称布局验证）", { exact: true }).waitFor();
+    await assertNoHorizontalOverflow(desktop, "desktop settings");
+    await desktop.screenshot({ path: path.join(screenshotDir, "settings-desktop.png"), fullPage: true });
+
+    await desktop.setViewportSize({ width: 390, height: 844 });
+    await desktop.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
+    await desktop.locator(".app-shell").waitFor();
+    await desktop.getByLabel("打开导航").click();
+    await desktop.locator("aside.sidebar.open[aria-label='工作区导航']").waitFor();
+    await assertNoHorizontalOverflow(desktop, "mobile overview");
+    await desktop.screenshot({ path: path.join(screenshotDir, "overview-mobile.png"), fullPage: true });
+
+    if (browserErrors.length > 0) {
+      throw new Error(`Admin browser emitted errors: ${browserErrors.join(" | ")}`);
+    }
+    console.log(`ADMIN_BROWSER_SMOKE_OK=${screenshotDir}`);
+  } catch (error) {
+    try {
+      await desktop.screenshot({ path: path.join(screenshotDir, "failure-desktop.png"), fullPage: true });
+    } catch {
+      // Preserve the original test failure if the page itself cannot render.
+    }
+    throw error;
+  } finally {
+    await desktopContext.close();
+    await browser.close();
+  }
+}
+
+async function assertNoHorizontalOverflow(page, label) {
+  const dimensions = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  if (dimensions.scrollWidth > dimensions.clientWidth + 1) {
+    throw new Error(`${label} has horizontal overflow (${dimensions.scrollWidth}px > ${dimensions.clientWidth}px).`);
+  }
 }

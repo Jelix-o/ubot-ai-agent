@@ -155,15 +155,3 @@ function getNextSaturday(now: Date): Date {
   const daysUntilSaturday = ((6 - day + 7) % 7) || 7;
   return new Date(today.getTime() + daysUntilSaturday * 24 * 60 * 60 * 1000);
 }
-
-function isLikelyWorkday(now: Date): boolean {
-  const day = now.getDay();
-  if (day === 0 || day === 6) {
-    return false;
-  }
-
-  const todayKey = toLocalDateKey(now);
-  return !HOLIDAY_DEFINITIONS.some(
-    (holiday) => todayKey >= holiday.startDate && todayKey <= holiday.endDate,
-  );
-}

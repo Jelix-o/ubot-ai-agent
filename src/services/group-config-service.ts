@@ -9,7 +9,11 @@ import { assertRevision, type MutationGuard } from "./state-mutation.js";
 const HUIXIAN_PERSONA_ID = "huixian";
 
 export class GroupConfigValidationError extends Error {
-  constructor(public readonly code: string, message = code) {
+  constructor(
+    public readonly code: string,
+    message = code,
+    public readonly statusCode = 400,
+  ) {
     super(message);
   }
 }
@@ -25,7 +29,6 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "allowedSkillIds"
   | "switcherUserIds"
   | "liveChatUserIds"
-  | "roastModeUserIds"
   | "manualIdentities"
   | "liveChatDelaySeconds"
   | "dailyReportEnabled"
@@ -587,8 +590,14 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
   const legacy = group as GroupBotConfig & {
     voiceReplyEnabled?: unknown;
     defaultVoiceReplyEnabled?: unknown;
+    roastModeUserIds?: unknown;
   };
-  const { voiceReplyEnabled: _voiceReplyEnabled, defaultVoiceReplyEnabled: _defaultVoiceReplyEnabled, ...rest } = legacy;
+  const {
+    voiceReplyEnabled: _voiceReplyEnabled,
+    defaultVoiceReplyEnabled: _defaultVoiceReplyEnabled,
+    roastModeUserIds: _roastModeUserIds,
+    ...rest
+  } = legacy;
   return {
     ...rest,
     groupId: String(group.groupId || "").trim(),
@@ -601,7 +610,6 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     participationMode: normalizeParticipationMode(group.participationMode),
     switcherUserIds: Array.from(new Set(group.switcherUserIds ?? [])),
     liveChatUserIds: Array.from(new Set(group.liveChatUserIds ?? [])),
-    roastModeUserIds: normalizeUserIds(group.roastModeUserIds),
     manualIdentities: normalizeManualIdentities(group.manualIdentities),
     liveChatDelaySeconds: normalizeDelaySeconds(group.liveChatDelaySeconds),
     liveChatDelayMinutes: normalizeDelayMinutes(group.liveChatDelayMinutes),
@@ -642,6 +650,9 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   if ("voiceReplyEnabled" in legacyInput || "defaultVoiceReplyEnabled" in legacyInput) {
     throw new GroupConfigValidationError("voice_feature_retired");
   }
+  if ("roastModeUserIds" in legacyInput) {
+    throw new GroupConfigValidationError("roast_mode_retired", "roast_mode_retired", 410);
+  }
 
   const next: GroupBotConfig = { ...current };
 
@@ -667,9 +678,6 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   }
   if ("liveChatUserIds" in input) {
     next.liveChatUserIds = normalizeUserIdsStrict(input.liveChatUserIds);
-  }
-  if ("roastModeUserIds" in input) {
-    next.roastModeUserIds = normalizeUserIdsStrict(input.roastModeUserIds);
   }
   if ("manualIdentities" in input) {
     next.manualIdentities = normalizeManualIdentitiesStrict(input.manualIdentities);
@@ -774,14 +782,6 @@ function normalizeReplyModelModeStrict(value: unknown): ReplyModelMode {
   throw new GroupConfigValidationError("invalid_group_config");
 }
 
-function normalizeRequiredString(value: unknown, code: string): string {
-  const text = typeof value === "string" ? value.trim() : "";
-  if (!text) {
-    throw new GroupConfigValidationError(code);
-  }
-  return text;
-}
-
 function normalizeBoolean(value: unknown, code: string): boolean {
   if (typeof value !== "boolean") {
     throw new GroupConfigValidationError(code);
@@ -809,19 +809,6 @@ function normalizeTimeStrict(value: unknown): string {
     throw new GroupConfigValidationError("invalid_time");
   }
   return text;
-}
-
-function normalizeSkillIds(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw new GroupConfigValidationError("invalid_group_config");
-  }
-  return Array.from(
-    new Set(
-      value
-        .map((item) => String(item).trim())
-        .filter(Boolean),
-    ),
-  );
 }
 
 function normalizeDateRule(value: unknown): ScheduleDateRule {

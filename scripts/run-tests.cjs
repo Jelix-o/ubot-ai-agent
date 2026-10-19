@@ -40,14 +40,26 @@ if (tests.length === 0) {
   process.exit(1);
 }
 
-const result = spawnSync(node, ["--test", "--experimental-test-isolation=none", ...tests], {
-  stdio: "inherit",
-  shell: false,
-});
-
-if (result.error) {
-  console.error(result.error.message);
-  process.exit(1);
+function run(label, args) {
+  console.log(`\n> ${label}`);
+  const result = spawnSync(node, args, { stdio: "inherit", shell: false });
+  if (result.error) {
+    console.error(result.error.message);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
 }
 
-process.exit(result.status ?? 1);
+run("compiled service tests", ["--test", "--experimental-test-isolation=none", ...tests]);
+run("QQ member-profile batch tests", ["--test", "scripts/qq-member-profile-batch.test.mjs"]);
+run("Gemini reply-key rotation tests", ["--test", "scripts/rotate-gemini-reply-key.test.mjs"]);
+run("secret scan tests", ["--test", "scripts/secret-scan.test.mjs"]);
+
+const btTests = findTests("assets/bt/scripts/tests");
+if (btTests.length === 0) {
+  console.error("No BT test files found under assets/bt/scripts/tests.");
+  process.exit(1);
+}
+run("BT adapter tests", ["--test", ...btTests]);

@@ -101,12 +101,63 @@ export class NapCatReverseServer extends EventEmitter<{
     { expiresAt: number; members: NapcatGroupMember[] }
   >();
   private readonly groupMemberRequests = new Map<string, Promise<NapcatGroupMember[]>>();
+  private startPromise?: Promise<void>;
 
   constructor(private readonly options: NapCatReverseServerOptions) {
     super();
+    this.installConnectionHandlers();
+    // Keep a permanent observer so a later server-level error cannot become
+    // an unhandled EventEmitter error. `start()` also installs a one-shot
+    // listener that turns bind failures into a rejected startup promise.
+    this.httpServer.on("error", (error) => {
+      if (this.startPromise) return;
+      logWarn("NapCat reverse WebSocket server error.", {
+        error: error.message,
+      });
+    });
   }
 
-  start(): void {
+  async start(): Promise<void> {
+    if (this.httpServer.listening) return;
+    if (this.startPromise) return this.startPromise;
+
+    const pending = new Promise<void>((resolve, reject) => {
+      const onListening = () => {
+        cleanup();
+        logInfo("NapCat reverse WebSocket server listening.", {
+          host: this.options.host,
+          port: this.options.port,
+          path: this.options.path,
+        });
+        resolve();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const cleanup = () => {
+        this.httpServer.off("listening", onListening);
+        this.httpServer.off("error", onError);
+      };
+      this.httpServer.once("listening", onListening);
+      this.httpServer.once("error", onError);
+      try {
+        this.httpServer.listen(this.options.port, this.options.host);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+
+    this.startPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.startPromise === pending) this.startPromise = undefined;
+    }
+  }
+
+  private installConnectionHandlers(): void {
     this.httpServer.on("upgrade", (req, socket, head) => {
       const pathname = extractPathname(req);
       if (pathname !== this.options.path) {
@@ -139,21 +190,13 @@ export class NapCatReverseServer extends EventEmitter<{
         logWarn("NapCat reverse WebSocket closed.");
       });
     });
-
-    this.httpServer.listen(this.options.port, this.options.host, () => {
-      logInfo("NapCat reverse WebSocket server listening.", {
-        host: this.options.host,
-        port: this.options.port,
-        path: this.options.path,
-      });
-    });
   }
 
   close(): void {
     this.rejectPendingActions(new NapCatActionOutcomeUnknownError("NapCat reverse WebSocket server stopped during an action."));
     this.activeSocket?.close();
     this.wsServer.close();
-    this.httpServer.close();
+    if (this.httpServer.listening) this.httpServer.close();
   }
 
   async sendGroupMessage(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {

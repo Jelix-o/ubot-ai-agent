@@ -21,7 +21,6 @@ import type {
 const projectRoot = path.resolve(".");
 const reviewKeyName = "UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY";
 const reviewKeyIdName = "UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID";
-const releaseVersion = String(JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8")).version);
 
 const releasePaths = [
   ...createRequire(import.meta.url)(path.join(projectRoot, "scripts/bt-release-files.cjs")) as string[],
@@ -45,16 +44,24 @@ const releasePaths = [
   "deploy/systemd/ubot-ingress.service.template",
   "deploy/systemd/ubot-maintenance.service.template",
   "deploy/systemd/ubot-maintenance.timer.template",
+  "deploy/systemd/ubot-cloudflare-allowlist.service.template",
+  "deploy/systemd/ubot-cloudflare-allowlist.timer.template",
   "deploy/systemd/ubot-worker.service.template",
   "deploy/systemd/ubot.target.template",
   "scripts/configure-image-model.mjs",
   "scripts/configure-v3-network.mjs",
   "scripts/deploy-linux-release.sh",
+  "scripts/install-cloudflare-origin-hardening.sh",
+  "scripts/verify-nginx-vhost-ownership.mjs",
+  "scripts/install-node22-runtime.sh",
   "scripts/migrate-v3-state.mjs",
   "scripts/normalize-dotenv-bom.mjs",
+  "scripts/rotate-gemini-reply-key.mjs",
+  "scripts/update-cloudflare-origin-allowlist.sh",
   "scripts/upgrade-model-policy.mjs",
   "scripts/repair-member-name.mjs",
   "scripts/verify-release-source.mjs",
+  "scripts/validate-release-archive.mjs",
   "scripts/public-docs.mjs",
 ];
 

@@ -745,27 +745,6 @@ function getErrorCode(error: unknown): string {
   return error instanceof Error ? error.message.replace(/[^a-z0-9_:-]/gi, "_").slice(0, 100) : "unknown";
 }
 
-function formatShanghaiTime(value: string): string {
-  const compactMatch = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(value);
-  if (compactMatch) {
-    return `${compactMatch[1]}-${compactMatch[2]}-${compactMatch[3]} ${compactMatch[4]}:${compactMatch[5]} (UTC+8)`;
-  }
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(value)) {
-    return `${value.replace("T", " ")} (source local time)`;
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(date).replace(",", "");
-}
-
 interface OpenMeteoForecast {
   current?: {
     time?: string;

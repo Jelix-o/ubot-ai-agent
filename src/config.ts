@@ -24,6 +24,7 @@ export function loadConfig(): AppConfig {
   const reversePort = Number(process.env.NAPCAT_REVERSE_WS_PORT ?? "6199");
   const adminHttpPort = Number(process.env.ADMIN_HTTP_PORT ?? "6200");
   const ingressReadApiPort = Number(process.env.INGRESS_READ_API_PORT ?? "6198");
+  const ingressReadApiToken = requireEnv("INGRESS_READ_API_TOKEN");
   const openAiBaseUrl = requireEnv("OPENAI_BASE_URL");
   const openAiApiKey = requireEnv("OPENAI_API_KEY");
   const openAiModel = requireEnv("OPENAI_MODEL");
@@ -57,6 +58,7 @@ export function loadConfig(): AppConfig {
     napcatReverseWsPort: reversePort,
     napcatReverseWsPath: optionalEnv("NAPCAT_REVERSE_WS_PATH") ?? "/onebot/ws",
     ingressReadApiPort,
+    ingressReadApiToken,
     openAiBaseUrl,
     openAiApiKey,
     openAiModel,

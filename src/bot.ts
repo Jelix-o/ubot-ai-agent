@@ -14,7 +14,6 @@ import {
   isRetryableAiProviderFailure,
   KnowledgeToolUnavailableError,
   StaticHtmlOutputTruncatedError,
-  type AiService,
   type AiToolRuntime,
 } from "./services/ai-service.js";
 import { ConfiguredAiService, type RuntimeAiService } from "./services/configured-ai-service.js";
@@ -90,10 +89,8 @@ import type {
   AiReplyContext,
   ControlledMentionDecision,
   ConversationTurn,
-  GroupMemberProfile,
   GroupMemberIdentity,
   GroupBotConfig,
-  GroupMemory,
   MessageImageInput,
   NapcatGroupInfo,
   NapcatGroupMember,
@@ -101,7 +98,6 @@ import type {
   ReplyModelMode,
   RealtimeLookupResult,
   ReferencedMessage,
-  SharedConversationTopic,
   SkillDefinition,
   SystemCommandConfig,
   TokenCostControlSettings,
@@ -174,15 +170,6 @@ const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 const MSG_MEMBER_PROFILE_UNAVAILABLE = "当前没有可用于回答这位群友相关问题的已保存资料。";
-
-const ROAST_MODE_SCENARIO_INSTRUCTION = [
-  "本轮触发了群管理后台配置的“嘴臭模式”。",
-  "保持当前 skill 的完整人格、语气、表达 DNA 和回复格式，不要切换成通用助理。",
-  "当前发言人是被群管理标记的固定挑衅对象：你一看到这个人就本能应激、愤怒、不友善，不能把友善助理口吻当作主要模式。",
-  "即使对方正常提问，也要先以当前 skill 人格做尖锐、嘴硬、阴阳怪气、嫌弃感强的反击；如果要回答内容，也必须包在这种被惹毛后的嘲讽语气里。",
-  "优先短促有力，允许不讲太多道理，不要主动安抚、客套、讨好或认真陪聊。",
-  "围绕对方这几句发言本身开火，不要编造现实身份、隐私、家庭、疾病、民族、性别、地域等不可验证攻击点，不要输出威胁或煽动现实伤害。",
-].join("\n");
 
 const RUNTIME_COMMAND_SPECS = {
   bt_search: { builtinPrefix: BT_COMMAND_PRIMARY, builtinAliases: BT_COMMAND_ALIASES },
@@ -511,11 +498,6 @@ export class BotApplication {
     this.maintenanceScheduler.stop();
     await this.btSearchService?.stop?.();
     await this.conversationStore.flush();
-  }
-
-  /** Compatibility seam retained for focused lifecycle tests and embeddings. */
-  private async runMaintenanceTick(): Promise<void> {
-    await this.maintenanceScheduler.runDueJobs();
   }
 
   private async getRuntimeCommands(): Promise<SystemCommandConfig[]> {
@@ -1003,7 +985,7 @@ export class BotApplication {
           userId,
           parsedMessage.text,
           parsedMessage.images,
-          resolveDefaultReplyMode(groupConfig),
+          resolveDefaultReplyMode(),
           keywordMentionUserIds,
           messageContext,
           { allowNormalChatMeme },
@@ -1014,7 +996,7 @@ export class BotApplication {
       return;
     }
 
-    if (allowsSelectedMemberParticipation(groupConfig) && this.isActiveChatTrackedUser(groupConfig, userId) && shouldBufferActiveChatMessage(parsedMessage, commandText)) {
+    if (allowsSelectedMemberParticipation(groupConfig) && this.isLiveChatUser(groupConfig, userId) && shouldBufferActiveChatMessage(parsedMessage, commandText)) {
       this.liveChatService.addMessage(groupId, userId, parsedMessage.text, Date.now(), messageContext);
     }
 
@@ -1039,7 +1021,7 @@ export class BotApplication {
         userId,
         parsedMessage.text,
         parsedMessage.images,
-        resolveDefaultReplyMode(groupConfig),
+        resolveDefaultReplyMode(),
         [],
         messageContext,
         {
@@ -1130,7 +1112,7 @@ export class BotApplication {
       const groups = await this.getEnabledGroupConfigs();
 
       for (const groupConfig of groups) {
-        // 闭嘴时实时对话/嘴臭模式不触发（生产事故：botMuted 只拦了 @ 消息，
+        // 闭嘴时实时对话不触发（生产事故：botMuted 只拦了 @ 消息，
         // 实时对话 tick 绕过闭嘴导致乱回复）。
         if (groupConfig.botMuted === true) {
           continue;
@@ -1194,7 +1176,7 @@ export class BotApplication {
               candidate.userId,
               formatBufferedMessages(candidate.messages),
               [],
-              resolveDefaultReplyMode(groupConfig),
+              resolveDefaultReplyMode(),
               [candidate.userId],
               buildBufferedInteractionContext(candidate.messages),
             );
@@ -1204,7 +1186,6 @@ export class BotApplication {
             userId: candidate.userId,
             messageCount: candidate.messages.length,
             delaySeconds,
-            roastMode: this.isRoastModeUser(groupConfig, candidate.userId),
           });
         } catch (error) {
           logError("Live chat tick failed.", {
@@ -2744,7 +2725,7 @@ export class BotApplication {
     const baseOptions: ConversationOptions = typeof optionsOrAllowControlledMention === "boolean"
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
-    const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
+    const options = baseOptions;
     if (identityCheck) {
       let answer = { text: IDENTITY_UNCONFIRMED, targetIds: identityCheck.explicitIds, reason: "directory_unavailable" };
       try {
@@ -3262,10 +3243,6 @@ export class BotApplication {
       }
       return { ...messageContext.replyContext, images: [] };
     })();
-    const storedUserContent =
-      resolvedImages.length > 0 && normalizedUserInput !== "[图片消息]"
-        ? `${normalizedUserInput} [附带${resolvedImages.length}张图片]`
-        : normalizedUserInput;
     const identityContext = {
       groupId: groupConfig.groupId,
       currentUserId: userId,
@@ -3347,23 +3324,6 @@ export class BotApplication {
       const outgoingMentionUserIds = controlledMentionUserId
         ? [controlledMentionUserId]
         : resolvedMentionUserIds;
-
-      const now = new Date().toISOString();
-      const turns: ConversationTurn[] = [
-        {
-          groupId: groupConfig.groupId,
-          role: "user",
-          content: storedUserContent,
-          userId,
-          timestamp: now,
-        },
-        {
-          groupId: groupConfig.groupId,
-          role: "assistant",
-          content: replyText,
-          timestamp: now,
-        },
-      ];
 
       const outgoingMessages = terminalMessages?.length
         ? terminalMessages
@@ -3989,34 +3949,6 @@ export class BotApplication {
     return groupConfig.liveChatUserIds.includes(userId);
   }
 
-  private isRoastModeUser(groupConfig: GroupBotConfig, userId: string): boolean {
-    return (groupConfig.roastModeUserIds ?? []).includes(userId);
-  }
-
-  private resolveConversationOptions(
-    groupConfig: GroupBotConfig,
-    userId: string,
-    options: ConversationOptions,
-  ): ConversationOptions {
-    if (!this.isRoastModeUser(groupConfig, userId)) {
-      return options;
-    }
-
-    const scenarioInstructions = [
-      options.scenarioInstruction,
-      ROAST_MODE_SCENARIO_INSTRUCTION,
-    ].filter((item): item is string => Boolean(item?.trim()));
-
-    return {
-      ...options,
-      scenarioInstruction: Array.from(new Set(scenarioInstructions)).join("\n\n"),
-    };
-  }
-
-  private isActiveChatTrackedUser(groupConfig: GroupBotConfig, userId: string): boolean {
-    return this.isLiveChatUser(groupConfig, userId) || this.isRoastModeUser(groupConfig, userId);
-  }
-
   private resolveKeywordReplyMentionUserIds(
     speakerUserId: string,
     messageContext: MessageInteractionContext,
@@ -4100,14 +4032,6 @@ export class BotApplication {
       return huixian;
     }
     throw new Error("Huixian persona is not available.");
-  }
-
-  private async getAllowedSkills(groupConfig: GroupBotConfig): Promise<SkillDefinition[]> {
-    const configured = await Promise.all(groupConfig.allowedSkillIds.map((skillId) => this.skillService.getSkill(skillId)));
-    const visible = configured.filter((skill): skill is SkillDefinition => Boolean(skill));
-    if (visible.length > 0) return visible;
-    const huixian = await this.skillService.getSkill("huixian");
-    return huixian ? [huixian] : [];
   }
 
   private async getTransportHealthStatus(): Promise<TransportHealthStatus> {
@@ -4837,51 +4761,8 @@ function matchMuteRuntimeCommand(commandText: string, configured?: SystemCommand
     ?? matchCommandPrefix(commandText, unmutePrefixes, UNMUTE_COMMAND);
 }
 
-function isHelpCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return HELP_PREFIXES.some((prefix) => new RegExp(`^${escapeRegex(prefix)}(?:\\s+.+)?$`).test(normalized));
-}
-
 function isRetiredPersonaCommand(commandText: string): boolean {
   return /^(?:#技能|#人格|#角色)(?:\s|$)/u.test(commandText.trim());
-}
-
-function isStatusCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return normalized === STATUS_PREFIX || normalized === `${STATUS_PREFIX} 查看`;
-}
-
-function isHealthCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return normalized === HEALTH_PREFIX || normalized === SHORT_HEALTH_PREFIX;
-}
-
-function isOperationLogCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return normalized === OPERATION_LOG_PREFIX || normalized === `${OPERATION_LOG_PREFIX} 查看`;
-}
-
-function isServerCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return normalized === SERVER_PREFIX || normalized === `${SERVER_PREFIX} 状态` || normalized === `${SERVER_PREFIX} 查看`;
-}
-
-function isMemoryStatusCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return normalized === MEMORY_PREFIX || normalized === `${MEMORY_PREFIX} 状态` || normalized === `${MEMORY_PREFIX} 查看`;
-}
-
-function isKnowledgeStatusCommand(commandText: string): boolean {
-  const normalized = commandText.replace(/\s+/g, " ").trim();
-  return normalized === KNOWLEDGE_PREFIX || normalized === `${KNOWLEDGE_PREFIX} 状态` || normalized === `${KNOWLEDGE_PREFIX} 查看`;
-}
-
-function formatOpsAlertMentions(userIds: string[]): string {
-  const mentions = userIds
-    .map((userId) => userId.trim())
-    .filter((userId) => /^\d+$/.test(userId))
-    .map((userId) => `[CQ:at,qq=${userId}]`);
-  return mentions.length > 0 ? `${mentions.join(" ")} ` : "";
 }
 
 function extractQqFromInput(input: string): string {
@@ -4926,40 +4807,6 @@ function buildBufferedInteractionContext(messages: BufferedMessage[]): MessageIn
     sourceMessageId: latestContextMessage?.sourceMessageId,
     replyMessageId: latestContextMessage?.replyMessageId,
   };
-}
-
-function toSharedTopicHistory(
-  topic: SharedConversationTopic,
-  groupConfig: GroupBotConfig,
-): ConversationTurn[] {
-  return topic.turns.map((turn) => ({
-    groupId: topic.groupId,
-    role: turn.role,
-    content: turn.role === "user"
-      ? `${formatSharedTopicSpeaker(turn, groupConfig)} ${turn.content}`
-      : turn.content,
-    ...(turn.userId ? { userId: turn.userId } : {}),
-    timestamp: turn.timestamp,
-  }));
-}
-
-function formatSharedTopicSpeaker(
-  turn: SharedConversationTopic["turns"][number],
-  groupConfig: GroupBotConfig,
-): string {
-  const userId = turn.userId?.trim();
-  const manualName = userId ? findUniqueManualIdentity(groupConfig, userId)?.names[0] : undefined;
-  const senderCard = normalizeIdentityDisplayText(turn.senderCard);
-  const senderNickname = normalizeIdentityDisplayText(turn.senderNickname);
-  const displayName = manualName ?? senderCard ?? senderNickname ?? (userId ? `QQ ${userId}` : "未知成员");
-  const details = [
-    userId ? `QQ ${userId}` : "QQ 未知",
-    ...(senderCard && senderCard !== displayName ? [`群名片：${senderCard}`] : []),
-    ...(senderNickname && senderNickname !== displayName && senderNickname !== senderCard
-      ? [`昵称：${senderNickname}`]
-      : []),
-  ];
-  return `[发言者：${displayName}（${details.join("；")}）]`;
 }
 
 function buildCurrentSpeaker(
@@ -5264,36 +5111,6 @@ function formatClockTime(date: Date): string {
   return `${`${date.getHours()}`.padStart(2, "0")}:${`${date.getMinutes()}`.padStart(2, "0")}`;
 }
 
-function isScheduledMinute(date: Date, hour: number, minute: number): boolean {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Hong_Kong",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? "0");
-  return get("hour") === hour && get("minute") === minute;
-}
-
-function isScheduledClockMinute(date: Date, time: string): boolean {
-  const match = /^(?<hour>[01]\d|2[0-3]):(?<minute>[0-5]\d)$/.exec(time);
-  if (!match?.groups) {
-    return false;
-  }
-  return isScheduledMinute(date, Number(match.groups.hour), Number(match.groups.minute));
-}
-
-function getHongKongDateKey(date: Date): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Hong_Kong",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? "";
-  return `${get("year")}-${get("month")}-${get("day")}`;
-}
-
 function formatLocalDateTime(date: Date): string {
   return [
     `${date.getMonth() + 1}`.padStart(2, "0"),
@@ -5586,10 +5403,7 @@ function getLiveChatDelaySeconds(groupConfig: GroupBotConfig): number {
 }
 
 function getActiveChatUserIds(groupConfig: GroupBotConfig): string[] {
-  return Array.from(new Set([
-    ...groupConfig.liveChatUserIds,
-    ...(groupConfig.roastModeUserIds ?? []),
-  ]));
+  return Array.from(new Set(groupConfig.liveChatUserIds));
 }
 
 function collectMemoryIdentityTerms(groupConfig: GroupBotConfig, userIds: string[]): string[] {
@@ -5841,7 +5655,7 @@ function formatLiveChatDelay(groupConfig: GroupBotConfig): string {
   return seconds % 60 === 0 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
 }
 
-function resolveDefaultReplyMode(groupConfig: GroupBotConfig): ReplyOutputMode {
+function resolveDefaultReplyMode(): ReplyOutputMode {
   return "text";
 }
 
@@ -5989,19 +5803,6 @@ function parseLiveChatDelay(raw: string): { unit: "seconds" | "minutes"; value: 
   }
 
   return { unit: "minutes", value: numericValue };
-}
-
-function formatFailureKind(kind: string): string {
-  const labels: Record<string, string> = {
-    auth: "鉴权失败",
-    rate_limit: "限流",
-    unavailable: "上游不可用",
-    timeout: "超时",
-    network: "网络异常",
-    format_error: "响应格式异常",
-    unknown: "未知",
-  };
-  return labels[kind] ?? kind;
 }
 
 function formatModelPurpose(purpose: string): string {

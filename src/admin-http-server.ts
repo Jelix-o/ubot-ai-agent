@@ -7,6 +7,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { URL } from "node:url";
@@ -262,6 +263,32 @@ const STATIC_CONTENT_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
+/**
+ * Nginx rewrites X-Real-IP after validating Cloudflare's source address. The
+ * Node server accepts that value only from its loopback reverse proxy; a
+ * direct or remotely forwarded request keeps the socket peer address.
+ */
+export function resolveTrustedClientIp(req: Pick<IncomingMessage, "headers" | "socket">): string {
+  const rawPeer = req.socket.remoteAddress?.trim();
+  const peer = normalizeSocketIp(rawPeer);
+  if (!isLoopbackIp(peer)) return peer;
+
+  const forwarded = req.headers["x-real-ip"];
+  if (typeof forwarded !== "string") return peer;
+  const candidate = forwarded.trim();
+  return isIP(candidate) !== 0 ? candidate : peer;
+}
+
+function normalizeSocketIp(rawPeer: string | undefined): string {
+  if (!rawPeer) return "unknown";
+  const mappedIpv4 = rawPeer.match(/^::ffff:(.+)$/i)?.[1];
+  return mappedIpv4 && isIP(mappedIpv4) === 4 ? mappedIpv4 : rawPeer;
+}
+
+function isLoopbackIp(ip: string): boolean {
+  return ip === "::1" || (isIP(ip) === 4 && ip.startsWith("127."));
+}
+
 export class AdminHttpServer {
   private readonly memberProfileCache = new Map<string, {
     expiresAt: number;
@@ -279,6 +306,7 @@ export class AdminHttpServer {
   private readonly auth: AdminAuthService;
   private readonly bulk?: AdminBulkService;
   private readonly analytics?: ModelTelemetryStore;
+  private startPromise?: Promise<void>;
 
   private readonly server = createServer((req, res) => {
     void this.handleRequest(req, res);
@@ -300,26 +328,53 @@ export class AdminHttpServer {
     this.auth = new AdminAuthService(options.sharedDb, authOptions);
   }
 
-  start(): void {
+  async start(): Promise<void> {
+    if (this.server.listening) return;
+    if (this.startPromise) return this.startPromise;
+
+    const pending = this.startInternal();
+    this.startPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.startPromise === pending) this.startPromise = undefined;
+    }
+  }
+
+  private async startInternal(): Promise<void> {
     // Bootstrap is deliberately performed before the listener opens.  This
     // consumes legacy environment credentials exactly once when the account
     // table is empty, rather than deferring that security transition until the
     // first unauthenticated browser request.
-    void (async () => { await this.bulk?.interruptPreviousRuns(); await this.auth.ensureInitialized(); })()
-      .then(() => {
-        this.server.listen(this.options.port, this.options.host, () => {
-          logInfo("Admin HTTP server listening.", {
-            host: this.options.host,
-            port: this.options.port,
-            publicBaseUrl: this.options.publicBaseUrl,
-          });
-        });
-      })
-      .catch((error: unknown) => {
-        logWarn("Admin HTTP server bootstrap failed; listener was not opened.", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+    await this.bulk?.interruptPreviousRuns();
+    await this.auth.ensureInitialized();
+    await new Promise<void>((resolve, reject) => {
+      const onListening = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const cleanup = () => {
+        this.server.off("listening", onListening);
+        this.server.off("error", onError);
+      };
+      this.server.once("listening", onListening);
+      this.server.once("error", onError);
+      try {
+        this.server.listen(this.options.port, this.options.host);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+    logInfo("Admin HTTP server listening.", {
+      host: this.options.host,
+      port: this.options.port,
+      publicBaseUrl: this.options.publicBaseUrl,
+    });
   }
 
   close(): void {
@@ -802,13 +857,13 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "health_probe_requires_post" }, 405);
         return;
       }
-      this.sendJson(res, await this.buildHealthResponse(session));
+      this.sendJson(res, await this.buildHealthResponse());
       return;
     }
 
     if (req.method === "POST" && pathname === "/api/health/probe") {
       if (!this.requireSuperAdmin(session, res)) return;
-      const health = await this.buildHealthResponse(session, { refresh: true });
+      const health = await this.buildHealthResponse({ refresh: true });
       await this.recordOperation({
         session,
         groupId: "system",
@@ -1055,7 +1110,7 @@ export class AdminHttpServer {
         this.sendJson(res, { taskId }, 202); return true;
       }
       throw new BulkError("not_found", 404);
-    } catch (error) { this.sendJson(res, { error: error instanceof BulkError ? error.code : error instanceof GroupConfigValidationError ? error.code : "invalid_bulk_request" }, error instanceof BulkError ? error.status : 400); return true; }
+    } catch (error) { this.sendJson(res, { error: error instanceof BulkError ? error.code : error instanceof GroupConfigValidationError ? error.code : "invalid_bulk_request" }, error instanceof BulkError ? error.status : error instanceof GroupConfigValidationError ? error.statusCode : 400); return true; }
   }
 
   private bulkAdapter(session: AdminSession) {
@@ -2101,6 +2156,10 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "voice_feature_retired" }, 410);
         return;
       }
+      if ("roastModeUserIds" in body) {
+        this.sendJson(res, { error: "roast_mode_retired" }, 410);
+        return;
+      }
       if (hasRetiredSharedAdminSecretField(body)) {
         this.sendJson(res, { error: "shared_admin_secret_retired" }, 410);
         return;
@@ -2159,7 +2218,7 @@ export class AdminHttpServer {
       } catch (error) {
         if (error instanceof StateConflictError) { this.sendJson(res, { error: "configuration_conflict" }, 409); return; }
         if (error instanceof GroupConfigValidationError) {
-          this.sendJson(res, { error: error.code }, 400);
+          this.sendJson(res, { error: error.code }, error.statusCode);
           return;
         }
         if ((error as Error).message.includes("is not configured")) {
@@ -2709,10 +2768,7 @@ export class AdminHttpServer {
     }
   }
 
-  private async buildHealthResponse(
-    session: AdminSession,
-    options: { refresh?: boolean } = {},
-  ) {
+  private async buildHealthResponse(options: { refresh?: boolean } = {}) {
     const rawTransportHealth = this.options.getTransportHealthStatus
       ? await this.options.getTransportHealthStatus()
       : { ok: true, detail: "未配置传输层自检" };
@@ -3245,16 +3301,14 @@ export class AdminHttpServer {
   }
 
   private loginAttemptKey(req: IncomingMessage, username: string): string {
-    // Nginx is expected to terminate TLS locally. Do not trust a public
-    // X-Forwarded-For header for a security decision in the Node process.
-    const ip = (req.socket.remoteAddress || "unknown").trim();
+    const ip = resolveTrustedClientIp(req);
     return `${ip}:${username.trim().toLowerCase() || "unknown"}`;
   }
 
   private authRequestMeta(req: IncomingMessage): { ip?: string; userAgent?: string } {
     const userAgent = req.headers["user-agent"];
     return {
-      ip: (req.socket.remoteAddress || "unknown").trim(),
+      ip: resolveTrustedClientIp(req),
       ...(typeof userAgent === "string" ? { userAgent } : {}),
     };
   }
@@ -3332,10 +3386,6 @@ export class AdminHttpServer {
 
   private sendJson(res: ServerResponse, data: unknown, statusCode = 200): void {
     this.sendText(res, JSON.stringify(data), "application/json; charset=utf-8", { statusCode, cacheControl: ADMIN_API_CACHE_CONTROL });
-  }
-
-  private sendHtml(res: ServerResponse, html: string): void {
-    this.sendText(res, html, "text/html; charset=utf-8");
   }
 
   private sendBuffer(

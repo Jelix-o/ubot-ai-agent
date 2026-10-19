@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { BtSearchError, BtSearchService, btEngineArguments, normalizeBtSearchResult, parseBtSearchRequest, type BtSearchResult } from "./bt-search-service.js";
+import { BtSearchError, BtSearchService, btEngineArguments, normalizeBtSearchResult, parseBtSearchRequest } from "./bt-search-service.js";
 import { BT_ADULT_CONTENT_WARNING, btHelp, btEmptyResultMessage, renderBtForwardNodes } from "./bt-search-renderer.js";
 import { toNapCatForwardNodes } from "../forward-message.js";
 import { matchBtCommand } from "./command-prefixes.js";

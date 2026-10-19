@@ -25,3 +25,4 @@ function run(label, args) {
 run("public documentation", ["scripts/public-docs.mjs", "check"]);
 run("build", ["scripts/build.cjs"]);
 run("test", ["scripts/run-tests.cjs"]);
+run("admin smoke", ["scripts/visual-admin-smoke.mjs"]);

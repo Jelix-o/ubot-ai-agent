@@ -1,22 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, shallowRef, watch } from "vue";
+import { computed, reactive, shallowRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, queryString, type GroupConfig, type Pagination } from "../services/api";
+import { api, queryString, type Pagination } from "../services/api";
 import { useUrlState } from "../composables/useUrlState";
 import { useAppStore } from "../stores/app";
-import { formatDateTime } from "../utils/format";
+import { formatDateTime as formatDateTimeText } from "../utils/format";
 
 type RangeKey = "24h" | "7d" | "30d" | "custom";
 type UsageSummary = { calls:number; succeeded:number; failed:number; cancelled:number; durationMs:number; inputTokens:number; outputTokens:number; totalTokens:number; usageCount:number; images:number; billingCount:number; charges:Record<string,number>; successRate:number|null; averageLatencyMs:number|null; p95LatencyUpperBoundMs:number|null; billingCoverage:number|null; usageCoverage:number|null };
 type AnalyticsData = { options:{models:Array<{id:string;label:string}>;purposes:string[]}; summary:UsageSummary; series:Array<UsageSummary & {time:string}>; startedAt:string|null; timezone:string; retention:{detailDays:number;aggregateDays:number} };
 type RequestRecord = { id:string; operationId:string; groupId:string; modelId:string; model:string; purpose:string; probe:boolean; startedAt:number; durationMs:number; status:"succeeded"|"failed"|"cancelled"; inputTokens:number|null; outputTokens:number|null; totalTokens:number|null; images:number; actualAmount:number|null; currency:string|null };
+type TrendKey = "calls" | "tokens" | "durationMs" | "images";
 const route=useRoute(),router=useRouter(),app=useAppStore();
 const ranges:Array<{key:RangeKey;label:string}>=[{key:"24h",label:"近 24 小时"},{key:"7d",label:"近 7 天"},{key:"30d",label:"近 30 天"},{key:"custom",label:"自定义"}];
 const range=computed<RangeKey>({get:()=>ranges.some(r=>r.key===route.query.range)?route.query.range as RangeKey:"24h",set:value=>updateQuery({range:value})});
 const filters=reactive({groupId:typeof route.query.analyticsGroup==="string"?route.query.analyticsGroup:"",modelId:typeof route.query.modelId==="string"?route.query.modelId:"",purpose:typeof route.query.purpose==="string"?route.query.purpose:"",includeProbes:route.query.probes==="1",fromDate:typeof route.query.from==="string"?route.query.from.slice(0,10):dateKey(Date.now()-6*86400000),toDate:typeof route.query.to==="string"?route.query.to.slice(0,10):dateKey(Date.now())});
 const data=shallowRef<AnalyticsData|null>(null), requests=shallowRef<RequestRecord[]>([]), pagination=reactive<Pagination>({page:1,pageSize:25,total:0,totalPages:1});
 useUrlState(pagination,["page","pageSize"],"request");
-const loading=shallowRef(false),failed=shallowRef(""),detailLoading=shallowRef(false),trend=shallowRef<"calls"|"tokens"|"durationMs"|"images">("calls");
+const loading=shallowRef(false),failed=shallowRef(""),detailLoading=shallowRef(false),trend=shallowRef<TrendKey>("calls");
 const purposeLabels:Record<string,string>={reply:"对话",html:"网页生成",image:"图片生成",probe:"检测",summary:"总结",knowledge:"知识",memory:"记忆",broadcast:"播报",reminder:"提醒",background:"后台任务"};
 const currentRange=computed(()=>range.value==="custom"?`${filters.fromDate} 至 ${filters.toDate}`:range.value==="24h"?"近 24 小时":range.value==="7d"?"近 7 天":"近 30 天");
 const chargeLines=computed(()=>Object.entries(data.value?.summary.charges||{}));
@@ -28,7 +29,8 @@ const metricCards=computed(()=>{const summary=data.value?.summary;return [
   {label:"图片生成",value:number(summary?.images),note:"成功生成数量"},
   {label:"实际计费",value:chargeLines.value.length?chargeLines.value.map(([c,v])=>`${money(v)} ${c}`).join(" · "):"上游未提供",note:`计费数据覆盖率 ${percent(summary?.billingCoverage)}`},
 ]});
-const chartPoints=computed(()=>{const rows=data.value?.series||[],values=rows.map(r=>Number(r[trend.value]||0)),max=Math.max(1,...values);return rows.map((row,i)=>({x:rows.length<2?50:i/(rows.length-1)*100,y:94-values[i]!/max*84,value:values[i]!,time:row.time}));});
+const trendFields: Record<TrendKey, "calls" | "totalTokens" | "durationMs" | "images"> = { calls: "calls", tokens: "totalTokens", durationMs: "durationMs", images: "images" };
+const chartPoints=computed(()=>{const rows=data.value?.series||[],values=rows.map(r=>Number(r[trendFields[trend.value]]||0)),max=Math.max(1,...values);return rows.map((row,i)=>({x:rows.length<2?50:i/(rows.length-1)*100,y:94-values[i]!/max*84,value:values[i]!,time:row.time}));});
 const linePath=computed(()=>chartPoints.value.map((point,i)=>`${i?"L":"M"}${point.x},${point.y}`).join(" "));
 const areaPath=computed(()=>chartPoints.value.length?`${linePath.value} L 100,100 L 0,100 Z`:"");
 const fromTo=computed(()=>{
@@ -47,6 +49,7 @@ function number(value:number|undefined){return (value??0).toLocaleString("zh-CN"
 function percent(value:number|null|undefined){return value==null?"—":`${(value*100).toFixed(1)}%`;}
 function money(value:number){return new Intl.NumberFormat("zh-CN",{minimumFractionDigits:2,maximumFractionDigits:6}).format(value);}
 function formatLatency(value:number){return value<1000?`${Math.round(value)} ms`:`${(value/1000).toFixed(2)} s`;}
+function formatDateTime(value?: string | number){return formatDateTimeText(typeof value === "number" ? new Date(value).toISOString() : value);}
 function rangeLabel(time:string){return range.value==="24h"?`${time.slice(11,13)}:00`:time;}
 function statusLabel(status:RequestRecord["status"]){return ({succeeded:"成功",failed:"失败",cancelled:"取消"} as const)[status];}
 function statusClass(status:RequestRecord["status"]){return status==="failed"?"danger":status==="cancelled"?"neutral":"";}

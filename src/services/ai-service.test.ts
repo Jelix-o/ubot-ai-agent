@@ -13,7 +13,6 @@ import {
   isRetryableAiProviderFailure,
   KnowledgeToolUnavailableError,
   MAX_STATIC_HTML_REQUEST_CHARS,
-  STATIC_HTML_MAX_COMPLETION_TOKENS,
   STATIC_HTML_REQUEST_TIMEOUT_MS,
   StaticHtmlOutputTruncatedError,
   type AiToolRuntime,

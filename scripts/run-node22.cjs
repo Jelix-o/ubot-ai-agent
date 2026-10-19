@@ -60,7 +60,12 @@ function findNvmNode() {
 
 function resolveNode() {
   if (process.env.UBOT_NODE) {
-    return process.env.UBOT_NODE;
+    const configured = process.env.UBOT_NODE;
+    if ((majorOf(configured) ?? 0) >= NEEDED_MAJOR) {
+      return configured;
+    }
+    console.error(`UBOT_NODE must refer to Node.js ${NEEDED_MAJOR} or newer.`);
+    process.exit(1);
   }
   const fromNvm = findNvmNode();
   if (fromNvm) {
@@ -69,7 +74,8 @@ function resolveNode() {
   if ((majorOf("node") ?? 0) >= NEEDED_MAJOR) {
     return "node";
   }
-  return "node";
+  console.error(`Node.js ${NEEDED_MAJOR} or newer is required. Set UBOT_NODE or install a supported runtime.`);
+  process.exit(1);
 }
 
 const node = resolveNode();

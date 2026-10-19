@@ -6,14 +6,14 @@ PartOf=ubot.target
 
 [Service]
 Type=simple
-User=ubuntu
-Group=ubuntu
+User=ubot
+Group=ubot
 WorkingDirectory=/opt/ai-project-releases/current
 EnvironmentFile=/opt/ai-project/.env
 Environment=BOT_ROLE=worker
 Environment=NODE_ENV=production
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env node dist/index.js
+Environment=PATH=/opt/ubot-runtime/node22/bin:/usr/bin:/bin
+ExecStart=/opt/ubot-runtime/node22/bin/node dist/index.js
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=45
@@ -21,8 +21,14 @@ UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=full
-ReadWritePaths=/opt/ai-project /opt/ai-project-releases
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+PrivateDevices=true
+ReadWritePaths=/opt/ai-project/data /var/lib/ubot-preview
 
 [Install]
 WantedBy=ubot.target

@@ -12,7 +12,7 @@ import {
 } from "./v3-runtime-state.js";
 import { V3CapabilityPolicyService } from "./capability-policy-service.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 test("V3 runtime resolver requires encryption, cutover, and persisted capabilities", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-runtime-"));
