@@ -1133,7 +1133,7 @@ test("replay: first mention can evaluate prior discussion, including rate-limite
   const f = conversationReplay(t);
   const a = f.add("我觉得熟练就不该紧张", "20002", { passive: true });
   const b = f.add("熟练和在乎输赢又不是一回事", USER_ID, { passive: true, excludedDrop: true });
-  f.ai.resolve = data => ({ intent: "opinion", relation: "new", resolvedInput: "评价熟练了是否仍会游戏紧张这场讨论", selectedMessageIds: [a.id, b.id], needsMoreContext: false });
+  f.ai.resolve = () => ({ intent: "opinion", relation: "new", resolvedInput: "评价熟练了是否仍会游戏紧张这场讨论", selectedMessageIds: [a.id, b.id], needsMoreContext: false });
   f.ai.replies.push({ text: "熟练管操作，在乎输赢管心跳，这俩不冲突" });
   const question = await f.ask("你来说说，别胡扯");
   assert.equal(f.ai.resolutions.length, 1);
@@ -1180,7 +1180,7 @@ test("replay: game conditions survive a fishing detour and the same speaker can 
   assert.equal(f.ai.calls.at(-1)?.history.some(turn => turn.content.includes("钓鱼")), false);
   assert.equal(f.identity().replyPlan?.explanation, "on_request");
   f.ack();
-  f.ai.resolve = data => ({ intent: "explain", relation: "follow_up", resolvedInput: "解释为什么熟练了还会紧张", topicCandidateId: game.route.branchId, selectedMessageIds: [game.id] });
+  f.ai.resolve = () => ({ intent: "explain", relation: "follow_up", resolvedInput: "解释为什么熟练了还会紧张", topicCandidateId: game.route.branchId, selectedMessageIds: [game.id] });
   await f.ask("为什么？详细解释一下");
   assert.equal(f.identity().replyPlan?.explanation, "requested");
   assert.equal(f.identity().conversationState?.knownFacts[0]?.userId, USER_ID);
@@ -1190,7 +1190,7 @@ test("replay: another member's heckling shares the discussion but not the origin
   const f = conversationReplay(t);
   f.ai.replies.push({ text: "行，队里的大腿是吧😂", conversationUpdate: { conclusion: { text: "本人说把把 carry，暂无战绩材料", evidenceIds: ["40001"] } } });
   const boast = await f.ask("我把把 carry"); f.ack();
-  f.ai.resolve = data => ({ intent: "challenge", relation: "follow_up", resolvedInput: "回应群友对把把carry的起哄", topicCandidateId: boast.route.branchId, selectedMessageIds: [boast.id] });
+  f.ai.resolve = () => ({ intent: "challenge", relation: "follow_up", resolvedInput: "回应群友对把把carry的起哄", topicCandidateId: boast.route.branchId, selectedMessageIds: [boast.id] });
   f.ai.replies.push({ text: "你这拆台速度，比他交战绩还快" });
   const heckle = await f.ask("他在吹牛", "20002");
   assert.equal(heckle.route.topicId, boast.route.topicId);
