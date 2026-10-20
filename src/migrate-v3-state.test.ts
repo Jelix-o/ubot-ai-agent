@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { SharedDb } from "./shared/sqlite.js";
 import { StateCipher, V3StateRepository } from "./services/v3-state-repository.js";
+import { HUIXIAN_CONVERSATION_REVISION } from "./persona/huixian-conversation-policy.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -344,7 +345,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     const revision = migrated.db.prepare(
       "SELECT changed_by FROM v3_character_profile_revisions ORDER BY id DESC LIMIT 1",
     ).get() as { changed_by: string };
-    assert.equal(revision.changed_by, "release:3.0.3:huixian-immersive");
+    assert.equal(revision.changed_by, `release:${HUIXIAN_CONVERSATION_REVISION}`);
     await repository.saveHuixianProfile({ ...profile!, name: "会仙·管理员调整" }, "admin:test");
     repository.saveGroup({ ...repository.getGroup("10001")!, visionEnabled: false });
     const policy = repository.getCapabilityPolicy();
@@ -387,7 +388,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
       "SELECT COUNT(*) AS count FROM v3_character_profile_revisions",
     ).get() as { count: number };
     assert.equal(profile.name, "会仙·管理员调整");
-    assert.equal(revisions.count, 2);
+    assert.equal(revisions.count, 4);
     assert.equal(repository.getGroup("10001")?.visionEnabled, false);
   } finally {
     afterRepeat.close();

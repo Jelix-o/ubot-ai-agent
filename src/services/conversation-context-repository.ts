@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { SharedDb } from "../shared/sqlite.js";
+import { ConversationOrchestrationRepository } from "./conversation-orchestration-repository.js";
 
 const DEFAULT_MAX_TURNS = 32;
 const DEFAULT_MAX_CHARS = 24_000;
@@ -96,6 +97,7 @@ export interface AppendAssistantTurnInput {
   deliveryId?: string;
   platformMessageId?: string;
   deliveryIds?: string[];
+  stateUpdate?: { value: unknown; route: ConversationRoute; sources: Map<string, string>; expectedRevision: number };
 }
 
 interface RouteRow {
@@ -150,7 +152,10 @@ interface TurnRow {
 
 /** Persistent, process-safe short-term conversation state. */
 export class ConversationContextRepository {
-  constructor(private readonly sharedDb: SharedDb) {}
+  readonly orchestration: ConversationOrchestrationRepository;
+  constructor(private readonly sharedDb: SharedDb) {
+    this.orchestration = new ConversationOrchestrationRepository(sharedDb);
+  }
 
   getSourceRowId(groupId: string, sourceMessageId: string): number | undefined {
     const row = this.sharedDb.db
@@ -443,6 +448,10 @@ export class ConversationContextRepository {
           input.createdAt,
         );
       const turnId = Number(result.lastInsertRowid);
+      if (input.stateUpdate) {
+        if (!this.orchestration.isTaskCurrent(input.stateUpdate.route.sourceRowId)) throw new Error("conversation_task_superseded");
+        this.orchestration.saveStateUpdate(turnId, input.stateUpdate.route, input.stateUpdate.value, input.stateUpdate.sources, input.stateUpdate.expectedRevision);
+      }
       const deliveryIds = [...new Set((input.deliveryIds ?? []).map((id) => id.trim()).filter(Boolean))];
       for (const deliveryId of deliveryIds) {
         const outboxId = parseOutboxDeliveryId(deliveryId);
@@ -496,7 +505,7 @@ export class ConversationContextRepository {
                   FROM conversation_message_routes
                  WHERE branch_id = ?
                    AND parent_turn_id = ?
-                   AND route_reason IN ('same-user-follow-up', 'same-user-similar')
+                   AND route_reason IN ('same-user-follow-up', 'same-user-similar', 'resolved-follow-up')
               )`,
           )
           .run(turnId, input.branchId, parentTurnId);
@@ -506,7 +515,7 @@ export class ConversationContextRepository {
                 SET parent_turn_id = ?
               WHERE branch_id = ?
                 AND parent_turn_id = ?
-                AND route_reason IN ('same-user-follow-up', 'same-user-similar')`,
+                AND route_reason IN ('same-user-follow-up', 'same-user-similar', 'resolved-follow-up')`,
           )
           .run(turnId, input.branchId, parentTurnId);
       }
@@ -632,6 +641,7 @@ export class ConversationContextRepository {
 
   clearUser(groupId: string, userId: string): void {
     this.withImmediateTransaction(() => {
+      this.orchestration.clear(groupId, userId);
       this.sharedDb.db
         .prepare("DELETE FROM conversation_user_active_routes WHERE group_id = ? AND user_id = ?")
         .run(groupId, userId);
@@ -728,6 +738,7 @@ export class ConversationContextRepository {
 
   clearGroup(groupId: string): void {
     this.withImmediateTransaction(() => {
+      this.orchestration.clear(groupId);
       const topics = this.sharedDb.db
         .prepare("SELECT topic_id FROM conversation_topics WHERE group_id = ?")
         .all(groupId) as Array<{ topic_id: string }>;
@@ -755,6 +766,9 @@ export class ConversationContextRepository {
                 source_turn_id = NULL, turn_id = NULL, updated_at = ?`,
       ).run(Date.now());
       this.sharedDb.db.exec(`
+        DELETE FROM conversation_state_updates;
+        DELETE FROM conversation_reply_tasks;
+        DELETE FROM conversation_reply_plans;
         DELETE FROM conversation_message_routes;
         DELETE FROM conversation_message_context;
         DELETE FROM conversation_user_active_routes;

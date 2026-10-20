@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import OpenAI from "openai";
+import { ReplyOutputTruncatedError } from "./ai-service.js";
 import type { SystemModelConfig, SystemSettings } from "../types.js";
 import type { RuntimeAiService } from "./configured-ai-service.js";
 import { ReplyModelRouter, retryableModelFailure } from "./reply-model-router.js";
@@ -23,6 +24,14 @@ function fixture(overrides: Partial<SystemSettings> = {}) {
   return { router, settings, calls, behavior, execute, run };
 }
 const unavailable = () => Promise.reject(Object.assign(new Error("upstream unavailable"), { status: 503 }));
+
+test("a truncated draft is replaced by a complete reply from the configured backup", async () => {
+  const f = fixture();
+  f.behavior.sol = () => Promise.reject(new ReplyOutputTruncatedError("sol", "length", 32_768, 100));
+  const result = await f.execute();
+  assert.equal(result.modelId, "gpt");
+  assert.deepEqual(f.calls, ["sol", "gpt"]);
+});
 
 test("SDK connection failures and nested transport causes reach the next model", async () => {
   for (const error of [new OpenAI.APIConnectionError({}), new Error("provider failed", { cause: Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" }) })]) {

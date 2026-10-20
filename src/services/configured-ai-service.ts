@@ -21,7 +21,7 @@ export type RuntimeAiService = Pick<
   | "generateBroadcastQuip"
   | "generateScheduledReminderText"
   | "generateChatPeriodSummary"
->;
+> & Partial<Pick<AiService, "resolveConversationContext">>;
 
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
@@ -90,6 +90,11 @@ export class ConfiguredAiService implements RuntimeAiService {
   async generateReply(args: Parameters<AiService["generateReply"]>[0]): ReturnType<AiService["generateReply"]> {
     const service = await this.resolveService();
     return withModelOperation("reply", undefined, () => service.generateReply(args), this.modelIds.get(service));
+  }
+
+  async resolveConversationContext(args: Parameters<AiService["resolveConversationContext"]>[0]): Promise<string> {
+    const service = await this.resolveService("reply");
+    return service.resolveConversationContext ? service.resolveConversationContext(args) : "";
   }
 
   async generateStaticHtml(

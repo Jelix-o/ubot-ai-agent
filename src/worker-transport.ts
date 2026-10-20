@@ -76,7 +76,8 @@ export class WorkerTransport implements MessageTransport {
   // ---- outbox-based sending ----
 
   async sendGroupMessage(groupId: string, text: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, text, "text", this.outboxContext());
+    const route = this.routeStorage.getStore() ?? this.conversationRoute;
+    const id = this.db.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext());
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };
   }

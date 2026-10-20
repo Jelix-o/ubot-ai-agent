@@ -174,7 +174,7 @@ export class WorkerApp {
           score: decision.score,
           policyVersion: decision.policyVersion,
         });
-        const route = this.resolveRoute(message);
+        const route = await this.resolveRoute(message);
         return `${message.group_id}:${route.branchId}`;
       },
       handler: async (message, done) => {
@@ -274,7 +274,7 @@ export class WorkerApp {
     // Commands deliberately have no conversation route.
     const route = !isRoutedConversation
       ? undefined
-      : this.contextRepository.getRouteBySourceRowId(message.id) ?? this.resolveRoute(message);
+      : this.contextRepository.getRouteBySourceRowId(message.id) ?? await this.resolveRoute(message);
     const key = isBt
       ? `${message.group_id}:bt-search:${message.id}`
       : isPreview
@@ -337,26 +337,15 @@ export class WorkerApp {
       return;
     }
 
-    // Conversation keys retain their existing in-flight merge semantics.
-    const existingInflight = this.sharedDb.getInflight(key);
-    if (existingInflight && !isPreview && !isBt) {
-      const decision = this.inflight.decideNewMessage(key, message.text, Date.now());
-      if (decision.action === "drop") {
-        this.metrics.inc("duplicate_trigger_dropped");
-        logInfo("Dropped duplicate-triggering message.", { key, msgId: message.msg_id });
-        await done();
-        return;
-      }
-      if (decision.reason === "cancel_and_rerun") {
-        // 旧任务被取消（>20s 无响应），新消息续跑；旧任务的失败话术被
-        // cancelledReplyHook 抑制，不会与新回复一起冒出来。
-        this.metrics.inc("cancelled_task");
-        logInfo("Rerunning key with merged follow-up message.", { key, msgId: message.msg_id });
-      }
+    if (route && !this.contextRepository.orchestration.isTaskCurrent(message.id)) {
+      this.metrics.inc("superseded_task_skipped");
+      await done();
+      return;
     }
 
     const taskStartedAt = Date.now();
     const task = this.inflight.begin(key);
+    if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "running");
     this.metrics.inc("tasks_started");
     let completed = false;
     try {
@@ -364,7 +353,7 @@ export class WorkerApp {
       const controller = new AbortController();
       const cancelPoll = setInterval(() => {
         const row = this.sharedDb.getInflight(key);
-        if (row?.cancel_requested) {
+        if (row?.cancel_requested || (route && !this.contextRepository.orchestration.isTaskCurrent(message.id))) {
           controller.abort();
         }
       }, 100);
@@ -375,16 +364,18 @@ export class WorkerApp {
           // The route alone is not authorization: the policy reason proves
           // this was a same-group reply to an acknowledged bot message.
           allowReplyWithoutMention: participation?.reason === "explicit_reply" ||
-            participation?.reason === "explicit_memory_request",
+            participation?.reason === "explicit_memory_request" || participation?.reason === "directed_follow_up",
         });
         this.metrics.inc("tasks_completed");
         completed = true;
+        if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "awaiting_delivery");
         // 指标 #4：端到端回复延迟 p95（计划 §6）。
         this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
       } finally {
         clearInterval(cancelPoll);
       }
     } catch (error) {
+      if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "failed");
       logError("Worker message handling failed.", {
         key,
         msgId: message.msg_id,
@@ -404,7 +395,7 @@ export class WorkerApp {
     }
   }
 
-  private resolveRoute(message: {
+  private async resolveRoute(message: {
     id: number;
     group_id: string;
     user_id: string;
@@ -415,9 +406,9 @@ export class WorkerApp {
     sender_card?: string | null;
     sender_nickname?: string | null;
     reply_to?: string | null;
-  }): ConversationRoute {
+  }): Promise<ConversationRoute> {
     const images = parseImages(message.images_json);
-    return this.contextRouter.resolve({
+    const input = {
       sourceRowId: message.id,
       groupId: message.group_id,
       userId: message.user_id,
@@ -426,7 +417,11 @@ export class WorkerApp {
       text: message.text,
       hasImages: images.length > 0,
       nowMs: message.msg_time,
-    });
+    };
+    const route = await this.options.botApp.prepareConversationRoute?.(input) ?? this.contextRouter.resolve(input);
+    this.contextRepository.orchestration.registerTask(route, message.group_id, message.user_id,
+      this.contextRepository.orchestration.getResolution(message.id)?.relation ?? "new");
+    return route;
   }
 
   private isBlacklistedMessage(message: { group_id: string; user_id: string }): Promise<boolean> {
@@ -460,6 +455,7 @@ export class WorkerApp {
       {
         hasImages: parseImages(message.images_json).length > 0,
         replyToBot,
+        userId: message.user_id,
       },
     );
     this.sharedDb.recordParticipationDecision({

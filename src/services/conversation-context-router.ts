@@ -86,6 +86,7 @@ export interface ConversationRouteInput {
   text: string;
   hasImages?: boolean;
   nowMs?: number;
+  resolvedContext?: { topicId?: string; branchId?: string; parentTurnId?: number; newTopic?: boolean };
 }
 
 /**
@@ -128,6 +129,12 @@ export class ConversationContextRouter {
       const replyToMessageId = input.replyToMessageId?.trim();
       if (replyToMessageId) {
         return this.resolveExplicitReply(input, replyToMessageId, nowMs);
+      }
+      if (input.resolvedContext) {
+        const target = input.resolvedContext;
+        return this.save(input, nowMs, target.newTopic ? "new-topic" : target.branchId ? "resolved-follow-up" : "resolved-shared-topic", {
+          topicId: target.topicId, branchId: target.branchId, parentTurnId: target.parentTurnId,
+        });
       }
       return this.resolveUnquoted(input, nowMs);
     } catch (error) {

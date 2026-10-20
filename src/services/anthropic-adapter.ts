@@ -81,7 +81,9 @@ export class AnthropicChatCompletions implements ProviderCapabilitiesCarrier {
             content: textContent || null,
             ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
           },
-          finish_reason: toolCalls.length > 0 || result.stop_reason === "tool_use"
+          finish_reason: result.stop_reason === "max_tokens"
+            ? "length"
+            : toolCalls.length > 0 || result.stop_reason === "tool_use"
             ? "tool_calls"
             : result.stop_reason === "end_turn" ? "stop" : result.stop_reason,
           logprobs: null,

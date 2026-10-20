@@ -21,7 +21,7 @@ test("forward payload migration upgrades an already versioned database and toler
     const dbPath = tempDb(t);
     const old = new SharedDb(dbPath);
     const originalId = old.enqueueOutbox("group-old", null, "old queued text");
-    old.db.exec("DELETE FROM schema_migrations WHERE version IN (19, 20)");
+    old.db.exec("DELETE FROM schema_migrations WHERE version >= 19");
     old.db.exec("DROP TABLE message_recalls");
     old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_after_ms");
     old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_deadline_ms");
@@ -48,7 +48,7 @@ test("durable message recall migration upgrades an existing v3.0.37-style databa
   const dbPath = tempDb(t);
   const old = new SharedDb(dbPath);
   const originalId = old.enqueueOutbox("group-old", null, "old queued text");
-  old.db.exec("DELETE FROM schema_migrations WHERE version = 20");
+  old.db.exec("DELETE FROM schema_migrations WHERE version >= 20");
   old.db.exec("DROP TABLE message_recalls");
   old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_after_ms");
   old.db.exec("ALTER TABLE outbox DROP COLUMN auto_recall_deadline_ms");
@@ -258,6 +258,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 18, name: "durable-bulk-target-results" },
       { version: 19, name: "add-outbox-forward-payload" },
       { version: 20, name: "add-durable-message-recalls" },
+      { version: 21, name: "add-conversation-orchestration" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -279,7 +280,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
     "reopening must not apply or record the same migration twice",
   );
   second.close();

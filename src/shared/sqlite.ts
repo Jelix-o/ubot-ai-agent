@@ -1069,6 +1069,30 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "add-durable-message-recalls",
     apply: addDurableMessageRecalls,
   },
+  {
+    version: 21,
+    name: "add-conversation-orchestration",
+    apply: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS conversation_reply_plans (
+        source_row_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        group_id TEXT NOT NULL, user_id TEXT NOT NULL, resolution_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS conversation_state_updates (
+        turn_id INTEGER PRIMARY KEY REFERENCES conversation_turns(id) ON DELETE CASCADE,
+        group_id TEXT NOT NULL, branch_id TEXT NOT NULL, source_turn_id INTEGER NOT NULL,
+        revision INTEGER NOT NULL, update_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS conversation_state_updates_group ON conversation_state_updates(group_id);
+      CREATE TABLE IF NOT EXISTS conversation_reply_tasks (
+        source_row_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        group_id TEXT NOT NULL, user_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL REFERENCES conversation_branches(branch_id) ON DELETE CASCADE,
+        source_turn_id INTEGER NOT NULL, status TEXT NOT NULL,
+        replacement_row_id INTEGER, merged_source_ids_json TEXT NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS conversation_reply_tasks_branch ON conversation_reply_tasks(group_id,user_id,branch_id,source_row_id);
+    `),
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
@@ -1430,7 +1454,7 @@ export class SharedDb {
     const requestedLookbackMs = Number.isFinite(args.lookbackMs)
       ? Math.trunc(args.lookbackMs)
       : 10 * 60 * 1_000;
-    const lookbackMs = Math.max(1, Math.min(10 * 60 * 1_000, requestedLookbackMs));
+    const lookbackMs = Math.max(1, Math.min(60 * 60 * 1_000, requestedLookbackMs));
     return this.listGroupTranscriptBefore({
       groupId: args.groupId,
       beforeSourceRowId: args.beforeSourceRowId,
@@ -1438,7 +1462,7 @@ export class SharedDb {
       memberBeforeOccurredAt: source.created_at,
       sinceMs: source.created_at - lookbackMs,
       excludedUserIds: args.excludedUserIds,
-      limit: Math.max(1, Math.min(30, args.limit ?? 30)),
+      limit: Math.max(1, Math.min(200, args.limit ?? 60)),
     });
   }
 
@@ -1470,7 +1494,7 @@ export class SharedDb {
             AND created_at >= ?
             ${memberTimeUpperBoundClause}
             AND is_bot_msg = 0
-            AND processable = 1
+            AND (processable = 1 OR drop_reason = 'rate_limited')
             AND (text = '' OR ltrim(text) NOT LIKE '#%')
             AND NOT (lower(trim(text)) = '/bt' OR lower(ltrim(text)) LIKE '/bt %')
             AND NOT EXISTS (
@@ -1512,6 +1536,7 @@ export class SharedDb {
       : [];
 
     return [...memberRows, ...botRows]
+      .filter(row => !row.message_id || !this.isRetracted(args.groupId, row.message_id))
       .sort((left, right) => left.occurred_at - right.occurred_at)
       .slice(-args.limit);
   }

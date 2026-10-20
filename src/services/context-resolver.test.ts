@@ -1,0 +1,90 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ContextResolver, isDirectedFollowUp, resolveContextByRules } from "./context-resolver.js";
+import { emptyConversationState, parseConversationReply, sanitizeConversationUpdate, type ContextResolution } from "./conversation-state.js";
+import { ReplyPolicyService } from "./reply-policy-service.js";
+import type { AmbientGroupContextMessage } from "../types.js";
+
+const replyPolicy = new ReplyPolicyService();
+const buildReplyPlan = (resolution: ContextResolution) => replyPolicy.plan({ resolution, state: emptyConversationState(), userId: "a" });
+
+const messages: AmbientGroupContextMessage[] = [
+  { role: "member", userId: "a", messageId: "game", text: "我只有打游戏才紧张，喝水已经成习惯了", timestamp: new Date(1).toISOString() },
+  { role: "bot", messageId: "answer", text: "先改掉顺手拿水喝的动作", timestamp: new Date(2).toISOString() },
+  { role: "member", userId: "b", messageId: "fish", text: "熬夜钓鱼睡过头了", timestamp: new Date(3).toISOString() },
+];
+const candidates = [
+  { id: "games", topicId: "t-game", ownerUserId: "a", title: "游戏紧张", lastUserInput: messages[0].text, lastReply: messages[1].text, updatedAt: 1 },
+  { id: "fishing", topicId: "t-fish", ownerUserId: "b", title: "熬夜钓鱼", lastUserInput: messages[2].text, lastReply: "", updatedAt: 3 },
+];
+
+test("semantic context returns to the relevant topic and rejects invented ids", async () => {
+  let supplied = "";
+  const resolver = new ContextResolver(async (_instruction, data) => {
+    supplied = data;
+    return JSON.stringify({ intent: "confirm", relation: "follow_up", resolvedInput: "打游戏紧张是因为太认真了吗", topicCandidateId: "games", selectedMessageIds: ["game", "answer", "private-other-group"], needsMoreContext: false });
+  });
+  const result = await resolver.resolve({ userId: "a", text: "是太认真了吗", hasImages: false, messages, candidates });
+  assert.equal(result.topicCandidateId, "games");
+  assert.deepEqual(result.selectedMessageIds, ["game", "answer"]);
+  assert.match(supplied, /熬夜钓鱼/);
+  assert.equal(buildReplyPlan(result).explanation, "on_request");
+});
+
+test("lookup ellipsis is resolved before tools see it and explicit ambiguity stays specific", async () => {
+  const resolver = new ContextResolver(async () => JSON.stringify({ intent: "lookup", relation: "follow_up", resolvedInput: "杭州今天的天气", selectedMessageIds: ["game"] }));
+  const resolved = await resolver.resolve({ userId: "a", text: "杭州", hasImages: false, messages, candidates });
+  assert.equal(buildReplyPlan(resolved).resolvedInput, "杭州今天的天气");
+  const ambiguous = await new ContextResolver(async () => JSON.stringify({ intent: "opinion", relation: "new", resolvedInput: "你来说说", topicCandidateId: "invented", selectedMessageIds: [], clarification: "你说游戏紧张那段，还是钓鱼那段？" }))
+    .resolve({ userId: "a", text: "你来说说", hasImages: false, messages, candidates });
+  assert.equal(ambiguous.topicCandidateId, undefined);
+  assert.equal(buildReplyPlan(ambiguous).action, "clarify");
+  assert.match(ambiguous.clarification!, /游戏.*钓鱼/);
+});
+
+test("unavailable semantic selection keeps the bounded shared discussion, including bot replies", async () => {
+  const input = { userId: "a", text: "常工与中正比如何", hasImages: false, messages, candidates };
+  const fallback = await new ContextResolver(async () => "malformed").resolve(input);
+  assert.equal(fallback.source, "rules");
+  assert.deepEqual(fallback.selectedMessageIds, ["game", "answer", "fish"]);
+  const ordinary = resolveContextByRules({ ...input, text: "这有风险吗" });
+  assert.equal(buildReplyPlan(ordinary).explanation, "on_request");
+  assert.match(replyPolicy.instruction(buildReplyPlan(ordinary), emptyConversationState()), /本轮直接回应当前问题/);
+  assert.equal(isDirectedFollowUp("那你觉得呢"), true);
+  assert.equal(isDirectedFollowUp("所以正常吗"), false);
+});
+
+test("state attribution rejects another person's condition and unknown evidence", () => {
+  const update = sanitizeConversationUpdate({
+    knownFacts: [
+      { userId: "a", text: "只在游戏时紧张", sourceMessageIds: ["game"] },
+      { userId: "b", text: "喝水成习惯了", sourceMessageIds: ["game"] },
+      { userId: "a", text: "不存在的病史", sourceMessageIds: ["invented"] },
+    ], questions: [{ key: "x", userId: "outsider", text: "问谁", status: "answered" }],
+    conclusion: { text: "当前判断", evidenceIds: ["game", "unknown"] },
+  }, new Map([["game", "a"], ["fish", "b"]]));
+  assert.equal(update.knownFacts.length, 1);
+  assert.equal(update.questions.length, 0);
+  assert.deepEqual(update.conclusion?.evidenceIds, ["game"]);
+});
+
+test("reply envelopes expose only natural text and never leak truncated metadata", () => {
+  const parsed = parseConversationReply('{"text":"行，队里的大腿是吧😂","stateUpdate":{"coveredPoints":[]},"review":{"reasksKnown":false}}');
+  assert.equal(parsed.text, "行，队里的大腿是吧😂");
+  assert.deepEqual(parsed.check, { repeatsAnswered: false, reasksKnown: false, unsupportedReversal: false });
+  assert.throws(() => parseConversationReply('{"text":"answer","stateUpdate":{'), /invalid_envelope/);
+  assert.throws(() => parseConversationReply('{"stateUpdate":{}}'), /invalid_envelope/);
+  assert.equal(parseConversationReply("自然回复").text, "自然回复");
+});
+
+test("expanded candidates stay within the auxiliary JSON budget and preserve the newest discussion", async () => {
+  const expanded = Array.from({ length: 200 }, (_, index) => ({ ...messages[0], messageId: `m-${index}`, text: "长内容".repeat(170) }));
+  let received: any;
+  await new ContextResolver(async (_instruction, data) => {
+    assert.ok(data.length <= 75_000);
+    received = JSON.parse(data);
+    return JSON.stringify({ intent: "opinion", relation: "new", resolvedInput: "评价刚才的讨论", selectedMessageIds: ["m-199"] });
+  }).resolve({ userId: "a", text: "你来说说", hasImages: false, messages: expanded, candidates });
+  assert.equal(received.messages.at(-1).messageId, "m-199");
+  assert.ok(received.messages.length < 200);
+});

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { logInfo, logWarn } from "../logger.js";
 import type { GroupBotConfig, SystemModelConfig } from "../types.js";
-import { AiService, getAiProviderFailureDetails, StaticHtmlOutputTruncatedError } from "./ai-service.js";
+import { AiService, getAiProviderFailureDetails, ReplyOutputTruncatedError, StaticHtmlOutputTruncatedError } from "./ai-service.js";
 import { resolveProviderCapabilities } from "./ai-provider.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { ProviderCapabilityPolicy } from "./capability-policy-service.js";
@@ -14,7 +14,7 @@ import { withModelOperation } from "./model-telemetry.js";
 export type ReplyOperation = "chat" | "html" | "auxiliary";
 type Gate = <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 export function retryableModelFailure(error: unknown): boolean {
-  if (error instanceof CircuitOpenError || error instanceof StaticHtmlOutputTruncatedError) return true;
+  if (error instanceof CircuitOpenError || error instanceof StaticHtmlOutputTruncatedError || error instanceof ReplyOutputTruncatedError) return true;
   if (error instanceof LlmSemaphoreTimeoutError) return false;
   const { kind, statusCode } = getAiProviderFailureDetails(error);
   if (statusCode !== undefined && statusCode < 500 && ![408, 409, 429].includes(statusCode)) return false;

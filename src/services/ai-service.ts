@@ -3,7 +3,9 @@ import OpenAI from "openai";
 
 import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
 
-import { COMMON_PERSONA_CHAT_RULES } from "../persona/common-chat-behavior.js";
+import { compilePersonaPolicy } from "../persona/persona-policy.js";
+import { normalizeReplyMaxTokens } from "../shared/reply-token-budget.js";
+import { parseConversationReply } from "./conversation-state.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES,
@@ -28,9 +30,7 @@ type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type ChatCompletionsClient = Pick<OpenAI.Chat.Completions, "create"> & ProviderCapabilitiesCarrier;
 
 const DEFAULT_REPLY_REQUEST_TIMEOUT_MS = 45_000;
-const DEFAULT_REPLY_MAX_TOKENS = 600;
 const MAX_REPLY_REQUEST_TIMEOUT_MS = 300_000;
-const MAX_REPLY_TOKENS = 16_384;
 const MAX_KNOWLEDGE_TOOL_ROUNDS = 2;
 const MAX_KNOWLEDGE_TOOL_CALLS = 4;
 const MAX_KNOWLEDGE_TOOL_ARGUMENT_CHARS = 8_000;
@@ -96,6 +96,19 @@ export class StaticHtmlOutputTruncatedError extends Error {
   ) {
     super("static_html_output_truncated");
     this.name = "StaticHtmlOutputTruncatedError";
+  }
+}
+
+/** No truncated draft, including a valid-looking partial JSON object, is deliverable. */
+export class ReplyOutputTruncatedError extends Error {
+  constructor(
+    public readonly model: string,
+    public readonly finishReason: string,
+    public readonly completionTokens: number | undefined,
+    public readonly outputChars: number,
+  ) {
+    super("reply_output_truncated");
+    this.name = "ReplyOutputTruncatedError";
   }
 }
 
@@ -365,6 +378,16 @@ export class AiService {
 
 }); }
 
+  async resolveConversationContext(args: { instruction: string; data: string; signal?: AbortSignal }): Promise<string> {
+    const completion = await this.chatCompletions.create({
+      model: this.model, temperature: 0, max_tokens: 1_600,
+      messages: [{ role: "system", content: args.instruction }, { role: "user", content: args.data.slice(0, 80_000) }],
+      stream: false,
+    }, { signal: args.signal, timeout: 8_000 }) as OpenAI.Chat.Completions.ChatCompletion;
+    assertCompletionAllowed(completion.choices[0]);
+    return completion.choices[0]?.message?.content?.trim() ?? "";
+  }
+
   async generateReply(args: {
     skill: SkillDefinition;
     history: ConversationTurn[];
@@ -409,14 +432,21 @@ export class AiService {
     const replyScenarioInstruction = [
       buildReplyScenarioInstruction(scenarioInstruction, imageInspection),
       knowledgeToolInstruction,
+      identityContext?.replyPlan ? [
+        "Return a single JSON object, without fences. The text field is the natural reply for the user; all other fields are internal metadata and must not appear in text.",
+        'Schema: {"text":"reply","stateUpdate":{"knownFacts":[{"userId":"QQ","text":"user supplied condition","sourceMessageIds":["real id"]}],"coveredPoints":["new points actually explained"],"questions":[{"key":"stable short key","userId":"QQ","text":"question","status":"open|answered|skipped"}],"conclusion":{"text":"current judgment","evidenceIds":["real id"],"revisionReason":"only if changed"},"mediaObservations":[{"sourceMessageId":"actual image message id","text":"visible observation"}]},"review":{"repeatsAnswered":false,"reasksKnown":false,"unsupportedReversal":false}}',
+        "Only report evidence supplied in this request. Keep metadata compact; do not fabricate user conditions, image observations or message ids. Conclusions are judgments, never confirmed diagnoses. Do not reproduce old advice in coveredPoints. A question answered in the current input must be marked answered. Each question key is scoped to its recipient.",
+        "Review the reply against the delivered conversation state before returning. Fix repetition, unnecessary explanations, repeated questions and unsupported reversals. Do not output internal reasoning.",
+      ].join("\n") : undefined,
     ].filter((item): item is string => Boolean(item)).join("\n\n") || undefined;
     const messages = buildChatMessages(skill, history, userInput, images, identityContext, replyScenarioInstruction);
     const promptChars = countPromptChars(messages);
 
     const reply = await this.createReply(messages, skill.temperature, signal, toolRuntime);
+    const conversational = identityContext?.replyPlan && !reply.messages?.length ? parseConversationReply(reply.text) : { text: reply.text };
 
     return {
-      text: reply.text,
+      text: conversational.text,
       model: reply.model,
       skillId: skill.id,
       promptChars,
@@ -424,6 +454,8 @@ export class AiService {
       ...(reply.reasoningEffort ? { reasoningEffort: reply.reasoningEffort } : {}),
       ...(imageInspection ? { imageInspectionUsed: true } : {}),
       ...(reply.knowledgeToolCalls?.length ? { knowledgeToolCalls: reply.knowledgeToolCalls } : {}),
+      ...("update" in conversational ? { conversationUpdate: conversational.update } : {}),
+      ...("check" in conversational ? { replyCheck: conversational.check } : {}),
     };
 
 }); }
@@ -1178,6 +1210,7 @@ export class AiService {
         { signal },
       ) as Promise<OpenAI.Chat.Completions.ChatCompletion>,
     );
+    assertReplyCompletion(response.value.choices[0], response.value.model ?? this.model, response.value.usage?.completion_tokens);
     return {
       completion: response.value,
       ...(response.reasoningEffort ? { reasoningEffort: response.reasoningEffort } : {}),
@@ -1237,7 +1270,7 @@ export class AiService {
         throw new Error("AI reply cancelled by request signal.");
       }
       model = chunk.model ?? model;
-      assertCompletionAllowed(chunk.choices[0]);
+      assertReplyCompletion(chunk.choices[0], model, chunk.usage?.completion_tokens, text.length);
       const delta = chunk.choices[0]?.delta?.content;
       if (typeof delta === "string") {
         text += delta;
@@ -1262,7 +1295,7 @@ export class AiService {
       this.buildReplyRequest(messages, temperature, false, reasoningEffort, signal) as any,
       { signal },
     ) as OpenAI.Chat.Completions.ChatCompletion;
-    assertCompletionAllowed(completion.choices[0]);
+    assertReplyCompletion(completion.choices[0], completion.model ?? this.model, completion.usage?.completion_tokens);
     const text = completion.choices[0]?.message?.content?.trim();
     if (!text) {
       throw new Error("AI response was empty in non-stream mode.");
@@ -1283,6 +1316,7 @@ export class AiService {
       model: this.model,
       temperature,
       messages,
+      // Natural text and structured metadata share the configured total budget.
       max_tokens: this.replyRequestOptions.maxCompletionTokens,
       stream,
       ...(reasoningEffort && this.providerCapabilities.reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
@@ -1318,13 +1352,6 @@ function normalizeReplyTimeout(value: number | undefined): number {
     return DEFAULT_REPLY_REQUEST_TIMEOUT_MS;
   }
   return Math.max(1_000, Math.min(MAX_REPLY_REQUEST_TIMEOUT_MS, Math.floor(value)));
-}
-
-function normalizeReplyMaxTokens(value: number | undefined): number {
-  if (!Number.isFinite(value) || !value) {
-    return DEFAULT_REPLY_MAX_TOKENS;
-  }
-  return Math.max(64, Math.min(MAX_REPLY_TOKENS, Math.floor(value)));
 }
 
 function buildReplyScenarioInstruction(
@@ -1610,6 +1637,14 @@ function assertCompletionAllowed(choice: unknown): void {
   if (value?.finish_reason === "content_filter" || value?.message?.refusal || value?.delta?.refusal) throw new Error("AI content refusal.");
 }
 
+function assertReplyCompletion(choice: unknown, model: string, completionTokens?: number, outputChars = 0): void {
+  assertCompletionAllowed(choice);
+  const value = choice as { finish_reason?: string; message?: { content?: string } } | undefined;
+  if (isStaticHtmlLengthFinishReason(value?.finish_reason)) {
+    throw new ReplyOutputTruncatedError(model, value!.finish_reason!, completionTokens, value?.message?.content?.length ?? outputChars);
+  }
+}
+
 function parseControlledMentionDecision(raw: string, strict = false): ControlledMentionDecision {
   const jsonText = extractJsonObject(raw);
   if (!jsonText) {
@@ -1657,8 +1692,9 @@ export function buildSystemPrompt(
   identityContext?: AiIdentityContext,
   scenarioInstruction?: string,
 ): string {
-  const commonChatBehavior = COMMON_PERSONA_CHAT_RULES.map((rule) => `- ${rule}`).join("\n");
-  const style = skill.styleRules.map((rule) => `- ${rule}`).join("\n");
+  const persona = compilePersonaPolicy(skill);
+  const commonChatBehavior = persona.sharedRules.map((rule) => `- ${rule}`).join("\n");
+  const style = persona.styleRules.map((rule) => `- ${rule}`).join("\n");
   const knowledge = skill.knowledge.map((item) => `- ${item}`).join("\n");
   const runtimeContext = buildRuntimeContext(new Date());
   const manualIdentityContext = buildManualIdentityContext(identityContext);
@@ -1680,7 +1716,7 @@ export function buildSystemPrompt(
         ].join("\n")
       : "";
   return [
-    skill.systemPrompt,
+    persona.systemPrompt,
     "",
     "Context precedence and isolation:",
     "- Treat the current user request and its attached image as the primary task.",
@@ -1719,7 +1755,7 @@ function buildAmbientGroupContext(identityContext?: AiIdentityContext): string {
   const identities = identityContext?.manualIdentities ?? [];
   const selected: string[] = [];
   let usedChars = 0;
-  for (const message of [...messages].reverse().slice(0, 30)) {
+  for (const message of [...messages].reverse().slice(0, 60)) {
     const speaker = message.role === "bot"
       ? "会仙（机器人）"
       : formatEvidenceSpeaker(message.userId, message.senderCard, message.senderNickname, identities);

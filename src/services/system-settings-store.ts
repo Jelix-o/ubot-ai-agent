@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DEFAULT_REPLY_MAX_TOKENS, MIN_REPLY_MAX_TOKENS, MAX_REPLY_MAX_TOKENS } from "../shared/reply-token-budget.js";
 import { readFile, stat } from "node:fs/promises";
 
 import type {
@@ -472,7 +473,7 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     : value.apiProtocol === "anthropic" ? "anthropic" : "openai";
   const isDefaultGptReply = id === "gpt" && purpose === "reply";
   const reasoningEffort = normalizeReasoningEffort(value.reasoningEffort);
-  const maxCompletionTokens = normalizeOptionalInt(value.maxCompletionTokens, 64, 16_384);
+  const maxCompletionTokens = normalizeOptionalInt(value.maxCompletionTokens, MIN_REPLY_MAX_TOKENS, MAX_REPLY_MAX_TOKENS);
   const requestTimeoutMs = normalizeOptionalInt(value.requestTimeoutMs, 1_000, 300_000);
   return {
     id,
@@ -490,7 +491,7 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
     } : {}),
     supportsVision: value.supportsVision === true || (value.supportsVision === undefined && isDefaultGptReply),
     ...(reasoningEffort || isDefaultGptReply ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
-    ...(maxCompletionTokens || isDefaultGptReply ? { maxCompletionTokens: maxCompletionTokens ?? 8_192 } : {}),
+    ...(maxCompletionTokens || purpose === "reply" ? { maxCompletionTokens: maxCompletionTokens ?? DEFAULT_REPLY_MAX_TOKENS } : {}),
     ...(requestTimeoutMs || isDefaultGptReply ? { requestTimeoutMs: requestTimeoutMs ?? 180_000 } : {}),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : now,

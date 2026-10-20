@@ -24,7 +24,10 @@ import type {
   ConversationContextRepository,
   ConversationRoute,
 } from "./services/conversation-context-repository.js";
-import type { ConversationContextRouter } from "./services/conversation-context-router.js";
+import type { ConversationContextRouter, ConversationRouteInput } from "./services/conversation-context-router.js";
+import { ContextResolver, isMediaReference, isDirectedFollowUp, resolveContextByRules } from "./services/context-resolver.js";
+import { emptyConversationState, selectConversationEvidence } from "./services/conversation-state.js";
+import { ReplyPolicyService } from "./services/reply-policy-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
 import type { GroupLock } from "./services/group-lock.js";
@@ -142,7 +145,7 @@ const HELP_PREFIXES = ["#功能", "#帮助", "#命令"];
 const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
 const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 10 * 60 * 1_000;
-const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 30;
+const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 60;
 const KNOWLEDGE_CONTINUATION_WINDOW_MS = 10 * 60 * 1_000;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -293,7 +296,7 @@ export interface ForwardAutoRecallOptions {
 }
 
 export interface MessageTransport {
-  sendGroupMessage(groupId: string, text: string): Promise<void | MessageReceipt>;
+  sendGroupMessage(groupId: string, text: string, options?: { replyToMessageId?: string }): Promise<void | MessageReceipt>;
   sendGroupForwardMessage?(groupId: string, nodes: ForwardMessageNode[], options?: ForwardAutoRecallOptions): Promise<void | MessageReceipt>;
   /** Persists a recall after a direct transport receives a real platform receipt. */
   scheduleMessageRecall?(groupId: string, platformMessageId: string, policy: MessageRecallPolicy): Promise<void> | void;
@@ -1084,9 +1087,18 @@ export class BotApplication {
     groupId: string,
     text: string,
     hasAtBot: boolean,
-    options: { hasImages?: boolean; replyToBot?: boolean } = {},
+    options: { hasImages?: boolean; replyToBot?: boolean; userId?: string } = {},
   ): Promise<ParticipationDecision> {
     const decision = await this.participationService.decide(groupId, text, hasAtBot, options);
+    if (decision.action === "observe" && options.userId && isDirectedFollowUp(text) && this.isCapabilityEnabled("conversation")) {
+      const group = await this.groupConfigService.getGroup(groupId);
+      const active = this.conversationContextRepository?.getActiveRoute(groupId, options.userId);
+      if (group && group.enabled !== false && !group.botMuted && !(group.blacklistedUserIds ?? []).includes(options.userId) &&
+        active && Date.now() - active.updatedAt >= 0 && Date.now() - active.updatedAt <= 120_000) {
+        const turns = this.conversationContextRepository!.getCausalTurns(active.branchId, active.headTurnId);
+        if (turns.some(turn => turn.role === "assistant" && this.conversationContextRepository!.orchestration.deliveredText(turn.id, turn.content, turn.deliveryId))) return { ...decision, action: "reply", reason: "directed_follow_up", score: 0.95, signals: { ...decision.signals, directedFollowUp: true } };
+      }
+    }
     if (decision.action === "reply" && !this.isCapabilityEnabled("conversation")) {
       return {
         ...decision,
@@ -1099,12 +1111,102 @@ export class BotApplication {
     return decision;
   }
 
+  /** Resolve context before selecting a serial queue; retries reuse the stored decision. */
+  async prepareConversationRoute(input: ConversationRouteInput, signal?: AbortSignal): Promise<ConversationRoute | undefined> {
+    const repository = this.conversationContextRepository;
+    if (!repository || !this.conversationContextRouter) return undefined;
+    const existing = repository.getRouteBySourceRowId(input.sourceRowId);
+    if (existing) return existing;
+    const group = await this.groupConfigService.getGroup(input.groupId);
+    if (!group || group.enabled === false || !this.isCapabilityEnabled("conversation") || (group.blacklistedUserIds ?? []).includes(input.userId)) return undefined;
+    const store = repository.orchestration;
+    if (!store || isMemberProfileQueryRequest(input.text)) return this.conversationContextRouter.resolve(input);
+    const now = store.sourceReceivedAt(input.sourceRowId) ?? input.nowMs ?? Date.now();
+    const excluded = [...(group.blacklistedUserIds ?? []), ...(group.memoryDisabledUserIds ?? [])];
+    const contextEnabled = group.ambientGroupContextEnabled !== false;
+    const candidates = store.listCandidates(input.groupId, input.sourceRowId, now, excluded)
+      .filter(candidate => contextEnabled || candidate.ownerUserId === input.userId);
+    let messages: NonNullable<AiIdentityContext["ambientGroupContext"]> = [];
+    if (contextEnabled) {
+      try {
+        messages = this.recentGroupEvidenceService?.listAmbient?.({
+          groupId: input.groupId, beforeSourceRowId: input.sourceRowId, lookbackMs: 10 * 60_000, excludedUserIds: excluded, limit: 60,
+        }) ?? [];
+      } catch (error) {
+        logWarn("Context candidate read failed closed.", { groupId: input.groupId, sourceRowId: input.sourceRowId, error: summarizeAiError(error) });
+      }
+    }
+    const reference = input.replyToMessageId ? store.reference(input.groupId, input.replyToMessageId, input.sourceRowId, excluded) : undefined;
+    const contextInput = { userId: input.userId, text: input.text, hasImages: Boolean(input.hasImages), replyToMessageId: input.replyToMessageId, reference, candidates, messages };
+    const needsSemanticContext = !/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(input.text.trim()) &&
+      (candidates.length > 0 || Boolean(reference) || /(?:你来说说|你怎么看|你觉得呢|评评理|上面|刚才|这个|那个|所以|看图|展开|继续)/u.test(input.text));
+    const resolver = new ContextResolver(this.aiService.resolveConversationContext && needsSemanticContext ? async (instruction, data, resolverSignal) => {
+      const router = await this.getReplyRouter();
+      if (router) {
+        const session = await router.begin(group, "auxiliary", { signal: resolverSignal, gate: this.backgroundLlmGate });
+        return (await session.run((service, routedSignal) => service.resolveConversationContext?.({ instruction, data, signal: routedSignal }) ?? Promise.resolve(""))).value;
+      }
+      const execute = () => this.aiService.resolveConversationContext!({ instruction, data, signal: resolverSignal });
+      return this.backgroundLlmGate ? this.backgroundLlmGate(execute, resolverSignal) : execute();
+    } : undefined);
+    let resolution = resolveContextByRules(contextInput);
+    try {
+      resolution = await resolver.resolve(contextInput, signal);
+      if (resolution.needsMoreContext && contextEnabled && this.recentGroupEvidenceService?.listAmbient) {
+        messages = this.recentGroupEvidenceService.listAmbient({ groupId: input.groupId, beforeSourceRowId: input.sourceRowId, lookbackMs: 60 * 60_000, excludedUserIds: excluded, limit: 200 });
+        resolution = { ...await resolver.resolve({ ...contextInput, messages }, signal), expandedContext: true };
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      logWarn("Context resolution fell back to bounded rules.", { groupId: input.groupId, sourceRowId: input.sourceRowId, error: summarizeAiError(error) });
+    }
+    if (!input.hasImages && isMediaReference(input.text) && !excluded.includes(input.userId)) {
+      const media = input.replyToMessageId
+        ? store.mediaByIds(input.groupId, [input.replyToMessageId], input.sourceRowId, excluded)
+        : store.recentMedia(input.groupId, input.userId, input.sourceRowId, now);
+      if (media.length === 1) {
+        resolution.mediaSourceMessageIds = [media[0].sourceMessageId];
+        resolution.intent = "image";
+        resolution.relation = "supplement";
+        resolution.clarification = undefined;
+        if (!input.replyToMessageId && media[0].branchId) resolution.topicCandidateId = media[0].branchId;
+      } else if (media.length > 1) resolution.clarification = "你说的是哪张图？引用一下那条图片消息";
+    }
+    if ((resolution.intent === "opinion" || /(?:你来说说|你怎么看|你觉得呢|评评理|结合群聊|根据上面)/u.test(input.text)) &&
+      !messages.length && !candidates.length && !input.replyToMessageId) {
+      resolution.clarification = contextEnabled ? "你指的是刚才哪件事？我这边没读到对应的讨论" : "本群没开启近期群聊上下文，把要我评价的那段引用一下？";
+    }
+    if (resolution.needsMoreContext && !resolution.clarification) {
+      const titles = [...new Set(candidates.map(item => item.title.trim()).filter(Boolean))].slice(0, 2);
+      resolution.clarification = titles.length === 2 ? `你是说“${titles[0].slice(0, 25)}”那段，还是“${titles[1].slice(0, 25)}”那段？` : "你指的是哪条讨论？引用一下对应消息";
+    }
+    resolution = store.saveResolution(input.sourceRowId, input.groupId, input.userId, resolution);
+    let candidate = candidates.find(item => item.id === resolution.topicCandidateId);
+    if (!candidate && resolution.mediaSourceMessageIds.length && resolution.topicCandidateId) {
+      const branch = repository.getBranch(resolution.topicCandidateId);
+      if (branch?.groupId === input.groupId && branch.ownerUserId === input.userId) {
+        candidate = { id: branch.branchId, topicId: branch.topicId, ownerUserId: branch.ownerUserId, title: "图片", lastUserInput: "", lastReply: "", updatedAt: branch.updatedAt };
+      }
+    }
+    const useResolution = resolution.source === "model" || resolution.mediaSourceMessageIds.length > 0;
+    const target = candidate && !resolution.clarification ? {
+      topicId: candidate.topicId,
+      ...(candidate.ownerUserId === input.userId ? { branchId: candidate.id } : {}),
+    } : { newTopic: true };
+    const route = this.conversationContextRouter.resolve({ ...input, ...(useResolution && !input.replyToMessageId ? { resolvedContext: target } : {}) });
+    store.registerTask(route, input.groupId, input.userId, resolution.relation);
+    logInfo("Conversation context planned.", { groupId: input.groupId, sourceRowId: input.sourceRowId, topicId: route.topicId, branchId: route.branchId,
+      intent: resolution.intent, relation: resolution.relation, source: resolution.source, expanded: resolution.expandedContext === true,
+      selectedMessageIds: resolution.selectedMessageIds, mediaSourceMessageIds: resolution.mediaSourceMessageIds, clarification: Boolean(resolution.clarification) });
+    return route;
+  }
+
   /** Read-only trigger check used by a legacy ingress before it persists a route. */
   async shouldRouteConversation(
     groupId: string,
     text: string,
     hasAtBot: boolean,
-    options: { hasImages?: boolean; replyToBot?: boolean } = {},
+    options: { hasImages?: boolean; replyToBot?: boolean; userId?: string } = {},
   ): Promise<boolean> {
     const decision = await this.getParticipationDecision(groupId, text, hasAtBot, options);
     return decision.action === "reply";
@@ -2700,7 +2802,8 @@ export class BotApplication {
       return;
     }
     const conversationStartedAt = Date.now();
-    const normalizedUserInput = userInput.trim() || "[图片消息]";
+    const currentMessageHasImages = images.length > 0;
+    let normalizedUserInput = userInput.trim() || "[图片消息]";
     // Determine this before reading the causal branch. A profile request is
     // intentionally isolated from prior conversation text even when it later
     // resolves through an @, quoted message, or saved alias.
@@ -2725,7 +2828,7 @@ export class BotApplication {
       : undefined;
     if (!conversationRoute && this.conversationContextRouter && messageContext.sourceMessageId) {
       if (sourceRowId !== undefined) {
-        conversationRoute = this.conversationContextRouter.resolve({
+        const input = {
           sourceRowId,
           groupId: groupConfig.groupId,
           userId,
@@ -2733,7 +2836,8 @@ export class BotApplication {
           replyToMessageId: messageContext.replyMessageId,
           text: userInput,
           hasImages: images.length > 0,
-        });
+        };
+        conversationRoute = await this.prepareConversationRoute(input, signal) ?? this.conversationContextRouter.resolve(input);
       } else {
         logWarn("Conversation source row is missing; using isolated context.", {
           groupId: groupConfig.groupId,
@@ -2745,6 +2849,16 @@ export class BotApplication {
       ? { allowControlledMention: optionsOrAllowControlledMention }
       : optionsOrAllowControlledMention;
     const options = this.resolveConversationOptions(groupConfig, userId, baseOptions);
+    const orchestration = this.conversationContextRepository?.orchestration;
+    if (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId)) return;
+    const contextResolution = sourceRowId === undefined ? undefined : orchestration?.getResolution(sourceRowId);
+    const excludedContextUsers = [...(groupConfig.blacklistedUserIds ?? []), ...(groupConfig.memoryDisabledUserIds ?? [])];
+    if (!memberProfileQueryIntent && sourceRowId !== undefined && orchestration) {
+      const merged = orchestration.mergedInput(sourceRowId, groupConfig.groupId, userId);
+      normalizedUserInput = merged.text || normalizedUserInput;
+      const media = orchestration.mediaByIds(groupConfig.groupId, contextResolution?.mediaSourceMessageIds ?? [], sourceRowId, excludedContextUsers);
+      images = uniqueConversationImages([...images, ...merged.images, ...media.flatMap(item => item.images)]);
+    }
     if (identityCheck) {
       let answer = { text: IDENTITY_UNCONFIRMED, targetIds: identityCheck.explicitIds, reason: "directory_unavailable" };
       try {
@@ -2810,12 +2924,26 @@ export class BotApplication {
     // incidental image must not turn that deterministic query into a vision
     // request. The same history is reused below for ordinary model replies.
     let causalHistory: ConversationContextTurn[] = [];
+    let conversationStateHistory: ConversationContextTurn[] = [];
     if (!memberProfileQueryIntent && conversationRoute && this.conversationContextRepository) {
       try {
+        if (orchestration) {
+          const since = (orchestration.sourceReceivedAt(conversationRoute.sourceRowId) ?? Date.now()) - 60 * 60_000;
+          conversationStateHistory = this.conversationContextRepository.getCausalTurnsBeforeTurn(
+            conversationRoute.branchId, conversationRoute.turnId, { maxTurns: 200, maxChars: 80_000 },
+          ).filter(turn => turn.createdAt >= since);
+        }
         causalHistory = this.conversationContextRepository.getCausalTurnsBeforeTurn(
           conversationRoute.branchId,
           conversationRoute.turnId,
         );
+        const hasExcludedAncestor = causalHistory.some(turn => turn.userId && excludedContextUsers.includes(turn.userId));
+        if (orchestration) causalHistory = causalHistory.flatMap(turn => {
+          if (turn.role !== "assistant") return turn.userId && excludedContextUsers.includes(turn.userId) ? [] : [turn];
+          if (hasExcludedAncestor) return [];
+          const content = orchestration.deliveredText(turn.id, turn.content, turn.deliveryId);
+          return content ? [{ ...turn, content }] : [];
+        });
       } catch (error) {
         logWarn("Conversation history read failed closed; using current message only.", {
           topicId: conversationRoute.topicId,
@@ -3037,7 +3165,7 @@ export class BotApplication {
             beforeSourceRowId: sourceRowId,
             lookbackMs: AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
             excludedUserIds,
-            limit: AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
+            limit: 30,
           }) ?? []
           : this.recentGroupEvidenceService?.list({
             groupId: groupConfig.groupId,
@@ -3070,8 +3198,6 @@ export class BotApplication {
       ambientGroupContextStatus = "member_profile_query";
     } else if (groupConfig.ambientGroupContextEnabled === false) {
       ambientGroupContextStatus = "disabled";
-    } else if (messageContext.replyMessageId) {
-      ambientGroupContextStatus = "explicit_reply";
     } else if (recentGroupEvidenceTriggered) {
       ambientGroupContextStatus = "targeted_group_evidence";
     } else if (sourceRowId === undefined) {
@@ -3087,13 +3213,15 @@ export class BotApplication {
         ambientGroupContext = this.recentGroupEvidenceService.listAmbient({
           groupId: groupConfig.groupId,
           beforeSourceRowId: sourceRowId,
-          lookbackMs: AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
+          lookbackMs: contextResolution?.expandedContext ? 60 * 60_000 : AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
           excludedUserIds: [
             ...(groupConfig.blacklistedUserIds ?? []),
             ...(groupConfig.memoryDisabledUserIds ?? []),
           ],
-          limit: AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
+          limit: contextResolution?.expandedContext ? 200 : AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
         }).filter((message) => !message.messageId || !causalMessageIds.has(message.messageId));
+        ambientGroupContext = contextResolution?.source === "model" && contextResolution.selectedMessageIds.length === 0
+          ? [] : selectConversationEvidence(ambientGroupContext, contextResolution?.selectedMessageIds ?? []);
         ambientGroupContextStatus = "loaded";
       } catch (error) {
         ambientGroupContextStatus = "read_failed";
@@ -3104,6 +3232,25 @@ export class BotApplication {
       }
     }
     const ambientGroupContextChars = formatRecentGroupEvidenceForMetrics(ambientGroupContext).length;
+    const conversationState = !targetedMemberProfileRequested
+      ? orchestration?.readState(conversationStateHistory, excludedContextUsers) ?? emptyConversationState()
+      : emptyConversationState();
+    if (!targetedMemberProfileRequested && conversationRoute && orchestration) conversationState.pendingMedia = orchestration.pendingMedia(conversationRoute, excludedContextUsers);
+    const replyPolicy = new ReplyPolicyService();
+    const replyPlan = replyPolicy.plan({
+      resolution: contextResolution ?? resolveContextByRules({
+        userId, text: normalizedUserInput, hasImages: images.length > 0, replyToMessageId: messageContext.replyMessageId, candidates: [], messages: ambientGroupContext,
+      }),
+      state: conversationState, userId, sourceMessageId: messageContext.sourceMessageId,
+      mediaSourceMessageIds: [...(currentMessageHasImages && messageContext.sourceMessageId ? [messageContext.sourceMessageId] : []), ...(contextResolution?.mediaSourceMessageIds ?? [])],
+    });
+    if (!targetedMemberProfileRequested && replyPlan.action === "clarify" && replyPlan.clarification) {
+      signal?.throwIfAborted();
+      if (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId)) return;
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, replyPlan.clarification, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, replyPlan.clarification, receipt ? [receipt] : []);
+      return;
+    }
     // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
     const atmosphere = !targetedMemberProfileRequested && this.atmosphereSummarizer
       ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
@@ -3125,7 +3272,8 @@ export class BotApplication {
       : replyFormatBudget
         ? buildHuixianReplyLengthInstruction(replyFormatBudget)
         : undefined;
-    const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction]
+    const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction,
+      !targetedMemberProfileRequested ? replyPolicy.instruction(replyPlan, conversationState) : undefined]
       .filter((instruction): instruction is string => Boolean(instruction))
       .join("\n\n");
     const currentSpeaker = buildCurrentSpeaker(promptGroupConfig, userId, messageContext);
@@ -3172,7 +3320,7 @@ export class BotApplication {
         : Promise.resolve([]),
       targetedMemberProfileRequested
         ? Promise.resolve(undefined)
-        : this.resolveRealtimeLookup(groupConfig, normalizedUserInput),
+        : this.resolveRealtimeLookup(groupConfig, replyPlan.resolvedInput),
     ]);
     const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
     const visibleSubjectUserIds = new Set(memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds]);
@@ -3262,10 +3410,6 @@ export class BotApplication {
       }
       return { ...messageContext.replyContext, images: [] };
     })();
-    const storedUserContent =
-      resolvedImages.length > 0 && normalizedUserInput !== "[图片消息]"
-        ? `${normalizedUserInput} [附带${resolvedImages.length}张图片]`
-        : normalizedUserInput;
     const identityContext = {
       groupId: groupConfig.groupId,
       currentUserId: userId,
@@ -3285,6 +3429,7 @@ export class BotApplication {
         recentGroupEvidenceTargetUserId: evaluationTargetUserIds[0],
       } : {}),
       ...(ambientGroupContext.length > 0 ? { ambientGroupContext } : {}),
+      ...(!targetedMemberProfileRequested && orchestration ? { conversationState, replyPlan } : {}),
       ...(atmosphere ? { atmosphereSummary: atmosphere.summary } : {}),
     };
     const replyArgs = {
@@ -3299,7 +3444,19 @@ export class BotApplication {
     const modelStartedAt = Date.now();
 
     try {
-      const { reply, usedMode, fallbackUsed, visionFallback } = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal });
+      let { reply, usedMode, fallbackUsed, visionFallback } = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal });
+      const rewriteReason = replyPolicy.review(reply, replyPlan, history.filter(turn => turn.role === "assistant").map(turn => turn.content));
+      if (rewriteReason && !targetedMemberProfileRequested && !reply.messages?.length) {
+        const revised = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal,
+          scenarioInstruction: replyPolicy.rewriteInstruction(scenarioInstruction, rewriteReason, reply.text),
+        });
+        reply = revised.reply;
+        usedMode = revised.usedMode;
+        fallbackUsed ||= revised.fallbackUsed;
+        visionFallback ||= revised.visionFallback;
+      }
+      signal?.throwIfAborted();
+      if (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId)) return;
       const modelMs = Date.now() - modelStartedAt;
       const resolvedMentionUserIds = await this.resolveMentionUserIds(
         groupConfig.groupId,
@@ -3348,23 +3505,6 @@ export class BotApplication {
         ? [controlledMentionUserId]
         : resolvedMentionUserIds;
 
-      const now = new Date().toISOString();
-      const turns: ConversationTurn[] = [
-        {
-          groupId: groupConfig.groupId,
-          role: "user",
-          content: storedUserContent,
-          userId,
-          timestamp: now,
-        },
-        {
-          groupId: groupConfig.groupId,
-          role: "assistant",
-          content: replyText,
-          timestamp: now,
-        },
-      ];
-
       const outgoingMessages = terminalMessages?.length
         ? terminalMessages
         : formatReplyMessages(skill, replyText, replyFormatBudget);
@@ -3378,7 +3518,18 @@ export class BotApplication {
         outgoingMentionUserIds,
         conversationRoute,
       );
-      await this.persistAssistantContext(conversationRoute, replyText, receipts);
+      if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) return;
+      const stateSources = orchestration?.sourceMap(causalHistory, ambientGroupContext, messageContext.sourceMessageId ?? "", userId);
+      if (stateSources && messageContext.replyContext?.userId) stateSources.set(messageContext.replyContext.messageId, messageContext.replyContext.userId);
+      if (stateSources && sourceRowId !== undefined) {
+        for (const media of orchestration!.mediaByIds(groupConfig.groupId, contextResolution?.mediaSourceMessageIds ?? [], sourceRowId, excludedContextUsers)) stateSources.set(media.sourceMessageId, media.userId);
+      }
+      const deliveredReplyText = outgoingMessages.map((message, index) => index === 0 && outgoingMentionUserIds.length
+        ? prefixAtMentions(outgoingMentionUserIds, message) : message).join("\n\n");
+      const compactReply = (text: string) => text.replace(/[\p{P}\p{Z}\s]/gu, "");
+      await this.persistAssistantContext(conversationRoute, deliveredReplyText, receipts,
+        stateSources && conversationRoute ? { value: compactReply(outgoingMessages.join("")) === compactReply(replyText) ? reply.conversationUpdate : undefined,
+          route: conversationRoute, sources: stateSources, expectedRevision: conversationState.revision } : undefined);
       if (options.allowNormalChatMeme === true && normalizedUserInput.trim()) {
         await this.maybeSendNormalChatMeme({
           groupConfig,
@@ -3443,7 +3594,7 @@ export class BotApplication {
       }
       // 已取消的任务不发任何回复（计划 §2.3）：用户重触发后旧任务被取消，
       // 它的失败话术如果照发，就会和新消息的回复一起冒出来。
-      if (signal?.aborted) {
+      if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) {
         this.metricsAbortedReply();
         logInfo("Skipped failure reply because the task was cancelled.", {
           groupId: groupConfig.groupId,
@@ -4284,9 +4435,9 @@ export class BotApplication {
     });
   }
 
-  private async sendText(groupId: string, text: string): Promise<MessageReceipt | undefined> {
+  private async sendText(groupId: string, text: string, replyToMessageId?: string): Promise<MessageReceipt | undefined> {
     try {
-      const receipt = await this.transport.sendGroupMessage(groupId, text);
+      const receipt = await this.transport.sendGroupMessage(groupId, text, replyToMessageId ? { replyToMessageId } : undefined);
       this.liveChatService.recordBotActivity(groupId);
       await this.handleSendSuccessRecovery();
       return receipt ?? undefined;
@@ -4423,6 +4574,9 @@ export class BotApplication {
     if (!route) {
       return this.sendText(groupId, text);
     }
+    if (this.conversationContextRepository?.orchestration && !this.conversationContextRepository.orchestration.isTaskCurrent(route.sourceRowId)) {
+      throw new Error("conversation_task_superseded");
+    }
     const contextualTransport = this.transport as MessageTransport & {
       runWithConversationContext?<T>(route: ConversationRoute, task: () => Promise<T>): Promise<T>;
       setConversationContext?(route?: ConversationRoute): void;
@@ -4431,7 +4585,7 @@ export class BotApplication {
       return contextualTransport.runWithConversationContext(route, () => this.sendText(groupId, text));
     }
     if (!contextualTransport.setConversationContext) {
-      return this.sendText(groupId, text);
+      return this.sendText(groupId, text, route.sourceMessageId);
     }
     contextualTransport.setConversationContext(route);
     try {
@@ -4445,10 +4599,12 @@ export class BotApplication {
     route: ConversationRoute | undefined,
     content: string,
     receipts: MessageReceipt[],
-  ): Promise<void> {
+    stateUpdate?: import("./services/conversation-context-repository.js").AppendAssistantTurnInput["stateUpdate"],
+  ): Promise<number | undefined> {
     if (!route || !this.conversationContextRepository) {
       return;
     }
+    if (this.conversationContextRepository.orchestration && !this.conversationContextRepository.orchestration.isTaskCurrent(route.sourceRowId)) return;
     try {
       const firstReceipt = receipts[0];
       const deliveryIds = receipts.flatMap((receipt) => receipt.deliveryId ? [receipt.deliveryId] : []);
@@ -4461,6 +4617,7 @@ export class BotApplication {
         deliveryId: firstReceipt?.deliveryId,
         platformMessageId: firstReceipt?.platformMessageId ?? firstReceipt?.messageId,
         deliveryIds,
+        stateUpdate,
       });
       const contextualTransport = this.transport as MessageTransport & {
         bindConversationTurn?(receipts: MessageReceipt[], route: ConversationRoute, turnId: number): void;
@@ -4485,6 +4642,7 @@ export class BotApplication {
           }
         }
       }
+      return turn.id;
     } catch (error) {
       const contextualTransport = this.transport as MessageTransport & {
         discardConversationDrafts?(receipts: MessageReceipt[]): void;
@@ -4657,15 +4815,22 @@ export class BotApplication {
     groupConfig: GroupBotConfig,
     replyMessageId?: string,
   ): Promise<AiReplyContext | undefined> {
-    if (!replyMessageId || !this.transport.getMessage) {
+    if (!replyMessageId) {
       return undefined;
     }
 
     try {
-      const referenced = await this.transport.getMessage(replyMessageId);
+      const excluded = [...(groupConfig.blacklistedUserIds ?? []), ...(groupConfig.memoryDisabledUserIds ?? [])];
+      const store = this.conversationContextRepository?.orchestration;
+      if (store?.isReferenceRetracted(groupConfig.groupId, replyMessageId)) return undefined;
+      const local = store?.reference(groupConfig.groupId, replyMessageId, undefined, excluded);
+      const referenced = local ?? await this.transport.getMessage?.(replyMessageId);
       if (!referenced) {
         return undefined;
       }
+      if (referenced.groupId && referenced.groupId !== groupConfig.groupId) return undefined;
+      if (store && !local && !referenced.groupId && !this.conversationContextRepository?.getMessageContext(groupConfig.groupId, replyMessageId)) return undefined;
+      if (referenced.userId && excluded.includes(referenced.userId)) return undefined;
 
       const manualTarget = referenced.userId
         ? resolveManualIdentityTarget(groupConfig, referenced.userId, "reply")
@@ -4690,6 +4855,10 @@ export class BotApplication {
     }
   }
 
+}
+
+function uniqueConversationImages(images: MessageImageInput[]): MessageImageInput[] {
+  return [...new Map(images.map(image => [image.file || image.url || JSON.stringify(image), image])).values()].slice(0, 6);
 }
 
 function extractCommandText(message: NapcatGroupMessageEvent["message"]): string {
@@ -5769,30 +5938,16 @@ function resolveHuixianReplyFormatBudget(
   if (/(?:一句话|一两句|简短|简单说|别展开|少废话)/.test(normalized)) {
     return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
   }
-  if (
-    /(?:分析|方案|计划|对比|区别|排查|实现|代码|日志|步骤|风险|复盘|详细|展开|全面|写一份|怎么做|如何做)/.test(normalized) ||
-    normalized.length > 180 ||
-    (normalized.match(/[？?]/g)?.length ?? 0) > 1
-  ) {
-    return { maxChars: 500, maxTotalChars: 3_000, maxMessages: 8, preferredMaxMessages: 6 };
-  }
-  if (/^(?:在吗|你好|嗨|早|晚安|几点了|什么情况|状态|天气|谢谢|好的)[？?!！。]?$/.test(normalized)) {
-    return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
-  }
-  return { maxChars: 180, maxTotalChars: 360, maxMessages: 2, preferredMaxMessages: 2 };
+  // A transport ceiling is not a target length. Content/explicit requests
+  // control explanation depth; words such as “风险” cannot select long mode.
+  return { maxChars: 500, maxTotalChars: 3_000, maxMessages: 8, preferredMaxMessages: 8 };
 }
 
 function buildHuixianReplyLengthInstruction(budget: ReplyFormatBudget): string {
-  if (budget.maxTotalChars >= 3_000) {
-    return "\u4f1a\u4ed9\u672c\u8f6e\u56de\u590d\u6a21\u5f0f\uff1a\u590d\u6742\u4efb\u52a1\u3002Think carefully before answering. Give the conclusion first, then the evidence, implementation steps, constraints, and risks needed to complete the task. Do not omit a necessary judgment just to be brief. \u6700\u591a\u516b\u6761\uff0c\u603b\u8ba1\u63a7\u5236\u5728 3000 \u5b57\u5185\u3002";
-  }
   if (budget.maxTotalChars <= 160) {
-    return "会仙本轮回复模式：简单问题。只用一条直接回答，先给答案，不铺垫、不复述问题、不额外追问；控制在 160 字内。";
+    return "用户明确要求简短：直接回应，不铺垫、不额外追问；一条、160 字内。";
   }
-  if (budget.maxTotalChars >= 1_200) {
-    return "会仙本轮回复模式：复杂任务。先给结论，再按需要给依据、步骤、约束或风险；信息足够时直接完成，不要为了简短省掉关键判断。最多四条、总计控制在 1200 字内。这条规则覆盖通用的短回复偏好。";
-  }
-  return "会仙本轮回复模式：普通交流。先答用户关心的点，保持自然，不要空泛铺垫；最多两条、总计控制在 360 字内。";
+  return "传输上限为 3000 字内、八条消息；这只是投递边界，不是目标长度。";
 }
 
 function shouldBufferActiveChatMessage(

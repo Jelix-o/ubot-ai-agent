@@ -12,6 +12,7 @@ import {
   getAiProviderFailureDetails,
   isRetryableAiProviderFailure,
   KnowledgeToolUnavailableError,
+  ReplyOutputTruncatedError,
   MAX_STATIC_HTML_REQUEST_CHARS,
   STATIC_HTML_MAX_COMPLETION_TOKENS,
   STATIC_HTML_REQUEST_TIMEOUT_MS,
@@ -20,6 +21,9 @@ import {
 } from "./ai-service.js";
 import { createKnowledgeToolRuntime } from "./knowledge-query-tools.js";
 import { loadPrivateEnterpriseRanking } from "./private-enterprise-ranking.js";
+import { ReplyPolicyService } from "./reply-policy-service.js";
+import { emptyConversationState } from "./conversation-state.js";
+import { resolveContextByRules } from "./context-resolver.js";
 
 test("AI provider failure classification permits only transient cross-model fallback", () => {
   assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("service unavailable"), { status: 503 })), true);
@@ -133,6 +137,69 @@ test("a structured content refusal terminates streaming without compatibility re
   } as never);
   await assert.rejects(service.generateReply({ skill, history: [], userInput: "test" }), /content refusal/);
   assert.equal(calls, 1);
+});
+
+test("reply output budgets are identical for streaming, non-streaming and structured metadata, with explicit limits preserved", async () => {
+  const plan = new ReplyPolicyService().plan({ resolution: resolveContextByRules({ userId: "a", text: "你好", hasImages: false, messages: [], candidates: [] }), state: emptyConversationState(), userId: "a" });
+  for (const streaming of [true, false]) {
+    for (const structured of [true, false]) {
+      for (const configured of [undefined, 4_096, 65_536]) {
+        let requested = 0;
+        const text = structured ? '{"text":"接住了","stateUpdate":{},"review":{}}' : "接住了";
+        const service = new AiService("https://invalid.example", "test", "test", {
+          async create(args: { max_tokens: number }) {
+            requested = args.max_tokens;
+            return streaming
+              ? (async function* () { yield { choices: [{ delta: { content: text }, finish_reason: "stop" }] }; })()
+              : { choices: [{ message: { content: text }, finish_reason: "stop" }] };
+          },
+        } as never, { maxCompletionTokens: configured, providerCapabilities: { streaming } });
+        const reply = await service.generateReply({ skill, history: [], userInput: "你好", ...(structured ? { identityContext: { groupId: "g", currentUserId: "a", replyPlan: plan } } : {}) });
+        assert.equal(requested, configured ?? 32_768);
+        assert.equal(reply.text, "接住了");
+      }
+    }
+  }
+});
+
+test("length-truncated replies are rejected even when their structured JSON looks complete", async () => {
+  for (const streaming of [true, false]) {
+    for (const finishReason of ["length", "max_tokens", "max_output_tokens"]) {
+      const service = new AiService("https://invalid.example", "test", "test", {
+        async create() {
+          const text = '{"text":"尚未完整的答案","stateUpdate":{"coveredPoints":["不能记为已答"]}}';
+          return streaming
+            ? (async function* () {
+              yield { choices: [{ delta: { content: text }, finish_reason: null }] };
+              yield { choices: [{ delta: {}, finish_reason: finishReason }] };
+            })()
+            : { choices: [{ message: { content: text }, finish_reason: finishReason }], usage: { completion_tokens: 32_768 } };
+        },
+      } as never, { providerCapabilities: { streaming } });
+      await assert.rejects(service.generateReply({ skill, history: [], userInput: "详细说说" }), (error: unknown) => error instanceof ReplyOutputTruncatedError && error.finishReason === finishReason);
+    }
+  }
+});
+
+test("tool calls truncated by the token limit are rejected before executing a partial request", async () => {
+  let executed = false;
+  const service = new AiService("https://invalid.example", "test", "test", {
+    async create() { return { choices: [{ message: { content: null, tool_calls: [testToolCall("partial")] }, finish_reason: "length" }] }; },
+  } as never);
+  await assert.rejects(service.generateReply({ skill, history: [], userInput: "查询", toolRuntime: {
+    tools: [testKnowledgeTool], async execute() { executed = true; return { content: "{}" }; },
+  } }), ReplyOutputTruncatedError);
+  assert.equal(executed, false);
+});
+
+test("an upstream token-limit rejection stays visible and never silently shrinks the configured budget", async () => {
+  const requests: number[] = [];
+  const rejected = Object.assign(new Error("max_tokens exceeds the supported output limit"), { status: 400 });
+  const service = new AiService("https://invalid.example", "test", "test", {
+    async create(args: { max_tokens: number }) { requests.push(args.max_tokens); throw rejected; },
+  } as never);
+  await assert.rejects(service.generateReply({ skill, history: [], userInput: "你好" }), error => error === rejected);
+  assert.deepEqual(requests, [32_768]);
 });
 
 test("buildSystemPrompt includes target examples", () => {

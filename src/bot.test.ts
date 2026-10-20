@@ -2359,7 +2359,7 @@ test("Huixian keeps heavy in-memory group traffic out when no durable ambient co
   assert.equal(aiService.calls[0]?.userInput, "总结当前话题");
 });
 
-test("Huixian normal replies omit runtime task context and retain adaptive detailed reply instruction", async () => {
+test("Huixian replies omit runtime task context and explain only when requested", async () => {
   const groupConfigService = new FakeGroupConfigService([{
     groupId: "67890",
     currentSkillId: "huixian",
@@ -2401,7 +2401,8 @@ test("Huixian normal replies omit runtime task context and retain adaptive detai
   const identityContext = call?.identityContext as Record<string, unknown> | undefined;
   assert.equal(Object.hasOwn(identityContext ?? {}, "groupRuntimeContext"), false);
   assert.doesNotMatch(JSON.stringify(identityContext ?? {}), /提醒喝水/);
-  assert.match(call?.scenarioInstruction ?? "", /复杂任务/);
+  assert.match(call?.scenarioInstruction ?? "", /"explanation":"requested"/);
+  assert.match(call?.scenarioInstruction ?? "", /用户这轮要求解释/);
   assert.match(call?.scenarioInstruction ?? "", /3000 字内/);
 });
 
@@ -3440,7 +3441,7 @@ test("injects durable group evidence only for a verified person-evaluation reque
   assert.equal(ambientCalls, 1);
 });
 
-test("injects ambient group context for unquoted conversation and skips explicit replies", async () => {
+test("injects ambient group context for both unquoted conversation and explicit replies", async () => {
   const ambientCalls: Array<{
     groupId: string;
     beforeSourceRowId: number;
@@ -3486,7 +3487,7 @@ test("injects ambient group context for unquoted conversation and skips explicit
 
   assert.equal(ambientCalls.length, 1);
   assert.equal(ambientCalls[0]?.lookbackMs, 10 * 60 * 1_000);
-  assert.equal(ambientCalls[0]?.limit, 30);
+  assert.equal(ambientCalls[0]?.limit, 60);
   assert.deepEqual(ambientCalls[0]?.excludedUserIds, ["30001", "30002"]);
   assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext?.[0]?.text, "现代梗圈顶流必须是常公");
 
@@ -3496,8 +3497,8 @@ test("injects ambient group context for unquoted conversation and skips explicit
     { type: "text", data: { text: " 常公是谁 " } },
   ], 20001, 67890, 7202));
 
-  assert.equal(ambientCalls.length, 1);
-  assert.equal(aiService.calls[1]?.identityContext?.ambientGroupContext, undefined);
+  assert.equal(ambientCalls.length, 2);
+  assert.equal(aiService.calls[1]?.identityContext?.ambientGroupContext?.[0]?.text, "现代梗圈顶流必须是常公");
 });
 
 test("ambient group context can be disabled per group", async () => {

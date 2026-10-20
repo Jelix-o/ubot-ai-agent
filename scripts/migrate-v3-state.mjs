@@ -176,6 +176,7 @@ async function runExistingCutoverUpgrade() {
         profile: huixianProfile,
         changedBy: HUIXIAN_RELEASE_PROFILE_CHANGED_BY,
       }),
+      huixianConversationPolicy: repository.upgradeHuixianConversationProfileOnce(now),
       htmlPreviewCapability: enableHtmlPreviewCapability(repository, now),
       imageGenerationCapability: enableImageGenerationCapability(repository, now),
       btSearchCapability: enableBtSearchCapability(repository, now),

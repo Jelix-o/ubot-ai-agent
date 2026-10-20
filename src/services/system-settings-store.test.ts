@@ -64,6 +64,20 @@ test("SystemSettingsStore redacts provider keys from public reads", async () => 
   });
 });
 
+test("reply token budgets inherit 32768, preserve explicit settings, and round-trip values through 65536", async () => {
+  await withDir(async dir => {
+    const file = path.join(dir, "settings.json");
+    await writeFile(file, JSON.stringify({ models: [model("sol", "reply"), { ...model("gpt", "reply"), maxCompletionTokens: 8192 }, model("summary", "summary")] }));
+    const store = new SystemSettingsStore(file);
+    const settings = await store.getInternal();
+    assert.equal(settings.models.find(item => item.id === "sol")?.maxCompletionTokens, 32_768);
+    assert.equal(settings.models.find(item => item.id === "gpt")?.maxCompletionTokens, 8_192);
+    assert.equal(settings.models.find(item => item.id === "summary")?.maxCompletionTokens, undefined);
+    await store.update({ models: settings.models.map(item => ({ ...item, maxCompletionTokens: item.id === "sol" ? 65_536 : item.maxCompletionTokens })) });
+    assert.equal((await new SystemSettingsStore(file).getInternal()).models.find(item => item.id === "sol")?.maxCompletionTokens, 65_536);
+  });
+});
+
 test("SystemSettingsStore preserves an existing API key for blank-key edits", async () => {
   await withDir(async (dir) => {
     const store = new SystemSettingsStore(path.join(dir, "settings.json"));

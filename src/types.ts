@@ -126,6 +126,7 @@ export interface MessageImageInput {
 
 export interface ReferencedMessage {
   messageId: string;
+  groupId?: string;
   userId?: string;
   userName?: string;
   text: string;
@@ -296,6 +297,8 @@ export interface AiIdentityContext {
   recentGroupEvidenceTargetUserId?: string;
   /** Short-lived, untrusted nearby group conversation used only for local references. */
   ambientGroupContext?: AmbientGroupContextMessage[];
+  conversationState?: import("./services/conversation-state.js").ConversationState;
+  replyPlan?: import("./services/conversation-state.js").ReplyPlan;
   /** 脱敏后的群氛围摘要；不得包含聊天原文或成员身份。 */
   atmosphereSummary?: string;
 }
@@ -395,6 +398,8 @@ export interface AiReply {
   reasoningEffort?: ReasoningEffort;
   imageInspectionUsed?: boolean;
   knowledgeToolCalls?: string[];
+  conversationUpdate?: unknown;
+  replyCheck?: import("./services/conversation-state.js").ConversationReplyCheck;
 }
 
 export interface ControlledMentionDecision {

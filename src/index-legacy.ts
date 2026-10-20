@@ -265,29 +265,26 @@ async function startLegacyBot(): Promise<BotApplication> {
       // the worker path: only a same-group, acknowledged bot message may
       // continue without an explicit @.
       const replyToBot = sharedDb.isKnownBotMessage(groupId, parsed.replyMessageId);
-      const shouldRoute = !isAdministrativeCommand && await app.shouldRouteConversation(
+      const participation = !isAdministrativeCommand ? await app.getParticipationDecision(
         groupId,
         parsed.text,
         parsed.hasAtBot,
         {
           hasImages: images.length > 0,
           replyToBot,
+          userId,
         },
-      );
-      const route = !shouldRoute
+      ) : undefined;
+      const routeInput = {
+        sourceRowId: rowId, groupId, userId, sourceMessageId: messageId,
+        replyToMessageId: parsed.replyMessageId, text: parsed.text,
+        hasImages: images.length > 0, nowMs: messageTime,
+      };
+      const route = participation?.action !== "reply"
         ? undefined
-        : contextRouter.resolve({
-            sourceRowId: rowId,
-            groupId,
-            userId,
-            sourceMessageId: messageId,
-            replyToMessageId: parsed.replyMessageId,
-            text: parsed.text,
-            hasImages: images.length > 0,
-            nowMs: messageTime,
-          });
+        : await app.prepareConversationRoute(routeInput) ?? contextRouter.resolve(routeInput);
       await app.handleGroupMessage(event, undefined, route, {
-        allowReplyWithoutMention: replyToBot,
+        allowReplyWithoutMention: replyToBot || participation?.reason === "directed_follow_up",
       });
     } catch (error) {
       logError("Unhandled group message error.", {

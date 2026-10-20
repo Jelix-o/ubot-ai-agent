@@ -150,6 +150,27 @@ try {
   const csrf = login.data.session?.csrfToken;
   if (!cookie || typeof csrf !== "string") throw new Error("V3 password login did not issue an opaque session and CSRF token.");
 
+  const settingsBefore = await getJson(baseUrl, "/api/system-settings", cookie);
+  const budgetModel = settingsBefore.models.find(model => model.purpose === "reply") ?? {
+    id: "budget-smoke", name: "Budget smoke", shortName: "budget", purpose: "reply",
+    model: "local-fixture", baseUrl: "http://127.0.0.1:63199/v1", apiKey: "smoke-not-a-real-key", enabled: true,
+  };
+  const budgetModels = settingsBefore.models.some(model => model.id === budgetModel.id)
+    ? settingsBefore.models.map(model => model.id === budgetModel.id ? { ...model, maxCompletionTokens: 65536 } : model)
+    : [...settingsBefore.models, { ...budgetModel, maxCompletionTokens: 65536 }];
+  const saveBudget = await requestJson(baseUrl, "/api/system-settings", "PUT", {
+    models: budgetModels, expectedRevision: settingsBefore.revision,
+  }, { Cookie: cookie, "X-CSRF-Token": csrf });
+  const savedSettings = await getJson(baseUrl, "/api/system-settings", cookie);
+  if (!saveBudget.response.ok || savedSettings.models.find(model => model.id === budgetModel.id)?.maxCompletionTokens !== 65536) {
+    throw new Error("Reply token budget 65536 did not round-trip through the admin API.");
+  }
+  const restoreSettings = await requestJson(baseUrl, "/api/system-settings", "PUT", {
+    models: settingsBefore.models, selectedModelIds: settingsBefore.selectedModelIds,
+    replyRouting: settingsBefore.replyRouting, expectedRevision: savedSettings.revision,
+  }, { Cookie: cookie, "X-CSRF-Token": csrf });
+  if (!restoreSettings.response.ok) throw new Error("Reply token budget smoke fixture could not restore its settings.");
+
   const pages = ["/", "/login", "/analytics", "/groups", "/groups/bulk", "/members", "/memories", "/knowledge", "/html-previews", "/memes", "/tasks", "/audit", "/security", "/health", "/persona", "/commands", "/settings"];
   for (const page of pages) {
     const response = await fetch(`${baseUrl}${page}`, { headers: { Cookie: cookie } });

@@ -14,6 +14,7 @@ export type ParticipationReason =
   | "conversation_command"
   | "direct_mention"
   | "explicit_reply"
+  | "directed_follow_up"
   | "keyword_trigger"
   | "muted_observation"
   | "ambient_observation";

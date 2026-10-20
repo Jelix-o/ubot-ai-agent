@@ -102,7 +102,7 @@ export async function deliverOutboxRow(
     generatedImagePath = row.text;
     receipt = await transport.sendGroupImage(row.group_id, `base64://${image.toString("base64")}`);
   } else {
-    receipt = await transport.sendGroupMessage(row.group_id, row.text);
+    receipt = await transport.sendGroupMessage(row.group_id, row.text, row.reply_to ? { replyToMessageId: row.reply_to } : undefined);
   }
   const platformMessageId = receipt?.platformMessageId ?? receipt?.messageId;
   if (!platformMessageId) {

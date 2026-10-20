@@ -5,6 +5,7 @@ import { URL } from "node:url";
 import WebSocket, { RawData, WebSocketServer } from "ws";
 
 import { logInfo, logWarn } from "./logger.js";
+import { withReplyReference } from "./utils/reply-reference.js";
 import { toNapCatForwardNodes, type ForwardMessageNode } from "./forward-message.js";
 import { NapCatActionNotSentError, NapCatActionOutcomeUnknownError, napCatActionFailure } from "./napcat-action-errors.js";
 export { NapCatActionNotSentError, NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
@@ -55,6 +56,7 @@ interface NapCatActionResponse<TData = unknown> {
 
 interface NapCatGetMessageResponse {
   message_id?: number | string;
+  group_id?: number | string;
   sender?: {
     user_id?: number | string;
     nickname?: string;
@@ -156,10 +158,10 @@ export class NapCatReverseServer extends EventEmitter<{
     this.httpServer.close();
   }
 
-  async sendGroupMessage(groupId: string, text: string): Promise<{ messageId?: string } | undefined> {
+  async sendGroupMessage(groupId: string, text: string, options?: { replyToMessageId?: string }): Promise<{ messageId?: string } | undefined> {
     const response = await this.callAction<NapCatSendMessageResponse>("send_group_msg", {
       group_id: Number(groupId),
-      message: text,
+      message: withReplyReference(text, options?.replyToMessageId),
     });
     return toMessageReceipt(response.data);
   }
@@ -459,6 +461,7 @@ function toReferencedMessage(
 
   return {
     messageId: String(data.message_id ?? fallbackMessageId),
+    ...(data.group_id !== undefined ? { groupId: String(data.group_id) } : {}),
     userId,
     userName: card || nickname || userId,
     text: extractTextFromMessage(message),

@@ -9,6 +9,7 @@ import { SharedDb } from "../shared/sqlite.js";
 import { GroupMemoryStore } from "./group-memory-store.js";
 import { KnowledgeBaseStore } from "./knowledge-base-store.js";
 import { StateCipher, V3StateRepository } from "./v3-state-repository.js";
+import { HUIXIAN_CONVERSATION_MARKER, HUIXIAN_CONVERSATION_REVISION, HUIXIAN_CONVERSATION_RULES, PREVIOUS_HUIXIAN_CONVERSATION_REVISION, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
 
 const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -76,6 +77,61 @@ function groupConfig(groupId: string, enabled = true): GroupBotConfig {
     liveChatUserIds: [],
   };
 }
+
+test("conversation persona migration snapshots the active profile, preserves custom fields, and never reapplies over later admin edits", async () => {
+  await withRepository(async (repository, db) => {
+    const custom = huixianProfile({ name: "会仙·自定义", temperature: 0.37, systemPrompt: "管理员自定义：爱讲游戏梗", styleRules: ["保留这个管理员习惯"], exampleExchanges: [{ user: "暗号", assistant: "管理员自己的回答" }] });
+    await repository.saveHuixianProfile(custom, "admin:before");
+    const before = await repository.getHuixianProfile();
+    assert.deepEqual(repository.upgradeHuixianConversationProfileOnce(), { applied: true, revision: HUIXIAN_CONVERSATION_REVISION });
+    const after = await repository.getHuixianProfile();
+    assert.equal(after?.name, custom.name);
+    assert.equal(after?.temperature, custom.temperature);
+    assert.ok(after?.styleRules.includes(custom.styleRules[0]));
+    assert.ok(after?.exampleExchanges?.some(item => item.assistant === "管理员自己的回答"));
+    assert.match(after!.systemPrompt, /管理员自定义/);
+    assert.ok(after!.systemPrompt.includes(HUIXIAN_CONVERSATION_MARKER));
+    const snapshot = db.db.prepare("SELECT profile_json FROM v3_character_profile_revisions WHERE changed_by = ?").get(`snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`) as { profile_json: string };
+    assert.deepEqual(JSON.parse(snapshot.profile_json), before);
+    assert.deepEqual(upgradeHuixianConversationProfile(after!), after);
+    await repository.saveHuixianProfile({ ...after!, name: "管理员再次修改" }, "admin:after");
+    assert.equal(repository.upgradeHuixianConversationProfileOnce().applied, false);
+    assert.equal((await repository.getHuixianProfile())?.name, "管理员再次修改");
+  });
+});
+
+test("packaged Huixian baseline contains the same managed conversation policy as the SQLite migration", async () => {
+  const profile = JSON.parse(await readFile(path.resolve("assets/huixian-profile.json"), "utf8")) as SkillDefinition;
+  assert.deepEqual(upgradeHuixianConversationProfile(profile), profile);
+  assert.ok(profile.systemPrompt.includes(HUIXIAN_CONVERSATION_MARKER));
+  assert.ok(profile.styleRules.some(rule => rule.includes("只有用户追问")));
+});
+
+test("the prior conversation revision upgrades once and snapshots all custom content added after its managed block", async () => {
+  await withRepository(async (repository, db) => {
+    const old = huixianProfile({ name: "管理员起的名字", temperature: 0.37,
+      systemPrompt: `管理员自定义开头\n\n【会仙对话策略：2026-10-20】\n以下为当前对话风格，覆盖前文对篇幅、铺垫、主动解释和习惯性追问的旧偏好；准确性、尊重和必要风险提醒继续有效。\n${HUIXIAN_CONVERSATION_RULES.join("\n")}\n管理员追加：喜欢游戏梗`,
+      styleRules: ["管理员自己的规则", ...HUIXIAN_CONVERSATION_RULES],
+      exampleExchanges: [{ user: "暗号", assistant: "保留自定义示例" }],
+    });
+    await repository.saveHuixianProfile(old, "admin:customized-v1");
+    repository.setMeta("huixian_conversation_policy_revision", PREVIOUS_HUIXIAN_CONVERSATION_REVISION);
+    assert.equal(repository.upgradeHuixianConversationProfileOnce().applied, true);
+    const next = (await repository.getHuixianProfile())!;
+    assert.equal(next.temperature, 0.37);
+    assert.equal(next.name, old.name);
+    assert.match(next.systemPrompt, /管理员自定义开头/);
+    assert.match(next.systemPrompt, /管理员追加：喜欢游戏梗/);
+    assert.equal(next.systemPrompt.includes("【会仙对话策略：2026-10-20】"), false);
+    assert.ok(next.styleRules.includes("管理员自己的规则"));
+    assert.ok(next.exampleExchanges?.some(example => example.assistant === "保留自定义示例"));
+    const snapshot = db.db.prepare("SELECT profile_json FROM v3_character_profile_revisions WHERE changed_by = ?").get(`snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`) as { profile_json: string };
+    assert.deepEqual(JSON.parse(snapshot.profile_json), old);
+    assert.equal(repository.upgradeHuixianConversationProfileOnce().applied, false);
+    repository.setMeta("huixian_conversation_policy_revision", "future-version");
+    assert.deepEqual(repository.upgradeHuixianConversationProfileOnce(), { applied: false, revision: "future-version" });
+  });
+});
 
 test("StateCipher uses purpose-isolated AES-GCM keys", () => {
   const cipher = new StateCipher(TEST_STATE_KEY);

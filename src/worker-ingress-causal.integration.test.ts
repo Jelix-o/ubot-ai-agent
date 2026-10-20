@@ -11,6 +11,7 @@ import { IngressApp, normalizeIngressMessageTime } from "./index-ingress.js";
 import { WorkerApp } from "./index-worker.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
+import { AiService } from "./services/ai-service.js";
 import { ConversationContextRepository } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
 import { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
@@ -19,10 +20,12 @@ import { REQUIRED_V3_RUNTIME_CAPABILITIES } from "./services/v3-runtime-state.js
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
 import type {
   AiReply,
+  AiIdentityContext,
   ConversationTurn,
   GroupBotConfig,
   NapcatGroupMessageEvent,
   SkillDefinition,
+  MessageImageInput,
 } from "./types.js";
 import { WorkerTransport } from "./worker-transport.js";
 import type { BtSearchRuntime } from "./services/bt-search-service.js";
@@ -97,7 +100,7 @@ class GatedWorkerTransport extends WorkerTransport {
 }
 
 class CapturingAiService {
-  readonly calls: Array<{ history: ConversationTurn[]; userInput: string; identityContext?: unknown }> = [];
+  readonly calls: Array<{ history: ConversationTurn[]; userInput: string; identityContext?: unknown; images?: MessageImageInput[]; scenarioInstruction?: string }> = [];
 
   constructor(
     private readonly replyForCall: (callNumber: number, userInput: string) => string =
@@ -108,11 +111,15 @@ class CapturingAiService {
     history: ConversationTurn[];
     userInput: string;
     identityContext?: unknown;
+    images?: MessageImageInput[];
+    scenarioInstruction?: string;
   }): Promise<AiReply> {
     this.calls.push({
       history: args.history.map((turn) => ({ ...turn })),
       userInput: args.userInput,
       identityContext: args.identityContext,
+      images: args.images,
+      scenarioInstruction: args.scenarioInstruction,
     });
     return {
       text: this.replyForCall(this.calls.length, args.userInput),
@@ -799,6 +806,199 @@ function createBot(
     options.btSearchService,
   );
 }
+
+class ConversationReplayAi extends CapturingAiService {
+  readonly resolutions: Array<any> = [];
+  readonly replies: Array<Partial<AiReply> & { text: string }> = [];
+  resolve: (data: any) => Record<string, unknown> = data => ({
+    intent: "chat", relation: data.candidates.length ? "follow_up" : "new", resolvedInput: data.text,
+    topicCandidateId: data.candidates.find((item: any) => item.ownerUserId === data.userId)?.id,
+    selectedMessageIds: data.messages.map((item: any) => item.messageId), needsMoreContext: false,
+  });
+  async resolveConversationContext(args: { data: string }): Promise<string> {
+    const data = JSON.parse(args.data);
+    this.resolutions.push(data);
+    return JSON.stringify(this.resolve(data));
+  }
+  override async generateReply(args: Parameters<CapturingAiService["generateReply"]>[0]): Promise<AiReply> {
+    return { ...await super.generateReply(args), ...(this.replies.shift() ?? { text: "接住了" }) };
+  }
+}
+
+function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false) {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "huixian-replay-"));
+  const db = openSharedDb(dataDir), repository = new ConversationContextRepository(db);
+  const transport = gated ? new GatedWorkerTransport(db) : new WorkerTransport(db);
+  const ai = new ConversationReplayAi();
+  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides } });
+  let time = Date.now() - 90_000, messageId = 40_000;
+  t.after(async () => { await bot.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
+  const add = (text: string, userId = USER_ID, options: { image?: boolean; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
+    time += options.elapsed ?? 1_000;
+    const id = ++messageId;
+    const images = options.image ? [{ url: "https://example.test/score.png" }] : [];
+    const sourceRowId = db.insertMessage({ groupId: GROUP_ID, userId, selfId: BOT_QQ, msgId: String(id), msgTime: time, createdAt: time, text,
+      imagesJson: JSON.stringify(images), hasAtBot: !options.passive, isBotMsg: false,
+      ...(options.excludedDrop ? { processable: false, dropReason: "rate_limited" } : {}),
+    });
+    const event = inboundEvent({ messageId: id, userId, text, eventTimeSeconds: Math.floor(time / 1_000), hasAtBot: !options.passive, replyToMessageId: options.replyToMessageId });
+    if (options.image) (event.message as any[]).push({ type: "image", data: images[0] });
+    const input = { sourceRowId, groupId: GROUP_ID, userId, sourceMessageId: String(id), text, hasImages: options.image, nowMs: time, replyToMessageId: options.replyToMessageId };
+    return { input, event, id: String(id) };
+  };
+  const ask = async (...args: Parameters<typeof add>) => {
+    const message = add(...args);
+    const route = await bot.prepareConversationRoute(message.input);
+    await bot.handleGroupMessage(message.event, undefined, route);
+    return { ...message, route: route! };
+  };
+  const ack = () => {
+    const rows = db.db.prepare("SELECT id FROM outbox WHERE status = 'pending'").all() as Array<{ id: number }>;
+    for (const row of rows) db.ackOutboxDelivery(row.id, `receipt-${row.id}`, time + 100);
+  };
+  const identity = (index = ai.calls.length - 1) => ai.calls[index]?.identityContext as AiIdentityContext;
+  return { db, repository, transport, ai, bot, add, ask, ack, identity };
+}
+
+test("replay: first mention can evaluate prior discussion, including rate-limited background, without asking for context again", async t => {
+  const f = conversationReplay(t);
+  const a = f.add("我觉得熟练就不该紧张", "20002", { passive: true });
+  const b = f.add("熟练和在乎输赢又不是一回事", USER_ID, { passive: true, excludedDrop: true });
+  f.ai.resolve = data => ({ intent: "opinion", relation: "new", resolvedInput: "评价熟练了是否仍会游戏紧张这场讨论", selectedMessageIds: [a.id, b.id], needsMoreContext: false });
+  f.ai.replies.push({ text: "熟练管操作，在乎输赢管心跳，这俩不冲突" });
+  const question = await f.ask("你来说说，别胡扯");
+  assert.equal(f.ai.resolutions.length, 1);
+  assert.deepEqual(f.identity().ambientGroupContext?.map(message => message.messageId), [a.id, b.id]);
+  assert.equal(f.identity().replyPlan?.intent, "opinion");
+  assert.equal(f.identity().replyPlan?.explanation, "on_request");
+  assert.equal(f.db.db.prepare("SELECT reply_to FROM outbox WHERE source_turn_id = ?").get(question.route.turnId)?.reply_to, question.id);
+});
+
+test("replay: a length-truncated model envelope never becomes an outbox answer or a state update", async t => {
+  const f = conversationReplay(t);
+  const model = new AiService("https://example.invalid", "test-key", "reply-test", {
+    async create() { return { choices: [{ finish_reason: "length", message: { content: '{"text":"尚未完成的模型草稿","stateUpdate":{"coveredPoints":["错误地记成已解释"]}}' } }] }; },
+  } as never, { providerCapabilities: { streaming: false } });
+  f.ai.generateReply = args => model.generateReply({ ...args, skill: assistantSkill, identityContext: args.identityContext as AiIdentityContext | undefined });
+  await f.ask("给点看法");
+  const rows = f.db.db.prepare("SELECT text FROM outbox").all() as Array<{ text: string }>;
+  assert.ok(rows.length > 0);
+  assert.doesNotMatch(rows.map(row => row.text).join("\n"), /尚未完成的模型草稿|错误地记成已解释|stateUpdate/);
+  assert.equal(f.db.db.prepare("SELECT count(*) AS n FROM conversation_state_updates").get()?.n, 0);
+});
+
+test("replay: game conditions survive a fishing detour and the same speaker can return to an older topic", async t => {
+  const f = conversationReplay(t);
+  const nextId = "40001";
+  f.ai.replies.push({ text: "认真是认真，喝水也成了顺手动作", conversationUpdate: {
+    knownFacts: [{ userId: USER_ID, text: "只有打游戏时这样，喝水成了习惯", sourceMessageIds: [nextId] }],
+    coveredPoints: ["喝水习惯建议"], questions: [{ key: "only-game", userId: USER_ID, text: "平时也会吗", status: "answered" }],
+    conclusion: { text: "游戏时紧张和习惯性喝水", evidenceIds: [nextId] },
+  } });
+  const game = await f.ask("只有打游戏才这样，喝水已经成了习惯");
+  f.ack();
+  f.ai.resolve = data => ({ intent: "chat", relation: "new", resolvedInput: data.text, selectedMessageIds: [] });
+  const fish = await f.ask("昨晚钓鱼睡过头了");
+  f.ack();
+  f.add("再也不熬夜钓鱼了", "20002", { passive: true });
+  f.ai.resolve = data => ({ intent: "confirm", relation: "follow_up", resolvedInput: "游戏时紧张是太认真了吗", topicCandidateId: data.candidates.find((item: any) => item.id === game.route.branchId)?.id, selectedMessageIds: [game.id] });
+  f.ai.replies.push({ text: "有点，操作熟了，胜负欲可没退休" });
+  const follow = await f.ask("是太认真了吗");
+  assert.equal(follow.route.branchId, game.route.branchId);
+  assert.notEqual(follow.route.branchId, fish.route.branchId);
+  assert.equal(f.identity().conversationState?.knownFacts[0]?.text, "只有打游戏时这样，喝水成了习惯");
+  assert.equal(f.identity().conversationState?.questions[0]?.status, "answered");
+  assert.equal(f.ai.calls.at(-1)?.history.some(turn => turn.content.includes("钓鱼")), false);
+  assert.equal(f.identity().replyPlan?.explanation, "on_request");
+  f.ack();
+  f.ai.resolve = data => ({ intent: "explain", relation: "follow_up", resolvedInput: "解释为什么熟练了还会紧张", topicCandidateId: game.route.branchId, selectedMessageIds: [game.id] });
+  await f.ask("为什么？详细解释一下");
+  assert.equal(f.identity().replyPlan?.explanation, "requested");
+  assert.equal(f.identity().conversationState?.knownFacts[0]?.userId, USER_ID);
+});
+
+test("replay: another member's heckling shares the discussion but not the original member's task or private branch", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push({ text: "行，队里的大腿是吧😂", conversationUpdate: { conclusion: { text: "本人说把把 carry，暂无战绩材料", evidenceIds: ["40001"] } } });
+  const boast = await f.ask("我把把 carry"); f.ack();
+  f.ai.resolve = data => ({ intent: "challenge", relation: "follow_up", resolvedInput: "回应群友对把把carry的起哄", topicCandidateId: boast.route.branchId, selectedMessageIds: [boast.id] });
+  f.ai.replies.push({ text: "你这拆台速度，比他交战绩还快" });
+  const heckle = await f.ask("他在吹牛", "20002");
+  assert.equal(heckle.route.topicId, boast.route.topicId);
+  assert.notEqual(heckle.route.branchId, boast.route.branchId);
+  assert.equal(f.ai.calls.at(-1)?.history.length, 0);
+  assert.match(f.identity().ambientGroupContext?.[0]?.text ?? "", /把把 carry/);
+  assert.equal(f.identity().conversationState?.knownFacts.length, 0);
+  assert.equal(f.repository.orchestration.isTaskCurrent(boast.route.sourceRowId), true);
+});
+
+test("replay: image followed 15 seconds later by look-at-the-image cancels the old unpublished draft and carries the actual image", async t => {
+  const f = conversationReplay(t, {}, true);
+  f.ai.replies.push({ text: "旧图片草稿" });
+  const image = f.add("", USER_ID, { image: true });
+  const first = await f.bot.prepareConversationRoute(image.input);
+  const old = f.bot.handleGroupMessage(image.event, undefined, first);
+  await waitFor(() => (f.transport as GatedWorkerTransport).firstDraftReady);
+  const caption = f.add("看图说话", USER_ID, { elapsed: 15_000 });
+  const follow = await f.bot.prepareConversationRoute(caption.input);
+  assert.equal(follow?.branchId, first?.branchId);
+  assert.equal(f.repository.orchestration.isTaskCurrent(image.input.sourceRowId), false);
+  (f.transport as GatedWorkerTransport).publishFirstDraft();
+  await old;
+  f.ai.replies.push({ text: "这张战绩确实能打" });
+  await f.bot.handleGroupMessage(caption.event, undefined, follow);
+  const rows = f.db.db.prepare("SELECT text, status, reply_to FROM outbox ORDER BY id").all() as Array<{ text: string; status: string; reply_to: string }>;
+  assert.equal(rows[0]?.status, "cancelled");
+  assert.equal(rows[1]?.status, "pending");
+  assert.equal(rows[1]?.reply_to, caption.id);
+  assert.equal(f.ai.calls.at(-1)?.images?.[0]?.url, "https://example.test/score.png");
+  assert.ok(f.identity().replyPlan?.mediaSourceMessageIds?.includes(image.id));
+  assert.equal(rows.some(row => /没.*图|补发/.test(row.text)), false);
+});
+
+test("replay: duplicate-question review rewrites only once and records only the chosen reply", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push({ text: "平时也会吗", replyCheck: { repeatsAnswered: false, reasksKnown: true, unsupportedReversal: false } }, { text: "那就先改顺手拿杯子的动作" });
+  await f.ask("只有游戏时这样，其他时候不会");
+  assert.equal(f.ai.calls.length, 2);
+  assert.match(f.ai.calls[1].scenarioInstruction!, /定向修正一次/);
+  const rows = f.db.db.prepare("SELECT text FROM outbox").all() as Array<{ text: string }>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].text, "那就先改顺手拿杯子的动作");
+});
+
+test("replay: known conditions outlive ordinary prompt-history trimming within the active topic", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push({ text: "先记住这个条件", conversationUpdate: { knownFacts: [{ userId: USER_ID, text: "只有游戏时出现", sourceMessageIds: ["40001"] }] } });
+  await f.ask("只有游戏时出现这个状态"); f.ack();
+  for (let i = 0; i < 18; i++) { await f.ask(`所以呢 ${i}`); f.ack(); }
+  assert.equal(f.ai.calls.at(-1)?.history.some(turn => turn.content.includes("只有游戏时出现这个状态")), false);
+  assert.equal(f.identity().conversationState?.knownFacts[0]?.text, "只有游戏时出现");
+});
+
+test("replay: context disabled and excluded members stay outside the resolver and final prompt", async t => {
+  const f = conversationReplay(t, { memoryDisabledUserIds: ["20002"] });
+  f.add("不允许读取的个人条件", "20002", { passive: true });
+  f.add("允许读取的讨论", USER_ID, { passive: true });
+  await f.ask("你来说说");
+  assert.doesNotMatch(JSON.stringify(f.ai.resolutions), /不允许读取/);
+  assert.doesNotMatch(JSON.stringify(f.ai.calls), /不允许读取/);
+  const disabled = conversationReplay(t, { ambientGroupContextEnabled: false });
+  disabled.add("关闭背景时不该读到", "20002", { passive: true });
+  await disabled.ask("你来说说");
+  assert.equal(disabled.ai.calls.length, 0);
+  assert.doesNotMatch(JSON.stringify(disabled.ai.resolutions), /不该读到/);
+  assert.match(String(disabled.db.db.prepare("SELECT text FROM outbox").get()?.text), /引用/);
+});
+
+test("replay: a forged reply id cannot import a quoted message from another group", async t => {
+  const f = conversationReplay(t);
+  f.transport.getMessage = async () => ({ messageId: "foreign-message", groupId: "different-group", userId: "20002", text: "其他群的个人条件不该进入当前群", images: [] });
+  await f.ask("你怎么看这个说法", USER_ID, { replyToMessageId: "foreign-message" });
+  assert.equal(f.identity().replyContext, undefined);
+  assert.doesNotMatch(JSON.stringify(f.ai.calls), /其他群的个人条件/);
+  assert.doesNotMatch(JSON.stringify(f.ai.resolutions), /其他群的个人条件/);
+});
 
 test("Worker isolates both BT entries without mentions, routes or later context leakage", async (t) => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-bt-"));

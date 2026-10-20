@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 
-import { AiService, type AiToolRuntime } from "./ai-service.js";
+import { AiService, ReplyOutputTruncatedError, type AiToolRuntime } from "./ai-service.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 
 test("AnthropicChatCompletions preserves text and image URL content blocks", async (t) => {
@@ -60,6 +60,29 @@ test("AnthropicChatCompletions explicitly declines OpenAI-style streaming", asyn
     adapter.create({ model: "claude-test", max_tokens: 64, stream: true, messages: [] } as never),
     /anthropic_stream_unsupported/,
   );
+});
+
+test("Anthropic max_tokens takes precedence over partial tool-use content and prevents execution", async () => {
+  let executed = false;
+  let budget = 0;
+  const adapter = new AnthropicChatCompletions("https://example.invalid", "test-key", {
+    client: { messages: { async create(request: { max_tokens: number }) {
+      budget = request.max_tokens;
+      return { id: "truncated", model: "claude-test", stop_reason: "max_tokens",
+        content: [{ type: "tool_use", id: "partial", name: "lookup", input: { query: "partial" } }],
+        usage: { input_tokens: 10, output_tokens: 32_768 } };
+    } } as never },
+  });
+  const service = new AiService("https://example.invalid", "test-key", "claude-test", adapter as never);
+  await assert.rejects(service.generateReply({
+    skill: { id: "huixian", name: "会仙", systemPrompt: "自然接话", styleRules: [], knowledge: [], temperature: 0.82, maxContextTurns: 8 },
+    history: [], userInput: "查一下", toolRuntime: {
+      tools: [{ name: "lookup", description: "lookup", parameters: { type: "object" } }],
+      async execute() { executed = true; return { content: "{}" }; },
+    },
+  }), ReplyOutputTruncatedError);
+  assert.equal(budget, 32_768);
+  assert.equal(executed, false);
 });
 
 test("AnthropicChatCompletions sends cancellation and data URLs through the Messages SDK boundary", async () => {

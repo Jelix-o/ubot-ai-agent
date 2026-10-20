@@ -9,6 +9,7 @@ import {
 import type { GroupBotConfig, GroupsConfigFile, SkillDefinition, SystemSettings } from "../types.js";
 import type { GroupMemory, KnowledgeBaseEntry, KnowledgePack, ScheduledReminderTask } from "../types.js";
 import type { SharedDb } from "../shared/sqlite.js";
+import { HUIXIAN_CONVERSATION_REVISION, PREVIOUS_HUIXIAN_CONVERSATION_REVISION, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
 import { validateV3CapabilityPolicy } from "./capability-policy-service.js";
 
 const CIPHER_VERSION = "v1";
@@ -511,6 +512,26 @@ export class V3StateRepository {
       this.writeHuixianProfile(saved, changedBy, now);
     });
     return saved;
+  }
+
+  upgradeHuixianConversationProfileOnce(now = Date.now()): { applied: boolean; revision: string } {
+    return this.withImmediateTransaction(() => {
+      const key = "huixian_conversation_policy_revision";
+      const previousRevision = this.getMeta(key);
+      if (previousRevision && previousRevision !== PREVIOUS_HUIXIAN_CONVERSATION_REVISION) {
+        return { applied: false, revision: previousRevision };
+      }
+      const row = this.sharedDb.db.prepare("SELECT profile_json FROM v3_character_profiles WHERE id = 'huixian' AND active = 1").get() as { profile_json: string } | undefined;
+      if (!row) return { applied: false, revision: "uninitialized" };
+      const current = JSON.parse(row.profile_json) as SkillDefinition;
+      // Keep the exact prior active profile, even if earlier versions did not
+      // retain its last admin revision, so this change is reversible.
+      this.sharedDb.db.prepare("INSERT INTO v3_character_profile_revisions (profile_id,profile_json,changed_at,changed_by) VALUES ('huixian',?,?,?)")
+        .run(row.profile_json, now, `snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`);
+      this.writeHuixianProfile(upgradeHuixianConversationProfile(current), `release:${HUIXIAN_CONVERSATION_REVISION}`, now);
+      this.setMeta(key, HUIXIAN_CONVERSATION_REVISION, now);
+      return { applied: true, revision: HUIXIAN_CONVERSATION_REVISION };
+    });
   }
 
   /**
@@ -1155,6 +1176,11 @@ export class V3StateRepository {
         this.sharedDb.db.prepare(`DELETE FROM conversation_message_routes WHERE source_row_id IN (${placeholders})`).run(...sourceRows.map((row) => row.id));
       }
       const messages = this.sharedDb.db.prepare("DELETE FROM messages WHERE created_at <= ?").run(beforeMs).changes;
+      // Short-term conversation state must expire with the raw source window;
+      // the assistant-turn FK alone would retain it after user text is redacted.
+      this.sharedDb.db.prepare(`DELETE FROM conversation_state_updates WHERE created_at <= ?
+        OR source_turn_id IN (SELECT id FROM conversation_turns WHERE role = 'user' AND created_at <= ?)`)
+        .run(beforeMs, beforeMs);
       // Reply routing must not retain old QQ message identifiers after the
       // underlying raw ingress row has expired.  This applies to assistant
       // anchors as well: references older than the retention window cannot be

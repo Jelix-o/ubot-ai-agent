@@ -524,7 +524,7 @@ onMounted(() => {
         </section>
         <section v-if="editingModel.purpose === 'reply'" class="model-edit-section" aria-labelledby="model-parameters-title"><h3 id="model-parameters-title">调用参数</h3>
           <label class="policy-toggle"><span><strong>支持图片理解</strong><small>仅支持视觉的模型会参与看图请求。</small></span><input v-model="editingModel.supportsVision" type="checkbox" /></label>
-          <div class="edit-field-pair"><label>请求超时（毫秒）<input v-model.number="editingModel.requestTimeoutMs" class="input" type="number" min="1000" max="300000" /></label><label>最大输出 Token<input v-model.number="editingModel.maxCompletionTokens" class="input" type="number" min="64" max="16384" /></label></div>
+          <div class="edit-field-pair"><label>请求超时（毫秒）<input v-model.number="editingModel.requestTimeoutMs" class="input" type="number" min="1000" max="300000" /></label><label>最大输出 Token<input v-model.number="editingModel.maxCompletionTokens" class="input" type="number" min="64" max="65536" :placeholder="editingModel.purpose === 'reply' ? '32768' : ''" /></label></div>
           <label>推理强度<select v-model="editingModel.reasoningEffort" class="select"><option :value="undefined">不指定</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>
         </section>
         <section class="model-edit-section" aria-labelledby="model-access-title"><h3 id="model-access-title">密钥与启用</h3>
