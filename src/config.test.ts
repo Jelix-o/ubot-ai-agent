@@ -3,6 +3,14 @@ import test from "node:test";
 
 import { loadConfig } from "./config.js";
 
+test("startup refuses a retired Gemini environment model", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env = { ...originalEnv, INGRESS_READ_API_TOKEN: "fixture-token", OPENAI_BASE_URL: "https://example.test/v1", OPENAI_API_KEY: "fixture-key", OPENAI_MODEL: "models/gemini-3" };
+    assert.throws(() => loadConfig(), /model_retired/);
+  } finally { process.env = originalEnv; }
+});
+
 test("profile AI environment variables are not part of the V3 runtime configuration", () => {
   const originalEnv = { ...process.env };
   try {
@@ -12,6 +20,7 @@ test("profile AI environment variables are not part of the V3 runtime configurat
       OPENAI_BASE_URL: "https://reply.example/v1",
       OPENAI_API_KEY: "reply-key",
       OPENAI_MODEL: "reply-model",
+      INGRESS_READ_API_TOKEN: "test-ingress-read-token",
       BOT_QQ: "12345",
     };
     process.env.PROFILE_AI_BASE_URL = "https://profile.example/v1";
@@ -37,6 +46,7 @@ test("tts environment variables are not part of the runtime configuration", () =
       OPENAI_BASE_URL: "https://reply.example/v1",
       OPENAI_API_KEY: "reply-key",
       OPENAI_MODEL: "reply-model",
+      INGRESS_READ_API_TOKEN: "test-ingress-read-token",
       BOT_QQ: "12345",
       TTS_BASE_URL: "https://custom-tts.example/v1",
       TTS_API_KEY: "tts-key",
@@ -62,6 +72,7 @@ test("reverse websocket requires access token when listening publicly", () => {
       OPENAI_BASE_URL: "https://reply.example/v1",
       OPENAI_API_KEY: "reply-key",
       OPENAI_MODEL: "reply-model",
+      INGRESS_READ_API_TOKEN: "test-ingress-read-token",
       BOT_QQ: "12345",
     };
     delete process.env.NAPCAT_ACCESS_TOKEN;
@@ -75,6 +86,27 @@ test("reverse websocket requires access token when listening publicly", () => {
     const config = loadConfig();
     assert.equal(config.napcatAccessToken, "reverse-token");
     assert.equal(config.napcatReverseWsHost, "0.0.0.0");
+  } finally {
+    process.env = originalEnv;
+  }
+});
+
+test("ingress read API requires a separate shared bearer token", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env = {
+      ...originalEnv,
+      NAPCAT_MODE: "reverse",
+      OPENAI_BASE_URL: "https://reply.example/v1",
+      OPENAI_API_KEY: "reply-key",
+      OPENAI_MODEL: "reply-model",
+      BOT_QQ: "12345",
+    };
+    delete process.env.INGRESS_READ_API_TOKEN;
+    assert.throws(() => loadConfig(), /Missing required environment variable: INGRESS_READ_API_TOKEN/);
+
+    process.env.INGRESS_READ_API_TOKEN = "test-ingress-read-token";
+    assert.equal(loadConfig().ingressReadApiToken, "test-ingress-read-token");
   } finally {
     process.env = originalEnv;
   }

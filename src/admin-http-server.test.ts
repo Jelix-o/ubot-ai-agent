@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { AdminHttpServer } from "./admin-http-server.js";
+import { AdminHttpServer, resolveTrustedClientIp } from "./admin-http-server.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { AdminTaskStore } from "./services/admin-task-store.js";
@@ -22,7 +22,7 @@ import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import type { CharacterProfile, NapcatGroupMember } from "./types.js";
 
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 type Auth = { cookie: string; csrf: string; session: { userId: string; username: string; role: string; allowedGroupIds: string[] } };
 
@@ -196,8 +196,7 @@ async function startFixture(
   // Windows can assign a port forbidden by fetch (for example, 10080).
   // Rebind the fixture only for that error; real HTTP failures still fail.
   for (;;) {
-    server.start();
-    await new Promise<void>((resolve) => rawServer.once("listening", resolve));
+    await server.start();
     const address = rawServer.address() as AddressInfo | null;
     assert.ok(address);
     baseUrl = `http://127.0.0.1:${address.port}`;
@@ -215,6 +214,25 @@ async function startFixture(
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
   return { baseUrl, db, memories, operations, tasks, htmlPreviewService, memeLibraryService };
+}
+
+function createStartupOnlyServer(port: number, ensureInitialized: () => Promise<void>): AdminHttpServer {
+  return new AdminHttpServer({
+    host: "127.0.0.1",
+    port,
+    publicBaseUrl: "http://127.0.0.1",
+    authService: { ensureInitialized } as never,
+  } as never);
+}
+
+function requestForClientIp(
+  remoteAddress: string | undefined,
+  xRealIp?: string | string[],
+): Pick<import("node:http").IncomingMessage, "headers" | "socket"> {
+  return {
+    headers: xRealIp === undefined ? {} : { "x-real-ip": xRealIp },
+    socket: { remoteAddress },
+  } as unknown as Pick<import("node:http").IncomingMessage, "headers" | "socket">;
 }
 
 async function request(baseUrl: string, pathname: string, options: RequestInit = {}): Promise<Response> {
@@ -283,6 +301,40 @@ async function reauth(baseUrl: string, auth: Auth, password = "secret-password")
   });
 }
 
+test("Admin startup rejects bootstrap failures before opening the listener", async () => {
+  const server = createStartupOnlyServer(0, async () => {
+    throw new Error("bootstrap_failed_for_test");
+  });
+
+  await assert.rejects(server.start(), /bootstrap_failed_for_test/);
+  const raw = (server as unknown as { server: Server }).server;
+  assert.equal(raw.listening, false);
+});
+
+test("Admin startup rejects an occupied port", async (t) => {
+  const blocker = createServer();
+  await new Promise<void>((resolve, reject) => {
+    blocker.once("error", reject);
+    blocker.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise<void>((resolve, reject) => blocker.close((error) => error ? reject(error) : resolve())));
+  const address = blocker.address() as AddressInfo;
+  const server = createStartupOnlyServer(address.port, async () => undefined);
+
+  await assert.rejects(server.start(), (error: unknown) => {
+    assert.equal((error as NodeJS.ErrnoException).code, "EADDRINUSE");
+    return true;
+  });
+});
+
+test("Admin trusts a valid X-Real-IP only from its loopback reverse proxy", () => {
+  assert.equal(resolveTrustedClientIp(requestForClientIp("127.0.0.1", "203.0.113.7")), "203.0.113.7");
+  assert.equal(resolveTrustedClientIp(requestForClientIp("::ffff:127.0.0.1", "2001:db8::7")), "2001:db8::7");
+  assert.equal(resolveTrustedClientIp(requestForClientIp("127.0.0.1", "not-an-ip")), "127.0.0.1");
+  assert.equal(resolveTrustedClientIp(requestForClientIp("198.51.100.20", "203.0.113.7")), "198.51.100.20");
+  assert.equal(resolveTrustedClientIp(requestForClientIp("127.0.0.1", ["203.0.113.7", "198.51.100.20"])), "127.0.0.1");
+});
+
 test("HTTP loopback sessions avoid the Secure-only __Host cookie prefix", async (t) => {
   const { baseUrl } = await startFixture(t);
   const response = await request(baseUrl, "/api/auth/password", {
@@ -323,6 +375,14 @@ test("V3 admin uses SQLite password authentication and retires legacy routes", a
     body: JSON.stringify({ switcherUserIds: ["77777"] }),
   });
   assert.equal(retiredQqAdminConfig.status, 410);
+
+  const retiredRoastModeConfig = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PUT",
+    headers: { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ roastModeUserIds: ["77777"] }),
+  });
+  assert.equal(retiredRoastModeConfig.status, 410);
+  assert.equal((await retiredRoastModeConfig.json() as { error: string }).error, "roast_mode_retired");
 
   const overview = await request(baseUrl, "/api/overview?groupId=67890", { headers: { Cookie: auth.cookie } });
   assert.equal(overview.status, 200);
@@ -636,6 +696,29 @@ test("command permissions expose server floors, persist changes and reject stale
   assert.equal((await put([{ ...image, permission: "member" }], after.revision)).status, 200);
 });
 
+test("configuration APIs reject retired Gemini IDs and upstream aliases before saving", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const settings = await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string };
+  for (const patch of [
+    { models: [{ id: "gemini", model: "gemini-3" }] },
+    { models: [{ id: "custom-alias", model: "google/gemini-3" }] },
+    { selectedModelIds: { summary: "gemini-38-flash" } },
+    { replyRouting: { fallbackModelIds: ["gemini"] } },
+  ]) {
+    const rejected = await request(baseUrl, "/api/system-settings", { method: "PATCH", headers, body: JSON.stringify({ expectedRevision: settings.revision, patch }) });
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json() as { error: string }).error, "model_retired");
+  }
+  const group = await (await request(baseUrl, "/api/groups/67890/config", { headers })).json() as { revision: string };
+  const rejected = await request(baseUrl, "/api/groups/67890/config", { method: "PATCH", headers, body: JSON.stringify({ expectedRevision: group.revision, patch: { replyModelMode: "gemini" } }) });
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json() as { error: string }).error, "model_retired");
+  const after = await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string };
+  assert.equal(after.revision, settings.revision);
+});
+
 test("model policy requires current revisions even through legacy PUT and supports restoring global inheritance", async (t) => {
   const { baseUrl } = await startFixture(t);
   const auth = await login(baseUrl);
@@ -873,7 +956,7 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     body: image,
   });
   assert.equal(hostileUploadOrigin.status, 403);
-  assert.equal((await hostileUploadOrigin.json() as { error: string }).error, "csrf_required");
+  assert.equal((await hostileUploadOrigin.json() as { error: string }).error, "invalid_origin");
 
   const uploadedResponse = await request(
     baseUrl,

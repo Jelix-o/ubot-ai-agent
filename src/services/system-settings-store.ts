@@ -16,6 +16,7 @@ import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
 import { isCommandPermission, minimumCommandPermission, normalizeCommandPermission, permissionAtLeast } from "./command-permissions.js";
 import type { ReplyRoutingSettings } from "../types.js";
+import { isRetiredModel, isRetiredModelId, removeRetiredModels } from "./retired-models.js";
 
 type SystemSettingsUpdateInput = Partial<Omit<SystemSettings, "models">> & {
   models?: Array<Partial<SystemModelConfig> & { apiKey?: unknown }>;
@@ -72,11 +73,17 @@ export class SystemSettingsStore {
   }
 
   private buildUpdate(current: SystemSettings, input: SystemSettingsUpdateInput): SystemSettings {
+    if ((Array.isArray(input.models) && input.models.some(isRetiredModel)) ||
+        Object.values(input.selectedModelIds ?? {}).some(isRetiredModelId) ||
+        (Array.isArray(input.replyRouting?.fallbackModelIds) && input.replyRouting.fallbackModelIds.some(isRetiredModelId))) {
+      throw new Error("model_retired");
+    }
     for (const command of input.commands ?? []) {
       if (!isCommandPermission(command.permission)) throw new Error("invalid_command_permission");
       if (!permissionAtLeast(command.permission, minimumCommandPermission(command.id))) throw new Error("command_permission_below_minimum");
     }
     if (input.models !== undefined) {
+      if (!Array.isArray(input.models)) throw new Error("invalid_models");
       if (input.models.some((model) => (model as { purpose?: unknown }).purpose === "tts")) {
         throw new Error("voice_feature_retired");
       }
@@ -261,6 +268,7 @@ function normalizeSettings(
   value: Partial<SystemSettings>,
   defaultModels: Array<Partial<SystemModelConfig> & { apiKey?: string }> = [],
 ): SystemSettings {
+  value = removeRetiredModels({ ...value, models: value.models ?? [], selectedModelIds: value.selectedModelIds ?? {} } as SystemSettings);
   const fallback = defaultSettings(defaultModels);
   const removedDefaultModelIds = normalizeRemovedDefaultModelIds(value.removedDefaultModelIds, defaultModels);
   const models = normalizeModels(value.models, defaultModels, removedDefaultModelIds);
@@ -356,7 +364,7 @@ function normalizeModels(
   const raw = [
     ...(Array.isArray(value) ? value : []),
     ...defaultModels.filter((model) => !removedDefaultIds.has(typeof model.id === "string" ? normalizeModelId(model.id.trim()) : "")),
-  ];
+  ].filter(model => !isRetiredModel(model));
   const byId = new Map<string, SystemModelConfig>();
   for (const model of raw
     .map((item) => normalizeModel(item as Partial<SystemModelConfig>))
@@ -547,6 +555,7 @@ function normalizeSelectedModelIds(value: unknown, models: SystemModelConfig[]):
     for (const [purposeValue, modelIdValue] of Object.entries(value as Record<string, unknown>)) {
       const purpose = normalizeModelPurpose(purposeValue);
       if (!purpose) continue;
+      if (modelIdValue === "") { selected[purpose] = ""; continue; }
       const modelId = typeof modelIdValue === "string" ? normalizeModelId(modelIdValue.trim()) : "";
       const model = modelId ? modelById.get(modelId) : undefined;
       if (model && model.purpose === purpose) {
@@ -556,7 +565,7 @@ function normalizeSelectedModelIds(value: unknown, models: SystemModelConfig[]):
   }
   for (const model of models) {
     if (!isRuntimeModelPurpose(model.purpose)) continue;
-    if (!selected[model.purpose] && model.enabled && model.hasApiKey) {
+    if (!Object.hasOwn(selected, model.purpose) && model.enabled && model.hasApiKey) {
       selected[model.purpose] = model.id;
     }
   }

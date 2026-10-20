@@ -71,6 +71,7 @@ const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; det
   { value: "custom", label: "自定义", detail: "已有自定义模型配置" },
 ];
 const visiblePurposeOptions = computed(() => modelPurposeOptions.filter((item) => item.value === "reply" || item.value === "image" || item.value === activePurpose.value || settings.models.some((model) => model.purpose === item.value)));
+const unconfiguredPurposes = computed(() => modelPurposeOptions.filter(item => settings.selectedModelIds[item.value] === ""));
 
 const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
 const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
@@ -429,11 +430,6 @@ function modelHasFailure(model: SystemModelConfig): boolean {
   return model.enabled && Boolean(health && !health.ok && !health.skipped);
 }
 
-function modelHasPassed(model: SystemModelConfig): boolean {
-  const health = modelHealthById.value[model.id];
-  return model.enabled && Boolean(health?.ok && !health.skipped);
-}
-
 function modelHealthLabel(model: SystemModelConfig): string {
   const health = modelHealthById.value[model.id];
   if (!health) return "";
@@ -473,6 +469,7 @@ onMounted(() => {
     <section v-else class="panel models-panel">
       <div class="purpose-tabs" aria-label="模型用途"><button v-for="item in visiblePurposeOptions" :key="item.value" type="button" :class="{ active: activePurpose === item.value, failed: purposeHasFailure(item.value) }" :aria-current="activePurpose === item.value ? 'page' : undefined" @click="activePurpose = item.value">{{ item.label }}<span>{{ settings.models.filter(model => model.purpose === item.value).length }}</span></button></div>
       <p class="model-purpose-description">{{ activePurposeMeta.detail }}。</p>
+      <p v-for="purpose in unconfiguredPurposes" :key="purpose.value" class="muted" role="status">{{ purpose.label }}：未配置，请为此用途选择模型。</p>
       <section v-if="activePurpose === 'reply'" class="reply-routing-settings" aria-labelledby="reply-routing-title">
         <div class="section-intro"><h2 id="reply-routing-title">统一群聊模型</h2><p>跟随默认的群共用此设置；个别群例外可在群配置中指定。</p></div>
         <div class="routing-layout">

@@ -64,7 +64,7 @@ test("runtime documentation and release packaging do not carry retired personas"
     readFile(path.join(repoRoot, "scripts", "deploy-linux-release.sh"), "utf8"),
     readFile(path.join(repoRoot, "scripts", "package-win.ps1"), "utf8"),
     readFile(path.join(repoRoot, "assets", "huixian-profile.json"), "utf8"),
-    readFile(path.join(repoRoot, "COMMANDS.md"), "utf8"),
+    readFile(path.join(repoRoot, "README.md"), "utf8"),
   ]);
 
   assert.match(packageLinux, /assets\/huixian-profile\.json/);

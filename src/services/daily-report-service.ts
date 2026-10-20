@@ -702,11 +702,6 @@ function parseScheduleMinute(value: string | undefined): number {
   return Number(matched[1]) * 60 + Number(matched[2]);
 }
 
-function isWeekday(now: Date): boolean {
-  const day = now.getDay();
-  return day >= 1 && day <= 5;
-}
-
 function isScheduledMinute(now: Date, scheduleMinute: number): boolean {
   const currentMinute = now.getHours() * 60 + now.getMinutes();
   return currentMinute === scheduleMinute;

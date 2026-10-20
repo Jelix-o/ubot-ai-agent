@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AddressInfo } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { NapCatActionRejectedError } from "./napcat-action-errors.js";
 
@@ -14,9 +14,34 @@ async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+test("reverse server rejects a port collision before ingress can report startup success", async (t) => {
+  const blocker = createServer();
+  await new Promise<void>((resolve, reject) => {
+    blocker.once("error", reject);
+    blocker.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => blocker.close((error) => error ? reject(error) : resolve()));
+  });
+
+  const address = blocker.address() as AddressInfo;
+  const server = new NapCatReverseServer({
+    host: "127.0.0.1",
+    port: address.port,
+    path: "/onebot/ws",
+  });
+  t.after(() => server.close());
+
+  await assert.rejects(
+    server.start(),
+    (error: unknown) => (error as NodeJS.ErrnoException).code === "EADDRINUSE",
+  );
+  assert.equal((server as unknown as { httpServer: { listening: boolean } }).httpServer.listening, false);
+});
+
 test("reverse forward API keeps literal links, returns ids and distinguishes rejection/unknown sends", async t => {
   const server = new NapCatReverseServer({ host: "127.0.0.1", port: 0, path: "/onebot/ws", actionTimeoutMs: 200 });
-  server.start();
+  await server.start();
   const http = (server as any).httpServer;
   if (!http.listening) await new Promise<void>(resolve => http.once("listening", resolve));
   const ws = new WebSocket(`ws://127.0.0.1:${http.address().port}/onebot/ws`);
@@ -49,7 +74,7 @@ test("reverse forward API keeps literal links, returns ids and distinguishes rej
 
 test("reverse server recalls the outer message id and preserves action outcome classification", async t => {
   const server = new NapCatReverseServer({ host: "127.0.0.1", port: 0, path: "/onebot/ws", actionTimeoutMs: 80 });
-  server.start();
+  await server.start();
   const http = (server as any).httpServer;
   if (!http.listening) await new Promise<void>(resolve => http.once("listening", resolve));
   const ws = new WebSocket(`ws://127.0.0.1:${http.address().port}/onebot/ws`);
@@ -94,7 +119,7 @@ test("reverse server accepts token and emits group and recall events", async (t)
     accessToken: "token-1",
   });
 
-  server.start();
+  await server.start();
   t.after(() => server.close());
   await wait(60);
 
@@ -151,7 +176,7 @@ test("reverse server rejects wrong token", async () => {
     accessToken: "token-1",
   });
 
-  server.start();
+  await server.start();
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
@@ -174,7 +199,7 @@ test("reverse server rejects query string token", async () => {
     accessToken: "token-1",
   });
 
-  server.start();
+  await server.start();
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
@@ -196,7 +221,7 @@ test("reverse server returns the message id from send_group_msg", async () => {
     path: "/onebot/ws",
   });
 
-  server.start();
+  await server.start();
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
@@ -231,7 +256,7 @@ test("reverse server sends group images as OneBot image segments", async () => {
     path: "/onebot/ws",
   });
 
-  server.start();
+  await server.start();
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
@@ -275,7 +300,7 @@ test("reverse server rejects pending actions when socket closes", async () => {
     accessToken: "token-1",
   });
 
-  server.start();
+  await server.start();
   await wait(60);
 
   const address = (server as any).httpServer.address() as AddressInfo;
@@ -316,7 +341,7 @@ test("reverse server classifies an action timeout as an unknown delivery outcome
     path: "/onebot/ws",
     actionTimeoutMs: 20,
   });
-  server.start();
+  await server.start();
   await wait(60);
   const address = (server as any).httpServer.address() as AddressInfo;
   const ws = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/ws`);

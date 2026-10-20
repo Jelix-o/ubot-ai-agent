@@ -36,6 +36,7 @@ export function resolveV3RuntimeState(
 
   repository.requireCutover();
   assertV3RuntimeCapabilities(repository);
+  repository.retireGeminiOnce();
   return repository;
 }
 

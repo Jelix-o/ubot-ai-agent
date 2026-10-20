@@ -9,7 +9,32 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="$(node -p "require('./package.json').version")"
+NODE_BIN="${UBOT_NODE_BIN:-}"
+NPM_CLI="${UBOT_NPM_CLI:-}"
+if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
+  echo "A controlled Node.js executable is required. Run this script through scripts/run-node22.cjs and scripts/run-bash.cjs." >&2
+  exit 2
+fi
+if [[ -z "$NPM_CLI" || ! -f "$NPM_CLI" ]]; then
+  echo "The npm CLI paired with the controlled Node.js runtime is required." >&2
+  exit 2
+fi
+
+NODE_MAJOR="$("$NODE_BIN" -p "process.versions.node.split('.')[0]")"
+if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 22 )); then
+  echo "Linux release packaging requires Node.js 22 or newer; found Node.js $NODE_MAJOR." >&2
+  exit 2
+fi
+
+run_node() {
+  "$NODE_BIN" "$@"
+}
+
+run_npm() {
+  "$NODE_BIN" "$NPM_CLI" "$@"
+}
+
+VERSION="$(run_node -p "require('./package.json').version")"
 if [[ -z "$VERSION" ]]; then
   echo "package.json has no version" >&2
   exit 2
@@ -28,7 +53,7 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf dist
-node scripts/build.cjs
+run_node scripts/build.cjs
 
 mkdir -p "$OUTPUT_DIR"
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"
@@ -52,19 +77,23 @@ for release_path in \
   package.json \
   package-lock.json \
   README.md \
-  COMMANDS.md \
-  "RELEASE-v$VERSION.md" \
   .env.example \
   .env.server-2022.example \
   dist \
   scripts/configure-v3-network.mjs \
   scripts/configure-image-model.mjs \
+  scripts/install-node22-runtime.sh \
+  scripts/update-cloudflare-origin-allowlist.sh \
+  scripts/install-cloudflare-origin-hardening.sh \
+  scripts/verify-nginx-vhost-ownership.mjs \
   scripts/upgrade-model-policy.mjs \
   scripts/repair-member-name.mjs \
   scripts/deploy-linux-release.sh \
   scripts/normalize-dotenv-bom.mjs \
   scripts/migrate-v3-state.mjs \
   scripts/verify-release-source.mjs \
+  scripts/validate-release-archive.mjs \
+  scripts/public-docs.mjs \
   deploy/nginx/bot.9958.uk.conf \
   deploy/nginx/preview.9958.uk.conf \
   deploy/nginx/ubot-preview-static.conf \
@@ -74,10 +103,8 @@ for release_path in \
   deploy/systemd/ubot.target.template \
   deploy/systemd/ubot-maintenance.service.template \
   deploy/systemd/ubot-maintenance.timer.template \
-  docs/OPERATIONS-v3.md \
-  docs/ADMIN-RECOVERY-v3.md \
-  docs/MIGRATION-v3.md \
-  docs/ROLLBACK-v3.md \
+  deploy/systemd/ubot-cloudflare-allowlist.service.template \
+  deploy/systemd/ubot-cloudflare-allowlist.timer.template \
   assets/huixian-profile.json \
   assets/private-enterprises-2026.json \
   assets/private-enterprises-2026-audit.json \
@@ -91,12 +118,14 @@ done
 
 while IFS= read -r release_path; do
   copy_release_path "$release_path"
-done < <(node scripts/bt-release-files.cjs)
+done < <(run_node scripts/bt-release-files.cjs)
 
 find "$STAGING_DIR/dist" -type f -name '*.test.js' -delete
 
-node scripts/verify-release-source.mjs "$STAGING_DIR"
-tar -C "$STAGING_DIR" -czf "$ARCHIVE" .
+run_node scripts/verify-release-source.mjs "$STAGING_DIR"
+# The deployment-side validator rejects links and non-USTAR metadata. Package
+# the trusted staging tree in the same deliberately narrow format.
+tar --format=ustar -C "$STAGING_DIR" -czf "$ARCHIVE" .
 
 archive_name="$(basename "$ARCHIVE")"
 sha256sum "$ARCHIVE" | awk -v asset="$archive_name" '{ print $1 " *" asset }' | tee "$ARCHIVE.sha256"
@@ -104,11 +133,14 @@ sha256sum "$ARCHIVE" | awk -v asset="$archive_name" '{ print $1 " *" asset }' | 
 # Verify the exact bytes that will be uploaded, then prove a fresh release can
 # install its production dependency graph without relying on this worktree.
 VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ubot-release-verify-$VERSION-XXXXXX")"
-tar -xzf "$ARCHIVE" -C "$VERIFY_DIR"
-node "$VERIFY_DIR/scripts/verify-release-source.mjs" "$VERIFY_DIR"
+run_node scripts/validate-release-archive.mjs "$ARCHIVE"
+tar --extract --gzip --file="$ARCHIVE" --directory="$VERIFY_DIR" \
+  --no-same-owner --no-same-permissions --delay-directory-restore
+run_node "$VERIFY_DIR/scripts/verify-release-source.mjs" "$VERIFY_DIR"
+run_node scripts/secret-scan.mjs --source "$VERIFY_DIR"
 (
   cd "$VERIFY_DIR"
-  npm ci --omit=dev --ignore-scripts
+  run_npm ci --omit=dev --ignore-scripts
 )
 rm -rf "$VERIFY_DIR"
 VERIFY_DIR=""

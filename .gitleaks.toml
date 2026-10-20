@@ -1,0 +1,12 @@
+title = "UBot secret scanning policy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "ubot-gateway-token"
+description = "OpenAI-compatible gateway token"
+regex = '''(?i)\bsk-[a-z0-9_-]{24,}\b'''
+secretGroup = 0
+entropy = 3.0
+keywords = ["sk-"]

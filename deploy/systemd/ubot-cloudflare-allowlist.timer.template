@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh UBot Cloudflare origin CIDRs weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 03:37:00 UTC
+Persistent=true
+Unit=ubot-cloudflare-allowlist.service
+
+[Install]
+WantedBy=timers.target

@@ -8,7 +8,7 @@ import MultiTagSelect from "../components/MultiTagSelect.vue";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
 import { confirmAction } from "../composables/useConfirm";
 import { useUnsavedChanges } from "../composables/useUnsavedChanges";
-import { api, queryString, type GroupConfig, type MemberProfile, type ModelOption, type Pagination, type ScheduleDateRule, type SchedulePreviewDay, type ScheduledReminderTask } from "../services/api";
+import { api, type GroupConfig, type MemberProfile, type ModelOption, type ScheduleDateRule, type SchedulePreviewDay, type ScheduledReminderTask } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
@@ -52,7 +52,13 @@ const reminderForm = reactive({
   enabled: true,
 });
 const form = reactive<GroupConfig>(defaultGroupConfig());
-const editableFields = ["enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "roastModeUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+const blacklistedUserIds = computed<string[]>({
+  get: () => form.blacklistedUserIds ?? [],
+  set: (userIds) => {
+    form.blacklistedUserIds = userIds;
+  },
+});
+const editableFields = ["enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
 function configValues(): Record<string, unknown> {
   return Object.fromEntries(editableFields.filter(key => app.role === "super_admin" || !["replyModelMode", "replyModelSource"].includes(key)).map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
 }
@@ -97,7 +103,6 @@ function defaultGroupConfig(): GroupConfig {
     allowedSkillIds: [],
     switcherUserIds: [],
     liveChatUserIds: [],
-    roastModeUserIds: [],
     liveChatDelaySeconds: 30,
     dailyReportEnabled: false,
     dailyReportTime: "10:00",
@@ -125,7 +130,6 @@ function resetForm(data: GroupConfig): void {
     allowedSkillIds: [...(data.allowedSkillIds || [])],
     switcherUserIds: [...(data.switcherUserIds || [])],
     liveChatUserIds: [...(data.liveChatUserIds || [])],
-    roastModeUserIds: [...(data.roastModeUserIds || [])],
     blacklistedUserIds: [...(data.blacklistedUserIds || [])],
     triggerKeywords: (data.triggerKeywords || []).map((item) => ({ ...item })),
     dailyReportDateRule: data.dailyReportDateRule || "all",
@@ -401,37 +405,6 @@ async function submitReminder(): Promise<void> {
   }
 }
 
-async function createReminder(): Promise<void> {
-  await submitReminder();
-}
-
-async function updateReminder(reminder: ScheduledReminderTask): Promise<void> {
-  if (readonly.value) return;
-  remindersLoading.value = true;
-  try {
-    await api<ScheduledReminderTask>(`/api/groups/${encodeURIComponent(app.groupId)}/reminders/${encodeURIComponent(reminder.id)}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        intervalMinutes: Number(reminder.executionIntervalMinutes ?? reminder.intervalMinutes),
-        topic: reminder.topic,
-        executionStartTime: reminder.executionStartTime,
-        executionEndTime: reminder.executionEndTime,
-        executionIntervalMinutes: reminder.executionIntervalMinutes ?? reminder.intervalMinutes,
-        dateRule: reminder.dateRule || "all",
-        weekdays: reminder.weekdays || [],
-        enabled: reminder.enabled,
-      }),
-    });
-    await loadReminders();
-    await loadSchedulePreview();
-    app.showToast("定时任务已保存");
-  } catch (error) {
-    app.showToast((error as Error).message, "error");
-  } finally {
-    remindersLoading.value = false;
-  }
-}
-
 async function deleteReminder(reminder: ScheduledReminderTask): Promise<void> {
   if (readonly.value) return;
   if (!await confirmAction({ title: "删除定时任务", message: `删除「${reminder.topic}」后将停止后续提醒。`, confirmText: "删除任务", danger: true })) return;
@@ -522,8 +495,7 @@ watch(() => app.groupId, () => {
           <div class="section-intro"><h2>成员权限</h2><p>成员身份、备注和隐私退出在成员详情中维护。</p></div>
           <div class="field-grid">
             <label class="wide">低频参与成员<MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" /><small>需先将参与方式设置为指定成员低频参与。</small></label>
-            <label class="wide">嘴臭模式成员<MultiTagSelect v-model="form.roastModeUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" /></label>
-            <label class="wide">黑名单成员<MultiTagSelect v-model="form.blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" /></label>
+            <label class="wide">黑名单成员<MultiTagSelect v-model="blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" /></label>
           </div>
         </section>
       <template v-else-if="activeTab === 'schedule'">

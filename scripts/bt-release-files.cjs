@@ -5,7 +5,6 @@ module.exports = Object.freeze([
   "scripts/install-bt-deps.mjs",
   "assets/bt/package.json",
   "assets/bt/requirements.txt",
-  "assets/bt/README.md",
   "assets/bt/scripts/bt.js",
   "assets/bt/scripts/curl_cffi_fetch.py",
   "assets/bt/scripts/curl_cffi_worker.py",

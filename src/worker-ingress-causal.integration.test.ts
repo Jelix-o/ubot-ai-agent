@@ -33,7 +33,7 @@ import type { BtSearchRuntime } from "./services/bt-search-service.js";
 const BOT_QQ = "12345";
 const GROUP_ID = "67890";
 const USER_ID = "20001";
-const TEST_STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const TEST_STATE_KEY = "0".repeat(64);
 
 test("Ingress clamps future OneBot timestamps to receipt time", () => {
   const receivedAt = Date.parse("2026-08-27T03:00:00.000Z");
@@ -74,6 +74,111 @@ class FakeNapCatTransport extends EventEmitter implements MessageTransport {
   start(): void {}
 
   close(): void {}
+}
+
+class GatedEmitterTransport extends EventEmitter implements MessageTransport {
+  activeSends = 0;
+  maxConcurrentSends = 0;
+  firstSendStarted = false;
+  private releaseFirstSend!: () => void;
+  private readonly firstSendGate = new Promise<void>((resolve) => {
+    this.releaseFirstSend = resolve;
+  });
+  private sendCount = 0;
+
+  async sendGroupMessage(_groupId: string, _text: string): Promise<MessageReceipt> {
+    this.activeSends += 1;
+    this.maxConcurrentSends = Math.max(this.maxConcurrentSends, this.activeSends);
+    const current = ++this.sendCount;
+    try {
+      if (current === 1) {
+        this.firstSendStarted = true;
+        await this.firstSendGate;
+      }
+      return { platformMessageId: `gated-${current}` };
+    } finally {
+      this.activeSends -= 1;
+    }
+  }
+
+  async sendGroupRecord(groupId: string, text: string): Promise<MessageReceipt> {
+    return this.sendGroupMessage(groupId, text);
+  }
+
+  async sendGroupImage(groupId: string, imageFile: string): Promise<MessageReceipt> {
+    return this.sendGroupMessage(groupId, imageFile);
+  }
+
+  async sendGroupAiRecord(groupId: string, text: string): Promise<MessageReceipt> {
+    return this.sendGroupMessage(groupId, text);
+  }
+
+  release(): void {
+    this.releaseFirstSend();
+  }
+
+  start(): void {}
+
+  close(): void {}
+}
+
+class StartupFailureTransport extends EventEmitter implements MessageTransport {
+  started = false;
+  closed = false;
+
+  async sendGroupMessage(): Promise<MessageReceipt> {
+    return { platformMessageId: "startup-failure" };
+  }
+
+  async sendGroupRecord(): Promise<MessageReceipt> {
+    return { platformMessageId: "startup-failure" };
+  }
+
+  async sendGroupImage(): Promise<MessageReceipt> {
+    return { platformMessageId: "startup-failure" };
+  }
+
+  async sendGroupAiRecord(): Promise<MessageReceipt> {
+    return { platformMessageId: "startup-failure" };
+  }
+
+  start(): void {
+    this.started = true;
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+class AsyncStartupFailureTransport extends EventEmitter implements MessageTransport {
+  started = false;
+  closed = false;
+
+  async sendGroupMessage(): Promise<MessageReceipt> {
+    return { platformMessageId: "async-startup-failure" };
+  }
+
+  async sendGroupRecord(): Promise<MessageReceipt> {
+    return { platformMessageId: "async-startup-failure" };
+  }
+
+  async sendGroupImage(): Promise<MessageReceipt> {
+    return { platformMessageId: "async-startup-failure" };
+  }
+
+  async sendGroupAiRecord(): Promise<MessageReceipt> {
+    return { platformMessageId: "async-startup-failure" };
+  }
+
+  async start(): Promise<void> {
+    this.started = true;
+    throw new Error("transport_start_failed");
+  }
+
+  close(): void {
+    this.closed = true;
+  }
 }
 
 class GatedWorkerTransport extends WorkerTransport {
@@ -153,6 +258,166 @@ const assistantSkill: SkillDefinition = {
   maxContextTurns: 12,
 };
 
+test("Ingress emitter allows only one claim-and-delivery pass at a time", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ingress-single-flight-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const queueDb = openSharedDb(dataDir);
+  const transport = new GatedEmitterTransport();
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, transport);
+  t.after(async () => {
+    await ingress.stop();
+    queueDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  queueDb.enqueueOutbox(GROUP_ID, null, "first");
+  const emitter = ingress as unknown as { runEmitterSafely(): Promise<void> };
+  const firstPass = emitter.runEmitterSafely();
+  await waitFor(() => transport.firstSendStarted);
+  queueDb.enqueueOutbox(GROUP_ID, null, "second");
+  const overlappingPass = emitter.runEmitterSafely();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(transport.maxConcurrentSends, 1);
+  transport.release();
+  await Promise.all([firstPass, overlappingPass]);
+  await emitter.runEmitterSafely();
+  assert.equal(transport.maxConcurrentSends, 1);
+  assert.equal((queueDb.db.prepare("SELECT COUNT(*) AS count FROM outbox WHERE status = 'sent'").get() as { count: number }).count, 2);
+});
+
+test("Ingress startup failure cleans up transport, timers, read API, and its database", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ingress-startup-failure-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const transport = new StartupFailureTransport();
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, transport);
+  const internals = ingress as unknown as {
+    messageRecalls: { start(): void; stop(): Promise<void> };
+    readApi: { server: { listening: boolean } };
+    sharedDb: SharedDb;
+  };
+  let recallsStopped = false;
+  internals.messageRecalls = {
+    start() {
+      throw new Error("recall_start_failed");
+    },
+    async stop() {
+      recallsStopped = true;
+    },
+  };
+  t.after(async () => {
+    await ingress.stop();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await assert.rejects(ingress.start(), /recall_start_failed/);
+  assert.equal(transport.started, true);
+  assert.equal(transport.closed, true);
+  assert.equal(recallsStopped, true);
+  assert.equal(internals.readApi.server.listening, false);
+  assert.throws(() => internals.sharedDb.db.prepare("SELECT 1").get());
+});
+
+test("Ingress awaits asynchronous transport startup failures before reporting ready", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ingress-async-startup-failure-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const transport = new AsyncStartupFailureTransport();
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, transport);
+  const internals = ingress as unknown as {
+    readApi: { server: { listening: boolean } };
+    sharedDb: SharedDb;
+  };
+  t.after(async () => {
+    await ingress.stop();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await assert.rejects(ingress.start(), /transport_start_failed/);
+  assert.equal(transport.started, true);
+  assert.equal(transport.closed, true);
+  assert.equal(internals.readApi.server.listening, false);
+  assert.throws(() => internals.sharedDb.db.prepare("SELECT 1").get());
+});
+
+test("WorkerApp stop drains active messages before its shared database is closed", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-stop-drain-"));
+  const db = openSharedDb(dataDir);
+  let releaseHandler!: () => void;
+  const handlerGate = new Promise<void>((resolve) => {
+    releaseHandler = resolve;
+  });
+  let markHandlerStarted!: () => void;
+  const handlerStarted = new Promise<void>((resolve) => {
+    markHandlerStarted = resolve;
+  });
+  const bot = {
+    getBotQq: () => BOT_QQ,
+    async handleGroupMessage(): Promise<void> {
+      markHandlerStarted();
+      await handlerGate;
+    },
+  } as unknown as BotApplication;
+  const worker = new WorkerApp({
+    dataDir,
+    sharedDb: db,
+    botApp: bot,
+    consumerKey: "worker:stop-drain",
+    isBlacklistedUser: async () => true,
+  });
+  t.after(async () => {
+    releaseHandler();
+    await worker.stop();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  db.insertMessage({
+    groupId: GROUP_ID,
+    userId: USER_ID,
+    selfId: BOT_QQ,
+    msgId: "stop-drain",
+    msgTime: Date.now(),
+    text: "blacklisted message",
+    imagesJson: "[]",
+    hasAtBot: true,
+    isBotMsg: false,
+    createdAt: Date.now(),
+  });
+  worker.start();
+  await handlerStarted;
+
+  let stopped = false;
+  const stopping = worker.stop().then(() => {
+    stopped = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(stopped, false, "WorkerApp.stop must wait for an active message handler");
+  assert.doesNotThrow(() => db.db.prepare("SELECT 1").get());
+
+  releaseHandler();
+  await stopping;
+  assert.equal(stopped, true);
+  assert.equal(db.pollMessages("worker:stop-drain", 100).length, 0);
+  assert.doesNotThrow(() => db.db.prepare("SELECT 1").get());
+});
+
 test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain", async (t) => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-ingress-causal-"));
   const readApiPort = await reservePort();
@@ -172,10 +437,11 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
   }, napcat);
   const worker = new WorkerApp({
     dataDir,
+    sharedDb: workerTransportDb,
     botApp: bot,
     consumerKey: "worker:causal-integration",
     isBlacklistedUser: async () => false,
-  }, workerTransport);
+  });
 
   t.after(async () => {
     await worker.stop();
@@ -382,10 +648,11 @@ test("unquoted group question receives a short ambient window without joining th
   }, napcat);
   const worker = new WorkerApp({
     dataDir,
+    sharedDb: workerTransportDb,
     botApp: bot,
     consumerKey: "worker:ambient-context-integration",
     isBlacklistedUser: async () => false,
-  }, workerTransport);
+  });
 
   t.after(async () => {
     await worker.stop();
@@ -463,10 +730,11 @@ test("Ingress records rate-limited messages but Worker skips them without an AI 
   }, napcat);
   const worker = new WorkerApp({
     dataDir,
+    sharedDb: workerTransportDb,
     botApp: bot,
     consumerKey: "worker:rate-limit-integration",
     isBlacklistedUser: async () => false,
-  }, workerTransport);
+  });
 
   t.after(async () => {
     await worker.stop();
@@ -548,13 +816,14 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
   }, napcat);
   const worker = new WorkerApp({
     dataDir,
+    sharedDb: workerTransportDb,
     botApp: bot,
     consumerKey: "worker:blacklisted-rate-limit-integration",
     isBlacklistedUser: async (groupId, userId) => (
       (state.getGroup(groupId)?.blacklistedUserIds ?? []).includes(userId)
     ),
     stateEncryptionKey: TEST_STATE_KEY,
-  }, workerTransport);
+  });
 
   t.after(async () => {
     await worker.stop();
@@ -1012,7 +1281,7 @@ test("Worker isolates both BT entries without mentions, routes or later context 
     return { query: request.query, requestedType: "anime", resolvedType: "anime", items: [{ title: "测试资源", magnet: "magnet:?xt=urn:btih:123&dn=%E6%B5%8B%E8%AF%95", torrent: "", page: "https://example.test/item", size: "1 GB", resolution: "1080P", subtitle: "中字", sources: ["nyaa"], episodeStart: 0, episodeEnd: 0, isBatch: false }], sites: [], warnings: [],
       totalResults: 1, rawResultCount: 1, uniqueResultCount: 1, durationMs: 0, fromCache: false, cacheAgeMs: 0, budgetExceeded: false };
   } } });
-  const worker = new WorkerApp({ dataDir, botApp: bot, consumerKey: "worker:bt-test", isBlacklistedUser: async () => false }, transport);
+  const worker = new WorkerApp({ dataDir, sharedDb: db, botApp: bot, consumerKey: "worker:bt-test", isBlacklistedUser: async () => false });
   t.after(async () => { await bot.stop(); await worker.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
   const now = Date.now();
   const insert = (text: string, id: string, time: number) => db.insertMessage({ groupId: GROUP_ID, userId: USER_ID, selfId: BOT_QQ, msgId: id,
@@ -1157,6 +1426,7 @@ function setRequiredEnvironment(readApiPort: number): () => void {
   const values: Record<string, string> = {
     BOT_QQ,
     INGRESS_READ_API_PORT: String(readApiPort),
+    INGRESS_READ_API_TOKEN: "test-ingress-read-token",
     NAPCAT_MODE: "forward",
     NAPCAT_WS_URL: "ws://127.0.0.1:1",
     OPENAI_BASE_URL: "https://unused.example/v1",

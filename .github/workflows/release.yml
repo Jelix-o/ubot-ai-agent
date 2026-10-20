@@ -5,20 +5,49 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "After verification, publish a matching final tag through the protected production environment"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 # These are public verification inputs, not signing secrets. Configure them as
 # repository Actions variables before publishing a completed headquarters
 # ledger; the matching Ed25519 private key stays offline.
 env:
+  # Release remains fail-closed while the credential incident is remediated and
+  # historical tags/Releases are rebuilt. A repository administrator must set
+  # this Actions variable to the literal string "true" after that work is signed off.
+  UBOT_RELEASE_PIPELINE_ENABLED: ${{ vars.UBOT_RELEASE_PIPELINE_ENABLED }}
   UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY }}
   UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID: ${{ vars.UBOT_PRIVATE_ENTERPRISE_HEADQUARTERS_REVIEW_PUBLIC_KEY_ID }}
 
 jobs:
+  secret-scan:
+    name: Secret scan
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan committed content
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
   verify:
     name: Verify (${{ matrix.os }})
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -27,10 +56,38 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Check public documentation
+        run: node scripts/public-docs.mjs check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm run audit:prod
+
+      - name: Run type checks and complete test suite
+        run: npm run verify
+
+  admin-visual-smoke:
+    name: Admin visual smoke
+    needs: [verify, secret-scan]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
           cache: npm
@@ -38,26 +95,58 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run complete test suite
-        run: npm test
+      - name: Install Chromium
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Run Admin browser smoke
+        run: npm run smoke:admin
+        env:
+          UBOT_VISUAL_ARTIFACT_DIR: artifacts/admin-visual-smoke
+
+      - name: Upload failed Admin screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: admin-visual-smoke
+          if-no-files-found: warn
+          path: artifacts/admin-visual-smoke
 
   package-windows:
     name: Package Windows
-    needs: verify
+    needs: [verify, secret-scan, admin-visual-smoke]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
           cache: npm
 
+      - name: Check public documentation
+        run: node scripts/public-docs.mjs check
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Install Gitleaks
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: "1.23.4"
+
+      - name: Install pinned Gitleaks
+        shell: pwsh
+        run: go install github.com/zricethezav/gitleaks/v8@v8.24.3
+        env:
+          GOBIN: ${{ runner.temp }}\\ubot-gitleaks
+
+      - name: Export Gitleaks path
+        shell: pwsh
+        run: '"GITLEAKS_BIN=${{ runner.temp }}\\ubot-gitleaks\\gitleaks.exe" >> $env:GITHUB_ENV'
 
       - name: Build Windows release
         run: npm run package:win
@@ -70,7 +159,7 @@ jobs:
           "value=$($package.version)" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-release
           if-no-files-found: error
@@ -80,21 +169,36 @@ jobs:
 
   package-linux:
     name: Package Linux
-    needs: verify
+    needs: [verify, secret-scan, admin-visual-smoke]
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
           cache: npm
 
+      - name: Check public documentation
+        run: node scripts/public-docs.mjs check
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Install Gitleaks
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: "1.23.4"
+
+      - name: Install pinned Gitleaks
+        run: GOBIN="$RUNNER_TEMP/ubot-gitleaks" go install github.com/zricethezav/gitleaks/v8@v8.24.3
+
+      - name: Export Gitleaks path
+        run: echo "GITLEAKS_BIN=$RUNNER_TEMP/ubot-gitleaks/gitleaks" >> "$GITHUB_ENV"
 
       - name: Build Linux release
         run: npm run package:linux
@@ -107,7 +211,7 @@ jobs:
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Upload Linux assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-release
           if-no-files-found: error
@@ -115,20 +219,102 @@ jobs:
             release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz
             release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz.sha256
 
-  github-release:
-    name: Publish GitHub Release
+  release-artifact-review:
+    name: Review release artifacts
     needs: [package-windows, package-linux]
-    # Candidate tags still receive the cross-platform verification and package
-    # gates above, but only a final tag may publish a formal GitHub Release.
-    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
+    if: vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22"
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node -p 'require("./package.json").version')"
+          test -n "$VERSION"
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: "*-release"
+          path: release
+          merge-multiple: true
+
+      - name: Verify all assets and checksums
+        run: node scripts/verify-release-assets.mjs --directory release --version ${{ steps.version.outputs.value }}
+
+      - name: Validate and extract exact release payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p release-scan/linux release-scan/windows
+          node scripts/validate-release-archive.mjs "release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz"
+          node scripts/validate-release-zip.mjs "release/ubot-${{ steps.version.outputs.value }}-win.zip"
+          tar --extract --gzip --file="release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz" --directory=release-scan/linux \
+            --no-same-owner --no-same-permissions --delay-directory-restore
+          unzip -q "release/ubot-${{ steps.version.outputs.value }}-win.zip" -d release-scan/windows
+
+      - name: Install Gitleaks
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version: "1.23.4"
+
+      - name: Install pinned Gitleaks
+        shell: bash
+        run: GOBIN="$RUNNER_TEMP/ubot-gitleaks" go install github.com/zricethezav/gitleaks/v8@v8.24.3
+
+      - name: Scan exact release payloads
+        shell: bash
+        env:
+          GITLEAKS_BIN: ${{ runner.temp }}/ubot-gitleaks/gitleaks
+        run: node scripts/secret-scan.mjs --source release-scan
+
+      - name: Upload reviewed release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reviewed-release-assets
+          if-no-files-found: error
+          path: |
+            release/ubot-${{ steps.version.outputs.value }}-win.zip
+            release/ubot-${{ steps.version.outputs.value }}-win.zip.sha256
+            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz
+            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz.sha256
+
+  release-metadata:
+    name: Validate release metadata
+    needs: [release-artifact-review]
+    # Tag pushes and the default manual dispatch only verify a candidate. A
+    # formal Release requires an explicit manual request on the final tag.
+    if: >-
+      vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' &&
+      github.ref_type == 'tag' &&
+      !contains(github.ref_name, '-') &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: "22"
 
@@ -142,31 +328,57 @@ jobs:
             echo "Only a final semantic version can create a formal GitHub Release: $VERSION" >&2
             exit 1
           fi
-          test -f "RELEASE-v$VERSION.md"
+          node scripts/public-docs.mjs release-notes
           if [ "$GITHUB_REF_TYPE" != "tag" ] || [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
             echo "Formal release must run from the matching v$VERSION tag." >&2
             exit 1
           fi
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download release assets
-        uses: actions/download-artifact@v4
+      - name: Upload reviewed release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          pattern: "*-release"
-          path: release
-          merge-multiple: true
+          name: reviewed-release-notes
+          if-no-files-found: error
+          path: .codex_tmp/release-notes.md
 
-      - name: Verify all assets and checksums
-        run: node scripts/verify-release-assets.mjs --directory release --version ${{ steps.version.outputs.value }}
+  github-release:
+    name: Publish GitHub Release
+    needs: [release-artifact-review, release-metadata]
+    if: >-
+      vars.UBOT_RELEASE_PIPELINE_ENABLED == 'true' &&
+      github.ref_type == 'tag' &&
+      !contains(github.ref_name, '-') &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    environment:
+      name: production-release
+    steps:
+      - name: Download reviewed release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: reviewed-release-assets
+          path: release
+
+      - name: Download reviewed release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: reviewed-release-notes
+          path: release-notes
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836 # v2.3.3
         with:
-          name: UBot V${{ steps.version.outputs.value }}
-          body_path: RELEASE-v${{ steps.version.outputs.value }}.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+          name: UBot V${{ needs.release-metadata.outputs.version }}
+          body_path: release-notes/release-notes.md
           prerelease: false
           files: |
-            release/ubot-${{ steps.version.outputs.value }}-win.zip
-            release/ubot-${{ steps.version.outputs.value }}-win.zip.sha256
-            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz
-            release/ubot-${{ steps.version.outputs.value }}-linux.tar.gz.sha256
+            release/ubot-${{ needs.release-metadata.outputs.version }}-win.zip
+            release/ubot-${{ needs.release-metadata.outputs.version }}-win.zip.sha256
+            release/ubot-${{ needs.release-metadata.outputs.version }}-linux.tar.gz
+            release/ubot-${{ needs.release-metadata.outputs.version }}-linux.tar.gz.sha256

@@ -11,6 +11,7 @@ import type { GroupMemory, KnowledgeBaseEntry, KnowledgePack, ScheduledReminderT
 import type { SharedDb } from "../shared/sqlite.js";
 import { HUIXIAN_CONVERSATION_REVISION, PREVIOUS_HUIXIAN_CONVERSATION_REVISION, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
 import { validateV3CapabilityPolicy } from "./capability-policy-service.js";
+import { isRetiredModel, isRetiredModelId, removeRetiredGroupModel, removeRetiredModels, RETIRED_GEMINI_MODEL_IDS } from "./retired-models.js";
 
 const CIPHER_VERSION = "v1";
 const STATE_CUTOVER_META_KEY = "state_cutover";
@@ -18,6 +19,8 @@ const STATE_CUTOVER_VERSION = "v3";
 const HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY = "huixian_release_profile_revision";
 const GROUP_VISION_ENABLED_MIGRATION_META_KEY = "group_vision_enabled_v3_0_18";
 const GROUP_VISION_ENABLED_MIGRATION_VERSION = "complete";
+const GROUP_ROAST_MODE_RETIREMENT_MIGRATION_META_KEY = "group_roast_mode_retired_v3_0_49";
+const GROUP_ROAST_MODE_RETIREMENT_MIGRATION_VERSION = "complete";
 
 export interface V3CapabilityPolicy {
   version: number;
@@ -250,13 +253,13 @@ export class V3StateRepository {
     return {
       groups: rows.flatMap((row) => {
         const parsed = parseJson<GroupBotConfig>(row.config_json);
-        return parsed ? [retireLegacyQqAdminFields(parsed)] : [];
+        return parsed ? [removeRetiredGroupFields(parsed)] : [];
       }),
     };
   }
 
   saveGroups(input: GroupsConfigFile, now = Date.now()): void {
-    const groups = (input.groups ?? []).map((group) => retireLegacyQqAdminFields(group));
+    const groups = (input.groups ?? []).map((group) => removeRetiredGroupFields(group));
     this.withImmediateTransaction(() => {
       // v3_groups is keyed by groupId, so duplicate records have always used
       // last-write-wins semantics. Build the same final view before provisioning
@@ -296,11 +299,11 @@ export class V3StateRepository {
       .prepare("SELECT config_json FROM v3_groups WHERE group_id = ?")
       .get(groupId) as { config_json: string } | undefined;
     const group = row ? parseJson<GroupBotConfig>(row.config_json) : undefined;
-    return group ? retireLegacyQqAdminFields(group) : undefined;
+    return group ? removeRetiredGroupFields(group) : undefined;
   }
 
   saveGroup(group: GroupBotConfig, now = Date.now()): void {
-    const safeGroup = retireLegacyQqAdminFields(group);
+    const safeGroup = removeRetiredGroupFields(group);
     const groupId = String(safeGroup.groupId).trim();
     if (!groupId) throw new Error("invalid_v3_group_id");
     this.withImmediateTransaction(() => {
@@ -336,11 +339,99 @@ export class V3StateRepository {
         if (!group || !Array.isArray(group.switcherUserIds) || group.switcherUserIds.length === 0) {
           continue;
         }
-        update.run(JSON.stringify(retireLegacyQqAdminFields(group)), now, row.group_id);
+        update.run(JSON.stringify(removeRetiredGroupFields(group)), now, row.group_id);
         groupsCleared += 1;
       }
       const controlRemoved = this.deleteDocument("group-control", "default");
       return { groupsCleared, controlRemoved };
+    });
+  }
+
+  /**
+   * Removes the retired roast-mode targeting field from all V3 groups in one
+   * transaction. Existing records can predate the type/API removal, so this
+   * release-owned migration is the final persistent-state cleanup.
+   */
+  retireRoastModeForExistingGroupsOnce(now = Date.now()): { applied: boolean; groupsUpdated: number } {
+    return this.withImmediateTransaction(() => {
+      if (this.getMeta(GROUP_ROAST_MODE_RETIREMENT_MIGRATION_META_KEY) === GROUP_ROAST_MODE_RETIREMENT_MIGRATION_VERSION) {
+        return { applied: false, groupsUpdated: 0 };
+      }
+
+      const rows = this.sharedDb.db.prepare(
+        "SELECT group_id, config_json FROM v3_groups ORDER BY group_id",
+      ).all() as Array<{ group_id: string; config_json: string }>;
+
+      // Validate every record before changing any row, preserving a recoverable
+      // state if historical JSON is malformed.
+      const groups = rows.map((row) => ({
+        row,
+        group: parseGroupConfigForRoastModeRetirement(row),
+      }));
+      const update = this.sharedDb.db.prepare(
+        "UPDATE v3_groups SET config_json = ?, updated_at = ? WHERE group_id = ?",
+      );
+      let groupsUpdated = 0;
+      for (const { row, group } of groups) {
+        if (!Object.hasOwn(group, "roastModeUserIds")) {
+          continue;
+        }
+        update.run(JSON.stringify(removeRoastModeUserIds(group)), now, row.group_id);
+        groupsUpdated += 1;
+      }
+      this.setMeta(
+        GROUP_ROAST_MODE_RETIREMENT_MIGRATION_META_KEY,
+        GROUP_ROAST_MODE_RETIREMENT_MIGRATION_VERSION,
+        now,
+      );
+      return { applied: true, groupsUpdated };
+    });
+  }
+
+  retireGeminiOnce(now = Date.now()): { applied: boolean; modelIds: string[]; groupsUpdated: number; secretsDeleted: number } {
+    return this.withImmediateTransaction(() => {
+      const marker = "gemini_retired_v4_0_0";
+      if (this.getMeta(marker) === "complete") return { applied: false, modelIds: [], groupsUpdated: 0, secretsDeleted: 0 };
+      const row = this.sharedDb.db.prepare("SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'")
+        .get() as { settings_json: string } | undefined;
+      const settings = row ? parseJson<SystemSettings>(row.settings_json) : undefined;
+      if (row && (!settings || !Array.isArray(settings.models) || !isRecord(settings.selectedModelIds) ||
+          Object.values(settings.selectedModelIds).some(id => typeof id !== "string") ||
+          settings.models.some(model => !isRecord(model) || !isNonEmptyString(model.id) || !isNonEmptyString(model.model)) ||
+          (settings.replyRouting && (!isRecord(settings.replyRouting) || !isStringArray(settings.replyRouting.fallbackModelIds))) ||
+          (settings.removedDefaultModelIds !== undefined && !isStringArray(settings.removedDefaultModelIds)))) {
+        throw new Error("invalid_v3_system_settings_for_gemini_retirement");
+      }
+      const retiredIds = new Set<string>(RETIRED_GEMINI_MODEL_IDS);
+      for (const model of settings?.models ?? []) if (isRetiredModel(model)) retiredIds.add(model.id);
+      const secretRows = this.sharedDb.db.prepare("SELECT secret_key FROM v3_system_secrets WHERE secret_key LIKE 'model:%:api_key'")
+        .all() as Array<{ secret_key: string }>;
+      for (const secret of secretRows) {
+        const id = secret.secret_key.slice(6, -8);
+        if (isRetiredModelId(id)) retiredIds.add(id);
+      }
+      const groups = (this.sharedDb.db.prepare("SELECT group_id, config_json FROM v3_groups ORDER BY group_id").all() as Array<{ group_id: string; config_json: string }>).map(groupRow => {
+        const group = parseJson<unknown>(groupRow.config_json);
+        if (!isStoredGroupBotConfig(group, groupRow.group_id)) throw new Error("invalid_v3_group_config_for_gemini_retirement");
+        return { groupRow, group };
+      });
+      if (settings) this.sharedDb.db.prepare("UPDATE v3_system_settings SET settings_json = ?, updated_at = ? WHERE settings_key = 'default'")
+        .run(JSON.stringify(removeRetiredModels(settings)), now);
+      let groupsUpdated = 0;
+      const update = this.sharedDb.db.prepare("UPDATE v3_groups SET config_json = ?, updated_at = ? WHERE group_id = ?");
+      for (const { groupRow, group } of groups) {
+        const next = removeRetiredGroupModel(group, retiredIds);
+        if (next === group) continue;
+        update.run(JSON.stringify(next), now, groupRow.group_id);
+        groupsUpdated += 1;
+      }
+      const deleteSecret = this.sharedDb.db.prepare("DELETE FROM v3_system_secrets WHERE secret_key = ?");
+      let secretsDeleted = 0;
+      for (const id of retiredIds) secretsDeleted += Number(deleteSecret.run(`model:${id}:api_key`).changes);
+      const result = { applied: true, modelIds: [...retiredIds].sort(), groupsUpdated, secretsDeleted };
+      this.recordMaintenanceRun("retire-gemini-v4.0.0", result, now);
+      this.setMeta(marker, "complete", now);
+      return result;
     });
   }
 
@@ -1303,7 +1394,7 @@ function normalizeReleaseProfileRevision(value: unknown): string {
  * retired runtime switch through a JSON payload.
  */
 function removeRetiredSystemSettingsFields<T extends SystemSettings>(settings: T): T {
-  const safe = structuredClone(settings) as T & Record<string, unknown>;
+  const safe = removeRetiredModels(settings) as T & Record<string, unknown>;
   // The QQ-number administration command is not a V3 capability. Remove an
   // imported command record as well as the authorization fields so a future
   // runtime cannot accidentally make it configurable again.
@@ -1349,6 +1440,55 @@ function retireLegacyQqAdminFields(group: GroupBotConfig): GroupBotConfig {
     ...group,
     switcherUserIds: [],
   };
+}
+
+function removeRetiredGroupFields(group: GroupBotConfig): GroupBotConfig {
+  return retireLegacyQqAdminFields(removeRoastModeUserIds(removeRetiredGroupModel(group)));
+}
+
+function removeRoastModeUserIds(group: GroupBotConfig): GroupBotConfig {
+  const withoutRoastMode = { ...group } as GroupBotConfig & Record<string, unknown>;
+  delete withoutRoastMode.roastModeUserIds;
+  return withoutRoastMode;
+}
+
+function parseGroupConfigForRoastModeRetirement(row: { group_id: string; config_json: string }): GroupBotConfig {
+  const group = parseJson<unknown>(row.config_json);
+  if (!isStoredGroupBotConfig(group, row.group_id)) {
+    throw new Error("invalid_v3_group_config_for_roast_mode_retirement");
+  }
+  return group;
+}
+
+/**
+ * This deliberately validates the persisted semantic minimum rather than
+ * normalizing it. A release migration must not silently repair a corrupt
+ * record while removing an unrelated retired setting.
+ */
+function isStoredGroupBotConfig(value: unknown, rowGroupId: string): value is GroupBotConfig {
+  if (!isRecord(value) || !isNonEmptyString(rowGroupId)) return false;
+  if (value.groupId !== rowGroupId || !isNonEmptyString(value.groupId)) return false;
+  if (!isNonEmptyString(value.currentSkillId)) return false;
+  if (!isNonEmptyStringArray(value.allowedSkillIds) || !value.allowedSkillIds.includes(value.currentSkillId)) return false;
+  return isStringArray(value.switcherUserIds) && isStringArray(value.liveChatUserIds);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return isStringArray(value)
+    && value.length > 0
+    && value.every((item) => item.trim().length > 0);
 }
 
 /** AES-256-GCM with a purpose-specific HKDF-derived key. */

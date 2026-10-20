@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, reactive, shallowRef } from "vue";
 
-import { api, type AdminSession, type GroupConfig } from "../services/api";
+import { api, cancelAuthRecovery, setCsrfToken, type AdminSession, type GroupConfig } from "../services/api";
 
 export type ThemeMode = "light" | "dark" | "system";
 
@@ -86,7 +86,9 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function logout(): Promise<void> {
+    cancelAuthRecovery();
     await api("/api/auth/logout", { method: "POST", body: "{}" });
+    setCsrfToken(undefined);
     sessionLoaded.value = false;
     sessionPromise = undefined;
     username.value = "";

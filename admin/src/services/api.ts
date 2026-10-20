@@ -21,7 +21,6 @@ export interface GroupConfig {
   allowedSkillIds: string[];
   switcherUserIds: string[];
   liveChatUserIds: string[];
-  roastModeUserIds?: string[];
   manualIdentities?: Array<{ userIds: string[]; names: string[]; note?: string }>;
   liveChatDelaySeconds?: number;
   dailyReportEnabled?: boolean;
@@ -462,6 +461,46 @@ export interface ScheduledReminderTask {
 }
 
 let csrfToken = "";
+let recoveryScope = new AbortController();
+let sessionRefresh: Promise<unknown> | undefined;
+let reauthPromise: Promise<void> | undefined;
+let reauthGeneration = 0;
+let reauthHandler: ((signal: AbortSignal) => Promise<void>) | undefined;
+
+export class ApiError extends Error {
+  constructor(public readonly code: string, public readonly status: number) {
+    super(friendlyApiError(code));
+    this.name = "ApiError";
+  }
+}
+
+export function registerReauthHandler(handler: (signal: AbortSignal) => Promise<void>): () => void {
+  reauthHandler = handler;
+  return () => {
+    if (reauthHandler !== handler) return;
+    cancelAuthRecovery();
+    reauthHandler = undefined;
+  };
+}
+
+export function cancelAuthRecovery(): void {
+  recoveryScope.abort();
+  recoveryScope = new AbortController();
+  sessionRefresh = undefined;
+  reauthPromise = undefined;
+}
+
+function recoveryCancelled(): ApiError { return new ApiError("operation_cancelled", 0); }
+
+async function waitForRecovery<T>(promise: Promise<T>, signals: Array<AbortSignal | null | undefined>): Promise<T> {
+  if (signals.some(signal => signal?.aborted)) throw recoveryCancelled();
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  let cancel: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => { cancel = () => reject(recoveryCancelled()); });
+  for (const signal of active) signal.addEventListener("abort", cancel, { once: true });
+  try { return await Promise.race([promise, cancelled]); }
+  finally { for (const signal of active) signal.removeEventListener("abort", cancel); }
+}
 
 export function setCsrfToken(token: string | undefined): void {
   csrfToken = token || "";
@@ -473,12 +512,15 @@ function setReadonlySession(_session: AdminSession | undefined): void {
 
 export function friendlyApiError(code: string): string {
   return ({
-    recent_reauth_required: "此操作需要近期密码复验，请先到「账号与安全」完成验证。",
+    recent_reauth_required: "此操作需要密码复验，请验证后继续。",
     invalid_password: "密码至少 12 位，请更换后重试。",
     invalid_credentials: "账号或密码错误。",
     invalid_current_password: "当前密码不正确。",
     too_many_login_attempts: "尝试次数过多，请稍后再试。",
-    csrf_required: "登录状态已失效，请重新登录。",
+    csrf_required: "请求校验未通过，请重试当前操作。",
+    invalid_origin: "请求来源校验失败，请通过正常的后台地址访问。",
+    operation_cancelled: "操作已取消。",
+    model_retired: "Gemini 已下线，请选择其他模型。",
     forbidden: "当前账号无权执行该操作。",
     version_conflict: "配置已被其他操作修改，请刷新后重新编辑。",
     target_changed: "目标已发生变化，请重新预览。",
@@ -498,15 +540,19 @@ function shouldSendCsrf(method: string | undefined): boolean {
 }
 
 export async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
-  if (url !== "/api/logout" && shouldSendCsrf(options.method) && !csrfToken && url.startsWith("/api/")) {
-    // CSRF token is issued after login; requests without it fail server-side with a clear code.
-  }
+  const scope = recoveryScope.signal;
+  let refreshed = false;
+  let reauthenticated = false;
+  const replayable = !(typeof ReadableStream !== "undefined" && options.body instanceof ReadableStream);
+  for (;;) {
+  const sentReauthGeneration = reauthGeneration;
+  const sentCsrfToken = csrfToken;
   const headers = new Headers(options.headers);
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   if (!headers.has("Content-Type") && !isFormData) {
     headers.set("Content-Type", "application/json");
   }
-  if (csrfToken && shouldSendCsrf(options.method)) {
+  if (csrfToken && shouldSendCsrf(options.method) && url.startsWith("/api/")) {
     headers.set("X-CSRF-Token", csrfToken);
   }
   let res: Response;
@@ -516,26 +562,11 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
       headers,
     });
   } catch (error) {
+    if (options.signal?.aborted) throw recoveryCancelled();
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(detail === "Failed to fetch"
       ? "网络连接失败或服务器暂时无响应，请稍后重试。"
       : `网络连接失败或服务器暂时无响应：${detail}`);
-  }
-  if (res.status === 401) {
-    const contentType401 = res.headers.get("content-type") || "";
-    let code401 = "unauthorized";
-    if (contentType401.includes("application/json")) {
-      const data401 = await res.json().catch(() => ({})) as { error?: string };
-      code401 = typeof data401.error === "string" && data401.error ? data401.error : "unauthorized";
-    }
-    // Business auth failures (wrong current password) are not session expiry.
-    if (code401 === "invalid_current_password" || code401 === "invalid_credentials") {
-      throw new Error(friendlyApiError(code401));
-    }
-    if (window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    }
-    throw new Error("unauthorized");
   }
   if (!res.ok) {
     const contentType = res.headers.get("content-type") || "";
@@ -552,8 +583,43 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
         message = message.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
       }
     }
-    const known = friendlyApiError(message);
-    throw new Error(known !== message ? known : (message || "请求失败"));
+    if (res.status === 401 && message === "unauthorized") {
+      cancelAuthRecovery();
+      setCsrfToken(undefined);
+      if (window.location.pathname !== "/login") window.location.href = "/login";
+    }
+    const canRecover = replayable && url.startsWith("/api/") && shouldSendCsrf(options.method);
+    if (canRecover && res.status === 403 && message === "csrf_required" && !refreshed) {
+      refreshed = true;
+      if (scope.aborted || options.signal?.aborted) throw recoveryCancelled();
+      if (sentCsrfToken === csrfToken) {
+        if (!sessionRefresh) {
+          const pending = api("/api/session");
+          sessionRefresh = pending;
+          void pending.finally(() => { if (sessionRefresh === pending) sessionRefresh = undefined; }).catch(() => {});
+        }
+        await waitForRecovery(sessionRefresh, [scope, options.signal]);
+      }
+      if (scope.aborted || options.signal?.aborted) throw recoveryCancelled();
+      continue;
+    }
+    if (canRecover && res.status === 403 && message === "recent_reauth_required" && !reauthenticated &&
+        url !== "/api/auth/reauth" && url !== "/api/auth/logout") {
+      reauthenticated = true;
+      if (scope.aborted || options.signal?.aborted) throw recoveryCancelled();
+      if (sentReauthGeneration === reauthGeneration) {
+        if (!reauthPromise) {
+          if (!reauthHandler) throw new ApiError(message, res.status);
+          const pending = waitForRecovery(reauthHandler(scope), [scope]).then(() => { reauthGeneration += 1; });
+          reauthPromise = pending;
+          void pending.finally(() => { if (reauthPromise === pending) reauthPromise = undefined; }).catch(() => {});
+        }
+        await waitForRecovery(reauthPromise, [scope, options.signal]);
+      }
+      if (scope.aborted || options.signal?.aborted) throw recoveryCancelled();
+      continue;
+    }
+    throw new ApiError(message || "请求失败", res.status);
   }
   const data = await res.json() as T;
   if (url === "/api/session" || url.startsWith("/api/auth/")) {
@@ -562,7 +628,7 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
     // Security actions such as recovery-code rotation return `{ ok: true }`.
     // They must retain the opaque session's existing CSRF token instead of
     // accidentally clearing it for every following management request.
-    if (typeof nextCsrfToken === "string") {
+    if (typeof nextCsrfToken === "string" && !scope.aborted) {
       setCsrfToken(nextCsrfToken);
     }
     if (authResponse.session) {
@@ -570,6 +636,7 @@ export async function api<T>(url: string, options: RequestInit = {}): Promise<T>
     }
   }
   return data;
+  }
 }
 export function queryString(params: Record<string, string | number | boolean | undefined>): string {
   const search = new URLSearchParams();

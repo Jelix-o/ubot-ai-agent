@@ -9,7 +9,7 @@ import { SharedDb } from "./shared/sqlite.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 
-const STATE_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const STATE_KEY = "0".repeat(64);
 
 test("image model configuration stores only encrypted key material and is idempotent", async (t) => {
   const appRoot = mkdtempSync(path.join(os.tmpdir(), "ubot-configure-image-"));
@@ -30,7 +30,7 @@ test("image model configuration stores only encrypted key material and is idempo
       liveChatUserIds: [],
     });
     const store = new SystemSettingsStore("unused.json", [], undefined, repository);
-    await store.update({ models: ["gpt", "ds", "gemini", "astra"].map(replyModel) });
+    await store.update({ models: ["gpt", "ds", "sol", "astra"].map(replyModel) });
   } finally {
     initial.close();
   }

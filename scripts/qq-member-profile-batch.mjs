@@ -545,7 +545,7 @@ async function main() {
   const baseURL = process.env.OPENAI_BASE_URL;
   const model = String(args.get("--model") || process.env.OPENAI_MODEL || "");
   const sshModelHost = typeof args.get("--ssh-model-host") === "string" ? String(args.get("--ssh-model-host")) : "";
-  const sshModelId = typeof args.get("--ssh-model-id") === "string" ? String(args.get("--ssh-model-id")) : "gemini-38-flash";
+  const sshModelId = typeof args.get("--ssh-model-id") === "string" ? String(args.get("--ssh-model-id")) : "";
   if (sshModelHost) {
     // The remote bridge owns provider credentials; do not require or transmit local secrets.
   } else if (pending.length > 0 && (!apiKey || !baseURL || !model)) {

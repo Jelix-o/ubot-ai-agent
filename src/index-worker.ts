@@ -50,7 +50,6 @@ import { RecentGroupEvidenceService } from "./services/recent-group-evidence-ser
 import { MemeLibraryService } from "./services/meme-library-service.js";
 import { ConfiguredImageGenerationService } from "./services/image-generation-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
-import { parseGroupMessage } from "./utils/message-parser.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
 
 /**
@@ -76,14 +75,14 @@ export class WorkerApp {
   constructor(
     private readonly options: {
       dataDir: string;
+      sharedDb: SharedDb;
       botApp: BotApplication;
       consumerKey: string;
       isBlacklistedUser: (groupId: string, userId: string) => Promise<boolean>;
       stateEncryptionKey?: string;
     },
-    private readonly transport: MessageTransport,
   ) {
-    this.sharedDb = openSharedDb(this.options.dataDir);
+    this.sharedDb = this.options.sharedDb;
     this.metrics = new Metrics(`${this.options.dataDir}/shared/metrics`, {
       processName: "worker",
       flushIntervalMs: 30_000,
@@ -91,10 +90,12 @@ export class WorkerApp {
     this.inflight = new InflightManager(this.sharedDb);
     this.contextRepository = new ConversationContextRepository(this.sharedDb);
     this.contextRouter = new ConversationContextRouter(this.contextRepository);
+    const v3State = resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey);
+    v3State?.retireRoastModeForExistingGroupsOnce();
     this.atmosphere = new AtmosphereSummarizer(
       this.options.dataDir,
       {},
-      resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey),
+      v3State,
     );
     this.backgroundLlmGate = async <T>(task: () => Promise<T>, signal?: AbortSignal) => {
       let release: (() => void) | undefined;
@@ -118,10 +119,10 @@ export class WorkerApp {
         return await this.backgroundLlmGate(task, signal);
       } catch (error) {
         if (error instanceof CircuitOpenError) {
-          return degradedReply("circuit_open", this.options.botApp.getBotQq());
+          return degradedReply("circuit_open");
         }
         if (error instanceof Error && error.message === "llm_semaphore_timeout") {
-          return degradedReply("llm_semaphore_timeout", this.options.botApp.getBotQq());
+          return degradedReply("llm_semaphore_timeout");
         }
         throw error;
       }
@@ -570,21 +571,24 @@ export class WorkerApp {
   }
 
   async stop(): Promise<void> {
-    this.runner.stop();
-    this.metrics.stop();
-    this.sharedDb.close();
+    try {
+      await this.runner.stop();
+    } finally {
+      this.metrics.stop();
+    }
   }
 }
 
 async function buildBotApp(
   config: ReturnType<typeof loadConfig>,
+  sharedDb: SharedDb,
   transport: MessageTransport,
   imagePipeline?: ImagePipeline,
 ): Promise<{ botApp: BotApplication; groupConfigService: GroupConfigService }> {
   const dataDir = config.dataDir;
-  const sharedDb = openSharedDb(dataDir);
   setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
+  v3State?.retireRoastModeForExistingGroupsOnce();
   const capabilityPolicy = v3State ? new V3CapabilityPolicyService(v3State) : undefined;
   const contextRepository = new ConversationContextRepository(sharedDb);
   const replyAiService = new AiService(config.openAiBaseUrl, config.openAiApiKey, config.openAiModel);
@@ -758,47 +762,77 @@ function buildImagePipeline(transport: MessageTransport): ImagePipeline {
 
 export async function main(): Promise<void> {
   const config = loadConfig();
-  const readClient = new IngressReadApiClient(`http://127.0.0.1:${config.ingressReadApiPort}`);
-  const sharedDb = openSharedDb(config.dataDir);
-  setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
-  const transport = new WorkerTransport(sharedDb, {
-    resolveImageInputs: (images) => readClient.resolveImages(images),
-    listGroupMembers: (groupId, options) => readClient.listGroupMembers(groupId, options),
-    listGroups: () => readClient.listGroups(),
-    resolveMentionTargets: (groupId, candidates) => readClient.resolveMentionTargets(groupId, candidates),
-    resolveMemberIdentities: (groupId, candidates) => readClient.resolveMemberIdentities(groupId, candidates),
-    getMessage: (messageId) => readClient.getMessage(messageId),
-  });
-  const builtBot = await buildBotApp(config, transport, buildImagePipeline(transport));
-  const app = new WorkerApp(
-    {
-      dataDir: config.dataDir,
-      botApp: builtBot.botApp,
-      consumerKey: "worker:main",
-      isBlacklistedUser: async (groupId, userId) => {
-        const group = await builtBot.groupConfigService.getGroup(groupId);
-        return (group?.blacklistedUserIds ?? []).includes(userId);
-      },
-      stateEncryptionKey: config.stateEncryptionKey,
-    },
-    transport,
+  const readClient = new IngressReadApiClient(
+    `http://127.0.0.1:${config.ingressReadApiPort}`,
+    config.ingressReadApiToken,
   );
-  // Wire the semaphore+breaker gate into the bot's LLM call path.
-  const botApp = app.botApp;
-  botApp.setLlmGate(app.llmGate);
-  botApp.setBackgroundLlmGate(app.backgroundLlmGate);
+  const sharedDb = openSharedDb(config.dataDir);
+  try {
+    const transport = new WorkerTransport(sharedDb, {
+      resolveImageInputs: (images) => readClient.resolveImages(images),
+      listGroupMembers: (groupId, options) => readClient.listGroupMembers(groupId, options),
+      listGroups: () => readClient.listGroups(),
+      resolveMentionTargets: (groupId, candidates) => readClient.resolveMentionTargets(groupId, candidates),
+      resolveMemberIdentities: (groupId, candidates) => readClient.resolveMemberIdentities(groupId, candidates),
+      getMessage: (messageId) => readClient.getMessage(messageId),
+    });
+    const builtBot = await buildBotApp(config, sharedDb, transport, buildImagePipeline(transport));
+    const app = new WorkerApp(
+      {
+        dataDir: config.dataDir,
+        sharedDb,
+        botApp: builtBot.botApp,
+        consumerKey: "worker:main",
+        isBlacklistedUser: async (groupId, userId) => {
+          const group = await builtBot.groupConfigService.getGroup(groupId);
+          return (group?.blacklistedUserIds ?? []).includes(userId);
+        },
+        stateEncryptionKey: config.stateEncryptionKey,
+      },
+    );
+    // Wire the semaphore+breaker gate into the bot's LLM call path.
+    const botApp = app.botApp;
+    botApp.setLlmGate(app.llmGate);
+    botApp.setBackgroundLlmGate(app.backgroundLlmGate);
 
-  botApp.start();
-  app.start();
+    botApp.start();
+    app.start();
 
-  const shutdown = async () => {
-    logInfo("Worker shutting down...");
-    await botApp.stop();
-    await app.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+    let stopping = false;
+    const shutdown = async () => {
+      if (stopping) return;
+      stopping = true;
+      logInfo("Worker shutting down...");
+      let shutdownError: unknown;
+      try {
+        await app.stop();
+      } catch (error) {
+        shutdownError = error;
+        logError("Worker application shutdown failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        await botApp.stop();
+      } catch (error) {
+        shutdownError ??= error;
+        logError("Worker bot shutdown failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        sharedDb.close();
+      }
+      if (shutdownError) {
+        process.exit(1);
+      }
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } catch (error) {
+    sharedDb.close();
+    throw error;
+  }
 }
 
 if (process.argv[1] && process.argv[1].endsWith("index-worker")) {
@@ -811,7 +845,7 @@ if (process.argv[1] && process.argv[1].endsWith("index-worker")) {
 }
 
 /** Builds a degraded AiReply from a fixed tier wording (plan §2.5). */
-function degradedReply(tier: string, botQq: string): AiReply {
+function degradedReply(tier: string): AiReply {
   return {
     text: degradedMessage(tier),
     model: "degraded",

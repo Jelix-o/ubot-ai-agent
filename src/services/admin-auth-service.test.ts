@@ -101,8 +101,8 @@ test("AdminAuthService password login succeeds, rejects bad credentials, and rat
   });
 });
 
-test("AdminAuthService resolves sessions, validates CSRF, rotates tokens, and revokes on logout", async () => {
-  await withAuth(async (auth) => {
+test("AdminAuthService keeps CSRF stable across tabs and service instances and revokes on logout", async () => {
+  await withAuth(async (auth, db) => {
     const session = await loginRoot(auth, "session-lifecycle");
 
     const resolved = auth.getSession(session.opaqueToken);
@@ -119,11 +119,20 @@ test("AdminAuthService resolves sessions, validates CSRF, rotates tokens, and re
     assert.equal(auth.validateCsrf(session, "wrong-csrf"), false);
     assert.equal(auth.validateCsrf(session, undefined), false);
 
-    const rotated = auth.rotateCsrfToken(session);
-    assert.ok(rotated);
-    assert.notEqual(rotated, session.csrfToken);
-    assert.equal(auth.validateCsrf(session, session.csrfToken), false);
-    assert.equal(auth.validateCsrf(session, rotated), true);
+    const firstTab = auth.getCsrfToken(session);
+    const secondTab = auth.getCsrfToken(resolved!);
+    assert.equal(firstTab, session.csrfToken);
+    assert.equal(secondTab, firstTab);
+    assert.equal(auth.validateCsrf(session, firstTab), true);
+    const restarted = new AdminAuthService(db, {});
+    await restarted.ensureInitialized();
+    const persistedSession = restarted.getSession(session.opaqueToken)!;
+    assert.equal(restarted.getCsrfToken(persistedSession), firstTab);
+    // Legacy random digests are converted on first session read without revoking the cookie.
+    db.db.prepare("UPDATE admin_sessions SET csrf_token_hash = ? WHERE id = ?").run("legacy-random-digest", session.sessionId);
+    assert.equal(restarted.validateCsrf(persistedSession, firstTab), false);
+    assert.equal(restarted.getCsrfToken(persistedSession), firstTab);
+    assert.equal(restarted.validateCsrf(persistedSession, firstTab), true);
 
     auth.revokeSession(session.sessionId, "logout");
     assert.equal(auth.getSession(session.opaqueToken), undefined);
@@ -185,6 +194,29 @@ test("AdminAuthService password change requires recent reauth, enforces min leng
     });
     assert.equal(nextLogin.kind, "authenticated");
   });
+});
+
+test("persisted sessions retain stable CSRF after reopening SQLite and still expire after twelve hours", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "ubot-auth-reopen-"));
+  const dbPath = path.join(dir, "bot-shared.db");
+  let db = new SharedDb(dbPath);
+  try {
+    const auth = new AdminAuthService(db, { bootstrap: { username: "root-admin", password: "root-password" } });
+    const before = Date.now();
+    const session = await loginRoot(auth, "persisted-session");
+    assert.ok(Date.parse(session.expiresAt) >= before + 12 * 60 * 60 * 1000);
+    assert.ok(Date.parse(session.expiresAt) <= Date.now() + 12 * 60 * 60 * 1000);
+    db.close();
+    db = new SharedDb(dbPath);
+    const restarted = new AdminAuthService(db, {});
+    await restarted.ensureInitialized();
+    const restored = restarted.getSession(session.opaqueToken)!;
+    assert.equal(restarted.getCsrfToken(restored), session.csrfToken);
+    assert.equal(restored.expiresAt, session.expiresAt);
+    db.db.prepare("UPDATE admin_sessions SET expires_at = ? WHERE id = ?").run(Date.now() - 1, session.sessionId);
+    assert.equal(restarted.getSession(session.opaqueToken), undefined);
+    assert.equal(restarted.validateCsrf(restored, session.csrfToken), false);
+  } finally { db.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("AdminAuthService invitations enforce grants, password policy, revocation, and unique usernames", async () => {

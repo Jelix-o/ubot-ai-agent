@@ -136,6 +136,17 @@ test("ConfiguredAiService falls back when no usable selected model remains", asy
   assert.equal(fallback.replyCalls, 1);
 });
 
+test("explicitly unconfigured summary never falls back to a reply or environment model", async (t) => {
+  const store = await createSettingsStore(t);
+  await store.update({ models: [model({ id: "reply", model: "reply-model" })], selectedModelIds: { summary: "" } });
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  let factoryCalls = 0;
+  const service = new ConfiguredAiService(fallback, store, "summary", () => { factoryCalls++; return fallback; });
+  await assert.rejects(service.checkHealth(), /model_not_configured/);
+  assert.equal(factoryCalls, 0);
+  assert.equal(fallback.healthCalls, 0);
+});
+
 test("ConfiguredAiService reuses a provider until its persisted model changes", async (t) => {
   const store = await createSettingsStore(t);
   const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));

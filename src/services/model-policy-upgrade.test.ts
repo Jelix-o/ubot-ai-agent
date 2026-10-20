@@ -7,7 +7,7 @@ import { SharedDb } from "../shared/sqlite.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
 import { checkModelPolicyUpgrade, rollbackModelPolicy, upgradeModelPolicy } from "./model-policy-upgrade.js";
-const key = "0123456789abcdef".repeat(4);
+const key = "0".repeat(64);
 
 async function fixture(t: test.TestContext) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "model-policy-")); const db = new SharedDb(path.join(dir, "shared.db"));

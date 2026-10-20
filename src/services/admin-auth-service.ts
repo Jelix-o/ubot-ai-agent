@@ -1,5 +1,6 @@
 import {
   createHash,
+  createHmac,
   randomBytes,
   randomUUID,
   scrypt,
@@ -183,10 +184,13 @@ export class AdminAuthService {
     };
   }
 
-  rotateCsrfToken(session: AdminAuthSession): string {
-    const token = randomToken();
-    this.sharedDb.db.prepare("UPDATE admin_sessions SET csrf_token_hash = ? WHERE id = ? AND revoked_at IS NULL")
-      .run(hashToken(token), session.sessionId);
+  getCsrfToken(session: AdminAuthSession): string {
+    const token = sessionCsrfToken(session.opaqueToken);
+    // Legacy sessions have a random CSRF hash. Convert it once without
+    // invalidating the opaque cookie or changing any other session.
+    this.sharedDb.db.prepare(
+      "UPDATE admin_sessions SET csrf_token_hash = ? WHERE id = ? AND token_hash = ? AND revoked_at IS NULL AND expires_at > ? AND csrf_token_hash <> ?",
+    ).run(hashToken(token), session.sessionId, hashToken(session.opaqueToken), Date.now(), hashToken(token));
     return token;
   }
 
@@ -602,7 +606,7 @@ export class AdminAuthService {
 
   private createSession(account: AccountRow, meta: AdminAuthRequestMeta | undefined, now: number): AdminAuthSession {
     const opaqueToken = randomToken();
-    const csrfToken = randomToken();
+    const csrfToken = sessionCsrfToken(opaqueToken);
     const id = randomUUID();
     const expiresAt = now + this.sessionTtlMs;
     this.sharedDb.db.prepare(
@@ -760,6 +764,10 @@ function normalizeQqUserId(value: string): string | undefined {
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
+}
+
+function sessionCsrfToken(opaqueToken: string): string {
+  return createHmac("sha256", opaqueToken).update("ubot-admin-session-csrf:v1").digest("base64url");
 }
 
 function hashToken(value: string): string {

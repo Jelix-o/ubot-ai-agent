@@ -6,6 +6,7 @@ const { default: OpenAI } = await import(pathToFileURL(`${releaseRoot}/node_modu
 const { SharedDb } = await import(pathToFileURL(`${releaseRoot}/dist/shared/sqlite.js`).href);
 const { V3StateRepository } = await import(pathToFileURL(`${releaseRoot}/dist/services/v3-state-repository.js`).href);
 const { SystemSettingsStore } = await import(pathToFileURL(`${releaseRoot}/dist/services/system-settings-store.js`).href);
+const { isRetiredModel } = await import(pathToFileURL(`${releaseRoot}/dist/services/retired-models.js`).href);
 
 dotenv.config({ path: "/opt/ai-project/.env" });
 process.stdin.setEncoding("utf8");
@@ -38,10 +39,9 @@ if (typeof request.systemPrompt !== "string" || typeof request.userPrompt !== "s
 const requestedId = typeof request.modelId === "string" && request.modelId.trim() ? request.modelId.trim() : "";
 const candidateOrder = [
   requestedId,
-  "gemini-38-flash",
-  "ds",
   settings.selectedModelIds.summary,
   settings.selectedModelIds.reply,
+  "ds",
 ].filter(Boolean);
 
 const seenIds = new Set();
@@ -50,10 +50,10 @@ for (const id of candidateOrder) {
   if (seenIds.has(id)) continue;
   seenIds.add(id);
   const found = settings.models.find((item) => item.id === id && item.enabled && item.apiKey?.trim());
-  if (found) candidates.push(found);
+  if (found && !isRetiredModel(found)) candidates.push(found);
 }
 for (const item of settings.models) {
-  if (!seenIds.has(item.id) && item.enabled && item.apiKey?.trim()) {
+  if (!seenIds.has(item.id) && item.enabled && item.apiKey?.trim() && !isRetiredModel(item)) {
     seenIds.add(item.id);
     candidates.push(item);
   }

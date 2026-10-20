@@ -69,7 +69,8 @@ function resetAssetForm(asset?: MemeAsset): void {
   assetForm.enabled = true;
 }
 
-function onBulkAction(action: "enable" | "disable" | "tags"): void {
+function onBulkAction(action: "enable" | "disable" | "delete" | "tags"): void {
+  if (action === "delete") return;
   if (action === "tags") {
     if (!bulkTagsAllowed.value) return;
     bulkTagIds.value = [];

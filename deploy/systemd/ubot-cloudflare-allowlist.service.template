@@ -1,0 +1,24 @@
+[Unit]
+Description=Refresh UBot-only Cloudflare origin allow-list
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/ai-project-releases/current
+Environment=PATH=/opt/ubot-runtime/node22/bin:/usr/bin:/bin
+ExecStart=/bin/bash /opt/ai-project-releases/current/scripts/update-cloudflare-origin-allowlist.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/etc/nginx /run/nginx.pid /var/log/nginx/access.log /var/log/nginx/error.log
