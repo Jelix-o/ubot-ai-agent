@@ -29,7 +29,7 @@ import { emptyConversationState, selectConversationEvidence } from "./services/c
 import { ReplyPolicyService } from "./services/reply-policy-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
-import type { GroupLock } from "./services/group-lock.js";
+import { GroupLock } from "./services/group-lock.js";
 import {
   ExplicitMemoryService,
   parseExplicitMemoryRequest,
@@ -52,7 +52,7 @@ import {
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
-import { parseIdentityCheck, answerIdentityCheck, identityCheckNeedsDirectory, refreshIdentityDirectory, IDENTITY_UNCONFIRMED } from "./services/member-identity-query.js";
+import { parseMemberIdentityQuery, resolveMemberIdentityQuery, isMemberIdentityQuerySyntax, refreshIdentityDirectory } from "./services/member-identity-query.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
 import type { SkillService } from "./services/skill-service.js";
@@ -403,6 +403,7 @@ export class BotApplication {
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly knowledgeContinuationSessions = new Map<string, KnowledgeContinuationSession>();
   private readonly knowledgeLatestMessages = new Map<string, string>();
+  private readonly identityQueryLock = new GroupLock(1);
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
     memoryAlertActive: false,
@@ -1102,6 +1103,10 @@ export class BotApplication {
     const group = await this.groupConfigService.getGroup(input.groupId);
     if (!group || group.enabled === false || !this.isCapabilityEnabled("conversation") || (group.blacklistedUserIds ?? []).includes(input.userId)) return undefined;
     const store = repository.orchestration;
+    // Identity questions are deterministic lookups, isolated from topic/model routing.
+    // This syntax check grants no access: verified objects and exact aliases are
+    // resolved again from the actual event before any member data is read.
+    if (isMemberIdentityQuerySyntax(input.text)) return this.conversationContextRouter.resolve({ ...input, resolvedContext: { newTopic: true } });
     if (!store || isMemberProfileQueryRequest(input.text)) return this.conversationContextRouter.resolve(input);
     const now = store.sourceReceivedAt(input.sourceRowId) ?? input.nowMs ?? Date.now();
     const excluded = [...(group.blacklistedUserIds ?? []), ...(group.memoryDisabledUserIds ?? [])];
@@ -2800,7 +2805,7 @@ export class BotApplication {
       selfProfileQuery || explicitProfileTargetUserIds.length > 0 || profileAliasResolution.status !== "none" ||
       isUnresolvedMemberProfileQuery(memberQueryText)
     );
-    const identityCheck = parseIdentityCheck(normalizedUserInput, groupConfig, messageContext.interactionTargets, this.botQq);
+    const identityQuery = parseMemberIdentityQuery(normalizedUserInput, groupConfig, messageContext.interactionTargets, this.botQq);
     const sourceRowId = messageContext.sourceMessageId
       ? this.conversationContextRepository?.getSourceRowId?.(
         groupConfig.groupId,
@@ -2832,6 +2837,39 @@ export class BotApplication {
     const options = baseOptions;
     const orchestration = this.conversationContextRepository?.orchestration;
     if (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId)) return;
+    if (identityQuery) {
+      await this.identityQueryLock.run(`${groupConfig.groupId}:${conversationRoute?.turnId ?? messageContext.sourceMessageId ?? userId}`, async () => {
+        if (conversationRoute && this.conversationContextRepository?.hasAssistantReplyForTurn?.(conversationRoute.branchId, conversationRoute.turnId)) return;
+        const identityArgs = {
+          group: groupConfig, userId, targets: messageContext.interactionTargets, botQq: this.botQq,
+          senderCard: messageContext.senderCard, senderNickname: messageContext.senderNickname,
+        };
+        let answer = resolveMemberIdentityQuery(identityQuery, identityArgs);
+        let directoryStatus = "not_needed";
+        if (answer.needsDirectory) {
+          try {
+            const members = await refreshIdentityDirectory(() => {
+              if (!this.transport.listGroupMembers) throw new Error("identity_directory_unavailable");
+              return this.transport.listGroupMembers(groupConfig.groupId, { refresh: true });
+            });
+            answer = resolveMemberIdentityQuery(identityQuery, { ...identityArgs, members });
+            directoryStatus = "read";
+          } catch (error) {
+            directoryStatus = error instanceof Error && error.message === "identity_directory_timeout" ? "timeout" : "unavailable";
+          }
+        }
+        if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) return;
+        const receipt = await this.sendTextWithContext(groupConfig.groupId, answer.text, conversationRoute);
+        await this.persistAssistantContext(conversationRoute, answer.text, receipt ? [receipt] : []);
+        logInfo("Completed verified member identity query.", {
+          groupId: groupConfig.groupId, memberQueryType: "identity_check", identityQueryKind: answer.kind,
+          identityQueryStatus: answer.status, targetUserIds: answer.targetIds,
+          memberQueryResolutionSource: answer.source, memberQueryUnresolvedReason: answer.reason,
+          identityDirectoryStatus: directoryStatus, memorySubjectUserIds: [],
+        });
+      });
+      return;
+    }
     const contextResolution = sourceRowId === undefined ? undefined : orchestration?.getResolution(sourceRowId);
     const excludedContextUsers = [...(groupConfig.blacklistedUserIds ?? []), ...(groupConfig.memoryDisabledUserIds ?? [])];
     if (!memberProfileQueryIntent && sourceRowId !== undefined && orchestration) {
@@ -2839,28 +2877,6 @@ export class BotApplication {
       normalizedUserInput = merged.text || normalizedUserInput;
       const media = orchestration.mediaByIds(groupConfig.groupId, contextResolution?.mediaSourceMessageIds ?? [], sourceRowId, excludedContextUsers);
       images = uniqueConversationImages([...images, ...merged.images, ...media.flatMap(item => item.images)]);
-    }
-    if (identityCheck) {
-      let answer = { text: IDENTITY_UNCONFIRMED, targetIds: identityCheck.explicitIds, reason: "directory_unavailable" };
-      try {
-        const members = identityCheckNeedsDirectory(identityCheck, groupConfig)
-          ? await refreshIdentityDirectory(() => {
-            if (!this.transport.listGroupMembers) throw new Error("identity_directory_unavailable");
-            return this.transport.listGroupMembers(groupConfig.groupId, { refresh: true });
-          }) : [];
-        answer = answerIdentityCheck(identityCheck, groupConfig, members);
-      } catch (error) {
-        answer.reason = error instanceof Error && error.message === "identity_directory_timeout" ? "directory_timeout" : "directory_unavailable";
-      }
-      if (signal?.aborted) return;
-      const receipt = await this.sendTextWithContext(groupConfig.groupId, answer.text, conversationRoute);
-      await this.persistAssistantContext(conversationRoute, answer.text, receipt ? [receipt] : []);
-      logInfo("Completed verified member identity check.", {
-        groupId: groupConfig.groupId, memberQueryType: "identity_check", targetUserIds: answer.targetIds,
-        memberQueryResolutionSource: identityCheck.explicitIds.length ? "member_object" : "saved_alias",
-        memberQueryUnresolvedReason: answer.reason, memorySubjectUserIds: [],
-      });
-      return;
     }
     const knowledgeSessionKey = knowledgeContinuationKey(groupConfig.groupId, userId);
     let knowledgeSession = this.knowledgeContinuationSessions.get(knowledgeSessionKey);
@@ -4639,6 +4655,7 @@ export class BotApplication {
       groupConfig,
       parsedMessage.verifiedMentionUserIds,
       "mention",
+      isMemberIdentityQuerySyntax(parsedMessage.text),
     );
     const replyContext = await this.resolveReplyContext(groupConfig, parsedMessage.replyMessageId);
 
@@ -4667,6 +4684,7 @@ export class BotApplication {
     groupConfig: GroupBotConfig,
     candidates: string[],
     source: AiInteractionTarget["source"],
+    identityOnly = false,
   ): Promise<AiInteractionTarget[]> {
     const uniqueCandidates = [...new Set(candidates.map((candidate) => candidate.trim()).filter(Boolean))];
     if (uniqueCandidates.length === 0) {
@@ -4679,6 +4697,10 @@ export class BotApplication {
       const manualTarget = resolveManualIdentityTarget(groupConfig, candidate, source);
       if (manualTarget) {
         byCandidate.set(candidate, manualTarget);
+      } else if (identityOnly && source === "mention" && /^\d+$/u.test(candidate)) {
+        // A real platform @ already carries the account. Fetch its display
+        // only in the bounded identity-directory step, not an earlier API call.
+        byCandidate.set(candidate, { userId: candidate, names: [], source });
       } else {
         unresolved.push(candidate);
       }

@@ -3271,7 +3271,7 @@ test("limits manual identities and member profiles to the current speaker and ex
     createEvent([
       { type: "at", data: { qq: "12345" } },
       { type: "at", data: { qq: "1967410653" } },
-      { type: "text", data: { text: " 小菜鸡是谁 " } },
+      { type: "text", data: { text: " 小菜鸡你也来聊聊 " } },
     ]),
   );
 

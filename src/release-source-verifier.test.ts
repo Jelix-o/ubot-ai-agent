@@ -59,6 +59,7 @@ const releasePaths = [
   "scripts/update-cloudflare-origin-allowlist.sh",
   "scripts/upgrade-model-policy.mjs",
   "scripts/repair-member-name.mjs",
+  "scripts/maintain-member-alias.mjs",
   "scripts/verify-release-source.mjs",
   "scripts/validate-release-archive.mjs",
   "scripts/public-docs.mjs",

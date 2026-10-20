@@ -219,6 +219,7 @@ $itemsToCopy = @(
   "scripts/verify-nginx-vhost-ownership.mjs",
   "scripts/upgrade-model-policy.mjs",
   "scripts/repair-member-name.mjs",
+  "scripts/maintain-member-alias.mjs",
   "scripts/deploy-linux-release.sh",
   "scripts/normalize-dotenv-bom.mjs",
   "scripts/migrate-v3-state.mjs",

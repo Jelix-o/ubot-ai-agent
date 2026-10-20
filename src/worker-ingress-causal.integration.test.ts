@@ -978,6 +978,7 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
 
 interface TestBotOptions {
   groupConfigOverrides?: Partial<GroupBotConfig>;
+  groupMemoryStore?: ConstructorParameters<typeof BotApplication>[14];
   dailyReportRecords?: Array<{ groupId: string; userId: string; text: string }>;
   btSearchService?: BtSearchRuntime;
 }
@@ -1048,7 +1049,7 @@ function createBot(
     new LiveChatService(),
     BOT_QQ,
     false,
-    undefined,
+    options.groupMemoryStore,
     undefined,
     undefined,
     undefined,
@@ -1094,12 +1095,12 @@ class ConversationReplayAi extends CapturingAiService {
   }
 }
 
-function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false) {
+function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"]) {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "huixian-replay-"));
   const db = openSharedDb(dataDir), repository = new ConversationContextRepository(db);
   const transport = gated ? new GatedWorkerTransport(db) : new WorkerTransport(db);
   const ai = new ConversationReplayAi();
-  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides } });
+  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides }, groupMemoryStore });
   let time = Date.now() - 90_000, messageId = 40_000;
   t.after(async () => { await bot.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
   const add = (text: string, userId = USER_ID, options: { image?: boolean; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
@@ -1128,6 +1129,132 @@ function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConf
   const identity = (index = ai.calls.length - 1) => ai.calls[index]?.identityContext as AiIdentityContext;
   return { db, repository, transport, ai, bot, add, ask, ack, identity };
 }
+
+const replayIdentities = [
+  { userIds: [USER_ID], names: ["成员甲", "甲别称", "管理员"], note: "不应读取的个人画像" },
+  { userIds: ["20002"], names: ["成员乙", "乙别称", "重名"] },
+  { userIds: ["20003"], names: ["成员丙", "重名"] },
+];
+const identityOutbox = (f: ReturnType<typeof conversationReplay>) => f.db.db.prepare("SELECT id, text, status, reply_to FROM outbox ORDER BY id").all() as Array<{ id: number; text: string; status: string; reply_to: string }>;
+
+test("identity replay: saved who queries skip topic/reply models and all profile reads, then publish through outbox", async t => {
+  const memory = new Proxy({}, { get() { throw new Error("identity must not read member profiles"); } }) as TestBotOptions["groupMemoryStore"];
+  const f = conversationReplay(t, { manualIdentities: replayIdentities, ambientGroupContextEnabled: false, memoryDisabledUserIds: ["20002"] }, false, memory);
+  f.add("旁边的话题不该影响身份查询", "20002", { passive: true });
+  let directoryReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; throw new Error("unnecessary directory read"); };
+  const a = await f.ask("甲别称是谁");
+  const b = await f.ask("谁是乙别称");
+  await f.ask("认识甲别称吗");
+  await f.ask("我是谁");
+  await f.ask("管理员是谁");
+  assert.equal(f.ai.resolutions.length, 0);
+  assert.equal(f.ai.calls.length, 0);
+  assert.equal(directoryReads, 0);
+  const rows = identityOutbox(f);
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0].text, "甲别称就是成员甲。");
+  assert.equal(rows[1].text, "乙别称就是成员乙。");
+  assert.equal(rows[3].text, "你是成员甲。");
+  assert.equal(rows[0].reply_to, a.id);
+  assert.equal(rows[1].reply_to, b.id);
+  assert.ok(rows.every(row => row.status === "pending"));
+  f.ack();
+  assert.ok(identityOutbox(f).every(row => row.status === "sent"));
+});
+
+test("identity replay: real mentions and same-group quoted authors resolve, conflicts and duplicate names clarify", async t => {
+  const f = conversationReplay(t, { manualIdentities: replayIdentities });
+  const mention = f.add("他是谁");
+  (mention.event.message as any[]).push({ type: "at", data: { qq: "20002" } });
+  const route = await f.bot.prepareConversationRoute(mention.input);
+  await f.bot.handleGroupMessage(mention.event, undefined, route);
+  assert.equal(identityOutbox(f)[0].text, "这位是成员乙。");
+  f.transport.getMessage = async id => ({ messageId: id, groupId: GROUP_ID, userId: "20002", text: "旧发言", images: [] });
+  await f.ask("他是谁", USER_ID, { replyToMessageId: "quoted-author" });
+  assert.equal(identityOutbox(f)[1].text, "这位是成员乙。");
+  const conflict = f.add("甲别称是谁");
+  (conflict.event.message as any[]).push({ type: "at", data: { qq: "20002" } });
+  await f.bot.handleGroupMessage(conflict.event, undefined, await f.bot.prepareConversationRoute(conflict.input));
+  assert.match(identityOutbox(f)[2].text, /外号对应的人.*引用的那位/);
+  await f.ask("重名是谁");
+  assert.match(identityOutbox(f)[3].text, /不止一位/);
+  f.transport.getMessage = async id => ({ messageId: id, groupId: "different-group", userId: "20002", text: "跨群不可读", images: [] });
+  await f.ask("他是谁", USER_ID, { replyToMessageId: "foreign-author" });
+  assert.match(identityOutbox(f)[4].text, /你指的是哪位/);
+  assert.equal(f.ai.calls.length + f.ai.resolutions.length, 0);
+});
+
+test("identity replay: directory rename and failure keep confirmed account mappings, never fabricate names", async t => {
+  const f = conversationReplay(t, { manualIdentities: replayIdentities });
+  f.transport.listGroupMembers = async () => [{ user_id: 20001, card: "全新名片" }];
+  await f.ask("成员甲是谁");
+  assert.match(identityOutbox(f)[0].text, /全新名片/);
+  f.transport.listGroupMembers = async () => { throw new Error("directory offline"); };
+  await f.ask("成员甲是谁");
+  assert.match(identityOutbox(f)[1].text, /能对上人/);
+  assert.doesNotMatch(identityOutbox(f)[1].text, /不认识|无法确认|全新名片/);
+  await f.ask("甲别称是不是成员甲");
+  assert.match(identityOutbox(f)[2].text, /^是同一位/);
+  assert.equal(f.ai.calls.length + f.ai.resolutions.length, 0);
+});
+
+test("identity replay: concurrent entry and retry after restart reuse one outbox delivery", async t => {
+  const f = conversationReplay(t, { manualIdentities: replayIdentities });
+  let directoryReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; return [{ user_id: 20001, card: "当前名片" }]; };
+  const message = f.add("成员甲是谁");
+  const route = await f.bot.prepareConversationRoute(message.input);
+  await Promise.all([f.bot.handleGroupMessage(message.event, undefined, route), f.bot.handleGroupMessage(message.event, undefined, route)]);
+  assert.equal(directoryReads, 1);
+  assert.equal(identityOutbox(f).length, 1);
+  const restarted = createBot(f.transport, new ConversationContextRepository(f.db), f.ai, undefined, { groupConfigOverrides: { manualIdentities: replayIdentities } });
+  t.after(() => restarted.stop());
+  await restarted.handleGroupMessage(message.event, undefined, route);
+  assert.equal(identityOutbox(f).length, 1);
+  const claimed = f.db.claimOutbox(1);
+  assert.equal(claimed.length, 1);
+  assert.equal(f.db.claimOutbox(1).length, 0);
+  f.db.ackOutboxDelivery(claimed[0].id, "identity-receipt");
+  await restarted.handleGroupMessage(message.event, undefined, route);
+  assert.equal(identityOutbox(f).length, 1);
+  assert.equal(f.ai.calls.length + f.ai.resolutions.length, 0);
+});
+
+test("identity replay: directory deadline preserves a known mapping and late results never send another reply", async t => {
+  const f = conversationReplay(t, { manualIdentities: replayIdentities });
+  let finish!: (members: Array<{ user_id: number; card: string }>) => void;
+  f.transport.listGroupMembers = () => new Promise(resolve => { finish = resolve; });
+  await f.ask("成员甲是谁");
+  assert.equal(identityOutbox(f).length, 1);
+  assert.match(identityOutbox(f)[0].text, /能对上人/);
+  finish([{ user_id: 20001, card: "迟到的名片" }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(identityOutbox(f).length, 1);
+  assert.doesNotMatch(identityOutbox(f)[0].text, /迟到的名片/);
+  assert.equal(f.ai.calls.length + f.ai.resolutions.length, 0);
+});
+
+test("identity replay: an unregistered real @ uses only the bounded directory step", async t => {
+  const f = conversationReplay(t, { manualIdentities: replayIdentities });
+  let unboundedReads = 0;
+  f.transport.resolveMemberIdentities = async () => { unboundedReads++; return []; };
+  f.transport.listGroupMembers = async () => [{ user_id: 20004, card: "成员丁" }];
+  const message = f.add("他是谁");
+  (message.event.message as any[]).push({ type: "at", data: { qq: "20004" } });
+  await f.bot.handleGroupMessage(message.event, undefined, await f.bot.prepareConversationRoute(message.input));
+  assert.match(identityOutbox(f)[0].text, /成员丁/);
+  assert.equal(unboundedReads, 0);
+  assert.equal(f.ai.calls.length + f.ai.resolutions.length, 0);
+});
+
+test("identity replay: unregistered names and public figures remain ordinary questions without alias substring matches", async t => {
+  const f = conversationReplay(t, { manualIdentities: replayIdentities });
+  for (const text of ["李白是谁", "陌生人是谁", "甲别称二号是谁"]) await f.ask(text);
+  assert.equal(f.ai.calls.length, 3);
+  assert.equal(f.ai.resolutions.length, 0);
+  assert.ok(f.ai.calls.every(call => (call.identityContext as AiIdentityContext | undefined)?.manualIdentities?.every(identity => identity.userIds.every(id => id === USER_ID))));
+});
 
 test("replay: first mention can evaluate prior discussion, including rate-limited background, without asking for context again", async t => {
   const f = conversationReplay(t);
