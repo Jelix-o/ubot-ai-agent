@@ -178,16 +178,24 @@ ensure_secure_archive_cache() {
 }
 
 assert_runtime_payload() {
-  local unsafe_entry
+  local unsafe_entry unsafe_link
   assert_root_owned_directory "$target_dir" "Node runtime directory"
   assert_root_owned_directory "$target_dir/bin" "Node runtime bin directory"
   assert_root_owned_regular_file "$target_dir/bin/node" "Node runtime binary"
   if [[ ! -x "$target_dir/bin/node" ]]; then
     fail_runtime_safety_check "Node runtime binary is not executable: $target_dir/bin/node"
   fi
-  unsafe_entry="$(find "$target_dir" -xdev \( ! -user root -o ! -group root -o -perm /022 \) -print -quit)"
+  # Node's signed archive contains executable entry-point symlinks (including
+  # bin/corepack) whose Linux lstat mode is conventionally 0777. Link mode
+  # bits are not a writable permission boundary, so validate ownership here
+  # and validate each link's type and target in the exact archive comparison.
+  unsafe_entry="$(find "$target_dir" -xdev \( -type f -o -type d \) \( ! -user root -o ! -group root -o -perm /022 \) -print -quit)"
   if [[ -n "$unsafe_entry" ]]; then
     fail_runtime_safety_check "Node runtime tree contains non-root-controlled content: $unsafe_entry"
+  fi
+  unsafe_link="$(find "$target_dir" -xdev -type l \( ! -user root -o ! -group root \) -print -quit)"
+  if [[ -n "$unsafe_link" ]]; then
+    fail_runtime_safety_check "Node runtime tree contains a non-root-owned symbolic link: $unsafe_link"
   fi
 }
 

@@ -258,6 +258,13 @@ test("Node runtime reuse validates root, payload, and active link before activat
   assert.match(nodeRuntimeInstaller, /assert_root_owned_directory "\/opt" "Runtime ancestor"/);
   assert.match(nodeRuntimeInstaller, /assert_root_owned_directory "\$current" "Node runtime path component"/);
   assert.match(nodeRuntimeInstaller, /assert_runtime_payload\(\)/);
+  assert.ok(nodeRuntimeInstaller.includes(
+    'find "$target_dir" -xdev \\( -type f -o -type d \\) \\( ! -user root -o ! -group root -o -perm /022 \\) -print -quit',
+  ));
+  assert.ok(nodeRuntimeInstaller.includes(
+    'find "$target_dir" -xdev -type l \\( ! -user root -o ! -group root \\) -print -quit',
+  ));
+  assert.match(nodeRuntimeInstaller, /bin\/corepack/);
   assert.match(nodeRuntimeInstaller, /if \[\[ -e "\$target_dir" \|\| -L "\$target_dir" \]\]; then\s+assert_runtime_payload/s);
   assert.match(nodeRuntimeInstaller, /assert_runtime_provenance "\$target_dir"/);
   assert.match(nodeRuntimeInstaller, /Existing Node runtime lacks a verified provenance receipt/);
