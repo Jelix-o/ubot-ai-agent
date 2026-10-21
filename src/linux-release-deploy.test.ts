@@ -150,6 +150,7 @@ test("V3 deployer quiesces the independent maintenance writer before state chang
 test("V3 Linux deployer rejects inaccessible mutable state before stopping writers", () => {
   assert.match(deployer, /preflight_cutover_write_access\(\)/);
   assert.match(deployer, /require_mutable_directory/);
+  assert.match(deployer, /require_root_or_runtime_owned_directory/);
   assert.match(deployer, /require_atomically_replaceable_file/);
   assert.match(deployer, /require_sudo_mutable_directory/);
   assert.match(deployer, /require_sudo_atomically_replaceable_file/);
@@ -157,6 +158,12 @@ test("V3 Linux deployer rejects inaccessible mutable state before stopping write
   assert.match(deployer, /NAPCAT_CONFIG/);
   assert.match(deployer, /DB_PATH/);
   assert.match(deployer, /ROLLBACK_DIR/);
+  assert.match(deployer, /owner_id="\$\(stat -c '%u' "\$directory"\)"/);
+  assert.match(deployer, /runtime_uid="\$\(id -u "\$RUNTIME_USER"\)"/);
+  assert.match(deployer, /"\$owner_id" != "0" && "\$owner_id" != "\$runtime_uid"/);
+  assert.match(deployer, /must be owned by root or the constrained UBot runtime account/);
+  assert.match(deployer, /if \[\[ -e "\$ROLLBACK_DIR" \|\| -L "\$ROLLBACK_DIR" \]\]; then\s+require_root_or_runtime_owned_directory "\$ROLLBACK_DIR" "V3 rollback"\s+require_mutable_directory "\$ROLLBACK_DIR" "V3 rollback"/s);
+  assert.doesNotMatch(deployer, /! -O "\$ROLLBACK_DIR"/);
   assert.match(deployer, /LEGACY_SOURCE_PATHS/);
   assert.match(deployer, /preflight_legacy_skills_access/);
   assert.match(deployer, /Release root/);

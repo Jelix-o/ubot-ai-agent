@@ -381,6 +381,21 @@ require_mutable_directory() {
   fi
 }
 
+require_root_or_runtime_owned_directory() {
+  local directory="$1"
+  local label="$2"
+  local owner_id runtime_uid
+  if [[ -L "$directory" || ! -d "$directory" ]]; then
+    fail_cutover_preflight "$label must be a real directory: $directory"
+  fi
+  owner_id="$(stat -c '%u' "$directory")"
+  runtime_uid="$(id -u "$RUNTIME_USER")"
+  if [[ ! "$owner_id" =~ ^[0-9]+$ || ! "$runtime_uid" =~ ^[0-9]+$ ]] ||
+     [[ "$owner_id" != "0" && "$owner_id" != "$runtime_uid" ]]; then
+    fail_cutover_preflight "$label must be owned by root or the constrained UBot runtime account: $directory"
+  fi
+}
+
 require_readable_file() {
   local file_path="$1"
   local label="$2"
@@ -983,13 +998,8 @@ preflight_cutover_write_access() {
   fi
   require_mutable_directory "$(dirname "$DB_PATH")" "Shared SQLite database parent"
 
-  if [[ -e "$ROLLBACK_DIR" ]]; then
-    if [[ ! -d "$ROLLBACK_DIR" ]]; then
-      fail_cutover_preflight "V3 rollback path is not a directory: $ROLLBACK_DIR"
-    fi
-    if [[ ! -O "$ROLLBACK_DIR" ]]; then
-      fail_cutover_preflight "V3 rollback directory must be owned by the deployment user because migration restricts its mode: $ROLLBACK_DIR"
-    fi
+  if [[ -e "$ROLLBACK_DIR" || -L "$ROLLBACK_DIR" ]]; then
+    require_root_or_runtime_owned_directory "$ROLLBACK_DIR" "V3 rollback"
     require_mutable_directory "$ROLLBACK_DIR" "V3 rollback"
   fi
 
