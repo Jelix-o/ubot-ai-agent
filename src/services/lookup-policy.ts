@@ -1,8 +1,11 @@
 import { detectRealtimeIntent } from "./realtime-lookup-service.js";
+import { planWebQueries } from "./web-search-policy.js";
 
 export interface LookupDecision {
   lookupRequired?: boolean;
   lookupQuery?: string;
+  lookupSubject?: string;
+  lookupFallbackQueries?: string[];
 }
 
 // These are transformations of supplied material, not requests for fresh facts.
@@ -35,6 +38,6 @@ export function resolveLookupDecision(text: string, semantic: LookupDecision = {
     ? false : rules.lookupRequired === true || semantic.lookupRequired;
   if (required === undefined) return {};
   return required
-    ? { lookupRequired: true, lookupQuery: semantic.lookupQuery?.trim().slice(0, 240) || rules.lookupQuery || text.trim().slice(0, 240) }
+    ? { lookupRequired: true, ...planWebQueries(text, { ...semantic, lookupQuery: semantic.lookupQuery || rules.lookupQuery }) }
     : { lookupRequired: false };
 }

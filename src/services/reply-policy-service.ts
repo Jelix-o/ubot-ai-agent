@@ -53,10 +53,14 @@ export class ReplyPolicyService {
     const lookup = resolveLookupDecision(input.userInput ?? resolution.resolvedInput, {
       lookupRequired: resolution.lookupRequired ?? (resolution.intent === "lookup" ? true : undefined),
       lookupQuery: resolution.lookupQuery || resolution.resolvedInput,
+      lookupSubject: resolution.lookupSubject,
+      lookupFallbackQueries: resolution.lookupFallbackQueries,
     });
     if (resolution.intent === "image" && resolution.lookupRequired === false) {
       lookup.lookupRequired = false;
       delete lookup.lookupQuery;
+      delete lookup.lookupSubject;
+      delete lookup.lookupFallbackQueries;
     }
     const toolNeeds: ReplyPlan["toolNeeds"] = ["image", "task"].includes(resolution.intent) ? [resolution.intent as "image" | "task"] : [];
     if (lookup.lookupRequired) toolNeeds.push("lookup");

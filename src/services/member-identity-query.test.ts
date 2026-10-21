@@ -17,7 +17,7 @@ test("deictic person questions are available to an established image anchor with
   for (const text of ["这是哪位", "这是谁？", "这个人是谁", "图里是谁", "图片中这人是哪位", "照片上的人是谁", "她是谁啊"]) {
     assert.equal(isDeicticImagePersonQuestion(text), true, text);
   }
-  for (const text of ["这是哪位", "这是谁？", "这个人是谁", "图里是谁", "图片中这人是哪位", "照片上的人是谁", "这张图里是谁"]) {
+  for (const text of ["这是哪位", "这是谁？", "这个人是谁", "图里是谁", "图片中这人是哪位", "照片上的人是谁", "这张图里是谁", "图里这是谁", "图中这个是谁", "照片上这位是谁", "请问， 图里 这 是 谁？", "麻烦你看看这张图片里这个人是谁啊？"]) {
     assert.equal(isExplicitImagePersonQuestion(text), true, text);
   }
   for (const text of ["他是谁", "她是谁", "鸡哥是谁", "@1418509802 他是谁"]) {

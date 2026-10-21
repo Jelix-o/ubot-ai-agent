@@ -1462,20 +1462,41 @@ test("replay: a deictic who-question after one recent image carries that image t
 test("replay: a direct reply to an image keeps that image ahead of newer media and identity routing", async t => {
   const f = conversationReplay(t);
   let directoryReads = 0;
+  let remoteReads = 0;
+  f.transport.getMessage = async () => { remoteReads++; throw new Error("remote unavailable"); };
   f.transport.listGroupMembers = async () => { directoryReads++; return []; };
   const quoted = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/quoted.png", passive: true });
   f.add("", USER_ID, { image: true, imageUrl: "https://example.test/newer.png", passive: true });
   f.ai.replies.push({ text: "这张图里的人我没法可靠确认。" });
 
-  const question = await f.ask("这是哪位", USER_ID, { elapsed: 37_000, replyToMessageId: quoted.id });
+  const question = await f.ask("图里这是谁", USER_ID, { elapsed: 37_000, replyToMessageId: quoted.id });
 
   assert.equal(directoryReads, 0);
+  assert.equal(remoteReads, 0);
   assert.equal(f.ai.calls.length, 1);
   assert.deepEqual(f.ai.calls[0]?.images?.map(item => item.url), ["https://example.test/quoted.png"]);
   assert.equal(f.identity().replyPlan?.intent, "image");
   assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
   assert.equal(identityOutbox(f).at(-1)?.reply_to, question.id);
   assert.doesNotMatch(identityOutbox(f).at(-1)?.text ?? "", /称呼还没对上|@ 一下/);
+});
+
+test("replay: a visual who-question recovers the remote quoted image before the identity shortcut", async t => {
+  const f = conversationReplay(t);
+  let directoryReads = 0, remoteReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; return []; };
+  f.transport.getMessage = async id => {
+    remoteReads++;
+    if (remoteReads > 1) throw new Error("transient second read failure");
+    return { messageId: id, groupId: GROUP_ID, userId: "20002", text: "", images: [{ url: "https://example.test/remote-original.png" }] };
+  };
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/newer.png", passive: true });
+  await f.ask("图里这是谁", USER_ID, { replyToMessageId: "remote-picture" });
+  assert.equal(directoryReads, 0);
+  assert.equal(remoteReads, 1);
+  assert.deepEqual(f.ai.calls[0]?.images?.map(i => i.url), ["https://example.test/remote-original.png"]);
+  assert.equal(f.identity().replyContext?.userId, undefined);
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
 });
 
 test("replay: a picture-person question does not expose the quoted image author's identity to vision", async t => {
@@ -1506,7 +1527,7 @@ test("replay: a picture-person question does not expose the quoted image author'
   const image = f.add("", authorId, { image: true, imageUrl: "https://example.test/quoted-person.png", passive: true });
   f.ai.replies.push({ text: "只看这张图，我认不出具体是谁。" });
 
-  await f.ask("这是哪位", USER_ID, { elapsed: 37_000, replyToMessageId: image.id });
+  await f.ask("请问，照片上这位是谁？", USER_ID, { elapsed: 37_000, replyToMessageId: image.id });
 
   const identity = f.identity();
   assert.deepEqual(f.ai.calls[0]?.images?.map(item => item.url), ["https://example.test/quoted-person.png"]);
@@ -1525,7 +1546,7 @@ test("replay: ambiguous recent images clarify the pictured object without callin
   f.add("", USER_ID, { image: true, imageUrl: "https://example.test/one.png", passive: true });
   f.add("", USER_ID, { image: true, imageUrl: "https://example.test/two.png", passive: true });
 
-  const question = await f.ask("这是哪位", USER_ID, { elapsed: 37_000 });
+  const question = await f.ask("图中这个是谁", USER_ID, { elapsed: 37_000 });
 
   assert.equal(directoryReads, 0);
   assert.equal(f.ai.calls.length, 0);
@@ -1539,7 +1560,7 @@ test("replay: an explicit picture-person question without an image asks for the 
   let directoryReads = 0;
   f.transport.listGroupMembers = async () => { directoryReads++; return []; };
 
-  await f.ask("这是哪位");
+  await f.ask("图里这是谁");
 
   assert.equal(directoryReads, 0);
   assert.equal(f.ai.calls.length, 0);

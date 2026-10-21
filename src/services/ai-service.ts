@@ -2034,11 +2034,16 @@ function buildRealtimeLookupContext(identityContext?: AiIdentityContext): string
   }
 
   if (lookup.status === "unavailable") {
+    const noEvidence = lookup.kind === "web" && ["no_search_results", "no_relevant_results", "search_engines_degraded"].includes(lookup.failureReason ?? "");
+    const timedOut = lookup.kind === "web" && lookup.failureReason === "search_timeout";
     return [
-      "- A current-information query was detected, but the specific data source is unavailable.",
-      "- Do not invent fresh facts. Say the source is temporarily unavailable; do not incorrectly say that you cannot access the internet.",
+      noEvidence ? "- Web searches were attempted but no relevant evidence was found. Say no matching information was found; do not say the data sources are unavailable."
+        : timedOut ? "- This web lookup timed out. Say this request timed out, not that internet access is unavailable."
+          : "- A current-information query was detected, but the specific data source is unavailable.",
+      "- Do not invent fresh facts or incorrectly say that you cannot access the internet.",
       "- You may still provide stable background knowledge when it clearly answers part of the request.",
       "- Preserve the exact work/product name and version from the question. Missing evidence is not evidence that a newer work does not exist; do not substitute an older similarly named work.",
+      lookup.promptContext,
     ].join("\n");
   }
 

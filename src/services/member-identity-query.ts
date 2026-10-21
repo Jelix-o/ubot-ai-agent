@@ -34,6 +34,7 @@ const realTargetIds = (targets: AiInteractionTarget[], botQq: string) => [...new
 
 function normalizeDeicticImagePersonQuestion(text: string): string {
   return text.normalize("NFKC").trim()
+    .replace(/^(?:(?:请问|请|麻烦(?:你)?|帮我|(?:你(?:帮我)?)?(?:看看|看下|看一下)|告诉我|说说|你知道)[，,：:\s]*)+/u, "")
     .replace(/[?？。!！]+$/u, "")
     .replace(/(?:吗|嘛|呢|啊|呀)$/u, "")
     .replace(/\s+/gu, "");
@@ -45,9 +46,8 @@ function normalizeDeicticImagePersonQuestion(text: string): string {
  */
 export function isExplicitImagePersonQuestion(text: string): boolean {
   const value = normalizeDeicticImagePersonQuestion(text);
-  return /^(?:这|这个|这位|这人|这个人)(?:是)?(?:谁|哪位)$/u.test(value) ||
-    /^(?:图|图片|照片)(?:里|中|上)(?:的)?(?:(?:这|这个)?人)?(?:是)?(?:谁|哪位)$/u.test(value) ||
-    /^(?:这张图|这图片|这照片)(?:里|中|上)?(?:的)?(?:(?:这|这个)?人)?(?:是)?(?:谁|哪位)$/u.test(value);
+  return /^(?:这|这个|这位|这人|这个人)(?:是)?(?:谁|哪位|哪个)$/u.test(value) ||
+    /^(?:(?:这|那)(?:张)?(?:图|图片|照片)|图|图片|照片)(?:里|中|上)?(?:的)?(?:(?:这|那)(?:个(?:人)?|位|人)?|此人|人|人物)?(?:是)?(?:谁|哪位|哪个)$/u.test(value);
 }
 
 /**
@@ -78,6 +78,7 @@ export function isMemberIdentityQuerySyntax(text: string): boolean {
 
 /** Unknown unanchored names stay ordinary questions, including public figures. */
 export function parseMemberIdentityQuery(text: string, group: GroupBotConfig, targets: AiInteractionTarget[], botQq: string): MemberIdentityQuery | undefined {
+  if (isExplicitImagePersonQuestion(text)) return undefined;
   const check = parseIdentityCheck(text, group, targets, botQq);
   if (check) return { kind: "compare", label: check.left, check };
   const explicit = realTargetIds(targets, botQq);

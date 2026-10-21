@@ -250,6 +250,14 @@ export interface RealtimeLookupResult {
   dataAt?: string;
   sources: RealtimeLookupSource[];
   failureReason?: string;
+  searchDiagnostics?: {
+    attempts: number;
+    engineErrors: number;
+    candidateCount: number;
+    relevantCount: number;
+    durationMs: number;
+    endReason: string;
+  };
   promptContext: string;
 }
 

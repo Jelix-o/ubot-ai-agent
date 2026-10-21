@@ -1148,12 +1148,23 @@ export class BotApplication {
     if (!store || isMemberProfileQueryRequest(input.text)) return this.conversationContextRouter.resolve(input);
     const now = store.sourceReceivedAt(input.sourceRowId) ?? input.nowMs ?? Date.now();
     const excluded = [...(group.blacklistedUserIds ?? []), ...(group.memoryDisabledUserIds ?? [])];
+    // Resolve the explicit quote before the identity shortcut can discard it.
+    let reference = input.replyToMessageId ? store.reference(input.groupId, input.replyToMessageId, input.sourceRowId, excluded) : undefined;
+    if (input.replyToMessageId && !hasReadableReference(reference)) {
+      const recovered = await this.resolveReplyContext(group, input.replyToMessageId);
+      if (recovered) reference = {
+        messageId: recovered.messageId,
+        ...(recovered.userId ? { userId: recovered.userId } : {}),
+        ...(recovered.userName ? { userName: recovered.userName } : {}),
+        text: recovered.text, images: recovered.images ?? [],
+      };
+    }
     const explicitImagePersonQuestion = isExplicitImagePersonQuestion(input.text);
     const deicticImagePersonQuestion = isDeicticImagePersonQuestion(input.text);
     // Only an explicit visual phrase can recover a prior image by proximity.
     // A bare "他是谁" still needs an image on this message or its quote; an
     // unrelated recent photo must not steal an ordinary member lookup.
-    const recentImageCandidates = explicitImagePersonQuestion && !excluded.includes(input.userId)
+    const recentImageCandidates = explicitImagePersonQuestion && !input.replyToMessageId && !excluded.includes(input.userId)
       ? store.recentMedia(input.groupId, input.userId, input.sourceRowId, now)
       : [];
     // Identity questions are normally deterministic lookups. A visually
@@ -1177,22 +1188,6 @@ export class BotApplication {
         }) ?? [];
       } catch (error) {
         logWarn("Context candidate read failed closed.", { groupId: input.groupId, sourceRowId: input.sourceRowId, error: summarizeAiError(error) });
-      }
-    }
-    let reference = input.replyToMessageId ? store.reference(input.groupId, input.replyToMessageId, input.sourceRowId, excluded) : undefined;
-    // The route is planned before the event reaches handleConversation. Recover
-    // a remote-only quote here too, so the resolver cannot discard evidence
-    // that the normal message path will recover a moment later.
-    if (input.replyToMessageId && !hasReadableReference(reference)) {
-      const recovered = await this.resolveReplyContext(group, input.replyToMessageId);
-      if (recovered) {
-        reference = {
-          messageId: recovered.messageId,
-          ...(recovered.userId ? { userId: recovered.userId } : {}),
-          ...(recovered.userName ? { userName: recovered.userName } : {}),
-          text: recovered.text,
-          images: recovered.images ?? [],
-        };
       }
     }
     const bareOpinionRequest = isBareOpinionRequest(input.text);
@@ -3910,6 +3905,8 @@ export class BotApplication {
       const result = await this.realtimeLookupService.lookup({
         text,
         ...(!detected ? { intent } : {}),
+        ...(intent === "web" && plan.lookupSubject ? { lookupSubject: plan.lookupSubject } : {}),
+        ...(intent === "web" && plan.lookupFallbackQueries?.length ? { lookupFallbackQueries: plan.lookupFallbackQueries } : {}),
       });
       logInfo("Completed realtime lookup before reply generation.", {
         groupId: groupConfig.groupId,
@@ -3919,6 +3916,7 @@ export class BotApplication {
         durationMs: Date.now() - startedAt,
         resultCount: result?.sources.length ?? 0,
         failureReason: result?.failureReason,
+        ...(result?.searchDiagnostics ?? {}),
       });
       return result;
     } catch (error) {

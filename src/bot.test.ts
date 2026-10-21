@@ -15,6 +15,7 @@ import { StaticHtmlOutputTruncatedError, type AiToolRuntime } from "./services/a
 import type { AdminOperationLogEntry } from "./services/admin-operation-log-service.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
+import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
@@ -4552,8 +4553,38 @@ test("work questions without freshness keywords reach web lookup and inject its 
   await app.handleGroupMessage(createEvent([
     { type: "at", data: { qq: "12345" } }, { type: "text", data: { text: query } },
   ]));
-  assert.deepEqual(realtimeLookupService.calls, [{ text: query, intent: "web" }]);
+  assert.deepEqual(realtimeLookupService.calls, [{ text: query, intent: "web", lookupSubject: "远征4", lookupFallbackQueries: ["远征4 剧情", "远征4"] }]);
   assert.match(aiService.calls[0]?.identityContext?.realtimeLookup?.promptContext ?? "", /exact numbered installment/);
+});
+
+test("a work question retries the real lookup pipeline and delivers only matching evidence to the answer model", async () => {
+  const query = "《远征4》中双方作战的核心主线结果是什么";
+  let searchRounds = 0;
+  const realtimeLookupService = new RealtimeLookupService({
+    resolveDns: async () => [{ address: "127.0.0.1" }],
+    fetch: async () => Response.json({ results: ++searchRounds === 1 ? [] : [
+      { title: "远征1 旧战役", url: "https://example.test/old", content: "错误旧版结局" },
+      { title: "远征4 官方战役", url: "https://www.playstation.com/new", content: "主线以双方停战结束。" },
+    ] }),
+  });
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"],
+    switcherUserIds: [], liveChatUserIds: [], onlineLookupEnabled: true,
+  }]);
+  const aiService = new FakeAiService(async () => {
+    const lookup = aiService.calls.at(-1)?.identityContext?.realtimeLookup;
+    assert.equal(lookup?.status, "ok");
+    assert.match(lookup?.promptContext ?? "", /主线以双方停战结束/);
+    assert.doesNotMatch(lookup?.promptContext ?? "", /错误旧版结局/);
+    return { text: "根据本作战役资料，主线以双方停战结束。", model: "test-model", skillId: "assistant" };
+  });
+  const { app, transport } = createApp({ aiService, groupConfigService, realtimeLookupService: realtimeLookupService as never,
+    systemSettingsStore: new FakeSystemSettingsStore([], [], [], {}, true) });
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } }, { type: "text", data: { text: query } },
+  ]));
+  assert.equal(searchRounds, 2);
+  assert.match(transport.sent.at(-1)?.text ?? "", /主线以双方停战结束/);
 });
 
 test("translation avoids real-time lookup even when the supplied text mentions news and stocks", async () => {

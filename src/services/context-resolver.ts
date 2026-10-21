@@ -1,6 +1,7 @@
 import type { AmbientGroupContextMessage, ReferencedMessage } from "../types.js";
 import type { ContextResolution, ConversationIntent, ConversationTopicCandidate } from "./conversation-state.js";
 import { isFactCheck, lookupByRules, resolveLookupDecision } from "./lookup-policy.js";
+import { isDeicticImagePersonQuestion, isExplicitImagePersonQuestion } from "./member-identity-query.js";
 
 export interface ContextResolverInput {
   userId: string;
@@ -24,7 +25,7 @@ export const CONTEXT_RESOLVER_INSTRUCTION = [
   "普通吹牛、玩笑无需事实审判。用户明确问为什么/解释/比较才 intent=explain；一般闲聊不主动长篇分析。",
   "selectedMessageIds 只选与当前问题直接相关的消息，保留双方原意和来源；最多 24 条。不要挑选无关旁听消息。",
   "resolvedInput 保留当前请求，补充必要主题/槽位，不能把群友意见或旧机器人推测改写成已核实事实；不要扩充用户没要的任务。",
-  '另输出 "lookupRequired":true/false；需要联网时输出 "lookupQuery":"独立、具体的检索问题"。这与 intent 独立，explain/confirm/challenge 也可能需要查资料。',
+  '另输出 "lookupRequired":true/false；需要联网时输出 "lookupQuery":"简短关键词，不要照抄长问句"、"lookupSubject":"问题中原有的作品/产品完整名称及版本，无明确对象则省略"、"lookupFallbackQueries":["更短的主题关键词","只保留作品/产品原名"]。备用词最多两条、逐步放宽；主查询保留对象和核心主题，不堆砌核心、结果是什么等问句词。这与 intent 独立，explain/confirm/challenge 也可能需要查资料。',
   "新作品、新产品、近期事件、具体作品的剧情/战役/版本/发布信息，以及针对外部事实的核实或质疑，应 lookupRequired=true，不要求用户说最新或联网。保留作品原名、数字和版本，不能用旧作品替换陌生的新作品。",
   "闲聊、玩笑、稳定常识、翻译、写作、纯看图、群友身份或画像问题 lookupRequired=false。只有当前问题及其明确锚定的主题可进入检索词，不包含无关群聊或个人资料。",
 ].join("\n");
@@ -61,6 +62,8 @@ export class ContextResolver {
           : parsed.intent === "lookup" || fallback.lookupRequired ? true : undefined,
         lookupQuery: typeof parsed.lookupQuery === "string" ? parsed.lookupQuery
           : fallback.lookupQuery || parsed.resolvedInput,
+        lookupSubject: typeof parsed.lookupSubject === "string" ? parsed.lookupSubject : undefined,
+        lookupFallbackQueries: Array.isArray(parsed.lookupFallbackQueries) ? parsed.lookupFallbackQueries : undefined,
       });
       // An explicit quote remains authoritative. The model may only add the
       // lookup decision, never discard/reinterpret the recovered reference.
@@ -96,8 +99,6 @@ export class ContextResolver {
 }
 
 const EXPLICIT_MEDIA_REFERENCE = /(?:看图|读图|图(?:片)?(?:里|上|中)|这(?:张|个)图|刚(?:才)?(?:发|那).*图|战绩图|截图|图片呢)/u;
-const EXPLICIT_DEICTIC_IMAGE_REFERENCE = /^(?:请问|你知道|说说)?(?:图(?:里|上|中)(?:的)?(?:这(?:位|个(?:人)?|人)?)?|这(?:位|个(?:人)?|人)?)(?:是)?(?:谁|哪位|哪个)$/u;
-const BARE_PERSON_REFERENCE = /^(?:请问|你知道|说说)?(?:他|她)(?:是)?(?:谁|哪位|哪个)$/u;
 
 function normalizeReferenceQuestion(text: string): string {
   return text.normalize("NFKC").trim().replace(/[？?。！!]+$/u, "").replace(/(?:吗|嘛|呢)$/u, "").trim();
@@ -109,8 +110,7 @@ function normalizeReferenceQuestion(text: string): string {
  * Keep named aliases out of this set so "鸡哥是谁" remains an identity query.
  */
 export function isDeicticImageReference(text: string): boolean {
-  const value = normalizeReferenceQuestion(text);
-  return EXPLICIT_DEICTIC_IMAGE_REFERENCE.test(value) || BARE_PERSON_REFERENCE.test(value);
+  return isDeicticImagePersonQuestion(text);
 }
 
 /**
@@ -120,8 +120,8 @@ export function isDeicticImageReference(text: string): boolean {
  */
 export function isMediaReference(text: string, options: { includeDeictic?: boolean } = {}): boolean {
   const value = normalizeReferenceQuestion(text);
-  return EXPLICIT_MEDIA_REFERENCE.test(value) || EXPLICIT_DEICTIC_IMAGE_REFERENCE.test(value) ||
-    (options.includeDeictic === true && BARE_PERSON_REFERENCE.test(value));
+  return EXPLICIT_MEDIA_REFERENCE.test(value) || isExplicitImagePersonQuestion(value) ||
+    (options.includeDeictic === true && isDeicticImagePersonQuestion(value));
 }
 
 export function hasReadableReference(reference?: ReferencedMessage): boolean {
