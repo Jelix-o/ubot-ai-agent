@@ -516,6 +516,7 @@ test("formal release publication is gated to the matching final tag and CI", () 
 });
 
 test("continuous integration validates the complete suite on Windows and Linux", () => {
+  const packageManifest = readFileSync(path.resolve("package.json"), "utf8");
   assert.match(ciWorkflow, /pull_request:/);
   assert.match(ciWorkflow, /ubuntu-latest/);
   assert.match(ciWorkflow, /windows-latest/);
@@ -525,6 +526,7 @@ test("continuous integration validates the complete suite on Windows and Linux",
   assert.match(ciWorkflow, /npm run verify/);
   assert.match(ciWorkflow, /npx --no-install playwright install --with-deps chromium/);
   assert.match(ciWorkflow, /npm run smoke:admin/);
+  assert.match(ciWorkflow, /Build Admin smoke fixture[\s\S]*?npm run build[\s\S]*?Run Admin browser smoke[\s\S]*?npm run smoke:admin/);
   assert.match(ciWorkflow, /admin-visual-smoke/);
   assert.match(ciWorkflow, /gitleaks\/gitleaks-action@[a-f0-9]{40}/);
   assert.match(ciWorkflow, /GITLEAKS_CONFIG: \.gitleaks\.toml/);
@@ -536,9 +538,11 @@ test("continuous integration validates the complete suite on Windows and Linux",
   assert.match(releaseWorkflow, /npm run audit:prod/);
   assert.match(releaseWorkflow, /npx --no-install playwright install --with-deps chromium/);
   assert.match(releaseWorkflow, /npm run smoke:admin/);
+  assert.match(releaseWorkflow, /Build Admin smoke fixture[\s\S]*?npm run build[\s\S]*?Run Admin browser smoke[\s\S]*?npm run smoke:admin/);
   assert.match(releaseWorkflow, /needs: \[verify, secret-scan, admin-visual-smoke\]/);
   assert.match(releaseWorkflow, /Scan exact release payloads/);
   assert.match(releaseWorkflow, /secret-scan\.mjs --source release-scan/);
+  assert.match(packageManifest, /"package:all": "[^"]*npm run verify && npm run build && npm run smoke:admin/);
 });
 
 test("V3 Nginx requires a strict Cloudflare origin boundary and trusted real IP", () => {

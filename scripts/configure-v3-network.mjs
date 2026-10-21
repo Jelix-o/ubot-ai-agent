@@ -173,9 +173,11 @@ function isSafeAbsolutePath(value) {
   // The deployer runs on Linux and allows only ordinary POSIX path
   // characters. The same configurator test is intentionally exercised on
   // Windows CI, where a canonical absolute path includes a drive letter and
-  // backslashes. Boundary checks above remain path-module based on both.
+  // backslashes. Windows may also expose an existing profile through an 8.3
+  // short-name segment such as `RUNNER~1`; `~` is literal path data here and
+  // does not weaken the path-module containment checks above.
   return process.platform === "win32"
-    ? /^[A-Za-z]:[A-Za-z0-9._\\/-]+$/.test(value)
+    ? /^[A-Za-z]:[A-Za-z0-9._~\\/-]+$/.test(value)
     : /^[A-Za-z0-9._/-]+$/.test(value);
 }
 

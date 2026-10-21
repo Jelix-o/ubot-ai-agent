@@ -1,6 +1,6 @@
 {
   "name": "ubot",
-  "version": "4.1.6",
+  "version": "4.1.8",
   "private": true,
   "type": "module",
   "engines": {
@@ -30,7 +30,7 @@
     "admin:reset-password": "node scripts/run-node22.cjs scripts/reset-admin-password.mjs",
     "package:linux": "node scripts/run-node22.cjs scripts/run-bash.cjs scripts/package-linux-release.sh",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-win.ps1",
-    "package:all": "npm run secret:scan && npm run audit:prod && npm run verify && npm run smoke:admin && npm run package:win && npm run package:linux && node scripts/verify-release-assets.mjs",
+    "package:all": "npm run secret:scan && npm run audit:prod && npm run verify && npm run build && npm run smoke:admin && npm run package:win && npm run package:linux && node scripts/verify-release-assets.mjs",
     "docs:check": "node scripts/run-node22.cjs scripts/public-docs.mjs check",
     "release:notes": "node scripts/run-node22.cjs scripts/public-docs.mjs release-notes",
     "verify:release": "node scripts/verify-release-assets.mjs"

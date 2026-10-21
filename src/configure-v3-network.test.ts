@@ -53,7 +53,13 @@ test("V3 network configuration updates only the approved NapCat endpoint and loo
 });
 
 test("V3 network configuration permits only the managed preview root or a real child of persistent data", (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-preview-root-"));
+  // GitHub's Windows runner may report a user-profile component through an
+  // 8.3 short name (`RUNNER~1`). Exercise the same safe-path character here;
+  // on POSIX the production policy intentionally remains narrower.
+  const temporaryPrefix = process.platform === "win32"
+    ? "ubot-v3-preview-root~1-"
+    : "ubot-v3-preview-root-";
+  const root = mkdtempSync(path.join(os.tmpdir(), temporaryPrefix));
   const envPath = path.join(root, ".env");
   const napcatPath = path.join(root, "napcat.json");
   const allowedPreviewRoot = path.join(root, "data", "generated-pages");
