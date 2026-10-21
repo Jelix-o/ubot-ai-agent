@@ -18,6 +18,8 @@ export interface ContextAnchor {
 }
 
 export interface ContextResolution {
+  lookupRequired?: boolean;
+  lookupQuery?: string;
   intent: ConversationIntent;
   relation: "new" | "follow_up" | "supplement";
   resolvedInput: string;
@@ -59,6 +61,8 @@ export interface ConversationState extends ConversationUpdate {
 }
 
 export interface ReplyPlan {
+  lookupRequired?: boolean;
+  lookupQuery?: string;
   action: "reply" | "clarify" | "tool";
   intent: ConversationIntent;
   explanation: "on_request" | "requested";

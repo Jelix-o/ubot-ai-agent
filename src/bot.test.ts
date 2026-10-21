@@ -4536,6 +4536,41 @@ test("unrouted calls fail closed instead of reading legacy personal context", as
   assert.equal(conversationStore.turnsByKey["67890:20002"], undefined);
 });
 
+test("work questions without freshness keywords reach web lookup and inject its evidence", async () => {
+  const query = "《远征4》中双方作战的核心主线结果是什么";
+  const realtimeLookupService = new FakeRealtimeLookupService({
+    kind: "web", status: "ok", queriedAt: new Date().toISOString(),
+    sources: [{ name: "Official campaign", url: "https://example.test/campaign" }],
+    promptContext: "Official campaign evidence for the exact numbered installment.",
+  });
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"],
+    switcherUserIds: [], liveChatUserIds: [], onlineLookupEnabled: true,
+  }]);
+  const { app, aiService } = createApp({ groupConfigService, realtimeLookupService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [], [], {}, true) });
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } }, { type: "text", data: { text: query } },
+  ]));
+  assert.deepEqual(realtimeLookupService.calls, [{ text: query, intent: "web" }]);
+  assert.match(aiService.calls[0]?.identityContext?.realtimeLookup?.promptContext ?? "", /exact numbered installment/);
+});
+
+test("translation avoids real-time lookup even when the supplied text mentions news and stocks", async () => {
+  const realtimeLookupService = new FakeRealtimeLookupService();
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"],
+    switcherUserIds: [], liveChatUserIds: [], onlineLookupEnabled: true,
+  }]);
+  const { app, aiService } = createApp({ groupConfigService, realtimeLookupService,
+    systemSettingsStore: new FakeSystemSettingsStore([], [], [], {}, true) });
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "把今天的股票新闻翻译成中文" } },
+  ]));
+  assert.equal(realtimeLookupService.calls.length, 0);
+  assert.equal(aiService.calls.length, 1);
+});
+
 test("puts successful explicitly enabled real-time lookup data in the reply context without source footer", async () => {
   const realtimeLookupService = new FakeRealtimeLookupService({
     kind: "stock",
