@@ -1326,10 +1326,13 @@ test("replay: a length-truncated model envelope never becomes an outbox answer o
   assert.equal(f.db.db.prepare("SELECT count(*) AS n FROM conversation_state_updates").get()?.n, 0);
 });
 
-test("replay: adapter-bypassed private state metadata gets one controlled format repair before delivery", async t => {
+test("replay: captured reply text with a split state suffix gets one controlled format repair before delivery", async t => {
   const f = conversationReplay(t);
   f.ai.replies.push(
-    { text: '这段草稿不能发。"coveredPoints":["泄漏"]' },
+    { text: [
+      "按这个简化算法，大概是四千多。",
+      '这两个条件会明显影响结果{"stateUpdate":{"coveredPoints":["养老金估算"],"questions":[{"key":"pension","userId":"20001","text":"缴费基数和退休年龄","status":"answered"}]},"review":{"repeatsAnswered":false,"reasksKnown":false,"unsupportedReversal":false}}',
+    ].join("\n\n") },
     { text: "这句重新整理过了。" },
   );
 
@@ -1341,12 +1344,29 @@ test("replay: adapter-bypassed private state metadata gets one controlled format
   assert.equal(outbox.length, 1);
   assert.match(outbox[0]?.text ?? "", /^这句重新整理过了/);
   assert.match(f.ai.calls[1]?.scenarioInstruction ?? "", /FORMAT RETRY/);
-  assert.doesNotMatch(outbox.map(row => row.text).join("\n"), /stateUpdate|coveredPoints|泄漏|这段草稿不能发/);
-  assert.doesNotMatch(assistantTurns.map(turn => turn.content).join("\n"), /stateUpdate|coveredPoints|泄漏|这段草稿不能发/);
+  assert.doesNotMatch(outbox.map(row => row.text).join("\n"), /stateUpdate|coveredPoints|养老金估算|这两个条件会明显影响结果/);
+  assert.doesNotMatch(assistantTurns.map(turn => turn.content).join("\n"), /stateUpdate|coveredPoints|养老金估算|这两个条件会明显影响结果/);
   const updates = f.db.db.prepare("SELECT update_json FROM conversation_state_updates").all() as Array<{ update_json: string }>;
   // State snapshots legitimately use protocol field names. Only the rejected
   // draft's values or an envelope wrapper would prove an internal leak here.
-  assert.doesNotMatch(updates.map(update => update.update_json).join("\n"), /stateUpdate|泄漏|这段草稿不能发/);
+  assert.doesNotMatch(updates.map(update => update.update_json).join("\n"), /stateUpdate|养老金估算|这两个条件会明显影响结果/);
+});
+
+test("replay: final outbox boundary rejects a state suffix before any split message is queued", async t => {
+  const f = conversationReplay(t);
+  const sendTextMessages = (f.bot as unknown as {
+    sendTextMessages(groupId: string, messages: string[]): Promise<unknown>;
+  }).sendTextMessages.bind(f.bot);
+
+  await assert.rejects(
+    sendTextMessages(GROUP_ID, [
+      "按这个简化算法，大概是四千多。",
+      '这两个条件会明显影响结果{"stateUpdate":{"coveredPoints":["养老金估算"]}}',
+    ]),
+    { name: "ConversationReplyEnvelopeError" },
+  );
+
+  assert.equal(f.db.db.prepare("SELECT count(*) AS n FROM outbox").get()?.n, 0);
 });
 
 test("replay: game conditions survive a fishing detour and the same speaker can return to an older topic", async t => {

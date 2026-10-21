@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { logInfo } from "./logger.js";
 import { BT_FORWARD_FALLBACK_TEXT, serializeForwardNodes, type ForwardMessageNode } from "./forward-message.js";
+import { ConversationReplyEnvelopeError, hasConversationReplyEnvelopeMarker } from "./services/conversation-state.js";
 import type { SharedDb } from "./shared/sqlite.js";
 import type { OutboxContext } from "./shared/sqlite.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
@@ -77,6 +78,11 @@ export class WorkerTransport implements MessageTransport {
 
   async sendGroupMessage(groupId: string, text: string): Promise<MessageReceipt | undefined> {
     const route = this.routeStorage.getStore() ?? this.conversationRoute;
+    // A routed text send is a user-facing conversation reply. Do not persist
+    // private reply-envelope fields even when a caller bypasses BotApplication.
+    if (route && hasConversationReplyEnvelopeMarker(text)) {
+      throw new ConversationReplyEnvelopeError();
+    }
     const id = this.db.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext());
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };

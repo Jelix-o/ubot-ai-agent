@@ -10,6 +10,7 @@ import {
 } from "./napcat-reverse-server.js";
 import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
+import { hasConversationReplyEnvelopeMarker } from "./services/conversation-state.js";
 import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
 import { MessageRecallService } from "./message-recall-service.js";
@@ -72,6 +73,13 @@ export async function deliverOutboxRow(
   onAckFailure?: (error: unknown) => void,
   generatedImageRoot?: string,
 ): Promise<string> {
+  // Old workers or manual recovery can leave malformed private reply metadata
+  // in a contextual outbox row. Stop it before any QQ send and leave a
+  // terminal record for inspection instead of retrying the same leak.
+  if (isMalformedConversationOutboxRow(row)) {
+    sharedDb.markOutboxFailed(row.id, null);
+    throw new ConversationOutboxEnvelopeError();
+  }
   let receipt: MessageReceipt | void;
   let deliveredForward = false;
   let generatedImagePath: string | undefined;
@@ -137,6 +145,24 @@ export class OutboxAcknowledgementError extends Error {
   }
 }
 
+/** A contextual outbox row contains private conversation reply metadata. */
+export class ConversationOutboxEnvelopeError extends Error {
+  constructor() {
+    super("Refused to deliver malformed conversation reply envelope");
+    this.name = "ConversationOutboxEnvelopeError";
+  }
+}
+
+function isMalformedConversationOutboxRow(row: OutboxRow): boolean {
+  const contextual = Boolean(
+    row.topic_id ||
+    row.branch_id ||
+    row.source_turn_id !== null ||
+    row.turn_id !== null,
+  );
+  return row.kind === "text" && contextual && hasConversationReplyEnvelopeMarker(row.text);
+}
+
 export type OutboxFailureDisposition = "retryable" | "terminal";
 
 export function markOutboxDeliveryFailed(
@@ -145,7 +171,9 @@ export function markOutboxDeliveryFailed(
   error: unknown,
 ): OutboxFailureDisposition {
   const retiredVoice = row.kind === "record" || row.kind === "airecord";
-  const retryable = !retiredVoice && (!["generated_image", "forward"].includes(row.kind) || error instanceof NapCatActionNotSentError);
+  const retryable = !(error instanceof ConversationOutboxEnvelopeError) &&
+    !retiredVoice &&
+    (!["generated_image", "forward"].includes(row.kind) || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }

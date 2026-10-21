@@ -2409,8 +2409,76 @@ test("Huixian replies omit runtime task context and explain only when requested"
   assert.equal(Object.hasOwn(identityContext ?? {}, "groupRuntimeContext"), false);
   assert.doesNotMatch(JSON.stringify(identityContext ?? {}), /提醒喝水/);
   assert.match(call?.scenarioInstruction ?? "", /"explanation":"requested"/);
-  assert.match(call?.scenarioInstruction ?? "", /用户这轮要求解释/);
-  assert.match(call?.scenarioInstruction ?? "", /3000 字内/);
+  assert.match(call?.scenarioInstruction ?? "", /"detailLevel":"detailed"/);
+  assert.match(call?.scenarioInstruction ?? "", /明确要求详细内容/);
+  assert.match(call?.scenarioInstruction ?? "", /1200 个可见字符内/);
+});
+
+test("Huixian formats ordinary pre-batched model output as one short reply while preserving explicit long-form output", async () => {
+  const huixianSkill: SkillDefinition = {
+    ...assistantSkill,
+    id: "huixian",
+    maxReplyCharsPerMessage: 500,
+    maxTotalReplyChars: 3_000,
+    maxReplyMessages: 8,
+    preferredMaxReplyMessages: 4,
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "huixian",
+    allowedSkillIds: ["huixian"],
+    switcherUserIds: ["99999"],
+    liveChatUserIds: [],
+  }]);
+  const ordinary = createApp({
+    groupConfigService,
+    skills: [huixianSkill],
+    aiService: new FakeAiService(async () => ({
+      text: "",
+      messages: ["甲".repeat(100), "乙".repeat(100)],
+      // Terminal knowledge results used to bypass Huixian's normal reply
+      // formatter and could arrive as several long messages.
+      knowledgeToolCalls: ["search_group_faq"],
+      model: "test-model",
+      skillId: "huixian",
+    })),
+  });
+
+  await ordinary.app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "湖南社保档位一万元，交三十年能领多少" } },
+  ]));
+
+  assert.match(ordinary.aiService.calls[0]?.scenarioInstruction ?? "", /默认短答/);
+  assert.equal(ordinary.transport.sent.length, 1);
+  assert.ok((ordinary.transport.sent[0]?.text.length ?? 0) <= 180);
+  assert.equal(ordinary.transport.sent[0]?.text.includes("乙"), false);
+
+  const explicit = createApp({
+    groupConfigService: new FakeGroupConfigService([{
+      groupId: "67890",
+      currentSkillId: "huixian",
+      allowedSkillIds: ["huixian"],
+      switcherUserIds: ["99999"],
+      liveChatUserIds: [],
+    }]),
+    skills: [huixianSkill],
+    aiService: new FakeAiService(async () => ({
+      text: "",
+      messages: ["甲".repeat(500), "乙".repeat(500)],
+      model: "test-model",
+      skillId: "huixian",
+    })),
+  });
+
+  await explicit.app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "来个1000字的社保说明" } },
+  ]));
+
+  assert.match(explicit.aiService.calls[0]?.scenarioInstruction ?? "", /显式长文本模式/);
+  assert.equal(explicit.transport.sent.length, 2);
+  assert.deepEqual(explicit.transport.sent.map(message => message.text.length), [500, 500]);
 });
 
 test("explicit 3000-character requests use any text skill's configured long-reply budget immediately", async () => {

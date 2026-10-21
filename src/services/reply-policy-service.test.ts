@@ -33,6 +33,45 @@ test("clarification does not ask the same recipient an already answered question
   assert.equal(service.plan({ ...input, userId: "b" }).action, "clarify");
 });
 
+test("Huixian defaults to a short direct answer, then expands only for explanations or explicit detail", () => {
+  const state = emptyConversationState();
+  const direct = service.plan({
+    resolution,
+    state,
+    userId: "a",
+    userInput: "湖南社保档位一万元，交三十年能领多少",
+  });
+  const directBudget = service.replyFormatBudget({ id: "huixian" }, "湖南社保档位一万元，交三十年能领多少", direct)!;
+  assert.equal(direct.detailLevel, "direct");
+  assert.deepEqual(directBudget, { maxChars: 180, maxTotalChars: 180, maxMessages: 1, preferredMaxMessages: 1 });
+  assert.match(service.instruction(direct, state, { formatBudget: directBudget }), /1 到 3 句、180 个可见字符内/);
+  assert.match(service.review({ text: "长".repeat(181) }, direct, [], { formatBudget: directBudget })!, /默认短答超过 180/);
+  assert.equal(service.review({ text: "大概四五千，具体还得看当地计发基数和缴费指数" }, direct, [], { formatBudget: directBudget }), undefined);
+
+  const explanation = service.plan({
+    resolution: { ...resolution, intent: "explain" },
+    state,
+    userId: "a",
+    userInput: "为什么会这样",
+  });
+  const explanationBudget = service.replyFormatBudget({ id: "huixian" }, "为什么会这样", explanation)!;
+  assert.equal(explanation.detailLevel, "brief_explanation");
+  assert.deepEqual(explanationBudget, { maxChars: 240, maxTotalChars: 240, maxMessages: 1, preferredMaxMessages: 1 });
+  assert.match(service.instruction(explanation, state, { formatBudget: explanationBudget }), /只解释当前被问的那一点/);
+
+  const detailed = service.plan({
+    resolution: { ...resolution, intent: "explain" },
+    state,
+    userId: "a",
+    userInput: "详细解释一下",
+  });
+  const detailedBudget = service.replyFormatBudget({ id: "huixian" }, "详细解释一下", detailed)!;
+  assert.equal(detailed.detailLevel, "detailed");
+  assert.equal(detailedBudget.maxTotalChars, 1_200);
+  assert.match(service.instruction(detailed, state, { formatBudget: detailedBudget }), /明确要求详细内容/);
+  assert.match(service.instruction(direct, state, { formatBudget: directBudget, explicitReplyLength: true }), /默认短答限制不适用/);
+});
+
 test("review preserves brief confirmations, catches repeats and targeted faults, and leaves verified tool messages intact", () => {
   const plan = service.plan({ resolution, state: emptyConversationState() });
   const prior = "先改掉打游戏时顺手不停喝水的习惯，真渴了照常小口喝，不用强忍";

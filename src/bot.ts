@@ -120,7 +120,7 @@ import type {
 } from "./types.js";
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
-import { formatReplyMessages, type ReplyFormatBudget } from "./utils/reply-format.js";
+import { formatReplyMessages } from "./utils/reply-format.js";
 import {
   buildExplicitReplyLengthInstruction,
   buildExplicitReplyLengthPlan,
@@ -3386,7 +3386,7 @@ export class BotApplication {
       resolution: contextResolution ?? resolveContextByRules({
         userId, text: normalizedUserInput, hasImages: images.length > 0, replyToMessageId: messageContext.replyMessageId, candidates: [], messages: ambientGroupContext,
       }),
-      state: conversationState, userId, sourceMessageId: messageContext.sourceMessageId,
+      state: conversationState, userId, userInput: normalizedUserInput, sourceMessageId: messageContext.sourceMessageId,
       mediaSourceMessageIds: [...(currentMessageHasImages && messageContext.sourceMessageId ? [messageContext.sourceMessageId] : []), ...(contextResolution?.mediaSourceMessageIds ?? [])],
     });
     if (!targetedMemberProfileRequested && replyPlan.action === "clarify" && replyPlan.clarification) {
@@ -3411,14 +3411,15 @@ export class BotApplication {
       return intent ? buildExplicitReplyLengthPlan(skill, intent) : undefined;
     })();
     const replyFormatBudget = explicitReplyLengthPlan?.budget
-      ?? resolveHuixianReplyFormatBudget(skill, normalizedUserInput);
+      ?? replyPolicy.replyFormatBudget(skill, normalizedUserInput, replyPlan);
     const replyLengthInstruction = explicitReplyLengthPlan
       ? buildExplicitReplyLengthInstruction(explicitReplyLengthPlan)
-      : replyFormatBudget
-        ? buildHuixianReplyLengthInstruction(replyFormatBudget)
-        : undefined;
+      : undefined;
     const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction,
-      !targetedMemberProfileRequested ? replyPolicy.instruction(replyPlan, conversationState) : undefined]
+      !targetedMemberProfileRequested ? replyPolicy.instruction(replyPlan, conversationState, {
+        formatBudget: replyFormatBudget,
+        explicitReplyLength: Boolean(explicitReplyLengthPlan),
+      }) : undefined]
       .filter((instruction): instruction is string => Boolean(instruction))
       .join("\n\n");
     const currentSpeaker = buildCurrentSpeaker(promptGroupConfig, userId, messageContext);
@@ -3598,7 +3599,10 @@ export class BotApplication {
 
     try {
       let { reply, usedMode, fallbackUsed, visionFallback } = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal });
-      const rewriteReason = replyPolicy.review(reply, replyPlan, history.filter(turn => turn.role === "assistant").map(turn => turn.content));
+      const rewriteReason = replyPolicy.review(reply, replyPlan, history.filter(turn => turn.role === "assistant").map(turn => turn.content), {
+        formatBudget: replyFormatBudget,
+        explicitReplyLength: Boolean(explicitReplyLengthPlan),
+      });
       if (rewriteReason && !targetedMemberProfileRequested && !reply.messages?.length) {
         const revised = await this.generateReplyWithSelectedModel(groupConfig, { ...replyArgs, signal,
           scenarioInstruction: replyPolicy.rewriteInstruction(scenarioInstruction, rewriteReason, reply.text),
@@ -3616,11 +3620,20 @@ export class BotApplication {
         prefixMentionUserIds,
       );
       const terminalMessages = reply.messages?.map((message) => message.trim()).filter(Boolean);
-      const replyText = terminalMessages?.length
-        ? terminalMessages.join("\n\n")
+      const keepTerminalMessages = Boolean(
+        terminalMessages?.length && (
+          skill.id !== "huixian" ||
+          // A Huixian reply always passes through the active format budget.
+          // Only a user-requested long reply keeps model-authored segments.
+          (explicitReplyLengthPlan?.budget.maxTotalChars ?? 0) > 180
+        ),
+      );
+      const rawReplyText = terminalMessages?.length ? terminalMessages.join("\n\n") : reply.text;
+      const replyText = keepTerminalMessages
+        ? rawReplyText
         : appendRealtimeLookupFooterToReply(
             sanitizeMentionEcho(
-              reply.text,
+              rawReplyText,
               buildSanitizeTargets(messageContext),
               messageContext.plainTextMentionCandidates,
             ),
@@ -3643,7 +3656,7 @@ export class BotApplication {
           .filter((target): target is string => Boolean(target)),
       );
       const controlledMentionUserId =
-        !terminalMessages?.length &&
+        !keepTerminalMessages &&
         options.allowControlledMention === true &&
         controlledMentionIdentities.length > 0 &&
         resolvedMentionUserIds.length === 0 &&
@@ -3665,7 +3678,7 @@ export class BotApplication {
         ? [controlledMentionUserId]
         : resolvedMentionUserIds;
 
-      const outgoingMessages = terminalMessages?.length
+      const outgoingMessages = keepTerminalMessages && terminalMessages?.length
         ? terminalMessages
         : formatReplyMessages(skill, replyText, replyFormatBudget);
       if (outgoingMessages.length === 0) {
@@ -4689,6 +4702,13 @@ export class BotApplication {
     mentionUserIds: string[] = [],
     conversationRoute?: ConversationRoute,
   ): Promise<MessageReceipt[]> {
+    // This is the last boundary before individual messages become outbox rows.
+    // Check the complete batch before sending the first item so a malformed
+    // reply cannot deliver its natural-text prefix and leak state metadata in
+    // a later split message.
+    if (hasConversationReplyEnvelopeMarker(messages.join(""))) {
+      throw new ConversationReplyEnvelopeError();
+    }
     const receipts: MessageReceipt[] = [];
     for (const [index, message] of messages.entries()) {
       const outgoingText =
@@ -6009,30 +6029,6 @@ function selectManualIdentitiesForUserIds(
   return (identities ?? []).filter((identity) =>
     identity.userIds.some((userId) => visibleUserIds.has(userId)),
   );
-}
-
-function resolveHuixianReplyFormatBudget(
-  skill: SkillDefinition,
-  userInput: string,
-): ReplyFormatBudget | undefined {
-  if (skill.id !== "huixian") {
-    return undefined;
-  }
-
-  const normalized = userInput.replace(/\s+/g, " ").trim();
-  if (/(?:一句话|一两句|简短|简单说|别展开|少废话)/.test(normalized)) {
-    return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
-  }
-  // A transport ceiling is not a target length. Content/explicit requests
-  // control explanation depth; words such as “风险” cannot select long mode.
-  return { maxChars: 500, maxTotalChars: 3_000, maxMessages: 8, preferredMaxMessages: 8 };
-}
-
-function buildHuixianReplyLengthInstruction(budget: ReplyFormatBudget): string {
-  if (budget.maxTotalChars <= 160) {
-    return "用户明确要求简短：直接回应，不铺垫、不额外追问；一条、160 字内。";
-  }
-  return "传输上限为 3000 字内、八条消息；这只是投递边界，不是目标长度。";
 }
 
 function shouldBufferActiveChatMessage(

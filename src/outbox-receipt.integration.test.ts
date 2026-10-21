@@ -5,9 +5,15 @@ import path from "node:path";
 import test from "node:test";
 
 import type { MessageReceipt, MessageTransport } from "./bot.js";
-import { deliverOutboxRow, markOutboxDeliveryFailed, OutboxAcknowledgementError } from "./index-ingress.js";
+import {
+  ConversationOutboxEnvelopeError,
+  deliverOutboxRow,
+  markOutboxDeliveryFailed,
+  OutboxAcknowledgementError,
+} from "./index-ingress.js";
 import { NapCatActionNotSentError, NapCatActionOutcomeUnknownError } from "./napcat-reverse-server.js";
 import { ConversationContextRepository, type ConversationRoute } from "./services/conversation-context-repository.js";
+import { ConversationReplyEnvelopeError } from "./services/conversation-state.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { WorkerTransport } from "./worker-transport.js";
 import { DatabaseSync } from "node:sqlite";
@@ -249,6 +255,64 @@ test("WorkerTransport keeps concurrent async send chains on their own routes", a
       { text: "b-second", topic_id: routeB.topicId, branch_id: routeB.branchId },
     ],
   );
+});
+
+test("WorkerTransport rejects private reply metadata only for contextual text sends", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  const repository = new ConversationContextRepository(db);
+  const route = createRoute(repository, 1, "group-context", "source-context");
+  const transport = new WorkerTransport(db);
+  const malformed = '正文{"stateUpdate":{"coveredPoints":["不该投递"]}}';
+
+  await assert.rejects(
+    transport.runWithConversationContext(route, () => transport.sendGroupMessage("group-context", malformed)),
+    ConversationReplyEnvelopeError,
+  );
+  assert.equal((db.db.prepare("SELECT count(*) AS count FROM outbox").get() as { count: number }).count, 0);
+
+  await transport.sendGroupMessage("group-plain", 'const schema = {"stateUpdate": "public code example"};');
+  const plain = db.db.prepare("SELECT group_id, text, status FROM outbox").get() as {
+    group_id: string; text: string; status: string;
+  };
+  assert.deepEqual({ ...plain }, {
+    group_id: "group-plain",
+    text: 'const schema = {"stateUpdate": "public code example"};',
+    status: "pending",
+  });
+  const plainRow = db.claimOutbox(1)[0]!;
+  const plainTransport = new ReceiptTransport(() => "qq-plain");
+  await deliverOutboxRow(db, plainTransport, plainRow);
+  assert.deepEqual(plainTransport.deliveries, [{
+    groupId: "group-plain",
+    kind: "text",
+    text: 'const schema = {"stateUpdate": "public code example"};',
+  }]);
+});
+
+test("ingress terminalizes a legacy malformed contextual outbox row before QQ delivery", async (t) => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  const id = db.enqueueOutbox(
+    "group-legacy",
+    null,
+    '旧草稿{"stateUpdate":{"coveredPoints":["不该投递"]}}',
+    "text",
+    { topicId: "topic-legacy", branchId: "branch-legacy", turnId: 1 },
+  );
+  const row = db.claimOutbox(1)[0]!;
+  const transport = new ReceiptTransport(() => "qq-never");
+
+  await assert.rejects(deliverOutboxRow(db, transport, row), ConversationOutboxEnvelopeError);
+  assert.equal(transport.deliveries.length, 0);
+  assert.equal(markOutboxDeliveryFailed(db, row, new ConversationOutboxEnvelopeError()), "terminal");
+  const stored = db.db.prepare("SELECT status, retry_after FROM outbox WHERE id = ?").get(id) as {
+    status: string; retry_after: number | null;
+  };
+  assert.deepEqual({ ...stored }, { status: "failed", retry_after: null });
+  assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 0);
 });
 
 test("WorkerTransport queues image outbox rows and ingress delivers them as images", async (t) => {

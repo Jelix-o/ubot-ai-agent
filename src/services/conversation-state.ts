@@ -2,6 +2,8 @@ import type { AmbientGroupContextMessage } from "../types.js";
 
 export type ConversationIntent = "chat" | "opinion" | "explain" | "confirm" | "challenge" | "image" | "lookup" | "task";
 
+export type ReplyDetailLevel = "direct" | "brief_explanation" | "detailed";
+
 export type ContextAnchorKind = "explicit_reply" | "recent_cluster" | "explicit_follow_up" | "none";
 
 /**
@@ -60,6 +62,7 @@ export interface ReplyPlan {
   action: "reply" | "clarify" | "tool";
   intent: ConversationIntent;
   explanation: "on_request" | "requested";
+  detailLevel: ReplyDetailLevel;
   resolvedInput: string;
   selectedMessageIds: string[];
   clarification?: string;
