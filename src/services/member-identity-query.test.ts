@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answerIdentityCheck, identityCheckNeedsDirectory, parseIdentityCheck, refreshIdentityDirectory } from "./member-identity-query.js";
+import { answerIdentityCheck, identityCheckNeedsDirectory, isDeicticImagePersonQuestion, isExplicitImagePersonQuestion, parseIdentityCheck, refreshIdentityDirectory } from "./member-identity-query.js";
 import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 
 const group: GroupBotConfig = {
@@ -12,6 +12,21 @@ const group: GroupBotConfig = {
   ],
 };
 const members: NapcatGroupMember[] = [{ user_id: 1418509802, card: "成都林心如", nickname: "☉_☉" }];
+
+test("deictic person questions are available to an established image anchor without widening named identity queries", () => {
+  for (const text of ["这是哪位", "这是谁？", "这个人是谁", "图里是谁", "图片中这人是哪位", "照片上的人是谁", "她是谁啊"]) {
+    assert.equal(isDeicticImagePersonQuestion(text), true, text);
+  }
+  for (const text of ["这是哪位", "这是谁？", "这个人是谁", "图里是谁", "图片中这人是哪位", "照片上的人是谁", "这张图里是谁"]) {
+    assert.equal(isExplicitImagePersonQuestion(text), true, text);
+  }
+  for (const text of ["他是谁", "她是谁", "鸡哥是谁", "@1418509802 他是谁"]) {
+    assert.equal(isExplicitImagePersonQuestion(text), false, text);
+  }
+  for (const text of ["鸡哥是谁", "谁是鸡哥", "我是谁", "群里他是谁", "@1418509802 他是谁", "这是什么"]) {
+    assert.equal(isDeicticImagePersonQuestion(text), false, text);
+  }
+});
 
 test("identity checks require an exact saved anchor and compare exact QQ mappings", () => {
   assert.equal(parseIdentityCheck("苹果是不是水果", group, [], "99"), undefined);

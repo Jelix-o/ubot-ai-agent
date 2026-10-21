@@ -65,7 +65,14 @@ import {
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import type { BufferedMessage, LiveChatService } from "./services/live-chat-service.js";
 import { buildGroupMemberProfiles } from "./services/member-profile-service.js";
-import { parseMemberIdentityQuery, resolveMemberIdentityQuery, isMemberIdentityQuerySyntax, refreshIdentityDirectory } from "./services/member-identity-query.js";
+import {
+  isDeicticImagePersonQuestion,
+  isExplicitImagePersonQuestion,
+  parseMemberIdentityQuery,
+  resolveMemberIdentityQuery,
+  isMemberIdentityQuerySyntax,
+  refreshIdentityDirectory,
+} from "./services/member-identity-query.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { formatIntervalLabel, isWithinWorkHours } from "./services/scheduled-reminder-service.js";
 import type { SkillService } from "./services/skill-service.js";
@@ -193,6 +200,7 @@ const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 const MSG_MEMBER_PROFILE_UNAVAILABLE = "当前没有可用于回答这位群友相关问题的已保存资料。";
 const MSG_QUOTED_MESSAGE_UNAVAILABLE = "这条引用我没读到，重新引用一下那条消息？";
 const MSG_UNAUTHORIZED_CYBER_REFUSAL = "这类入侵或破解行为不能帮。想学安全可以聊账号安全、防护方案，或在有授权的靶场里练习。";
+const MSG_IMAGE_SELECTION_REQUIRED = "你说的是哪张图？引用一下那条图片消息";
 const MSG_REPLY_ENVELOPE_INVALID = "刚才那条没生成完整，别理它，重新问一句？";
 
 const RUNTIME_COMMAND_SPECS = {
@@ -1136,13 +1144,27 @@ export class BotApplication {
     const group = await this.groupConfigService.getGroup(input.groupId);
     if (!group || group.enabled === false || !this.isCapabilityEnabled("conversation") || (group.blacklistedUserIds ?? []).includes(input.userId)) return undefined;
     const store = repository.orchestration;
-    // Identity questions are deterministic lookups, isolated from topic/model routing.
-    // This syntax check grants no access: verified objects and exact aliases are
-    // resolved again from the actual event before any member data is read.
-    if (isMemberIdentityQuerySyntax(input.text)) return this.conversationContextRouter.resolve({ ...input, resolvedContext: { newTopic: true } });
     if (!store || isMemberProfileQueryRequest(input.text)) return this.conversationContextRouter.resolve(input);
     const now = store.sourceReceivedAt(input.sourceRowId) ?? input.nowMs ?? Date.now();
     const excluded = [...(group.blacklistedUserIds ?? []), ...(group.memoryDisabledUserIds ?? [])];
+    const explicitImagePersonQuestion = isExplicitImagePersonQuestion(input.text);
+    const deicticImagePersonQuestion = isDeicticImagePersonQuestion(input.text);
+    // Only an explicit visual phrase can recover a prior image by proximity.
+    // A bare "他是谁" still needs an image on this message or its quote; an
+    // unrelated recent photo must not steal an ordinary member lookup.
+    const recentImageCandidates = explicitImagePersonQuestion && !excluded.includes(input.userId)
+      ? store.recentMedia(input.groupId, input.userId, input.sourceRowId, now)
+      : [];
+    // Identity questions are normally deterministic lookups. A visually
+    // deictic question needs its image anchor first: otherwise "这是哪位" can
+    // be reduced to the fake member name "这" before vision sees the image.
+    const deferIdentityForImage = explicitImagePersonQuestion ||
+      (deicticImagePersonQuestion && (
+        Boolean(input.hasImages) || Boolean(input.replyToMessageId)
+      ));
+    if (isMemberIdentityQuerySyntax(input.text) && !deferIdentityForImage) {
+      return this.conversationContextRouter.resolve({ ...input, resolvedContext: { newTopic: true } });
+    }
     const contextEnabled = group.ambientGroupContextEnabled !== false;
     const candidates = store.listCandidates(input.groupId, input.sourceRowId, now, excluded)
       .filter(candidate => contextEnabled || candidate.ownerUserId === input.userId);
@@ -1230,17 +1252,24 @@ export class BotApplication {
           anchor: { ...resolution.anchor!, topicCandidateId: recentClusterRoute.branchId },
         };
     }
-    if (!input.hasImages && isMediaReference(input.text) && !excluded.includes(input.userId)) {
+    const mediaReference = isMediaReference(input.text, {
+      includeDeictic: deicticImagePersonQuestion && (Boolean(input.hasImages) || Boolean(input.replyToMessageId)),
+    });
+    if (!input.hasImages && mediaReference && !excluded.includes(input.userId)) {
       const media = input.replyToMessageId
         ? store.mediaByIds(input.groupId, [input.replyToMessageId], input.sourceRowId, excluded)
-        : store.recentMedia(input.groupId, input.userId, input.sourceRowId, now);
+        : recentImageCandidates.length ? recentImageCandidates : store.recentMedia(input.groupId, input.userId, input.sourceRowId, now);
       if (media.length === 1) {
         resolution.mediaSourceMessageIds = [media[0].sourceMessageId];
         resolution.intent = "image";
         resolution.relation = "supplement";
         resolution.clarification = undefined;
         if (!input.replyToMessageId && media[0].branchId) resolution.topicCandidateId = media[0].branchId;
-      } else if (media.length > 1) resolution.clarification = "你说的是哪张图？引用一下那条图片消息";
+      } else if (media.length > 1) {
+        resolution.intent = "image";
+        resolution.relation = "supplement";
+        resolution.clarification = MSG_IMAGE_SELECTION_REQUIRED;
+      }
     }
     if (bareOpinionRequest && !hasReadableReference(reference) && resolution.selectedMessageIds.length === 0 && !resolution.clarification) {
       resolution.clarification = contextEnabled ? "你是说刚才哪件事？我这边没读到上一段讨论" : "本群没开启近期群聊上下文，把要我评价的那段引用一下？";
@@ -2899,7 +2928,6 @@ export class BotApplication {
       selfProfileQuery || explicitProfileTargetUserIds.length > 0 || profileAliasResolution.status !== "none" ||
       isUnresolvedMemberProfileQuery(memberQueryText)
     );
-    const identityQuery = parseMemberIdentityQuery(normalizedUserInput, groupConfig, messageContext.interactionTargets, this.botQq);
     const sourceRowId = messageContext.sourceMessageId
       ? this.conversationContextRepository?.getSourceRowId?.(
         groupConfig.groupId,
@@ -2931,6 +2959,23 @@ export class BotApplication {
     const options = baseOptions;
     const orchestration = this.conversationContextRepository?.orchestration;
     if (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId)) return;
+    let contextResolution = sourceRowId === undefined ? undefined : orchestration?.getResolution(sourceRowId);
+    const deicticImagePersonQuestion = isDeicticImagePersonQuestion(normalizedUserInput);
+    const hasImageAnchor = currentMessageHasImages ||
+      (messageContext.replyContext?.images?.length ?? 0) > 0 ||
+      Boolean(contextResolution?.mediaSourceMessageIds.length);
+    // A named alias and an ordinary pronoun still use member identity lookup.
+    // Explicit visual wording is never reduced to a name such as "这", even
+    // while a missing or ambiguous image is being resolved.
+    const visualImagePersonQuery = deicticImagePersonQuestion && (
+      hasImageAnchor || isExplicitImagePersonQuestion(normalizedUserInput)
+    );
+    const visualIdentityInstruction = visualImagePersonQuery
+      ? "用户在问图中人物。只能根据图片可见内容回答；无法可靠确认身份时直接说明看不出来。不得把发图者、引用作者、群成员名片或外号当作图中人物。"
+      : undefined;
+    const identityQuery = visualImagePersonQuery
+      ? undefined
+      : parseMemberIdentityQuery(normalizedUserInput, groupConfig, messageContext.interactionTargets, this.botQq);
     if (identityQuery) {
       await this.identityQueryLock.run(`${groupConfig.groupId}:${conversationRoute?.turnId ?? messageContext.sourceMessageId ?? userId}`, async () => {
         if (conversationRoute && this.conversationContextRepository?.hasAssistantReplyForTurn?.(conversationRoute.branchId, conversationRoute.turnId)) return;
@@ -2969,7 +3014,11 @@ export class BotApplication {
       await this.persistAssistantContext(conversationRoute, MSG_UNAUTHORIZED_CYBER_REFUSAL, receipt ? [receipt] : []);
       return;
     }
-    let contextResolution = sourceRowId === undefined ? undefined : orchestration?.getResolution(sourceRowId);
+    // A picture reply is evidence for vision, not an identity target. Keep the
+    // media for delivery, but do not let its sender turn into person context.
+    if (visualImagePersonQuery) {
+      messageContext = { ...messageContext, interactionTargets: [] };
+    }
     // Route planning may have hit a transient remote failure before this worker
     // gets a second chance to resolve the same quote. A recovered quote wins
     // over that persisted placeholder, including after a worker restart.
@@ -3014,6 +3063,14 @@ export class BotApplication {
       normalizedUserInput = merged.text || normalizedUserInput;
       const media = orchestration.mediaByIds(groupConfig.groupId, contextResolution?.mediaSourceMessageIds ?? [], sourceRowId, excludedContextUsers);
       images = uniqueConversationImages([...images, ...merged.images, ...media.flatMap(item => item.images)]);
+    }
+    const hasResolvedImage = images.length > 0 || (messageContext.replyContext?.images?.length ?? 0) > 0;
+    if (isExplicitImagePersonQuestion(normalizedUserInput) && !hasResolvedImage &&
+      contextResolution?.clarification !== MSG_IMAGE_SELECTION_REQUIRED) {
+      const missingImageText = "我没看到你指的图，引用那条图片消息或重发一下。";
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, missingImageText, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, missingImageText, receipt ? [receipt] : []);
+      return;
     }
     const knowledgeSessionKey = knowledgeContinuationKey(groupConfig.groupId, userId);
     let knowledgeSession = this.knowledgeContinuationSessions.get(knowledgeSessionKey);
@@ -3183,16 +3240,17 @@ export class BotApplication {
     // Fail closed: routed production messages read only their causal branch.
     // The branch was loaded above so a deterministic knowledge answer could
     // bypass the vision gate, and is reused here for model context.
-    const history = causalHistory
-      .map((turn): ConversationTurn => ({
-        groupId: groupConfig.groupId,
-        role: turn.role,
-        content: turn.role === "user"
-          ? formatCausalUserTurn(turn.userId, turn.content, promptGroupConfig)
-          : turn.content,
-        ...(turn.userId ? { userId: turn.userId } : {}),
-        timestamp: new Date(turn.createdAt).toISOString(),
-      }));
+    const history: ConversationTurn[] = visualImagePersonQuery
+      ? []
+      : causalHistory.map((turn): ConversationTurn => ({
+          groupId: groupConfig.groupId,
+          role: turn.role,
+          content: turn.role === "user"
+            ? formatCausalUserTurn(turn.userId, turn.content, promptGroupConfig)
+            : turn.content,
+          ...(turn.userId ? { userId: turn.userId } : {}),
+          timestamp: new Date(turn.createdAt).toISOString(),
+        }));
     const evaluationTargetUserIds = collectEvaluationTargetUserIds(
       messageContext.interactionTargets,
       this.botQq,
@@ -3319,13 +3377,18 @@ export class BotApplication {
     let ambientGroupContextStatus:
       | "loaded"
       | "member_profile_query"
+      | "visual_image"
       | "disabled"
       | "explicit_reply"
       | "targeted_group_evidence"
       | "missing_source"
       | "unavailable"
       | "read_failed";
-    if (targetedMemberProfileRequested) {
+    if (visualImagePersonQuery) {
+      // A photo's sender and its nearby discussion do not establish who is
+      // pictured. Vision gets the image itself, without roster context.
+      ambientGroupContextStatus = "visual_image";
+    } else if (targetedMemberProfileRequested) {
       // A member-profile query must be answered from approved durable profile
       // data only. Do not mix in nearby messages or the quoted reply used to
       // identify the target.
@@ -3377,10 +3440,12 @@ export class BotApplication {
       }
     }
     const ambientGroupContextChars = formatRecentGroupEvidenceForMetrics(ambientGroupContext).length;
-    const conversationState = !targetedMemberProfileRequested
+    const conversationState = !targetedMemberProfileRequested && !visualImagePersonQuery
       ? orchestration?.readState(conversationStateHistory, excludedContextUsers) ?? emptyConversationState()
       : emptyConversationState();
-    if (!targetedMemberProfileRequested && conversationRoute && orchestration) conversationState.pendingMedia = orchestration.pendingMedia(conversationRoute, excludedContextUsers);
+    if (!targetedMemberProfileRequested && !visualImagePersonQuery && conversationRoute && orchestration) {
+      conversationState.pendingMedia = orchestration.pendingMedia(conversationRoute, excludedContextUsers);
+    }
     const replyPolicy = new ReplyPolicyService();
     const replyPlan = replyPolicy.plan({
       resolution: contextResolution ?? resolveContextByRules({
@@ -3397,7 +3462,7 @@ export class BotApplication {
       return;
     }
     // L5 群氛围：注入的是摘要而不是原文（计划 §3/§5.2）。
-    const atmosphere = !targetedMemberProfileRequested && this.atmosphereSummarizer
+    const atmosphere = !targetedMemberProfileRequested && !visualImagePersonQuery && this.atmosphereSummarizer
       ? (this.atmosphereSummarizer.getSummary(groupConfig.groupId) ?? this.atmosphereSummarizer.summarizeNow(
           groupConfig.groupId,
           this.groupTranscriptService.getRecentMessages(groupConfig.groupId, {
@@ -3415,7 +3480,7 @@ export class BotApplication {
     const replyLengthInstruction = explicitReplyLengthPlan
       ? buildExplicitReplyLengthInstruction(explicitReplyLengthPlan)
       : undefined;
-    const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction,
+    const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction, visualIdentityInstruction,
       !targetedMemberProfileRequested ? replyPolicy.instruction(replyPlan, conversationState, {
         formatBudget: replyFormatBudget,
         explicitReplyLength: Boolean(explicitReplyLengthPlan),
@@ -3423,20 +3488,22 @@ export class BotApplication {
       .filter((instruction): instruction is string => Boolean(instruction))
       .join("\n\n");
     const currentSpeaker = buildCurrentSpeaker(promptGroupConfig, userId, messageContext);
-    const memoryQueryText = [
-      normalizedUserInput,
-      messageContext.replyContext?.text ?? "",
-      ...messageContext.interactionTargets.flatMap((target) => target.names),
-    ].join(" ");
+    const memoryQueryText = visualImagePersonQuery
+      ? normalizedUserInput
+      : [
+          normalizedUserInput,
+          messageContext.replyContext?.text ?? "",
+          ...messageContext.interactionTargets.flatMap((target) => target.names),
+        ].join(" ");
     const memberProfileTargetUserId = targetedMemberProfileRequested ? evaluationTargetUserIds[0]! : undefined;
     // Generic "you tell us" and terse reactions to an explicit quote only need
     // the anchor selected for this turn. Old durable profiles would turn a
     // short prompt into a stale personal-topic answer.
-    const suppressLongTermMemory = !memberProfileTargetUserId && (
+    const suppressLongTermMemory = visualImagePersonQuery || (!memberProfileTargetUserId && (
       contextResolution?.anchor?.kind === "recent_cluster" ||
       isBareOpinionRequest(normalizedUserInput) ||
       (Boolean(messageContext.replyContext) && isReferenceDependentShortReaction(normalizedUserInput))
-    );
+    ));
     const memoryIdentityTerms = collectMemoryIdentityTerms(
       promptGroupConfig,
       memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds],
@@ -3472,7 +3539,7 @@ export class BotApplication {
           return [];
         })
         : Promise.resolve([]),
-      targetedMemberProfileRequested
+      visualImagePersonQuery || targetedMemberProfileRequested
         ? Promise.resolve(undefined)
         : this.resolveRealtimeLookup(groupConfig, replyPlan.resolvedInput),
     ]);
@@ -3530,10 +3597,10 @@ export class BotApplication {
       : memberProfiles;
     const allImages = targetedMemberProfileRequested
       ? []
-      : [
+      : uniqueConversationImages([
         ...images,
         ...(messageContext.replyContext?.images ?? []),
-      ];
+      ]);
     // 图片两阶段（计划 §4）：Stage1 本地化（NapCat 缓存 → 内部代理）→ data URL；
     // 失败进入分级话术（L1-L4），绝不说成"思考超时"。
     const visionEnabled = groupConfig.visionEnabled === true;
@@ -3555,6 +3622,15 @@ export class BotApplication {
     // Referenced-message image metadata is also untrusted media input. Keep it
     // out of the model payload unless this group explicitly enabled vision.
     const replyContextForAi = targetedMemberProfileRequested ? undefined : (() => {
+      if (visualImagePersonQuery && messageContext.replyContext) {
+        return {
+          messageId: messageContext.replyContext.messageId,
+          text: "",
+          ...(visionEnabled && messageContext.replyContext.images?.length
+            ? { images: messageContext.replyContext.images }
+            : {}),
+        };
+      }
       if (
         visionEnabled ||
         !messageContext.replyContext ||
@@ -3696,7 +3772,9 @@ export class BotApplication {
       );
       if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) return;
       const stateSources = orchestration?.sourceMap(causalHistory, ambientGroupContext, messageContext.sourceMessageId ?? "", userId);
-      if (stateSources && messageContext.replyContext?.userId) stateSources.set(messageContext.replyContext.messageId, messageContext.replyContext.userId);
+      if (stateSources && messageContext.replyContext?.userId && !visualImagePersonQuery) {
+        stateSources.set(messageContext.replyContext.messageId, messageContext.replyContext.userId);
+      }
       if (stateSources && sourceRowId !== undefined) {
         for (const media of orchestration!.mediaByIds(groupConfig.groupId, contextResolution?.mediaSourceMessageIds ?? [], sourceRowId, excludedContextUsers)) stateSources.set(media.sourceMessageId, media.userId);
       }

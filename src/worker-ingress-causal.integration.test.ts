@@ -1103,10 +1103,10 @@ function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConf
   const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides }, groupMemoryStore });
   let time = Date.now() - 90_000, messageId = 40_000;
   t.after(async () => { await bot.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
-  const add = (text: string, userId = USER_ID, options: { image?: boolean; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
+  const add = (text: string, userId = USER_ID, options: { image?: boolean; imageUrl?: string; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
     time += options.elapsed ?? 1_000;
     const id = ++messageId;
-    const images = options.image ? [{ url: "https://example.test/score.png" }] : [];
+    const images = options.image ? [{ url: options.imageUrl ?? "https://example.test/score.png" }] : [];
     const sourceRowId = db.insertMessage({ groupId: GROUP_ID, userId, selfId: BOT_QQ, msgId: String(id), msgTime: time, createdAt: time, text,
       imagesJson: JSON.stringify(images), hasAtBot: !options.passive, isBotMsg: false,
       ...(options.excludedDrop ? { processable: false, dropReason: "rate_limited" } : {}),
@@ -1436,6 +1436,147 @@ test("replay: image followed 15 seconds later by look-at-the-image cancels the o
   assert.equal(f.ai.calls.at(-1)?.images?.[0]?.url, "https://example.test/score.png");
   assert.ok(f.identity().replyPlan?.mediaSourceMessageIds?.includes(image.id));
   assert.equal(rows.some(row => /没.*图|补发/.test(row.text)), false);
+});
+
+test("replay: a deictic who-question after one recent image carries that image to vision instead of querying identities", async t => {
+  const f = conversationReplay(t, { manualIdentities: [{ userIds: ["20002"], names: ["这"] }] });
+  let directoryReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; return []; };
+  const image = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/person.png", passive: true });
+  f.ai.replies.push({ text: "光凭这张图我认不出是谁。" });
+
+  const question = await f.ask("这是哪位", USER_ID, { elapsed: 37_000 });
+
+  assert.equal(directoryReads, 0);
+  assert.equal(f.ai.calls.length, 1);
+  assert.equal(f.ai.calls[0]?.userInput, "这是哪位");
+  assert.deepEqual(f.ai.calls[0]?.images?.map(item => item.url), ["https://example.test/person.png"]);
+  assert.equal(f.identity().replyPlan?.intent, "image");
+  assert.ok(f.identity().replyPlan?.mediaSourceMessageIds?.includes(image.id));
+  const row = identityOutbox(f).at(-1);
+  assert.equal(row?.reply_to, question.id);
+  assert.match(row?.text ?? "", /光凭这张图我认不出是谁/);
+  assert.doesNotMatch(row?.text ?? "", /称呼还没对上|@ 一下/);
+});
+
+test("replay: a direct reply to an image keeps that image ahead of newer media and identity routing", async t => {
+  const f = conversationReplay(t);
+  let directoryReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; return []; };
+  const quoted = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/quoted.png", passive: true });
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/newer.png", passive: true });
+  f.ai.replies.push({ text: "这张图里的人我没法可靠确认。" });
+
+  const question = await f.ask("这是哪位", USER_ID, { elapsed: 37_000, replyToMessageId: quoted.id });
+
+  assert.equal(directoryReads, 0);
+  assert.equal(f.ai.calls.length, 1);
+  assert.deepEqual(f.ai.calls[0]?.images?.map(item => item.url), ["https://example.test/quoted.png"]);
+  assert.equal(f.identity().replyPlan?.intent, "image");
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
+  assert.equal(identityOutbox(f).at(-1)?.reply_to, question.id);
+  assert.doesNotMatch(identityOutbox(f).at(-1)?.text ?? "", /称呼还没对上|@ 一下/);
+});
+
+test("replay: a picture-person question does not expose the quoted image author's identity to vision", async t => {
+  const authorId = "20002";
+  const memoryStore = {
+    async listRelevantEnabled() {
+      return [{
+        id: "quoted-author-profile",
+        groupId: GROUP_ID,
+        type: "member_profile" as const,
+        subjectUserId: authorId,
+        title: "图片作者画像",
+        content: "这是一条不该送进看图请求的成员画像。",
+        confidence: 1,
+        source: "test",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        enabled: true,
+      }];
+    },
+  } as unknown as TestBotOptions["groupMemoryStore"];
+  const f = conversationReplay(t, {
+    manualIdentities: [
+      { userIds: [USER_ID], names: ["提问者"] },
+      { userIds: [authorId], names: ["图片作者", "不该用于认图的外号"] },
+    ],
+  }, false, memoryStore);
+  const image = f.add("", authorId, { image: true, imageUrl: "https://example.test/quoted-person.png", passive: true });
+  f.ai.replies.push({ text: "只看这张图，我认不出具体是谁。" });
+
+  await f.ask("这是哪位", USER_ID, { elapsed: 37_000, replyToMessageId: image.id });
+
+  const identity = f.identity();
+  assert.deepEqual(f.ai.calls[0]?.images?.map(item => item.url), ["https://example.test/quoted-person.png"]);
+  assert.equal(identity.interactionTargets, undefined);
+  assert.equal(identity.replyContext?.userId, undefined);
+  assert.equal(identity.replyContext?.userName, undefined);
+  assert.equal(identity.manualIdentities?.some(item => item.userIds.includes(authorId)) ?? false, false);
+  assert.equal(identity.groupMemories?.some(item => item.subjectUserId === authorId) ?? false, false);
+  assert.equal(identity.memberProfiles?.some(item => item.userId === authorId) ?? false, false);
+});
+
+test("replay: ambiguous recent images clarify the pictured object without calling vision or the identity directory", async t => {
+  const f = conversationReplay(t, { manualIdentities: [{ userIds: ["20002"], names: ["这"] }] });
+  let directoryReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; return []; };
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/one.png", passive: true });
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/two.png", passive: true });
+
+  const question = await f.ask("这是哪位", USER_ID, { elapsed: 37_000 });
+
+  assert.equal(directoryReads, 0);
+  assert.equal(f.ai.calls.length, 0);
+  const row = identityOutbox(f).at(-1);
+  assert.equal(row?.reply_to, question.id);
+  assert.match(row?.text ?? "", /哪张图.*引用/);
+});
+
+test("replay: an explicit picture-person question without an image asks for the picture instead of querying identities", async t => {
+  const f = conversationReplay(t, { manualIdentities: [{ userIds: ["20002"], names: ["这"] }] });
+  let directoryReads = 0;
+  f.transport.listGroupMembers = async () => { directoryReads++; return []; };
+
+  await f.ask("这是哪位");
+
+  assert.equal(directoryReads, 0);
+  assert.equal(f.ai.calls.length, 0);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /没看到.*图.*引用.*重发/);
+});
+
+test("replay: a named alias and a real @ remain identity lookups even when a recent image exists", async t => {
+  const f = conversationReplay(t, { manualIdentities: [
+    { userIds: ["20002"], names: ["成员乙", "鸡哥"] },
+  ] });
+  const image = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/incidental.png", passive: true });
+  await f.ask("鸡哥是谁", USER_ID, { elapsed: 37_000 });
+  const mention = f.add("他是谁", USER_ID);
+  (mention.event.message as any[]).push({ type: "at", data: { qq: "20002" } });
+  const route = await f.bot.prepareConversationRoute(mention.input);
+  await f.bot.handleGroupMessage(mention.event, undefined, route);
+
+  const rows = identityOutbox(f);
+  assert.equal(f.ai.calls.length, 0);
+  assert.equal(rows[0]?.text, "鸡哥就是成员乙。");
+  assert.equal(rows[1]?.text, "这位是成员乙。");
+  assert.ok(image.id);
+});
+
+test("replay: an unrelated recent image does not turn a real @ identity query into vision", async t => {
+  const f = conversationReplay(t, {
+    manualIdentities: [{ userIds: ["20002"], names: ["成员乙"] }],
+  });
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/unrelated.png", passive: true });
+  const mention = f.add("他是谁", USER_ID);
+  (mention.event.message as any[]).push({ type: "at", data: { qq: "20002" } });
+  const route = await f.bot.prepareConversationRoute(mention.input);
+  await f.bot.handleGroupMessage(mention.event, undefined, route);
+
+  assert.equal(f.ai.calls.length, 0);
+  assert.equal(f.ai.resolutions.length, 0);
+  assert.equal(identityOutbox(f).at(-1)?.text, "这位是成员乙。");
 });
 
 test("replay: a short reaction to an acknowledged bot reply keeps the quoted reply as the authority anchor", async t => {

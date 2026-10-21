@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ContextResolver, isDirectedFollowUp, resolveContextByRules } from "./context-resolver.js";
+import { ContextResolver, isDeicticImageReference, isDirectedFollowUp, isMediaReference, resolveContextByRules } from "./context-resolver.js";
 import { ConversationReplyEnvelopeError, emptyConversationState, hasConversationReplyEnvelopeMarker, parseConversationReply, sanitizeConversationUpdate, type ContextResolution } from "./conversation-state.js";
 import { ReplyPolicyService } from "./reply-policy-service.js";
 import type { AmbientGroupContextMessage } from "../types.js";
@@ -51,6 +51,27 @@ test("a readable explicit reply is an authority anchor for short reactions and n
   const plan = buildReplyPlan(result);
   assert.equal(plan.anchor?.kind, "explicit_reply");
   assert.match(replyPolicy.instruction(plan, emptyConversationState()), /已恢复引用消息/);
+});
+
+test("deictic person questions are media references without swallowing named identity queries", () => {
+  for (const text of ["这是哪位", "这是谁", "图里是谁", "图中的这个人是谁", "这个人是谁", "她是谁"]) {
+    assert.equal(isDeicticImageReference(text), true, text);
+  }
+  for (const text of ["这是哪位", "这是谁", "图里是谁", "图中的这个人是谁", "这个人是谁"]) assert.equal(isMediaReference(text), true, text);
+  assert.equal(isMediaReference("她是谁"), false);
+  assert.equal(isMediaReference("她是谁", { includeDeictic: true }), true);
+  for (const text of ["鸡哥是谁", "成员甲是哪位", "谁是鸡哥", "认识鸡哥吗"]) {
+    assert.equal(isDeicticImageReference(text), false, text);
+    assert.equal(isMediaReference(text), false, text);
+  }
+  const imageReply = resolveContextByRules({
+    userId: "a", text: "这是哪位", hasImages: false, replyToMessageId: "photo",
+    reference: { messageId: "photo", text: "", images: [{ url: "https://example.test/photo.png" }] },
+    messages: [], candidates: [],
+  });
+  assert.equal(imageReply.intent, "image");
+  assert.equal(imageReply.relation, "supplement");
+  assert.deepEqual(imageReply.mediaSourceMessageIds, ["photo"]);
 });
 
 test("lookup ellipsis is resolved before tools see it and explicit ambiguity stays specific", async () => {

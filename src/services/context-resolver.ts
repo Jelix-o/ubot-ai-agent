@@ -80,8 +80,33 @@ export class ContextResolver {
   }
 }
 
-export function isMediaReference(text: string): boolean {
-  return /(?:看图|读图|图里|图上|这(?:张|个)图|刚(?:才)?(?:发|那).*图|战绩图|截图|图片呢)/u.test(text);
+const EXPLICIT_MEDIA_REFERENCE = /(?:看图|读图|图里|图上|图中|这(?:张|个)图|刚(?:才)?(?:发|那).*图|战绩图|截图|图片呢)/u;
+const EXPLICIT_DEICTIC_IMAGE_REFERENCE = /^(?:请问|你知道|说说)?(?:图(?:里|上|中)(?:的)?(?:这(?:位|个(?:人)?|人)?)?|这(?:位|个(?:人)?|人)?)(?:是)?(?:谁|哪位|哪个)$/u;
+const BARE_PERSON_REFERENCE = /^(?:请问|你知道|说说)?(?:他|她)(?:是)?(?:谁|哪位|哪个)$/u;
+
+function normalizeReferenceQuestion(text: string): string {
+  return text.normalize("NFKC").trim().replace(/[？?。！!]+$/u, "").replace(/(?:吗|嘛|呢)$/u, "").trim();
+}
+
+/**
+ * These are deictic questions: their subject has no independent name and
+ * becomes meaningful only when the caller has recovered an image anchor.
+ * Keep named aliases out of this set so "鸡哥是谁" remains an identity query.
+ */
+export function isDeicticImageReference(text: string): boolean {
+  const value = normalizeReferenceQuestion(text);
+  return EXPLICIT_DEICTIC_IMAGE_REFERENCE.test(value) || BARE_PERSON_REFERENCE.test(value);
+}
+
+/**
+ * Text such as "这是哪位" is specific enough to start image-anchor recovery.
+ * Bare "他/她是谁" is only visual when the caller has already established an
+ * image anchor; otherwise it remains available to the member-identity path.
+ */
+export function isMediaReference(text: string, options: { includeDeictic?: boolean } = {}): boolean {
+  const value = normalizeReferenceQuestion(text);
+  return EXPLICIT_MEDIA_REFERENCE.test(value) || EXPLICIT_DEICTIC_IMAGE_REFERENCE.test(value) ||
+    (options.includeDeictic === true && BARE_PERSON_REFERENCE.test(value));
 }
 
 export function hasReadableReference(reference?: ReferencedMessage): boolean {
@@ -168,22 +193,24 @@ export function resolveContextByRules(input: ContextResolverInput): ContextResol
   const text = input.text.trim();
   if (hasReadableReference(input.reference)) {
     const reference = input.reference!;
+    const usesReferenceImage = reference.images.length > 0 && isMediaReference(text, { includeDeictic: true });
+    const imageIntent = input.hasImages || usesReferenceImage;
     const nearby = selectDiscussionClusterAroundMessage(input.messages, reference.messageId);
     const selectedMessageIds = [...new Set([
       reference.messageId,
       ...nearby.flatMap(message => message.messageId ? [message.messageId] : []),
     ])];
-    const intent: ConversationIntent = input.hasImages || isMediaReference(text) ? "image"
+    const intent: ConversationIntent = imageIntent ? "image"
       : /(?:为什么|解释|展开|详细|比较|对比|区别)/u.test(text) ? "explain"
       : /(?:你错了|别胡扯|他在吹牛)/u.test(text) ? "challenge"
       : /(?:天气|股价|价格|最新|查一下|查询|搜索)/u.test(text) ? "lookup"
       : /(?:正常吗|对吗|是不是|是太)/u.test(text) ? "confirm" : "chat";
     return {
       intent,
-      relation: input.hasImages || isMediaReference(text) ? "supplement" : "follow_up",
+      relation: imageIntent ? "supplement" : "follow_up",
       resolvedInput: text || (reference.images.length ? "回应引用的图片" : "回应引用的消息"),
       selectedMessageIds,
-      mediaSourceMessageIds: [],
+      mediaSourceMessageIds: usesReferenceImage ? [reference.messageId] : [],
       needsMoreContext: false,
       source: "rules",
       anchor: { kind: "explicit_reply", messageIds: selectedMessageIds },

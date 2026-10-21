@@ -32,6 +32,33 @@ const realTargetIds = (targets: AiInteractionTarget[], botQq: string) => [...new
   .filter(target => target.source === "mention" || target.source === "reply")
   .flatMap(target => target.userId && target.userId !== botQq ? [target.userId] : []))];
 
+function normalizeDeicticImagePersonQuestion(text: string): string {
+  return text.normalize("NFKC").trim()
+    .replace(/[?？。!！]+$/u, "")
+    .replace(/(?:吗|嘛|呢|啊|呀)$/u, "")
+    .replace(/\s+/gu, "");
+}
+
+/**
+ * A visual-deictic person question that should ask for a picture when no
+ * image anchor exists. It deliberately excludes names, @ mentions and pronouns.
+ */
+export function isExplicitImagePersonQuestion(text: string): boolean {
+  const value = normalizeDeicticImagePersonQuestion(text);
+  return /^(?:这|这个|这位|这人|这个人)(?:是)?(?:谁|哪位)$/u.test(value) ||
+    /^(?:图|图片|照片)(?:里|中|上)(?:的)?(?:(?:这|这个)?人)?(?:是)?(?:谁|哪位)$/u.test(value) ||
+    /^(?:这张图|这图片|这照片)(?:里|中|上)?(?:的)?(?:(?:这|这个)?人)?(?:是)?(?:谁|哪位)$/u.test(value);
+}
+
+/**
+ * These phrases identify the subject by visual deixis, not by a member name.
+ * They only mean "use the image" after the caller has already established a
+ * same-group image anchor; on their own, they remain ordinary identity syntax.
+ */
+export function isDeicticImagePersonQuestion(text: string): boolean {
+  return isExplicitImagePersonQuestion(text) || /^(?:他|她)(?:是)?(?:谁|哪位)$/u.test(normalizeDeicticImagePersonQuestion(text));
+}
+
 function identityLabel(text: string): { kind: "who" | "recognize"; label: string; groupScoped: boolean } | undefined {
   const value = text.normalize("NFKC").trim().replace(/[?？。!！]+$/u, "").replace(/(?:吗|嘛|呢)$/u, "").trim();
   const prefix = "(?:请问|告诉我|说说|你知道|你还记得|知道|还记得)?";
