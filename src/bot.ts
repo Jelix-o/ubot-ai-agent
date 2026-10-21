@@ -38,6 +38,7 @@ import {
   emptyConversationState,
   hasConversationReplyEnvelopeMarker,
   selectConversationEvidence,
+  type ReplyPlan,
 } from "./services/conversation-state.js";
 import { ReplyPolicyService } from "./services/reply-policy-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
@@ -85,7 +86,7 @@ import {
   type HtmlPreviewService,
   type ParsedHtmlPreviewRequest,
 } from "./services/html-preview-service.js";
-import { formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
+import { detectRealtimeIntent, formatRealtimeLookupFooter } from "./services/realtime-lookup-service.js";
 import type { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import type { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { getBlacklistedAtMemeImageFile } from "./services/blacklisted-at-meme.js";
@@ -3541,7 +3542,7 @@ export class BotApplication {
         : Promise.resolve([]),
       visualImagePersonQuery || targetedMemberProfileRequested
         ? Promise.resolve(undefined)
-        : this.resolveRealtimeLookup(groupConfig, replyPlan.resolvedInput),
+        : this.resolveRealtimeLookup(groupConfig, replyPlan),
     ]);
     const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
     const visibleSubjectUserIds = new Set(memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds]);
@@ -3887,24 +3888,48 @@ export class BotApplication {
 
   private async resolveRealtimeLookup(
     groupConfig: GroupBotConfig,
-    userInput: string,
+    plan: ReplyPlan,
   ): Promise<RealtimeLookupResult | undefined> {
     if (!this.isCapabilityEnabled("realtime_lookup") || !this.realtimeLookupService || groupConfig.onlineLookupEnabled !== true) {
       return undefined;
     }
+    if (plan.lookupRequired === false) return undefined;
+    const originalKind = detectRealtimeIntent(plan.resolvedInput);
+    const text = originalKind === "weather" || originalKind === "stock"
+      ? plan.resolvedInput : plan.lookupQuery || plan.resolvedInput;
+    const detected = detectRealtimeIntent(text);
+    const intent = detected ?? (plan.lookupRequired === true ? "web" : undefined);
+    if (!intent) return undefined;
 
     try {
       const settings = await this.systemSettingsStore?.getInternal();
       if (settings?.onlineLookupEnabled !== true) {
         return undefined;
       }
-      return await this.realtimeLookupService.lookup({ text: userInput });
+      const startedAt = Date.now();
+      const result = await this.realtimeLookupService.lookup({
+        text,
+        ...(!detected ? { intent } : {}),
+      });
+      logInfo("Completed realtime lookup before reply generation.", {
+        groupId: groupConfig.groupId,
+        trigger: plan.lookupRequired ? "reply_plan" : "keywords",
+        kind: intent,
+        status: result?.status ?? "skipped",
+        durationMs: Date.now() - startedAt,
+        resultCount: result?.sources.length ?? 0,
+        failureReason: result?.failureReason,
+      });
+      return result;
     } catch (error) {
       logWarn("Realtime lookup failed before reply generation.", {
         groupId: groupConfig.groupId,
         error: summarizeAiError(error),
       });
-      return undefined;
+      return {
+        kind: intent, status: "unavailable", queriedAt: new Date().toISOString(), sources: [],
+        failureReason: "lookup_failed", promptContext: "The requested lookup failed. Do not invent current facts.",
+      };
     }
   }
 

@@ -1,6 +1,7 @@
 import type { AiReply, SkillDefinition } from "../types.js";
 import type { ReplyFormatBudget } from "../utils/reply-format.js";
 import type { ContextResolution, ConversationState, ReplyDetailLevel, ReplyPlan } from "./conversation-state.js";
+import { resolveLookupDecision } from "./lookup-policy.js";
 
 export interface ReplyPolicyInput {
   resolution: ContextResolution;
@@ -49,11 +50,21 @@ export class ReplyPolicyService {
     const answered = state.questions.filter(question => question.userId === userId && question.status === "answered");
     const clarification = resolution.clarification && !answered.some(question => normalize(question.text) === normalize(resolution.clarification!))
       ? resolution.clarification : undefined;
-    const toolNeeds = ["lookup", "image", "task"].includes(resolution.intent) ? [resolution.intent as "lookup" | "image" | "task"] : [];
+    const lookup = resolveLookupDecision(input.userInput ?? resolution.resolvedInput, {
+      lookupRequired: resolution.lookupRequired ?? (resolution.intent === "lookup" ? true : undefined),
+      lookupQuery: resolution.lookupQuery || resolution.resolvedInput,
+    });
+    if (resolution.intent === "image" && resolution.lookupRequired === false) {
+      lookup.lookupRequired = false;
+      delete lookup.lookupQuery;
+    }
+    const toolNeeds: ReplyPlan["toolNeeds"] = ["image", "task"].includes(resolution.intent) ? [resolution.intent as "image" | "task"] : [];
+    if (lookup.lookupRequired) toolNeeds.push("lookup");
     const detailLevel = resolveDetailLevel(resolution, input.userInput ?? resolution.resolvedInput);
     return {
       action: clarification ? "clarify" : toolNeeds.length ? "tool" : "reply",
       intent: resolution.intent,
+      ...lookup,
       explanation: resolution.intent === "explain" ? "requested" : "on_request",
       detailLevel,
       resolvedInput: resolution.resolvedInput,

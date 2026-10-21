@@ -50,6 +50,7 @@ export interface RealtimeLookupServiceOptions {
 
 export interface RealtimeLookupRequest {
   text: string;
+  intent?: RealtimeIntent;
 }
 
 interface TencentQuote {
@@ -101,8 +102,8 @@ export class RealtimeLookupService {
 
   async lookup(request: RealtimeLookupRequest): Promise<RealtimeLookupResult | undefined> {
     const text = request.text.trim();
-    const intent = detectRealtimeIntent(text);
-    if (!intent) {
+    const intent = request.intent ?? detectRealtimeIntent(text);
+    if (!text || !intent) {
       return undefined;
     }
 

@@ -1,5 +1,6 @@
 import type { AmbientGroupContextMessage, ReferencedMessage } from "../types.js";
 import type { ContextResolution, ConversationIntent, ConversationTopicCandidate } from "./conversation-state.js";
+import { isFactCheck, lookupByRules, resolveLookupDecision } from "./lookup-policy.js";
 
 export interface ContextResolverInput {
   userId: string;
@@ -23,6 +24,9 @@ export const CONTEXT_RESOLVER_INSTRUCTION = [
   "普通吹牛、玩笑无需事实审判。用户明确问为什么/解释/比较才 intent=explain；一般闲聊不主动长篇分析。",
   "selectedMessageIds 只选与当前问题直接相关的消息，保留双方原意和来源；最多 24 条。不要挑选无关旁听消息。",
   "resolvedInput 保留当前请求，补充必要主题/槽位，不能把群友意见或旧机器人推测改写成已核实事实；不要扩充用户没要的任务。",
+  '另输出 "lookupRequired":true/false；需要联网时输出 "lookupQuery":"独立、具体的检索问题"。这与 intent 独立，explain/confirm/challenge 也可能需要查资料。',
+  "新作品、新产品、近期事件、具体作品的剧情/战役/版本/发布信息，以及针对外部事实的核实或质疑，应 lookupRequired=true，不要求用户说最新或联网。保留作品原名、数字和版本，不能用旧作品替换陌生的新作品。",
+  "闲聊、玩笑、稳定常识、翻译、写作、纯看图、群友身份或画像问题 lookupRequired=false。只有当前问题及其明确锚定的主题可进入检索词，不包含无关群聊或个人资料。",
 ].join("\n");
 
 export class ContextResolver {
@@ -34,7 +38,9 @@ export class ContextResolver {
     // the auxiliary model reinterpret a short reaction such as "？？？？" or
     // "fw" can only discard that evidence and turn it into a false request for
     // more context.
-    if (fallback.anchor?.kind === "explicit_reply" || fallback.anchor?.kind === "recent_cluster") return fallback;
+    const lockedAnchor = fallback.anchor?.kind === "explicit_reply" || fallback.anchor?.kind === "recent_cluster";
+    const quotedFactQuestion = fallback.intent !== "image" && /(?:支持|参数|性能|是否|什么|哪些|多少钱|版本|真假)/u.test(input.text);
+    if (lockedAnchor && !fallback.lookupRequired && !isFactCheck(input.text) && !quotedFactQuestion) return fallback;
     if (!this.model) return fallback;
     const data = {
       ...input, text: input.text.slice(0, 4_000),
@@ -50,6 +56,15 @@ export class ContextResolver {
       const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
       const intents: ConversationIntent[] = ["chat", "opinion", "explain", "confirm", "challenge", "image", "lookup", "task"];
       if (!parsed || typeof parsed !== "object" || !intents.includes(parsed.intent) || typeof parsed.resolvedInput !== "string" || !parsed.resolvedInput.trim()) return fallback;
+      const lookup = resolveLookupDecision(input.text, {
+        lookupRequired: typeof parsed.lookupRequired === "boolean" ? parsed.lookupRequired
+          : parsed.intent === "lookup" || fallback.lookupRequired ? true : undefined,
+        lookupQuery: typeof parsed.lookupQuery === "string" ? parsed.lookupQuery
+          : fallback.lookupQuery || parsed.resolvedInput,
+      });
+      // An explicit quote remains authoritative. The model may only add the
+      // lookup decision, never discard/reinterpret the recovered reference.
+      if (lockedAnchor) return { ...fallback, ...lookup };
       const allowedIds = new Set(data.messages.flatMap(message => message.messageId ? [message.messageId] : []));
       if (input.reference) allowedIds.add(input.reference.messageId);
       const candidate = input.candidates.find(item => item.id === parsed.topicCandidateId);
@@ -61,7 +76,7 @@ export class ContextResolver {
         ? [...new Set<string>(parsed.selectedMessageIds.filter((id: unknown) => typeof id === "string" && allowedIds.has(id)))].slice(0, 24)
         : fallback.selectedMessageIds;
       return {
-        ...fallback, intent: parsed.intent,
+        ...fallback, ...lookup, intent: parsed.intent,
         relation: ["new", "follow_up", "supplement"].includes(parsed.relation) ? parsed.relation : fallback.relation,
         resolvedInput: parsed.resolvedInput.trim().slice(0, 2_000),
         topicCandidateId: selectedCandidate?.id,
@@ -80,7 +95,7 @@ export class ContextResolver {
   }
 }
 
-const EXPLICIT_MEDIA_REFERENCE = /(?:看图|读图|图里|图上|图中|这(?:张|个)图|刚(?:才)?(?:发|那).*图|战绩图|截图|图片呢)/u;
+const EXPLICIT_MEDIA_REFERENCE = /(?:看图|读图|图(?:片)?(?:里|上|中)|这(?:张|个)图|刚(?:才)?(?:发|那).*图|战绩图|截图|图片呢)/u;
 const EXPLICIT_DEICTIC_IMAGE_REFERENCE = /^(?:请问|你知道|说说)?(?:图(?:里|上|中)(?:的)?(?:这(?:位|个(?:人)?|人)?)?|这(?:位|个(?:人)?|人)?)(?:是)?(?:谁|哪位|哪个)$/u;
 const BARE_PERSON_REFERENCE = /^(?:请问|你知道|说说)?(?:他|她)(?:是)?(?:谁|哪位|哪个)$/u;
 
@@ -190,6 +205,18 @@ function messagesAreContiguous(older: AmbientGroupContextMessage, newer: Ambient
 }
 
 export function resolveContextByRules(input: ContextResolverInput): ContextResolution {
+  const resolution = resolveContextAnchorByRules(input);
+  if (resolution.intent === "image" && !isFactCheck(input.text)) {
+    return { ...resolution, lookupRequired: false };
+  }
+  const referenceQuery = input.reference && isFactCheck(input.text) && lookupByRules(input.reference.text).lookupRequired
+    ? `${input.reference.text}\n${input.text}` : undefined;
+  const decision = resolveLookupDecision(input.text, referenceQuery
+    ? { lookupRequired: true, lookupQuery: referenceQuery } : {});
+  return { ...resolution, ...decision };
+}
+
+function resolveContextAnchorByRules(input: ContextResolverInput): ContextResolution {
   const text = input.text.trim();
   if (hasReadableReference(input.reference)) {
     const reference = input.reference!;
