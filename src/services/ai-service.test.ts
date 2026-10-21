@@ -21,7 +21,7 @@ import {
 import { createKnowledgeToolRuntime } from "./knowledge-query-tools.js";
 import { loadPrivateEnterpriseRanking } from "./private-enterprise-ranking.js";
 import { ReplyPolicyService } from "./reply-policy-service.js";
-import { emptyConversationState } from "./conversation-state.js";
+import { ConversationReplyEnvelopeError, emptyConversationState } from "./conversation-state.js";
 import { resolveContextByRules } from "./context-resolver.js";
 
 test("AI provider failure classification permits only transient cross-model fallback", () => {
@@ -159,6 +159,65 @@ test("reply output budgets are identical for streaming, non-streaming and struct
       }
     }
   }
+});
+
+test("malformed structured metadata is retried once and never returned as natural reply text", async () => {
+  const plan = new ReplyPolicyService().plan({
+    resolution: resolveContextByRules({ userId: "a", text: "你怎么看", hasImages: false, messages: [], candidates: [] }),
+    state: emptyConversationState(),
+    userId: "a",
+  });
+  for (const streaming of [true, false]) {
+    const requests: Array<{ stream?: boolean; messages?: Array<{ role?: string; content?: unknown }> }> = [];
+    let call = 0;
+    const service = new AiService("https://invalid.example", "test", "test", {
+      async create(args: { stream?: boolean; messages?: Array<{ role?: string; content?: unknown }> }) {
+        requests.push(args);
+        const text = call++ === 0
+          ? '先把眼前这一下打好","stateUpdate":{"coveredPoints":["旧建议"]},"review":{"repeatsAnswered":false}}'
+          : '{"text":"先把眼前这一下打好","stateUpdate":{"coveredPoints":["新建议"]},"review":{"repeatsAnswered":false}}';
+        return streaming
+          ? (async function* () { yield { choices: [{ delta: { content: text }, finish_reason: "stop" }] }; })()
+          : { choices: [{ message: { content: text }, finish_reason: "stop" }] };
+      },
+    } as never, { providerCapabilities: { streaming } });
+
+    const reply = await service.generateReply({
+      skill,
+      history: [],
+      userInput: "你怎么看",
+      identityContext: { groupId: "g", currentUserId: "a", replyPlan: plan },
+    });
+    assert.equal(reply.text, "先把眼前这一下打好");
+    assert.deepEqual(reply.conversationUpdate, { coveredPoints: ["新建议"] });
+    assert.equal(reply.replyCheck?.repeatsAnswered, false);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests.map(request => request.stream), [streaming, streaming]);
+    const repair = requests[1]?.messages?.at(-1);
+    assert.equal(repair?.role, "system");
+    assert.match(String(repair?.content), /FORMAT RETRY/);
+  }
+});
+
+test("a second malformed structured envelope is typed for backup routing and never exposed as reply text", async () => {
+  const plan = new ReplyPolicyService().plan({
+    resolution: resolveContextByRules({ userId: "a", text: "你怎么看", hasImages: false, messages: [], candidates: [] }),
+    state: emptyConversationState(),
+    userId: "a",
+  });
+  let calls = 0;
+  const service = new AiService("https://invalid.example", "test", "test", {
+    async create() {
+      calls++;
+      return { choices: [{ message: { content: '正文","stateUpdate":{"coveredPoints":[]}' }, finish_reason: "stop" }] };
+    },
+  } as never, { providerCapabilities: { streaming: false } });
+
+  await assert.rejects(
+    service.generateReply({ skill, history: [], userInput: "你怎么看", identityContext: { groupId: "g", currentUserId: "a", replyPlan: plan } }),
+    (error: unknown) => error instanceof ConversationReplyEnvelopeError && getAiProviderFailureDetails(error).kind === "format_error",
+  );
+  assert.equal(calls, 2);
 });
 
 test("length-truncated replies are rejected even when their structured JSON looks complete", async () => {

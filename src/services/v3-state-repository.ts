@@ -9,7 +9,7 @@ import {
 import type { GroupBotConfig, GroupsConfigFile, SkillDefinition, SystemSettings } from "../types.js";
 import type { GroupMemory, KnowledgeBaseEntry, KnowledgePack, ScheduledReminderTask } from "../types.js";
 import type { SharedDb } from "../shared/sqlite.js";
-import { HUIXIAN_CONVERSATION_REVISION, PREVIOUS_HUIXIAN_CONVERSATION_REVISION, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
+import { HUIXIAN_CONVERSATION_REVISION, PREVIOUS_HUIXIAN_CONVERSATION_REVISIONS, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
 import { validateV3CapabilityPolicy } from "./capability-policy-service.js";
 import { isRetiredModel, isRetiredModelId, removeRetiredGroupModel, removeRetiredModels, RETIRED_GEMINI_MODEL_IDS } from "./retired-models.js";
 
@@ -609,7 +609,7 @@ export class V3StateRepository {
     return this.withImmediateTransaction(() => {
       const key = "huixian_conversation_policy_revision";
       const previousRevision = this.getMeta(key);
-      if (previousRevision && previousRevision !== PREVIOUS_HUIXIAN_CONVERSATION_REVISION) {
+      if (previousRevision && !PREVIOUS_HUIXIAN_CONVERSATION_REVISIONS.some(revision => revision === previousRevision)) {
         return { applied: false, revision: previousRevision };
       }
       const row = this.sharedDb.db.prepare("SELECT profile_json FROM v3_character_profiles WHERE id = 'huixian' AND active = 1").get() as { profile_json: string } | undefined;

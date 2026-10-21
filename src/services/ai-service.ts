@@ -5,7 +5,7 @@ import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upst
 
 import { compilePersonaPolicy } from "../persona/persona-policy.js";
 import { normalizeReplyMaxTokens } from "../shared/reply-token-budget.js";
-import { parseConversationReply } from "./conversation-state.js";
+import { ConversationReplyEnvelopeError, parseConversationReply } from "./conversation-state.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES,
@@ -442,8 +442,35 @@ export class AiService {
     const messages = buildChatMessages(skill, history, userInput, images, identityContext, replyScenarioInstruction);
     const promptChars = countPromptChars(messages);
 
-    const reply = await this.createReply(messages, skill.temperature, signal, toolRuntime);
-    const conversational = identityContext?.replyPlan && !reply.messages?.length ? parseConversationReply(reply.text) : { text: reply.text };
+    let reply = await this.createReply(messages, skill.temperature, signal, toolRuntime);
+    let conversational: ReturnType<typeof parseConversationReply> | { text: string };
+    if (identityContext?.replyPlan && !reply.messages?.length) {
+      try {
+        conversational = parseConversationReply(reply.text);
+      } catch (error) {
+        if (!(error instanceof ConversationReplyEnvelopeError)) throw error;
+
+        // Regenerate once without exposing the malformed draft. If this still
+        // fails, the typed error reaches the reply router, which may select a
+        // configured backup model; otherwise the bot's failure path responds.
+        reply = await this.createReply(
+          [...messages, {
+            role: "system",
+            content: [
+              "FORMAT RETRY: Regenerate your reply from the supplied conversation.",
+              "Return exactly one complete JSON object matching the requested reply schema.",
+              "Do not add prose, markdown fences, or any characters before or after that object.",
+            ].join("\n"),
+          }],
+          skill.temperature,
+          signal,
+          toolRuntime,
+        );
+        conversational = !reply.messages?.length ? parseConversationReply(reply.text) : { text: reply.text };
+      }
+    } else {
+      conversational = { text: reply.text };
+    }
 
     return {
       text: conversational.text,

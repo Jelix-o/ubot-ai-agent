@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import OpenAI from "openai";
 import { ReplyOutputTruncatedError } from "./ai-service.js";
+import { ConversationReplyEnvelopeError } from "./conversation-state.js";
 import type { SystemModelConfig, SystemSettings } from "../types.js";
 import type { RuntimeAiService } from "./configured-ai-service.js";
 import { ReplyModelRouter, retryableModelFailure } from "./reply-model-router.js";
@@ -116,6 +117,15 @@ test("queued cancellation releases the waiter without consuming a permit", async
 test("empty output and parse errors are eligible; errors with 400/403 status are terminal", () => {
   assert.equal(retryableModelFailure(new Error("AI response was empty in non-stream mode.")), true);
   assert.equal(retryableModelFailure(new SyntaxError("Unexpected token in JSON")), true);
+  assert.equal(retryableModelFailure(new ConversationReplyEnvelopeError()), true);
   assert.equal(retryableModelFailure(Object.assign(new Error("bad request"), { status: 400 })), false);
   assert.equal(retryableModelFailure(Object.assign(new Error("forbidden"), { status: 403 })), false);
+});
+
+test("a private reply-envelope failure reaches the configured backup", async () => {
+  const f = fixture();
+  f.behavior.sol = () => Promise.reject(new ConversationReplyEnvelopeError());
+  const result = await f.execute();
+  assert.equal(result.modelId, "gpt");
+  assert.deepEqual(f.calls, ["sol", "gpt"]);
 });

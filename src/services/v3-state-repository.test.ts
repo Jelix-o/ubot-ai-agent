@@ -105,14 +105,23 @@ test("packaged Huixian baseline contains the same managed conversation policy as
   assert.deepEqual(upgradeHuixianConversationProfile(profile), profile);
   assert.ok(profile.systemPrompt.includes(HUIXIAN_CONVERSATION_MARKER));
   assert.ok(profile.styleRules.some(rule => rule.includes("只有用户追问")));
+  assert.equal(profile.exampleExchanges?.some(example => example.user === "玩了十几年还是紧张"), false);
+  assert.equal(profile.exampleExchanges?.some(example => example.user === "我把把 carry"), false);
 });
 
-test("the prior conversation revision upgrades once and snapshots all custom content added after its managed block", async () => {
+test("the r2 conversation revision removes release-owned few-shot scenes and preserves custom examples", async () => {
   await withRepository(async (repository, db) => {
     const old = huixianProfile({ name: "管理员起的名字", temperature: 0.37,
-      systemPrompt: `管理员自定义开头\n\n【会仙对话策略：2026-10-20】\n以下为当前对话风格，覆盖前文对篇幅、铺垫、主动解释和习惯性追问的旧偏好；准确性、尊重和必要风险提醒继续有效。\n${HUIXIAN_CONVERSATION_RULES.join("\n")}\n管理员追加：喜欢游戏梗`,
+      systemPrompt: `管理员自定义开头\n\n【会仙对话策略：2026-10-20-r2】\n当前对话风格由下方受管理的 styleRules 统一定义；本轮明确要求优先于默认篇幅偏好，准确性与必要风险提醒继续有效。\n管理员追加：喜欢游戏梗`,
       styleRules: ["管理员自己的规则", ...HUIXIAN_CONVERSATION_RULES],
-      exampleExchanges: [{ user: "暗号", assistant: "保留自定义示例" }],
+      exampleExchanges: [
+        { user: "玩了十几年还是紧张", assistant: "熟练归熟练，胜负欲又没退休" },
+        { user: "我把把 carry", assistant: "行，队里的大腿是吧😂" },
+        { user: "他在吹牛", assistant: "你这拆台速度，比他交战绩还快" },
+        { user: "为什么熟练了还紧张？", assistant: "操作熟练和在意结果是两回事。你知道怎么打，不代表已经不在乎输赢了" },
+        { user: "管理员自定义", assistant: "行，队里的大腿是吧😂" },
+        { user: "暗号", assistant: "保留自定义示例" },
+      ],
     });
     await repository.saveHuixianProfile(old, "admin:customized-v1");
     repository.setMeta("huixian_conversation_policy_revision", PREVIOUS_HUIXIAN_CONVERSATION_REVISION);
@@ -125,6 +134,11 @@ test("the prior conversation revision upgrades once and snapshots all custom con
     assert.equal(next.systemPrompt.includes("【会仙对话策略：2026-10-20】"), false);
     assert.ok(next.styleRules.includes("管理员自己的规则"));
     assert.ok(next.exampleExchanges?.some(example => example.assistant === "保留自定义示例"));
+    assert.ok(next.exampleExchanges?.some(example => example.user === "管理员自定义" && example.assistant === "行，队里的大腿是吧😂"));
+    assert.equal(next.exampleExchanges?.some(example => example.user === "玩了十几年还是紧张" && example.assistant === "熟练归熟练，胜负欲又没退休"), false);
+    assert.equal(next.exampleExchanges?.some(example => example.user === "我把把 carry" && example.assistant === "行，队里的大腿是吧😂"), false);
+    assert.equal(next.exampleExchanges?.some(example => example.user === "他在吹牛" && example.assistant === "你这拆台速度，比他交战绩还快"), false);
+    assert.equal(next.exampleExchanges?.some(example => example.user === "为什么熟练了还紧张？" && example.assistant === "操作熟练和在意结果是两回事。你知道怎么打，不代表已经不在乎输赢了"), false);
     const snapshot = db.db.prepare("SELECT profile_json FROM v3_character_profile_revisions WHERE changed_by = ?").get(`snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`) as { profile_json: string };
     assert.deepEqual(JSON.parse(snapshot.profile_json), old);
     assert.equal(repository.upgradeHuixianConversationProfileOnce().applied, false);

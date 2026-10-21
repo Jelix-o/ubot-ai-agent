@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ContextResolver, isDirectedFollowUp, resolveContextByRules } from "./context-resolver.js";
-import { emptyConversationState, parseConversationReply, sanitizeConversationUpdate, type ContextResolution } from "./conversation-state.js";
+import { ConversationReplyEnvelopeError, emptyConversationState, hasConversationReplyEnvelopeMarker, parseConversationReply, sanitizeConversationUpdate, type ContextResolution } from "./conversation-state.js";
 import { ReplyPolicyService } from "./reply-policy-service.js";
 import type { AmbientGroupContextMessage } from "../types.js";
 
@@ -31,12 +31,34 @@ test("semantic context returns to the relevant topic and rejects invented ids", 
   assert.equal(buildReplyPlan(result).explanation, "on_request");
 });
 
+test("a readable explicit reply is an authority anchor for short reactions and never calls the auxiliary resolver", async () => {
+  let modelCalls = 0;
+  const resolver = new ContextResolver(async () => {
+    modelCalls += 1;
+    return JSON.stringify({ intent: "chat", relation: "new", resolvedInput: "错误的旧话题", needsMoreContext: true, clarification: "把引用内容再说一遍" });
+  });
+  const result = await resolver.resolve({
+    userId: "a", text: "？？？？", hasImages: false, replyToMessageId: "bot-answer",
+    reference: { messageId: "bot-answer", text: "刚才机器人的回答", images: [] },
+    messages, candidates,
+  });
+
+  assert.equal(modelCalls, 0);
+  assert.equal(result.needsMoreContext, false);
+  assert.equal(result.clarification, undefined);
+  assert.deepEqual(result.selectedMessageIds, ["bot-answer"]);
+  assert.deepEqual(result.anchor, { kind: "explicit_reply", messageIds: ["bot-answer"] });
+  const plan = buildReplyPlan(result);
+  assert.equal(plan.anchor?.kind, "explicit_reply");
+  assert.match(replyPolicy.instruction(plan, emptyConversationState()), /已恢复引用消息/);
+});
+
 test("lookup ellipsis is resolved before tools see it and explicit ambiguity stays specific", async () => {
   const resolver = new ContextResolver(async () => JSON.stringify({ intent: "lookup", relation: "follow_up", resolvedInput: "杭州今天的天气", selectedMessageIds: ["game"] }));
   const resolved = await resolver.resolve({ userId: "a", text: "杭州", hasImages: false, messages, candidates });
   assert.equal(buildReplyPlan(resolved).resolvedInput, "杭州今天的天气");
   const ambiguous = await new ContextResolver(async () => JSON.stringify({ intent: "opinion", relation: "new", resolvedInput: "你来说说", topicCandidateId: "invented", selectedMessageIds: [], clarification: "你说游戏紧张那段，还是钓鱼那段？" }))
-    .resolve({ userId: "a", text: "你来说说", hasImages: false, messages, candidates });
+    .resolve({ userId: "a", text: "结合上面说说", hasImages: false, messages, candidates });
   assert.equal(ambiguous.topicCandidateId, undefined);
   assert.equal(buildReplyPlan(ambiguous).action, "clarify");
   assert.match(ambiguous.clarification!, /游戏.*钓鱼/);
@@ -52,6 +74,17 @@ test("unavailable semantic selection keeps the bounded shared discussion, includ
   assert.match(replyPolicy.instruction(buildReplyPlan(ordinary), emptyConversationState()), /本轮直接回应当前问题/);
   assert.equal(isDirectedFollowUp("那你觉得呢"), true);
   assert.equal(isDirectedFollowUp("所以正常吗"), false);
+});
+
+test("a timed-out semantic resolver keeps a selected old branch out of unrelated ambient evidence", async () => {
+  const result = await new ContextResolver(async () => {
+    throw new Error("context timeout");
+  }).resolve({ userId: "a", text: "游戏紧张为什么还会这样", hasImages: false, messages, candidates });
+
+  assert.equal(result.source, "rules");
+  assert.equal(result.topicCandidateId, "games");
+  assert.equal(result.anchor?.kind, "explicit_follow_up");
+  assert.deepEqual(result.selectedMessageIds, []);
 });
 
 test("state attribution rejects another person's condition and unknown evidence", () => {
@@ -72,8 +105,25 @@ test("reply envelopes expose only natural text and never leak truncated metadata
   const parsed = parseConversationReply('{"text":"行，队里的大腿是吧😂","stateUpdate":{"coveredPoints":[]},"review":{"reasksKnown":false}}');
   assert.equal(parsed.text, "行，队里的大腿是吧😂");
   assert.deepEqual(parsed.check, { repeatsAnswered: false, reasksKnown: false, unsupportedReversal: false });
-  assert.throws(() => parseConversationReply('{"text":"answer","stateUpdate":{'), /invalid_envelope/);
-  assert.throws(() => parseConversationReply('{"stateUpdate":{}}'), /invalid_envelope/);
+  assert.throws(() => parseConversationReply('{"text":"answer","stateUpdate":{'), ConversationReplyEnvelopeError);
+  assert.throws(() => parseConversationReply('{"stateUpdate":{}}'), ConversationReplyEnvelopeError);
+  assert.throws(
+    () => parseConversationReply('先把眼前这一下打好","stateUpdate":{"coveredPoints":["旧建议"]},"review":{"repeatsAnswered":false}}'),
+    ConversationReplyEnvelopeError,
+  );
+  assert.throws(
+    () => parseConversationReply('行，先缓一缓。\n"review":{"reasksKnown":false}'),
+    ConversationReplyEnvelopeError,
+  );
+  for (const field of [
+    "knownFacts", "coveredPoints", "questions", "conclusion", "mediaObservations",
+    "repeatsAnswered", "reasksKnown", "unsupportedReversal",
+  ]) {
+    assert.equal(hasConversationReplyEnvelopeMarker(`正文，"${field}":[]`), true);
+    assert.throws(() => parseConversationReply(`正文，"${field}":[]`), ConversationReplyEnvelopeError);
+  }
+  assert.throws(() => parseConversationReply('{"coveredPoints":[]}'), ConversationReplyEnvelopeError);
+  assert.equal(hasConversationReplyEnvelopeMarker('正常说法："标题": "问题"'), false);
   assert.equal(parseConversationReply("自然回复").text, "自然回复");
 });
 
@@ -84,7 +134,7 @@ test("expanded candidates stay within the auxiliary JSON budget and preserve the
     assert.ok(data.length <= 75_000);
     received = JSON.parse(data);
     return JSON.stringify({ intent: "opinion", relation: "new", resolvedInput: "评价刚才的讨论", selectedMessageIds: ["m-199"] });
-  }).resolve({ userId: "a", text: "你来说说", hasImages: false, messages: expanded, candidates });
+  }).resolve({ userId: "a", text: "结合上面说说", hasImages: false, messages: expanded, candidates });
   assert.equal(received.messages.at(-1).messageId, "m-199");
   assert.ok(received.messages.length < 200);
 });

@@ -157,6 +157,17 @@ test("legacy direct replies are committed and cannot be cancelled as unpublished
   assert.equal(f.repository.orchestration.mergedInput(second.sourceRowId, "g", "a").text, undefined);
 });
 
+test("acknowledged bot quotes remain recoverable when other members are excluded", t => {
+  const f = fixture(t);
+  const outboxId = f.db.enqueueOutbox("g", null, "机器人已经说过的话", "text");
+  f.db.ackOutboxDelivery(outboxId, "bot-receipt", 2_000);
+
+  assert.deepEqual(
+    f.repository.orchestration.reference("g", "bot-receipt", Number.MAX_SAFE_INTEGER, ["opted-out-member"]),
+    { messageId: "bot-receipt", text: "机器人已经说过的话", images: [] },
+  );
+});
+
 test("raw retention removes recoverable short-term facts and source-bound plans/tasks", t => {
   const f = fixture(t), route = f.add("过期条件", "old");
   const store = f.repository.orchestration;

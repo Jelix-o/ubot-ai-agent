@@ -1260,14 +1260,57 @@ test("replay: first mention can evaluate prior discussion, including rate-limite
   const f = conversationReplay(t);
   const a = f.add("我觉得熟练就不该紧张", "20002", { passive: true });
   const b = f.add("熟练和在乎输赢又不是一回事", USER_ID, { passive: true, excludedDrop: true });
-  f.ai.resolve = () => ({ intent: "opinion", relation: "new", resolvedInput: "评价熟练了是否仍会游戏紧张这场讨论", selectedMessageIds: [a.id, b.id], needsMoreContext: false });
   f.ai.replies.push({ text: "熟练管操作，在乎输赢管心跳，这俩不冲突" });
   const question = await f.ask("你来说说，别胡扯");
-  assert.equal(f.ai.resolutions.length, 1);
+  assert.equal(f.ai.resolutions.length, 0);
   assert.deepEqual(f.identity().ambientGroupContext?.map(message => message.messageId), [a.id, b.id]);
   assert.equal(f.identity().replyPlan?.intent, "opinion");
   assert.equal(f.identity().replyPlan?.explanation, "on_request");
   assert.equal(f.db.db.prepare("SELECT reply_to FROM outbox WHERE source_turn_id = ?").get(question.route.turnId)?.reply_to, question.id);
+});
+
+test("replay: a bare opinion follows the current cluster without reading a stale branch, resolver, or durable memory", async t => {
+  let durableMemoryReads = 0;
+  const memoryStore = {
+    async listRelevantEnabled() {
+      durableMemoryReads++;
+      return [];
+    },
+  } as unknown as TestBotOptions["groupMemoryStore"];
+  const f = conversationReplay(t, {}, false, memoryStore);
+
+  const game = await f.ask("打游戏时我总会紧张");
+  f.ack();
+  durableMemoryReads = 0;
+  const currentA = f.add("破甲中转到底是什么？", "20002", { passive: true, elapsed: 121_001 });
+  const currentB = f.add("这事可能不太合法", "20003", { passive: true });
+  const resolverCallsBefore = f.ai.resolutions.length;
+  f.ai.replies.push({ text: "现在这段是在聊这件事，违法的路子别碰。" });
+
+  const opinion = await f.ask("你来说说");
+
+  assert.equal(f.ai.resolutions.length, resolverCallsBefore);
+  assert.equal(durableMemoryReads, 0);
+  assert.notEqual(opinion.route.branchId, game.route.branchId);
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "recent_cluster");
+  assert.deepEqual(f.identity().ambientGroupContext?.map(message => message.messageId), [currentA.id, currentB.id]);
+  assert.doesNotMatch(JSON.stringify(f.identity()), /打游戏时我总会紧张/);
+});
+
+test("replay: a bare opinion joins the one active shared discussion without inheriting its owner's branch", async t => {
+  const f = conversationReplay(t);
+  const original = await f.ask("这局到底该不该硬开");
+  f.ack();
+  const current = f.add("我觉得刚才那个判断有点保守", "20002", { passive: true });
+  f.ai.replies.push({ text: "我会看局势，不会硬把每波都当决赛。" });
+
+  const opinion = await f.ask("你来说说", "20003");
+
+  assert.equal(opinion.route.topicId, original.route.topicId);
+  assert.notEqual(opinion.route.branchId, original.route.branchId);
+  assert.equal(opinion.route.routeReason, "resolved-shared-topic");
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "recent_cluster");
+  assert.ok(f.identity().ambientGroupContext?.some(message => message.messageId === current.id));
 });
 
 test("replay: a length-truncated model envelope never becomes an outbox answer or a state update", async t => {
@@ -1281,6 +1324,29 @@ test("replay: a length-truncated model envelope never becomes an outbox answer o
   assert.ok(rows.length > 0);
   assert.doesNotMatch(rows.map(row => row.text).join("\n"), /尚未完成的模型草稿|错误地记成已解释|stateUpdate/);
   assert.equal(f.db.db.prepare("SELECT count(*) AS n FROM conversation_state_updates").get()?.n, 0);
+});
+
+test("replay: adapter-bypassed private state metadata gets one controlled format repair before delivery", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push(
+    { text: '这段草稿不能发。"coveredPoints":["泄漏"]' },
+    { text: "这句重新整理过了。" },
+  );
+
+  await f.ask("给点看法");
+
+  const outbox = f.db.db.prepare("SELECT text FROM outbox ORDER BY id").all() as Array<{ text: string }>;
+  const assistantTurns = f.db.db.prepare("SELECT content FROM conversation_turns WHERE role = 'assistant' ORDER BY id").all() as Array<{ content: string }>;
+  assert.equal(f.ai.calls.length, 2);
+  assert.equal(outbox.length, 1);
+  assert.match(outbox[0]?.text ?? "", /^这句重新整理过了/);
+  assert.match(f.ai.calls[1]?.scenarioInstruction ?? "", /FORMAT RETRY/);
+  assert.doesNotMatch(outbox.map(row => row.text).join("\n"), /stateUpdate|coveredPoints|泄漏|这段草稿不能发/);
+  assert.doesNotMatch(assistantTurns.map(turn => turn.content).join("\n"), /stateUpdate|coveredPoints|泄漏|这段草稿不能发/);
+  const updates = f.db.db.prepare("SELECT update_json FROM conversation_state_updates").all() as Array<{ update_json: string }>;
+  // State snapshots legitimately use protocol field names. Only the rejected
+  // draft's values or an envelope wrapper would prove an internal leak here.
+  assert.doesNotMatch(updates.map(update => update.update_json).join("\n"), /stateUpdate|泄漏|这段草稿不能发/);
 });
 
 test("replay: game conditions survive a fishing detour and the same speaker can return to an older topic", async t => {
@@ -1352,6 +1418,94 @@ test("replay: image followed 15 seconds later by look-at-the-image cancels the o
   assert.equal(rows.some(row => /没.*图|补发/.test(row.text)), false);
 });
 
+test("replay: a short reaction to an acknowledged bot reply keeps the quoted reply as the authority anchor", async t => {
+  const f = conversationReplay(t, { memoryDisabledUserIds: ["20002"] });
+  await f.ask("先说一句");
+  f.ack();
+  const delivered = f.db.db.prepare("SELECT platform_message_id FROM outbox WHERE status = 'sent' ORDER BY id LIMIT 1")
+    .get() as { platform_message_id: string } | undefined;
+  assert.ok(delivered?.platform_message_id);
+
+  let remoteReads = 0;
+  f.transport.getMessage = async () => {
+    remoteReads += 1;
+    return undefined;
+  };
+  const resolverCalls = f.ai.resolutions.length;
+  f.ai.replies.push({ text: "我刚才那句确实有点歪，你是在吐槽这个吧" });
+  const reaction = await f.ask("？？？？", USER_ID, { replyToMessageId: delivered!.platform_message_id });
+
+  assert.equal(remoteReads, 0);
+  assert.equal(f.ai.resolutions.length, resolverCalls);
+  assert.equal(reaction.route.routeReason, "explicit-reply");
+  assert.equal(f.identity().replyContext?.text, "接住了");
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
+  assert.match(f.ai.calls.at(-1)?.scenarioInstruction ?? "", /已恢复引用消息/);
+  assert.equal(identityOutbox(f).at(-1)?.text, "我刚才那句确实有点歪，你是在吐槽这个吧");
+});
+
+test("replay: a remote quote recovered for routing survives a transient second lookup failure", async t => {
+  const f = conversationReplay(t);
+  let remoteReads = 0;
+  f.transport.getMessage = async id => {
+    remoteReads += 1;
+    return remoteReads === 1
+      ? { messageId: id, groupId: GROUP_ID, userId: "20002", text: "这是远端刚恢复的引用内容", images: [] }
+      : undefined;
+  };
+  const resolverCalls = f.ai.resolutions.length;
+  f.ai.replies.push({ text: "这句我看到了，别急着开骂" });
+
+  const reaction = await f.ask("fw", USER_ID, { replyToMessageId: "remote-only-quote" });
+
+  assert.equal(remoteReads, 1);
+  assert.equal(f.ai.resolutions.length, resolverCalls);
+  assert.equal(f.identity().replyContext?.text, "这是远端刚恢复的引用内容");
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
+  assert.equal(reaction.route.routeReason, "explicit-reply-miss");
+  assert.equal(identityOutbox(f).at(-1)?.text, "这句我看到了，别急着开骂");
+});
+
+test("replay: a quote recovered only during handling replaces an earlier re-quote placeholder", async t => {
+  const f = conversationReplay(t);
+  let remoteReads = 0;
+  f.transport.getMessage = async id => {
+    remoteReads += 1;
+    return remoteReads === 1
+      ? undefined
+      : { messageId: id, groupId: GROUP_ID, userId: "20002", text: "第二次读取到的引用内容", images: [] };
+  };
+  f.ai.replies.push({ text: "这条我后面读到了，按它继续说。" });
+
+  const reaction = await f.ask("？？？？", USER_ID, { replyToMessageId: "late-remote-quote" });
+
+  assert.equal(remoteReads, 2);
+  assert.equal(f.identity().replyContext?.text, "第二次读取到的引用内容");
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
+  assert.equal(f.repository.orchestration.getResolution(reaction.input.sourceRowId)?.clarification, undefined);
+  assert.equal(f.repository.orchestration.getResolution(reaction.input.sourceRowId)?.anchor?.kind, "explicit_reply");
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /^这条我后面读到了，按它继续说/);
+});
+
+test("replay: an explicit bot quote keeps adjacent local discussion as supporting evidence", async t => {
+  const f = conversationReplay(t);
+  await f.ask("先说一句");
+  f.ack();
+  const delivered = f.db.db.prepare("SELECT platform_message_id FROM outbox WHERE status = 'sent' ORDER BY id LIMIT 1")
+    .get() as { platform_message_id: string } | undefined;
+  assert.ok(delivered?.platform_message_id);
+  const nearby = f.add("我觉得刚才那句还有一点没说清", "20002", { passive: true });
+  f.ai.replies.push({ text: "你是在问刚才那句，我也看到了后面的补充。" });
+
+  await f.ask("？？？？", USER_ID, { replyToMessageId: delivered!.platform_message_id });
+
+  const evidenceIds = f.identity().ambientGroupContext?.map(message => message.messageId) ?? [];
+  assert.equal(f.identity().replyContext?.text, "接住了");
+  assert.equal(f.identity().replyPlan?.anchor?.kind, "explicit_reply");
+  assert.ok(evidenceIds.includes(delivered!.platform_message_id));
+  assert.ok(evidenceIds.includes(nearby.id));
+});
+
 test("replay: duplicate-question review rewrites only once and records only the chosen reply", async t => {
   const f = conversationReplay(t);
   f.ai.replies.push({ text: "平时也会吗", replyCheck: { repeatsAnswered: false, reasksKnown: true, unsupportedReversal: false } }, { text: "那就先改顺手拿杯子的动作" });
@@ -1391,7 +1545,8 @@ test("replay: a forged reply id cannot import a quoted message from another grou
   const f = conversationReplay(t);
   f.transport.getMessage = async () => ({ messageId: "foreign-message", groupId: "different-group", userId: "20002", text: "其他群的个人条件不该进入当前群", images: [] });
   await f.ask("你怎么看这个说法", USER_ID, { replyToMessageId: "foreign-message" });
-  assert.equal(f.identity().replyContext, undefined);
+  assert.equal(f.ai.calls.length, 0);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /重新引用/);
   assert.doesNotMatch(JSON.stringify(f.ai.calls), /其他群的个人条件/);
   assert.doesNotMatch(JSON.stringify(f.ai.resolutions), /其他群的个人条件/);
 });

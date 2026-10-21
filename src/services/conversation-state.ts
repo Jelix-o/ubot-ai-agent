@@ -2,6 +2,19 @@ import type { AmbientGroupContextMessage } from "../types.js";
 
 export type ConversationIntent = "chat" | "opinion" | "explain" | "confirm" | "challenge" | "image" | "lookup" | "task";
 
+export type ContextAnchorKind = "explicit_reply" | "recent_cluster" | "explicit_follow_up" | "none";
+
+/**
+ * The evidence source that chose this turn's topic. It is carried from
+ * resolution into the reply plan so routing and prompt context cannot quietly
+ * disagree about what the user is responding to.
+ */
+export interface ContextAnchor {
+  kind: ContextAnchorKind;
+  messageIds: string[];
+  topicCandidateId?: string;
+}
+
 export interface ContextResolution {
   intent: ConversationIntent;
   relation: "new" | "follow_up" | "supplement";
@@ -13,6 +26,7 @@ export interface ContextResolution {
   clarification?: string;
   source: "rules" | "model";
   expandedContext?: boolean;
+  anchor?: ContextAnchor;
 }
 
 export interface ConversationFact {
@@ -56,12 +70,34 @@ export interface ReplyPlan {
   alreadyCovered: string[];
   answeredQuestionKeys: string[];
   toolNeeds: Array<"lookup" | "image" | "task">;
+  anchor?: ContextAnchor;
 }
 
 export interface ConversationReplyCheck {
   repeatsAnswered: boolean;
   reasksKnown: boolean;
   unsupportedReversal: boolean;
+}
+
+/**
+ * A reply-plan response included its private envelope but was not a complete,
+ * parseable envelope. Callers must never deliver the raw draft because it can
+ * expose state metadata to the group.
+ */
+export class ConversationReplyEnvelopeError extends Error {
+  constructor() {
+    super("conversation reply invalid JSON envelope");
+    this.name = "ConversationReplyEnvelopeError";
+  }
+}
+
+// These fields are private conversation-state protocol, never user-visible
+// reply text. Keep the detection shared with the final outbox guard so a
+// provider adapter cannot leak a partial envelope through a different path.
+const CONVERSATION_REPLY_ENVELOPE_MARKER = /"(?:stateUpdate|review|knownFacts|coveredPoints|questions|conclusion|mediaObservations|repeatsAnswered|reasksKnown|unsupportedReversal)"\s*:/u;
+
+export function hasConversationReplyEnvelopeMarker(text: string): boolean {
+  return CONVERSATION_REPLY_ENVELOPE_MARKER.test(text);
 }
 
 export interface ConversationTopicCandidate {
@@ -156,11 +192,21 @@ export function parseConversationReply(text: string): {
   let raw: any;
   try { raw = JSON.parse(json); }
   catch {
-    if (/^\{\s*"(?:text|stateUpdate|review)"\s*:/u.test(json)) throw new Error("conversation_reply_invalid_envelope");
+    // A common model failure starts with a normal-looking answer and then
+    // appends private envelope fields. It is still a malformed private
+    // envelope, not safe natural text.
+    if (
+      /^\{\s*"text"\s*:/u.test(json) ||
+      hasConversationReplyEnvelopeMarker(json)
+    ) {
+      throw new ConversationReplyEnvelopeError();
+    }
     return { text };
   }
   if (!raw || typeof raw.text !== "string" || !raw.text.trim()) {
-    if (raw && typeof raw === "object" && ("stateUpdate" in raw || "review" in raw || "text" in raw)) throw new Error("conversation_reply_invalid_envelope");
+    if (raw && typeof raw === "object" && ("text" in raw || hasConversationReplyEnvelopeMarker(json))) {
+      throw new ConversationReplyEnvelopeError();
+    }
     return { text };
   }
   const review = raw.review;

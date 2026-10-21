@@ -30,7 +30,8 @@ export class ConversationOrchestrationRepository {
     const member = this.sharedDb.db.prepare(`SELECT user_id, text, images_json FROM messages WHERE group_id = ? AND msg_id = ? AND id < ?
       AND (processable = 1 OR drop_reason = 'rate_limited') LIMIT 1`).get(groupId, messageId, beforeSourceRowId) as { user_id: string; text: string; images_json: string } | undefined;
     if (member) return excludedUserIds.includes(member.user_id) ? undefined : { messageId, userId: member.user_id, text: member.text, images: parseImages(member.images_json) };
-    if (excludedUserIds.length) return undefined;
+    // An acknowledged bot reply has no member author to exclude. It remains a
+    // valid same-group quote anchor even when another member opted out.
     const bot = this.sharedDb.db.prepare("SELECT text FROM outbox WHERE group_id = ? AND platform_message_id = ? AND status = 'sent' AND kind = 'text' LIMIT 1")
       .get(groupId, messageId) as { text: string } | undefined;
     return bot ? { messageId, text: bot.text, images: [] } : undefined;
@@ -45,6 +46,33 @@ export class ConversationOrchestrationRepository {
     this.sharedDb.db.prepare(`INSERT INTO conversation_reply_plans (source_row_id, group_id, user_id, resolution_json, created_at)
       VALUES (?, ?, ?, ?, ?) ON CONFLICT(source_row_id) DO NOTHING`).run(sourceRowId, groupId, userId, JSON.stringify(resolution), Date.now());
     return this.getResolution(sourceRowId)!;
+  }
+
+  /**
+   * A transient remote quote read can fail before the worker reaches the
+   * handler. Replace only that known placeholder when a later recovery has
+   * supplied the actual same-group quote; never overwrite another decision.
+   */
+  replaceUnavailableQuoteResolution(
+    sourceRowId: number,
+    unavailableClarification: string,
+    replacement: ContextResolution,
+  ): ContextResolution | undefined {
+    const row = this.sharedDb.db.prepare("SELECT resolution_json FROM conversation_reply_plans WHERE source_row_id = ?")
+      .get(sourceRowId) as { resolution_json: string } | undefined;
+    if (!row) return undefined;
+    let current: ContextResolution;
+    try {
+      current = JSON.parse(row.resolution_json) as ContextResolution;
+    } catch {
+      return undefined;
+    }
+    if (current.clarification !== unavailableClarification) return current;
+    this.sharedDb.db.prepare(`UPDATE conversation_reply_plans
+      SET resolution_json = ?, created_at = ?
+      WHERE source_row_id = ? AND resolution_json = ?`)
+      .run(JSON.stringify(replacement), Date.now(), sourceRowId, row.resolution_json);
+    return this.getResolution(sourceRowId);
   }
 
   listCandidates(groupId: string, beforeSourceRowId: number, now: number, excludedUserIds: string[] = []): ConversationTopicCandidate[] {

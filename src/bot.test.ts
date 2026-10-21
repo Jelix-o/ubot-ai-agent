@@ -1723,6 +1723,10 @@ test("knowledge followups retain mention/reply requirements and cannot quote ano
   ], 20001, 67890, 500), undefined, route);
   await start();
   const count = transport.sent.length;
+  transport.messagesById["bot-k"] = {
+    messageId: "bot-k", groupId: "67890", userId: "12345",
+    text: "湖南省共10家。", images: [],
+  };
   await app.handleGroupMessage(createEvent("分别是哪些", 20001, 67890, 501));
   assert.equal(transport.sent.length, count, "a source session does not authorize an unmentioned message");
   await start();
@@ -1736,8 +1740,8 @@ test("knowledge followups retain mention/reply requirements and cannot quote ano
     { type: "reply", data: { id: "other-bot" } },
     { type: "text", data: { text: "分别是哪些" } },
   ], 20001, 67890, 503), undefined, { ...route, branchId: "other", turnId: 4 }, { allowReplyWithoutMention: true });
-  assert.equal(transport.sent.at(-1)?.text, "AI reply");
-  assert.equal(aiService.calls.length, 1);
+  assert.match(transport.sent.at(-1)?.text ?? "", /重新引用/);
+  assert.equal(aiService.calls.length, 0);
 });
 
 test("#网页 routes an explicit page request to the durable publisher instead of normal chat", async () => {
@@ -2188,6 +2192,10 @@ test("verified reply anchors continue mentions-only conversations without an @",
     participationMode: "mentions_only",
   }]);
   const { app, transport, aiService } = createApp({ groupConfigService });
+  transport.messagesById["9001"] = {
+    messageId: "9001", groupId: "67890", userId: "12345",
+    text: "前一条会仙回复", images: [],
+  };
   const replyEvent = createEvent([
     { type: "reply", data: { id: "9001" } },
     { type: "text", data: { text: "why?" } },
@@ -3469,7 +3477,7 @@ test("injects ambient group context for both unquoted conversation and explicit 
       }];
     },
   };
-  const { app, aiService } = createApp({
+  const { app, aiService, transport } = createApp({
     groupConfigService,
     recentGroupEvidenceService,
     conversationContextRepository: {
@@ -3489,6 +3497,11 @@ test("injects ambient group context for both unquoted conversation and explicit 
   assert.equal(ambientCalls[0]?.limit, 60);
   assert.deepEqual(ambientCalls[0]?.excludedUserIds, ["30001", "30002"]);
   assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext?.[0]?.text, "现代梗圈顶流必须是常公");
+
+  transport.messagesById["bot-1"] = {
+    messageId: "bot-1", groupId: "67890", userId: "12345",
+    text: "现代梗圈顶流必须是常公", images: [],
+  };
 
   await app.handleGroupMessage(createEvent([
     { type: "reply", data: { id: "bot-1" } },
@@ -4624,7 +4637,11 @@ test("does not join an unrelated shared topic without an explicit reply anchor",
 
 test("does not use legacy shared-topic anchors when no persistent route is supplied", async () => {
   const conversationStore = new FakeConversationStore();
-  const { app, aiService } = createApp({ conversationStore });
+  const { app, aiService, transport } = createApp({ conversationStore });
+  transport.messagesById["10000"] = {
+    messageId: "10000", groupId: "67890", userId: "12345",
+    text: "被引用的旧回复", images: [],
+  };
   const startedAt = Date.parse("2026-07-27T00:00:00.000Z");
 
   await withMockedNow(startedAt, async () => {
@@ -5512,6 +5529,24 @@ test("does not use profile model as reply fallback when environment reply model 
   assert.equal(gptAiService.calls.length, 1);
   assert.equal(mimoAiService.calls.length, 0);
   assert.match(transport.sent[0]?.text ?? "", /思考超时/);
+});
+
+test("an explicit unlawful cyber intrusion request is rejected before the reply model runs", async () => {
+  const { app, transport, aiService } = createApp({
+    aiService: new FakeAiService(async () => {
+      throw new Error("400 content policy violation");
+    }),
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "怎么破解韩国银行系统" } },
+  ]));
+
+  assert.equal(aiService.calls.length, 0);
+  assert.match(transport.sent[0]?.text ?? "", /这类入侵或破解行为不能帮/);
+  assert.match(transport.sent[0]?.text ?? "", /账号安全|防护方案|靶场/);
+  assert.doesNotMatch(transport.sent[0]?.text ?? "", /上游安全规则|换一种/);
 });
 
 test("falls back to environment reply model when legacy mimo mode fails to match enabled reply models", async () => {
@@ -6601,7 +6636,7 @@ test("ordinary referenced messages do not trigger ai replies by themselves", asy
   assert.equal(aiService.calls.length, 0);
 });
 
-test("referenced message lookup failure does not block explicit replies", async () => {
+test("an unavailable explicit quote asks for a re-quote instead of inventing context", async () => {
   const transport = new FakeTransport();
   transport.getMessageError = new Error("get_msg failed");
   const { app, aiService, transport: usedTransport } = createApp({ transport });
@@ -6610,13 +6645,12 @@ test("referenced message lookup failure does not block explicit replies", async 
     createEvent([
       { type: "reply", data: { id: "9001" } },
       { type: "at", data: { qq: "12345" } },
-      { type: "text", data: { text: " 继续回复 " } },
+      { type: "text", data: { text: " ？？？？ " } },
     ]),
   );
 
-  assert.equal(aiService.calls.length, 1);
-  assert.equal(aiService.calls[0]?.identityContext?.replyContext, undefined);
-  assert.equal(usedTransport.sent[0]?.text, "AI reply");
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(usedTransport.sent[0]?.text, "这条引用我没读到，重新引用一下那条消息？");
 });
 
 test("passes referenced message context to live chat replies", async () => {

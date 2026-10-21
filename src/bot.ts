@@ -24,8 +24,21 @@ import type {
   ConversationRoute,
 } from "./services/conversation-context-repository.js";
 import type { ConversationContextRouter, ConversationRouteInput } from "./services/conversation-context-router.js";
-import { ContextResolver, isMediaReference, isDirectedFollowUp, resolveContextByRules } from "./services/context-resolver.js";
-import { emptyConversationState, selectConversationEvidence } from "./services/conversation-state.js";
+import {
+  ContextResolver,
+  hasReadableReference,
+  isBareOpinionRequest,
+  isMediaReference,
+  isDirectedFollowUp,
+  resolveContextByRules,
+  selectDiscussionClusterAroundMessage,
+} from "./services/context-resolver.js";
+import {
+  ConversationReplyEnvelopeError,
+  emptyConversationState,
+  hasConversationReplyEnvelopeMarker,
+  selectConversationEvidence,
+} from "./services/conversation-state.js";
 import { ReplyPolicyService } from "./services/reply-policy-service.js";
 import type { DailyReportService } from "./services/daily-report-service.js";
 import type { GroupConfigService } from "./services/group-config-service.js";
@@ -142,6 +155,11 @@ const MULTI_MESSAGE_DELAY_MS = 1000;
 const REPEAT_THRESHOLD = 4;
 const AMBIENT_GROUP_CONTEXT_LOOKBACK_MS = 10 * 60 * 1_000;
 const AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT = 60;
+// `prepareConversationRoute` and `handleConversation` both need the quoted
+// payload. Keep one verified recovery available across that single inbound
+// path, without turning remote quote reads into durable state.
+const RECOVERED_REPLY_CONTEXT_TTL_MS = 30 * 1_000;
+const MAX_RECOVERED_REPLY_CONTEXTS = 128;
 const KNOWLEDGE_CONTINUATION_WINDOW_MS = 10 * 60 * 1_000;
 const REPEAT_WINDOW_MS = 5 * 60 * 1000;
 const OPS_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
@@ -173,6 +191,9 @@ const MSG_OPERATION_LOG_NO_PERMISSION = "你没有查看机器人操作日志的
 const MSG_SERVER_NO_PERMISSION = "你没有查看服务器状态的权限";
 const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 const MSG_MEMBER_PROFILE_UNAVAILABLE = "当前没有可用于回答这位群友相关问题的已保存资料。";
+const MSG_QUOTED_MESSAGE_UNAVAILABLE = "这条引用我没读到，重新引用一下那条消息？";
+const MSG_UNAUTHORIZED_CYBER_REFUSAL = "这类入侵或破解行为不能帮。想学安全可以聊账号安全、防护方案，或在有授权的靶场里练习。";
+const MSG_REPLY_ENVELOPE_INVALID = "刚才那条没生成完整，别理它，重新问一句？";
 
 const RUNTIME_COMMAND_SPECS = {
   bt_search: { builtinPrefix: BT_COMMAND_PRIMARY, builtinAliases: BT_COMMAND_ALIASES },
@@ -231,6 +252,17 @@ interface ReplyAiResult {
   usedMode: ReplyModelMode;
   fallbackUsed: boolean;
   visionFallback: boolean;
+}
+
+interface ReplyGenerationArgs {
+  skill: SkillDefinition;
+  history: ConversationTurn[];
+  userInput: string;
+  images?: MessageImageInput[];
+  identityContext?: AiIdentityContext;
+  scenarioInstruction?: string;
+  toolRuntime?: AiToolRuntime;
+  signal?: AbortSignal;
 }
 
 export interface HtmlPreviewFallbackRoute {
@@ -403,6 +435,7 @@ export class BotApplication {
   private readonly groupRepeatStates = new Map<string, { text: string; count: number; lastTimestamp: number }>();
   private readonly knowledgeContinuationSessions = new Map<string, KnowledgeContinuationSession>();
   private readonly knowledgeLatestMessages = new Map<string, string>();
+  private readonly recoveredReplyContexts = new Map<string, { context: AiReplyContext; expiresAt: number }>();
   private readonly identityQueryLock = new GroupLock(1);
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
@@ -1123,10 +1156,36 @@ export class BotApplication {
         logWarn("Context candidate read failed closed.", { groupId: input.groupId, sourceRowId: input.sourceRowId, error: summarizeAiError(error) });
       }
     }
-    const reference = input.replyToMessageId ? store.reference(input.groupId, input.replyToMessageId, input.sourceRowId, excluded) : undefined;
-    const contextInput = { userId: input.userId, text: input.text, hasImages: Boolean(input.hasImages), replyToMessageId: input.replyToMessageId, reference, candidates, messages };
+    let reference = input.replyToMessageId ? store.reference(input.groupId, input.replyToMessageId, input.sourceRowId, excluded) : undefined;
+    // The route is planned before the event reaches handleConversation. Recover
+    // a remote-only quote here too, so the resolver cannot discard evidence
+    // that the normal message path will recover a moment later.
+    if (input.replyToMessageId && !hasReadableReference(reference)) {
+      const recovered = await this.resolveReplyContext(group, input.replyToMessageId);
+      if (recovered) {
+        reference = {
+          messageId: recovered.messageId,
+          ...(recovered.userId ? { userId: recovered.userId } : {}),
+          ...(recovered.userName ? { userName: recovered.userName } : {}),
+          text: recovered.text,
+          images: recovered.images ?? [],
+        };
+      }
+    }
+    const bareOpinionRequest = isBareOpinionRequest(input.text);
+    const contextInput = () => ({
+      userId: input.userId,
+      text: input.text,
+      hasImages: Boolean(input.hasImages),
+      replyToMessageId: input.replyToMessageId,
+      reference,
+      candidates,
+      messages,
+    });
     const needsSemanticContext = !/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(input.text.trim()) &&
-      (candidates.length > 0 || Boolean(reference) || /(?:你来说说|你怎么看|你觉得呢|评评理|上面|刚才|这个|那个|所以|看图|展开|继续)/u.test(input.text));
+      !bareOpinionRequest &&
+      (!input.replyToMessageId || hasReadableReference(reference)) &&
+      (candidates.length > 0 || Boolean(reference) || /(?:上面|刚才|这个|那个|所以|看图|展开|继续)/u.test(input.text));
     const resolver = new ContextResolver(this.aiService.resolveConversationContext && needsSemanticContext ? async (instruction, data, resolverSignal) => {
       const router = await this.getReplyRouter();
       if (router) {
@@ -1136,16 +1195,40 @@ export class BotApplication {
       const execute = () => this.aiService.resolveConversationContext!({ instruction, data, signal: resolverSignal });
       return this.backgroundLlmGate ? this.backgroundLlmGate(execute, resolverSignal) : execute();
     } : undefined);
-    let resolution = resolveContextByRules(contextInput);
+    let resolution = resolveContextByRules(contextInput());
     try {
-      resolution = await resolver.resolve(contextInput, signal);
+      resolution = await resolver.resolve(contextInput(), signal);
       if (resolution.needsMoreContext && contextEnabled && this.recentGroupEvidenceService?.listAmbient) {
         messages = this.recentGroupEvidenceService.listAmbient({ groupId: input.groupId, beforeSourceRowId: input.sourceRowId, lookbackMs: 60 * 60_000, excludedUserIds: excluded, limit: 200 });
-        resolution = { ...await resolver.resolve({ ...contextInput, messages }, signal), expandedContext: true };
+        resolution = {
+          ...(bareOpinionRequest
+            ? resolveContextByRules(contextInput())
+            : await resolver.resolve(contextInput(), signal)),
+          expandedContext: true,
+        };
       }
     } catch (error) {
       signal?.throwIfAborted();
       logWarn("Context resolution fell back to bounded rules.", { groupId: input.groupId, sourceRowId: input.sourceRowId, error: summarizeAiError(error) });
+    }
+    if (input.replyToMessageId && !hasReadableReference(reference)) {
+      resolution = {
+        ...resolution,
+        selectedMessageIds: [],
+        needsMoreContext: true,
+        clarification: MSG_QUOTED_MESSAGE_UNAVAILABLE,
+        anchor: { kind: "none", messageIds: [] },
+      };
+    }
+    let recentClusterRoute = resolution.anchor?.kind === "recent_cluster" && !resolution.clarification
+      ? resolveRecentClusterRoute(repository, input.groupId, input.userId, resolution.selectedMessageIds)
+      : undefined;
+    if (recentClusterRoute) {
+        resolution = {
+          ...resolution,
+          topicCandidateId: recentClusterRoute.branchId,
+          anchor: { ...resolution.anchor!, topicCandidateId: recentClusterRoute.branchId },
+        };
     }
     if (!input.hasImages && isMediaReference(input.text) && !excluded.includes(input.userId)) {
       const media = input.replyToMessageId
@@ -1159,13 +1242,17 @@ export class BotApplication {
         if (!input.replyToMessageId && media[0].branchId) resolution.topicCandidateId = media[0].branchId;
       } else if (media.length > 1) resolution.clarification = "你说的是哪张图？引用一下那条图片消息";
     }
-    if ((resolution.intent === "opinion" || /(?:你来说说|你怎么看|你觉得呢|评评理|结合群聊|根据上面)/u.test(input.text)) &&
+    if (bareOpinionRequest && !hasReadableReference(reference) && resolution.selectedMessageIds.length === 0 && !resolution.clarification) {
+      resolution.clarification = contextEnabled ? "你是说刚才哪件事？我这边没读到上一段讨论" : "本群没开启近期群聊上下文，把要我评价的那段引用一下？";
+    } else if (!bareOpinionRequest && (resolution.intent === "opinion" || /(?:你来说说|你怎么看|你觉得呢|评评理|结合群聊|根据上面)/u.test(input.text)) &&
       !messages.length && !candidates.length && !input.replyToMessageId) {
       resolution.clarification = contextEnabled ? "你指的是刚才哪件事？我这边没读到对应的讨论" : "本群没开启近期群聊上下文，把要我评价的那段引用一下？";
     }
-    if (resolution.needsMoreContext && !resolution.clarification) {
+    if (resolution.needsMoreContext && !resolution.clarification && !hasReadableReference(reference)) {
       const titles = [...new Set(candidates.map(item => item.title.trim()).filter(Boolean))].slice(0, 2);
-      resolution.clarification = titles.length === 2 ? `你是说“${titles[0].slice(0, 25)}”那段，还是“${titles[1].slice(0, 25)}”那段？` : "你指的是哪条讨论？引用一下对应消息";
+      resolution.clarification = bareOpinionRequest
+        ? "你是说刚才哪件事？我这边没读到上一段讨论"
+        : titles.length === 2 ? `你是说“${titles[0].slice(0, 25)}”那段，还是“${titles[1].slice(0, 25)}”那段？` : "你指的是哪条讨论？引用一下对应消息";
     }
     resolution = store.saveResolution(input.sourceRowId, input.groupId, input.userId, resolution);
     let candidate = candidates.find(item => item.id === resolution.topicCandidateId);
@@ -1175,15 +1262,22 @@ export class BotApplication {
         candidate = { id: branch.branchId, topicId: branch.topicId, ownerUserId: branch.ownerUserId, title: "图片", lastUserInput: "", lastReply: "", updatedAt: branch.updatedAt };
       }
     }
-    const useResolution = resolution.source === "model" || resolution.mediaSourceMessageIds.length > 0;
-    const target = candidate && !resolution.clarification ? {
-      topicId: candidate.topicId,
-      ...(candidate.ownerUserId === input.userId ? { branchId: candidate.id } : {}),
-    } : { newTopic: true };
+    const useResolution = resolution.source === "model" || resolution.mediaSourceMessageIds.length > 0 ||
+      resolution.anchor?.kind === "recent_cluster" || resolution.anchor?.kind === "explicit_follow_up";
+    // Keep the route, state branch and selected ambient evidence on the same
+    // anchor. A current participant gets a sibling branch in the shared topic;
+    // the original author continues their exact causal branch.
+    if (resolution.anchor?.kind !== "recent_cluster" || resolution.clarification) recentClusterRoute = undefined;
+    const target = recentClusterRoute ?? (candidate && !resolution.clarification
+      ? {
+          topicId: candidate.topicId,
+          ...(candidate.ownerUserId === input.userId ? { branchId: candidate.id } : {}),
+        }
+      : { newTopic: true });
     const route = this.conversationContextRouter.resolve({ ...input, ...(useResolution && !input.replyToMessageId ? { resolvedContext: target } : {}) });
     store.registerTask(route, input.groupId, input.userId, resolution.relation);
     logInfo("Conversation context planned.", { groupId: input.groupId, sourceRowId: input.sourceRowId, topicId: route.topicId, branchId: route.branchId,
-      intent: resolution.intent, relation: resolution.relation, source: resolution.source, expanded: resolution.expandedContext === true,
+      intent: resolution.intent, relation: resolution.relation, source: resolution.source, anchor: resolution.anchor?.kind, expanded: resolution.expandedContext === true,
       selectedMessageIds: resolution.selectedMessageIds, mediaSourceMessageIds: resolution.mediaSourceMessageIds, clarification: Boolean(resolution.clarification) });
     return route;
   }
@@ -2870,7 +2964,50 @@ export class BotApplication {
       });
       return;
     }
-    const contextResolution = sourceRowId === undefined ? undefined : orchestration?.getResolution(sourceRowId);
+    if (isExplicitUnauthorizedCyberIntrusionRequest(normalizedUserInput)) {
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, MSG_UNAUTHORIZED_CYBER_REFUSAL, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, MSG_UNAUTHORIZED_CYBER_REFUSAL, receipt ? [receipt] : []);
+      return;
+    }
+    let contextResolution = sourceRowId === undefined ? undefined : orchestration?.getResolution(sourceRowId);
+    // Route planning may have hit a transient remote failure before this worker
+    // gets a second chance to resolve the same quote. A recovered quote wins
+    // over that persisted placeholder, including after a worker restart.
+    if (
+      sourceRowId !== undefined &&
+      orchestration &&
+      messageContext.replyContext &&
+      contextResolution?.clarification === MSG_QUOTED_MESSAGE_UNAVAILABLE
+    ) {
+      const replacement = resolveContextByRules({
+        userId,
+        text: normalizedUserInput,
+        hasImages: images.length > 0,
+        replyToMessageId: messageContext.replyMessageId,
+        reference: {
+          messageId: messageContext.replyContext.messageId,
+          ...(messageContext.replyContext.userId ? { userId: messageContext.replyContext.userId } : {}),
+          ...(messageContext.replyContext.userName ? { userName: messageContext.replyContext.userName } : {}),
+          text: messageContext.replyContext.text,
+          images: messageContext.replyContext.images ?? [],
+        },
+        candidates: [],
+        messages: [],
+      });
+      contextResolution = orchestration.replaceUnavailableQuoteResolution(
+        sourceRowId,
+        MSG_QUOTED_MESSAGE_UNAVAILABLE,
+        replacement,
+      ) ?? contextResolution;
+    }
+    // A reply segment is an explicit request to use that message as evidence.
+    // Do not let a missing local/remote payload fall through to unrelated
+    // branch history or ask the user to describe the bot's own old reply.
+    if (messageContext.replyMessageId && !messageContext.replyContext) {
+      const receipt = await this.sendTextWithContext(groupConfig.groupId, MSG_QUOTED_MESSAGE_UNAVAILABLE, conversationRoute);
+      await this.persistAssistantContext(conversationRoute, MSG_QUOTED_MESSAGE_UNAVAILABLE, receipt ? [receipt] : []);
+      return;
+    }
     const excludedContextUsers = [...(groupConfig.blacklistedUserIds ?? []), ...(groupConfig.memoryDisabledUserIds ?? [])];
     if (!memberProfileQueryIntent && sourceRowId !== undefined && orchestration) {
       const merged = orchestration.mergedInput(sourceRowId, groupConfig.groupId, userId);
@@ -3207,7 +3344,10 @@ export class BotApplication {
           causalHistory.flatMap((turn) => [turn.sourceMessageId, turn.platformMessageId])
             .filter((messageId): messageId is string => Boolean(messageId)),
         );
-        ambientGroupContext = this.recentGroupEvidenceService.listAmbient({
+        const explicitQuoteId = contextResolution?.anchor?.kind === "explicit_reply"
+          ? messageContext.replyContext?.messageId
+          : undefined;
+        const ambientCandidates = this.recentGroupEvidenceService.listAmbient({
           groupId: groupConfig.groupId,
           beforeSourceRowId: sourceRowId,
           lookbackMs: contextResolution?.expandedContext ? 60 * 60_000 : AMBIENT_GROUP_CONTEXT_LOOKBACK_MS,
@@ -3216,9 +3356,17 @@ export class BotApplication {
             ...(groupConfig.memoryDisabledUserIds ?? []),
           ],
           limit: contextResolution?.expandedContext ? 200 : AMBIENT_GROUP_CONTEXT_MESSAGE_LIMIT,
-        }).filter((message) => !message.messageId || !causalMessageIds.has(message.messageId));
-        ambientGroupContext = contextResolution?.source === "model" && contextResolution.selectedMessageIds.length === 0
-          ? [] : selectConversationEvidence(ambientGroupContext, contextResolution?.selectedMessageIds ?? []);
+        }).filter((message) => !message.messageId || !causalMessageIds.has(message.messageId) || message.messageId === explicitQuoteId);
+        const selectedMessageIds = explicitQuoteId
+          ? [...new Set([
+              ...(contextResolution?.selectedMessageIds ?? []),
+              ...selectDiscussionClusterAroundMessage(ambientCandidates, explicitQuoteId)
+                .flatMap(message => message.messageId ? [message.messageId] : []),
+            ])]
+          : contextResolution?.selectedMessageIds ?? [];
+        const branchOnlyEvidence = contextResolution?.anchor?.kind === "explicit_follow_up" && selectedMessageIds.length === 0;
+        ambientGroupContext = branchOnlyEvidence || (contextResolution?.source === "model" && selectedMessageIds.length === 0)
+          ? [] : selectConversationEvidence(ambientCandidates, selectedMessageIds);
         ambientGroupContextStatus = "loaded";
       } catch (error) {
         ambientGroupContextStatus = "read_failed";
@@ -3280,6 +3428,14 @@ export class BotApplication {
       ...messageContext.interactionTargets.flatMap((target) => target.names),
     ].join(" ");
     const memberProfileTargetUserId = targetedMemberProfileRequested ? evaluationTargetUserIds[0]! : undefined;
+    // Generic "you tell us" and terse reactions to an explicit quote only need
+    // the anchor selected for this turn. Old durable profiles would turn a
+    // short prompt into a stale personal-topic answer.
+    const suppressLongTermMemory = !memberProfileTargetUserId && (
+      contextResolution?.anchor?.kind === "recent_cluster" ||
+      isBareOpinionRequest(normalizedUserInput) ||
+      (Boolean(messageContext.replyContext) && isReferenceDependentShortReaction(normalizedUserInput))
+    );
     const memoryIdentityTerms = collectMemoryIdentityTerms(
       promptGroupConfig,
       memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds],
@@ -3288,7 +3444,7 @@ export class BotApplication {
     // 分级超时（计划 §2.4）：记忆检索 1.5s/2s、实时查询 8s/10s——超时跳过该层，
     // 不阻塞回复生成。
     const [retrievedGroupMemories, realtimeLookup] = await Promise.all([
-      this.isCapabilityEnabled("explicit_memory")
+      this.isCapabilityEnabled("explicit_memory") && !suppressLongTermMemory
         ? withTimeout(
           memberProfileTargetUserId
             // The regular relevance ranking can prefer the speaker or a group
@@ -3472,6 +3628,13 @@ export class BotApplication {
             realtimeLookup,
             replyFormatBudget?.maxTotalChars,
           );
+      if (hasConversationReplyEnvelopeMarker([
+        reply.text,
+        ...(terminalMessages ?? []),
+        replyText,
+      ].join(""))) {
+        throw new ConversationReplyEnvelopeError();
+      }
       const controlledMentionIdentities = selectManualIdentitiesForUserIds(
         promptManualIdentities,
         messageContext.interactionTargets
@@ -3507,6 +3670,9 @@ export class BotApplication {
         : formatReplyMessages(skill, replyText, replyFormatBudget);
       if (outgoingMessages.length === 0) {
         throw new Error("Formatted AI reply was empty.");
+      }
+      if (hasConversationReplyEnvelopeMarker(outgoingMessages.join(""))) {
+        throw new ConversationReplyEnvelopeError();
       }
 
       const receipts = await this.sendTextMessages(
@@ -3617,7 +3783,7 @@ export class BotApplication {
         realtimeLookupMs,
         error: summarizeAiError(error),
       });
-      const failureText = messageForAiFailure(error, failureKind);
+      const failureText = messageForAiFailure(error, failureKind, normalizedUserInput);
       const failureReceipt = await this.sendTextWithContext(groupConfig.groupId, failureText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, failureText, failureReceipt ? [failureReceipt] : []);
     }
@@ -3684,21 +3850,12 @@ export class BotApplication {
 
   private async generateReplyWithSelectedModel(
     groupConfig: GroupBotConfig,
-    args: {
-      skill: SkillDefinition;
-      history: ConversationTurn[];
-      userInput: string;
-      images?: MessageImageInput[];
-      identityContext?: AiIdentityContext;
-      scenarioInstruction?: string;
-      toolRuntime?: AiToolRuntime;
-      signal?: AbortSignal;
-    },
+    args: ReplyGenerationArgs,
   ): Promise<ReplyAiResult> {
     const router = await this.getReplyRouter();
     if (router) {
       const session = await router.begin(groupConfig, "chat", { signal: args.signal, vision: Boolean(args.images?.length), gate: this.backgroundLlmGate });
-      const result = await session.run((service, signal) => service.generateReply({ ...args, signal }));
+      const result = await session.run((service, signal) => this.generateReplyWithEnvelopeRecovery(service, args, signal));
       return { reply: result.value, usedMode: result.modelId, fallbackUsed: result.fallbackUsed, visionFallback: Boolean(args.images?.length) && result.fallbackUsed };
     }
     const selectedRoute = await this.getReplyAiRoute(groupConfig);
@@ -3721,7 +3878,7 @@ export class BotApplication {
         inputImageCount: args.images?.length ?? 0,
       });
     }
-    const call = async () => route.service.generateReply(args);
+    const call = async () => this.generateReplyWithEnvelopeRecovery(route.service, args, args.signal);
     const reply = this.llmGate ? await this.llmGate(call, args.signal) : await call();
     return {
       reply,
@@ -3729,6 +3886,29 @@ export class BotApplication {
       fallbackUsed: visionFallback,
       visionFallback,
     };
+  }
+
+  /**
+   * Real AiService instances parse and repair reply envelopes themselves. This
+   * second boundary covers compatibility adapters that hand a raw draft back to
+   * BotApplication. Keeping it inside the model-router session lets a second
+   * malformed response reach the configured backup model instead of leaking.
+   */
+  private async generateReplyWithEnvelopeRecovery(
+    service: Pick<RuntimeAiService, "generateReply">,
+    args: ReplyGenerationArgs,
+    signal?: AbortSignal,
+  ): Promise<AiReply> {
+    const reply = await service.generateReply({ ...args, signal });
+    if (!hasPrivateReplyEnvelopeMarker(reply)) return reply;
+
+    const repaired = await service.generateReply({
+      ...args,
+      signal,
+      scenarioInstruction: buildReplyEnvelopeRecoveryInstruction(args.scenarioInstruction),
+    });
+    if (hasPrivateReplyEnvelopeMarker(repaired)) throw new ConversationReplyEnvelopeError();
+    return repaired;
   }
 
   private async getReplyRouter(): Promise<ReplyModelRouter | undefined> {
@@ -4790,6 +4970,14 @@ export class BotApplication {
       const excluded = [...(groupConfig.blacklistedUserIds ?? []), ...(groupConfig.memoryDisabledUserIds ?? [])];
       const store = this.conversationContextRepository?.orchestration;
       if (store?.isReferenceRetracted(groupConfig.groupId, replyMessageId)) return undefined;
+      const cacheKey = replyContextCacheKey(groupConfig.groupId, replyMessageId);
+      const cached = this.recoveredReplyContexts.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        if (!cached.context.userId || !excluded.includes(cached.context.userId)) return cached.context;
+        this.recoveredReplyContexts.delete(cacheKey);
+        return undefined;
+      }
+      if (cached) this.recoveredReplyContexts.delete(cacheKey);
       const local = store?.reference(groupConfig.groupId, replyMessageId, undefined, excluded);
       const referenced = local ?? await this.transport.getMessage?.(replyMessageId);
       if (!referenced) {
@@ -4805,13 +4993,15 @@ export class BotApplication {
       const primaryName =
         manualTarget?.names[0] ?? referenced.userName ?? referenced.userId;
 
-      return {
+      const context = {
         messageId: referenced.messageId,
         userId: referenced.userId,
         userName: primaryName,
         text: buildReferencedMessageText(referenced),
         images: referenced.images,
       };
+      this.cacheRecoveredReplyContext(cacheKey, context);
+      return context;
     } catch (error) {
       logWarn("Failed to load referenced message context.", {
         groupId: groupConfig.groupId,
@@ -4822,6 +5012,44 @@ export class BotApplication {
     }
   }
 
+  private cacheRecoveredReplyContext(cacheKey: string, context: AiReplyContext): void {
+    const now = Date.now();
+    for (const [key, value] of this.recoveredReplyContexts) {
+      if (value.expiresAt <= now) this.recoveredReplyContexts.delete(key);
+    }
+    while (this.recoveredReplyContexts.size >= MAX_RECOVERED_REPLY_CONTEXTS) {
+      const oldest = this.recoveredReplyContexts.keys().next().value;
+      if (oldest === undefined) break;
+      this.recoveredReplyContexts.delete(oldest);
+    }
+    this.recoveredReplyContexts.set(cacheKey, { context, expiresAt: now + RECOVERED_REPLY_CONTEXT_TTL_MS });
+  }
+
+}
+
+function resolveRecentClusterRoute(
+  repository: ConversationContextRepository,
+  groupId: string,
+  userId: string,
+  messageIds: string[],
+): NonNullable<ConversationRouteInput["resolvedContext"]> | undefined {
+  const contexts = messageIds.flatMap(messageId => {
+    const context = repository.getMessageContext(groupId, messageId);
+    return context ? [context] : [];
+  });
+  const topicIds = new Set(contexts.map(context => context.topicId));
+  // Interleaved known branches are ambiguous. Preserve the recent-cluster
+  // evidence, but do not silently attach the new message to either branch.
+  if (topicIds.size !== 1) return undefined;
+  const anchor = [...contexts].reverse().find(context => context.direction === "assistant" && context.turnId !== undefined)
+    ?? [...contexts].reverse().find(context => context.turnId !== undefined);
+  if (!anchor) return undefined;
+  const branch = repository.getBranch(anchor.branchId);
+  if (!branch || branch.groupId !== groupId || branch.topicId !== anchor.topicId) return undefined;
+  if (branch.ownerUserId !== userId || anchor.turnId === undefined) {
+    return { topicId: anchor.topicId };
+  }
+  return { topicId: anchor.topicId, branchId: anchor.branchId, parentTurnId: anchor.turnId };
 }
 
 function uniqueConversationImages(images: MessageImageInput[]): MessageImageInput[] {
@@ -5923,9 +6151,12 @@ function knowledgeContinuationKey(groupId: string, userId: string): string {
   return `${groupId}\u0000${userId}`;
 }
 
-function messageForAiFailure(error: unknown, failureKind: string): string {
+function messageForAiFailure(error: unknown, failureKind: string, userInput = ""): string {
   const message = error instanceof Error ? error.message : String(error);
   const errorName = error instanceof Error ? error.name : "";
+  if (error instanceof ConversationReplyEnvelopeError || errorName === "ConversationReplyEnvelopeError") {
+    return MSG_REPLY_ENVELOPE_INVALID;
+  }
   if (errorName === "VisionFallbackUnavailableError") {
     return "当前图片理解模型不可用，请联系管理员检查 GPT 图片理解配置后再试。";
   }
@@ -5939,7 +6170,10 @@ function messageForAiFailure(error: unknown, failureKind: string): string {
     return "当前回复模型暂不支持知识库查询，本次没有用未核验数据猜测回答；请稍后重试或联系管理员检查模型配置。";
   }
   if (/content was flagged|content policy|safety(?: |-)?(?:rule|filter)|cybersecurity risk/i.test(message)) {
-    return "这条内容被上游安全规则拦截了，换一种更明确、非敏感的说法再试试。";
+    if (isExplicitUnauthorizedCyberIntrusionRequest(userInput)) {
+      return MSG_UNAUTHORIZED_CYBER_REFUSAL;
+    }
+    return "这类高风险内容不能帮。若是合法场景，可以问防护、风险排查或合规的安全练习。";
   }
   if (failureKind === "timeout") {
     return "这次回复超过等待时间了，请稍后再试一次。";
@@ -5954,6 +6188,39 @@ function messageForAiFailure(error: unknown, failureKind: string): string {
     return "回复服务暂时不可用，请稍后再试一次。";
   }
   return MSG_AI_FAIL;
+}
+
+function isExplicitUnauthorizedCyberIntrusionRequest(userInput: string): boolean {
+  const normalized = userInput.normalize("NFKC").replace(/\s+/gu, "");
+  if (!normalized) return false;
+  if (/(?:防护|防范|防止|修复|检测|审计|授权|靶场|演练|自有|自己的|合规)/u.test(normalized)) return false;
+  const action = "(?:破解|入侵|攻击|攻破|黑进|黑入|绕过|拿下|打穿)";
+  const target = "(?:银行|金融|支付|账户|账号|系统|服务器|网站|平台|数据库)";
+  return new RegExp(`${action}.{0,24}${target}`, "u").test(normalized) ||
+    new RegExp(`${target}.{0,16}(?:怎么|如何|能否|可不可以|可以|我要|想要|教我|帮我).{0,12}${action}`, "u").test(normalized);
+}
+
+function isReferenceDependentShortReaction(userInput: string): boolean {
+  const normalized = userInput.normalize("NFKC").trim().toLowerCase();
+  return /^(?:[?!]+|fw|什么鬼|这啥|就这|啥意思|什么意思)$/u.test(normalized);
+}
+
+function replyContextCacheKey(groupId: string, messageId: string): string {
+  return `${groupId}\u0000${messageId}`;
+}
+
+/** A reply envelope is private metadata even when an adapter bypasses AiService. */
+function hasPrivateReplyEnvelopeMarker(reply: Pick<AiReply, "text" | "messages">): boolean {
+  return hasConversationReplyEnvelopeMarker([reply.text, ...(reply.messages ?? [])].join("\n"));
+}
+
+function buildReplyEnvelopeRecoveryInstruction(original?: string): string {
+  return [
+    original,
+    "FORMAT RETRY: The previous draft exposed private reply metadata. Regenerate the reply from the supplied conversation.",
+    "When this request has a reply plan, return exactly one complete JSON object matching its requested reply schema. Otherwise return only natural user-facing text.",
+    "Do not emit incomplete JSON, private state fields, review fields, markdown fences, or any characters outside the required response.",
+  ].filter((line): line is string => Boolean(line)).join("\n\n");
 }
 
 function summarizeAiError(error: unknown): string {
