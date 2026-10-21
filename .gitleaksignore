@@ -1,0 +1,14 @@
+4d7e64e2c3d089836df847525f0910ef5f276ff4:src/services/member-name-repair.test.ts:generic-api-key:10
+e40250d123e95015274449dd027b8a6f56711f59:src/services/model-policy-upgrade.test.ts:generic-api-key:10
+e21c624e40766bf7538ff1a0b6957cc11bc86db6:src/configure-image-model.test.ts:generic-api-key:12
+5794ccf97263cc568a14d3b6f056bc89f4a164ed:src/worker-ingress-causal.integration.test.ts:generic-api-key:32
+5794ccf97263cc568a14d3b6f056bc89f4a164ed:src/services/meme-library-service.test.ts:generic-api-key:23
+94fc0c2af7f610b2157314e3ab0bb6caf76ba201:src/services/daily-report-service.test.ts:generic-api-key:13
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:scripts/visual-admin-smoke.mjs:generic-api-key:17
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/admin-http-server.test.ts:generic-api-key:20
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/services/admin-task-store.test.ts:generic-api-key:12
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/migrate-v3-state.test.ts:generic-api-key:11
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/services/admin-auth-service.test.ts:generic-api-key:11
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/services/system-settings-store.test.ts:generic-api-key:19
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/services/v3-runtime-state.test.ts:generic-api-key:14
+2e28ac92ff8df2d7aac7121c42b41ca997376e8d:src/services/v3-state-repository.test.ts:generic-api-key:13
