@@ -61,6 +61,29 @@ export interface HtmlPreviewMetadata {
   byteSize?: number;
 }
 
+export type ImagePreviewStatus = "available" | "expired" | "deleted";
+
+/** List responses intentionally omit the full prompt. */
+export interface ImagePreviewListItem {
+  id: string;
+  groupId: string;
+  creatorUserId?: string;
+  promptSummary: string;
+  modelId?: string;
+  model?: string;
+  fallbackUsed?: boolean;
+  mimeType: string;
+  byteSize: number;
+  status: ImagePreviewStatus;
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+}
+
+export interface ImagePreviewDetail extends ImagePreviewListItem {
+  prompt: string;
+}
+
 export type MemeScope = "normal_chat" | "blacklisted_at";
 
 export interface MemeLibraryPolicy {

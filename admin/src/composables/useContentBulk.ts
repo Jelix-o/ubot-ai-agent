@@ -3,7 +3,7 @@ import { useRouter } from "vue-router";
 import { api } from "../services/api";
 import { useAppStore } from "../stores/app";
 
-export type ContentBulkResource = "memories" | "knowledge" | "html-previews" | "memes";
+export type ContentBulkResource = "memories" | "knowledge" | "html-previews" | "image-previews" | "memes";
 export type ContentBulkAction = "enable" | "disable" | "delete" | "tags";
 export interface ContentSelection { id: string; groupId?: string; title?: string; name?: string; protected?: boolean; status?: string }
 

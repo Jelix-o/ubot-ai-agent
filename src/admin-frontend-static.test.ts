@@ -130,6 +130,25 @@ test("admin manages HTML preview metadata without embedding generated page conte
   assert.match(server, /generated HTML/);
 });
 
+test("admin exposes private generated-image previews beside HTML previews", async () => {
+  const [router, workspaces, view, api] = await Promise.all([
+    readAdmin("router.ts"),
+    readAdmin("workspaces.ts"),
+    readAdmin(path.join("views", "ImagePreviewsView.vue")),
+    readAdmin(path.join("services", "api.ts")),
+  ]);
+
+  assert.match(router, /path:\s*"\/image-previews"/);
+  assert.match(router, /name:\s*"image-previews"/);
+  assert.match(workspaces, /"html-previews",\s*"image-previews"/);
+  assert.match(api, /interface ImagePreviewListItem/);
+  assert.match(api, /interface ImagePreviewDetail/);
+  assert.match(view, /\/api\/image-previews/);
+  assert.match(view, /\/preview/);
+  assert.match(view, /完整提示词/);
+  assert.match(view, /promptSummary/);
+});
+
 test("admin exposes a super-admin-only meme library with authenticated image previews", async () => {
   const [router, shell, view, api, server, adminEntry] = await Promise.all([
     readAdmin("router.ts"),
