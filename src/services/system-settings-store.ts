@@ -295,14 +295,18 @@ export function defaultTokenCostControlSettings(): TokenCostControlSettings {
 }
 
 export function defaultReplyRouting(): ReplyRoutingSettings {
-  return { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45_000, chatTotalTimeoutMs: 120_000, htmlAttemptTimeoutMs: 120_000, htmlTotalTimeoutMs: 300_000 };
+  return { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45_000, chatTotalTimeoutMs: 120_000, htmlAttemptTimeoutMs: 600_000, htmlTotalTimeoutMs: 1_200_000 };
+}
+
+function routingTimeoutMaximum(key: keyof ReplyRoutingSettings): number {
+  return key === "htmlTotalTimeoutMs" ? 1_200_000 : 600_000;
 }
 
 function normalizeReplyRouting(value: Partial<ReplyRoutingSettings> | undefined): ReplyRoutingSettings {
   const defaults = defaultReplyRouting();
   const result = { ...defaults, ...value, fallbackEnabled: value?.fallbackEnabled !== false, fallbackModelIds: normalizeStringArray(value?.fallbackModelIds, 20, 80) };
   for (const key of ["chatAttemptTimeoutMs", "chatTotalTimeoutMs", "htmlAttemptTimeoutMs", "htmlTotalTimeoutMs"] as const) {
-    result[key] = Number.isInteger(result[key]) && result[key] >= 1_000 && result[key] <= 600_000 ? result[key] : defaults[key];
+    result[key] = Number.isInteger(result[key]) && result[key] >= 1_000 && result[key] <= routingTimeoutMaximum(key) ? result[key] : defaults[key];
   }
   return result;
 }
@@ -310,7 +314,7 @@ function normalizeReplyRouting(value: Partial<ReplyRoutingSettings> | undefined)
 function validateReplyRouting(value: ReplyRoutingSettings, models: SystemModelConfig[]): void {
   if (typeof value.fallbackEnabled !== "boolean" || !Array.isArray(value.fallbackModelIds) || value.fallbackModelIds.length > 20 || new Set(value.fallbackModelIds).size !== value.fallbackModelIds.length) throw new Error("invalid_reply_routing");
   for (const key of ["chatAttemptTimeoutMs", "chatTotalTimeoutMs", "htmlAttemptTimeoutMs", "htmlTotalTimeoutMs"] as const) {
-    if (!Number.isInteger(value[key]) || value[key] < 1_000 || value[key] > 600_000) throw new Error("invalid_reply_routing_timeout");
+    if (!Number.isInteger(value[key]) || value[key] < 1_000 || value[key] > routingTimeoutMaximum(key)) throw new Error("invalid_reply_routing_timeout");
   }
   if (value.chatAttemptTimeoutMs > value.chatTotalTimeoutMs || value.htmlAttemptTimeoutMs > value.htmlTotalTimeoutMs) throw new Error("invalid_reply_routing_timeout");
   if (value.fallbackModelIds.some(id => !models.some(model => model.id === id && model.purpose === "reply" && model.enabled && model.hasApiKey))) throw new Error("reply_model_not_approved");

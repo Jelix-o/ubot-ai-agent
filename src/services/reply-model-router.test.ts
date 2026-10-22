@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import OpenAI from "openai";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { ReplyOutputTruncatedError } from "./ai-service.js";
 import { ConversationReplyEnvelopeError } from "./conversation-state.js";
 import type { SystemModelConfig, SystemSettings } from "../types.js";
@@ -89,6 +90,69 @@ test("attempt timeout aborts the upstream and proceeds to a healthy model", asyn
   const f = fixture(); f.settings.replyRouting!.chatAttemptTimeoutMs = 15; let aborted = false;
   f.behavior.sol = signal => new Promise((_resolve, reject) => signal.addEventListener("abort", () => { aborted = true; reject(signal.reason); }, { once: true }));
   assert.equal((await f.execute()).modelId, "gpt"); assert.equal(aborted, true);
+});
+
+test("HTML has ten minutes per model and twenty minutes total, independent of chat limits", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const f = fixture();
+  for (const model of f.settings.models) model.requestTimeoutMs = 45_000;
+  const aborted: string[] = [];
+  for (const id of ["sol", "gpt", "ds"]) {
+    f.behavior[id] = signal => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => { aborted.push(id); reject(signal.reason); }, { once: true });
+    });
+  }
+  const session = await f.router.begin(group, "html");
+  const pending = session.run((service, signal) => service.generateReply({ signal } as any));
+  const rejected = assert.rejects(pending, /timed out|model_total_timeout/);
+  await nextTurn();
+  t.mock.timers.tick(120_000);
+  await nextTurn();
+  assert.deepEqual(f.calls, ["sol"]);
+  assert.deepEqual(aborted, []);
+  t.mock.timers.tick(180_000);
+  await nextTurn();
+  assert.deepEqual(aborted, []);
+  t.mock.timers.tick(300_000);
+  await nextTurn();
+  assert.deepEqual(f.calls, ["sol", "gpt"]);
+  assert.deepEqual(aborted, ["sol"]);
+  t.mock.timers.tick(600_000);
+  await rejected;
+  assert.deepEqual(f.calls, ["sol", "gpt"]);
+  assert.deepEqual(aborted, ["sol", "gpt"]);
+});
+
+test("HTML can finish after five minutes on the primary model", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const f = fixture();
+  f.behavior.sol = () => new Promise(resolve => setTimeout(() => resolve("long SVG"), 500_000));
+  const session = await f.router.begin(group, "html");
+  const pending = session.run((service, signal) => service.generateReply({ signal } as any));
+  await nextTurn();
+  t.mock.timers.tick(500_000);
+  const result = await pending;
+  assert.equal(result.value.text ?? result.value, "long SVG");
+  assert.equal(result.modelId, "sol");
+  assert.equal(result.fallbackUsed, false);
+  assert.deepEqual(f.calls, ["sol"]);
+});
+
+test("losing a page claim cancels the routed SDK call without trying a backup", async () => {
+  const f = fixture();
+  const controller = new AbortController();
+  let aborted = false;
+  f.behavior.sol = signal => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => { aborted = true; reject(signal.reason); }, { once: true });
+  });
+  const session = await f.router.begin(group, "html");
+  const pending = session.run((service, signal) => service.generateReply({ signal } as any), controller.signal);
+  const rejected = assert.rejects(pending, /lease lost/);
+  await nextTurn();
+  controller.abort(new Error("lease lost"));
+  await rejected;
+  assert.equal(aborted, true);
+  assert.deepEqual(f.calls, ["sol"]);
 });
 test("total budget is shared across attempts and HTML repair sessions", async (t) => {
   let now = Date.now();

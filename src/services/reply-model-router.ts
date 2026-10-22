@@ -61,11 +61,13 @@ export class ReplyModelRouter {
     const attemptMs = kind === "auxiliary" ? 4_000 : kind === "html" ? routing.htmlAttemptTimeoutMs : routing.chatAttemptTimeoutMs;
     const deadline = Date.now() + totalMs;
     let cursor = 0;
+    let fallbackReason: string | undefined;
     let lastError: unknown = new ConfiguredModelUnavailableError(primary);
     return {
-      run: async <T>(action: (service: RuntimeAiService, signal: AbortSignal) => Promise<T>): Promise<{ value: T; modelId: string; fallbackUsed: boolean }> => {
+      run: async <T>(action: (service: RuntimeAiService, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<{ value: T; modelId: string; fallbackUsed: boolean }> => {
+        const requestSignal = signal && options.signal ? AbortSignal.any([signal, options.signal]) : signal ?? options.signal;
         while (cursor < candidates.length) {
-          options.signal?.throwIfAborted();
+          requestSignal?.throwIfAborted();
           if (Date.now() >= deadline) throw Object.assign(new Error("model_total_timeout"), { status: 408 });
           const model = candidates[cursor++]!;
           const fingerprint = createHash("sha256").update(JSON.stringify([model, this.policy?.getProviderCapabilityOverrides(model.apiProtocol === "anthropic" ? "anthropic" : "openai")])).digest("hex");
@@ -75,27 +77,31 @@ export class ReplyModelRouter {
             this.clients.set(model.id, entry);
           }
           const startedAt = Date.now();
+          let timeoutMs: number | undefined;
           try {
             const execute = async () => {
-              options.signal?.throwIfAborted();
+              requestSignal?.throwIfAborted();
               const remaining = deadline - Date.now();
               if (remaining <= 0) throw Object.assign(new Error("model_total_timeout"), { status: 408 });
+              // HTML owns a longer budget than the model's chat request timeout.
+              timeoutMs = Math.min(attemptMs, remaining, kind === "html" ? attemptMs : model.requestTimeoutMs ?? attemptMs);
               return entry!.breaker.call(signal => withModelOperation(kind === "chat" ? "reply" : kind === "html" ? "html" : "participation", group.groupId, () => action(entry!.service, signal), model.id), {
-                signal: options.signal, timeoutMs: Math.min(attemptMs, remaining, model.requestTimeoutMs ?? attemptMs), countFailure: retryableModelFailure,
+                signal: requestSignal, timeoutMs, countFailure: retryableModelFailure,
               });
             };
             let value: T;
-            if (options.gate) value = await options.gate(execute, options.signal);
-            else { const release = await this.semaphore.acquire(options.signal); try { value = await execute(); } finally { release(); } }
-            options.signal?.throwIfAborted();
-            logInfo("Reply model route succeeded.", { groupId: group.groupId, kind, modelId: model.id, attempt: cursor, durationMs: Date.now() - startedAt });
+            if (options.gate) value = await options.gate(execute, requestSignal);
+            else { const release = await this.semaphore.acquire(requestSignal); try { value = await execute(); } finally { release(); } }
+            requestSignal?.throwIfAborted();
+            logInfo("Reply model route succeeded.", { groupId: group.groupId, kind, modelId: model.id, model: model.model, attempt: cursor, durationMs: Date.now() - startedAt, attemptTimeoutMs: timeoutMs, totalTimeoutMs: totalMs, fallbackReason });
             return { value, modelId: model.id, fallbackUsed: model.id !== primary };
           } catch (error) {
-            options.signal?.throwIfAborted();
+            requestSignal?.throwIfAborted();
             lastError = error;
             const failure = getAiProviderFailureDetails(error);
-            logWarn("Reply model route failed.", { groupId: group.groupId, kind, modelId: model.id, attempt: cursor, durationMs: Date.now() - startedAt, failureKind: failure.kind, statusCode: failure.statusCode });
+            logWarn("Reply model route failed.", { groupId: group.groupId, kind, modelId: model.id, model: model.model, attempt: cursor, durationMs: Date.now() - startedAt, attemptTimeoutMs: timeoutMs, totalTimeoutMs: totalMs, failureKind: failure.kind, statusCode: failure.statusCode });
             if (!retryableModelFailure(error)) throw error;
+            fallbackReason = failure.kind;
           }
         }
         throw lastError;

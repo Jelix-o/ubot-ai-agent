@@ -1791,6 +1791,7 @@ export class BotApplication {
       });
       const route = await this.getReplyAiRoute(groupConfig);
       let generationRoute: HtmlPreviewFallbackRoute = route;
+      let generationModel: string | undefined;
       let fallbackUsed = false;
       const routedSession = await (await this.getReplyRouter())?.begin(groupConfig, "html", { signal, gate: this.backgroundLlmGate });
       const result = await this.htmlPreviewService.processNext({
@@ -1801,8 +1802,9 @@ export class BotApplication {
         generate: async (pageRequest, pageSignal) => {
           const requestSignal = pageSignal ?? signal;
           if (routedSession) {
-            const routed = await routedSession.run((service, attemptSignal) => service.generateStaticHtml({ request: pageRequest, signal: attemptSignal }));
+            const routed = await routedSession.run((service, attemptSignal) => service.generateStaticHtml({ request: pageRequest, signal: attemptSignal }), requestSignal);
             generationRoute = { ...route, mode: routed.modelId }; fallbackUsed ||= routed.fallbackUsed;
+            generationModel = routed.value.model;
             return routed.value;
           }
           const call = () => generationRoute.service.generateStaticHtml({ request: pageRequest, signal: requestSignal });
@@ -1873,6 +1875,7 @@ export class BotApplication {
         status: result.status,
         pageId: queued.page.id,
         generationMode: generationRoute.mode,
+        ...(generationModel ? { model: generationModel } : {}),
         fallbackUsed,
         ...(result.errorCode ? { errorCode: result.errorCode } : {}),
         ...(result.failureStage ? { failureStage: result.failureStage } : {}),

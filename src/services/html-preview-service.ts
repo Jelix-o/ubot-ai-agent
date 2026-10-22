@@ -17,6 +17,7 @@ export const MAX_HTML_PREVIEW_REQUEST_CHARS = 4_000;
 export const MAX_HTML_PREVIEW_BYTES = 512 * 1024;
 export const DEFAULT_HTML_PREVIEW_MIN_FREE_BYTES = 32 * 1024 * 1024;
 const HTML_PREVIEW_TEMP_RETENTION_MS = 15 * 60 * 1_000;
+export const HTML_PREVIEW_LEASE_RENEWAL_MS = 30_000;
 export const HTML_PREVIEW_FAILURE_MESSAGE = "网页生成失败了，这次没能发布预览链接。请换个说法后再试一次。";
 export const HTML_PREVIEW_PROVIDER_UNAVAILABLE_MESSAGE = "网页生成服务暂时繁忙，请稍后再试。";
 export const HTML_PREVIEW_OUTPUT_TRUNCATED_MESSAGE = "网页内容过于复杂，生成达到长度上限，这次没能发布预览链接。请减少细节后再试。";
@@ -280,14 +281,37 @@ export class HtmlPreviewService {
     now: number,
   ): Promise<HtmlPreviewProcessResult> {
     const page = claim.page;
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+    let leaseLost = false;
+    const assertLease = () => {
+      controller.signal.throwIfAborted();
+      try {
+        if (!this.repository.renewLease(page.id, claim.leaseToken, now + Date.now() - startedAt)) {
+          throw new HtmlPreviewError("html_preview_publish_lease_lost");
+        }
+      } catch (error) {
+        leaseLost = true;
+        controller.abort(error);
+        throw error;
+      }
+    };
+    const renewal = setInterval(() => {
+      try { assertLease(); } catch { /* The linked signal cancels generation. */ }
+    }, HTML_PREVIEW_LEASE_RENEWAL_MS);
+    renewal.unref();
     try {
       const request = await this.resolveRequest(page, options, targetId);
       if (!request) throw new HtmlPreviewError("html_preview_request_unavailable");
       await this.assertDiskSpace();
-      const generated = await this.generateValidatedPage(request, options.generate, options.signal, options.maxGenerationAttempts);
-      options.signal?.throwIfAborted();
-      const published = await this.publishFiles(page.id, generated.title, generated.html);
-      options.signal?.throwIfAborted();
+      const generated = await this.generateValidatedPage(request, options.generate, controller.signal, options.maxGenerationAttempts);
+      assertLease();
+      const published = await this.publishFiles(page.id, generated.title, generated.html, assertLease);
+      assertLease();
+      clearInterval(renewal);
       const stored = this.repository.publish({
         id: page.id,
         leaseToken: claim.leaseToken,
@@ -308,6 +332,7 @@ export class HtmlPreviewService {
         ...(announcementOutboxId === undefined ? {} : { announcementOutboxId }),
       };
     } catch (error) {
+      if (leaseLost) return { status: "unavailable", errorCode: "html_preview_publish_lease_lost" };
       if (options.signal?.aborted) {
         this.repository.fail(page.id, claim.leaseToken, "html_preview_cancelled", now);
         return { status: "failed", errorCode: "html_preview_cancelled" };
@@ -328,6 +353,9 @@ export class HtmlPreviewService {
         errorCode,
         ...(failureStage ? { failureStage } : {}),
       };
+    } finally {
+      clearInterval(renewal);
+      options.signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -430,7 +458,7 @@ export class HtmlPreviewService {
     }
   }
 
-  private async publishFiles(id: string, title: string, html: string): Promise<{ contentSha256: string; byteSize: number }> {
+  private async publishFiles(id: string, title: string, html: string, assertLease: () => void): Promise<{ contentSha256: string; byteSize: number }> {
     await this.ensureStorageReady();
     const finalDir = this.pageDirectory(id);
     const tempName = `${id}.${randomBytes(8).toString("hex")}.tmp`;
@@ -442,6 +470,7 @@ export class HtmlPreviewService {
     const contentSha256 = createHash("sha256").update(content).digest("hex");
     const index = Buffer.from(buildTrustedIndex(title), "utf8");
     try {
+      assertLease();
       await this.removePageDirectory(id);
       await mkdir(temporaryDir, { recursive: false, mode: 0o755 });
       await chmod(temporaryDir, 0o755);
@@ -449,6 +478,7 @@ export class HtmlPreviewService {
         writePublicFile(path.join(temporaryDir, "index.html"), index),
         writePublicFile(path.join(temporaryDir, "content.html"), content),
       ]);
+      assertLease();
       await rename(temporaryDir, finalDir);
       await chmod(finalDir, 0o755);
       return { contentSha256, byteSize: content.byteLength };

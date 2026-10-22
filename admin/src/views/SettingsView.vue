@@ -33,7 +33,7 @@ const modelHealthById = shallowRef<Record<string, ModelHealthStatus>>({});
 const modelRowKeys = new WeakMap<SystemModelConfig, string>();
 let modelRowKeySeed = 0;
 const settings = reactive<SystemSettings>({
-  replyRouting: { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45000, chatTotalTimeoutMs: 120000, htmlAttemptTimeoutMs: 120000, htmlTotalTimeoutMs: 300000 },
+  replyRouting: { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45000, chatTotalTimeoutMs: 120000, htmlAttemptTimeoutMs: 600000, htmlTotalTimeoutMs: 1200000 },
   onlineLookupEnabled: false,
   tokenCostControl: {
     dailyReportAiQuipEnabled: false,
@@ -496,7 +496,7 @@ onMounted(() => {
           <section class="routing-timeouts" aria-labelledby="routing-timeout-title">
             <div class="section-intro"><h3 id="routing-timeout-title">超时设置</h3><p>单位：秒。单次超时控制每个模型，总预算限制整次请求。</p></div>
             <div class="timeout-matrix"><div class="timeout-matrix-head" aria-hidden="true"><span>请求类型</span><span>单次超时</span><span>总预算</span></div>
-              <div v-for="row in timeoutRows" :key="row.label" class="timeout-matrix-row"><strong>{{ row.label }}</strong><label><span class="timeout-mobile-label">单次超时</span><input class="input" type="number" min="1" max="600" :aria-label="`${row.label}单次超时（秒）`" :value="routing[row.attemptKey] / 1000" @input="routing[row.attemptKey] = Number(($event.target as HTMLInputElement).value) * 1000" /></label><label><span class="timeout-mobile-label">总预算</span><input class="input" type="number" min="1" max="600" :aria-label="`${row.label}总预算（秒）`" :value="routing[row.totalKey] / 1000" @input="routing[row.totalKey] = Number(($event.target as HTMLInputElement).value) * 1000" /></label></div>
+              <div v-for="row in timeoutRows" :key="row.label" class="timeout-matrix-row"><strong>{{ row.label }}</strong><label><span class="timeout-mobile-label">单次超时</span><input class="input" type="number" min="1" max="600" :aria-label="`${row.label}单次超时（秒）`" :value="routing[row.attemptKey] / 1000" @input="routing[row.attemptKey] = Number(($event.target as HTMLInputElement).value) * 1000" /></label><label><span class="timeout-mobile-label">总预算</span><input class="input" type="number" min="1" :max="row.totalKey === 'htmlTotalTimeoutMs' ? 1200 : 600" :aria-label="`${row.label}总预算（秒）`" :value="routing[row.totalKey] / 1000" @input="routing[row.totalKey] = Number(($event.target as HTMLInputElement).value) * 1000" /></label></div>
             </div>
             <p class="routing-note">群指定模型共用这份备用列表与超时设置。</p>
           </section>

@@ -36,7 +36,7 @@ const MAX_KNOWLEDGE_TOOL_CALLS = 4;
 const MAX_KNOWLEDGE_TOOL_ARGUMENT_CHARS = 8_000;
 export const MAX_STATIC_HTML_REQUEST_CHARS = 4_000;
 export const STATIC_HTML_MAX_COMPLETION_TOKENS = 16_384;
-export const STATIC_HTML_REQUEST_TIMEOUT_MS = 300_000;
+export const STATIC_HTML_REQUEST_TIMEOUT_MS = 600_000;
 
 export interface AiReplyRequestOptions {
   timeoutMs?: number;

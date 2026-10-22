@@ -174,6 +174,19 @@ export class HtmlPreviewRepository {
     });
   }
 
+  /** Extend only the current, still-live generation claim. */
+  renewLease(id: string, leaseToken: string, now = Date.now()): boolean {
+    const normalizedId = normalizePreviewId(id);
+    if (!normalizedId || !leaseToken.trim()) return false;
+    const changed = this.sharedDb.db.prepare(
+      `UPDATE html_previews
+          SET lease_expires_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'processing' AND lease_token = ?
+          AND expires_at > ? AND lease_expires_at > ?`,
+    ).run(now + HTML_PREVIEW_DEFAULT_LEASE_MS, now, normalizedId, leaseToken, now, now);
+    return Number(changed.changes) === 1;
+  }
+
   /** Claims a published page only to finish a durable, missing announcement. */
   claimAnnouncement(id: string, options: { now?: number; leaseMs?: number } = {}): HtmlPreviewClaim | undefined {
     const normalizedId = normalizePreviewId(id);
