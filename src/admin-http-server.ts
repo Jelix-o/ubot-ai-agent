@@ -85,6 +85,11 @@ interface AdminHttpServerOptions {
    * Preview routes fail closed until the durable publisher is wired in.
    */
   htmlPreviewService?: HtmlPreviewAdminService;
+  /**
+   * Optional so an admin process stays runnable during rolling upgrades.
+   * Generated image records and files remain private to the admin origin.
+   */
+  imagePreviewService?: ImagePreviewAdminService;
   /** Global V3-only image library; omitted for legacy and rolling upgrades. */
   memeLibraryService?: MemeLibraryAdminService;
   adminOperationLogService: AdminOperationLogService;
@@ -174,6 +179,50 @@ interface HtmlPreviewAdminService {
     pagination: { page: number; pageSize: number; total: number; totalPages: number };
   }>;
   get(id: string): Promise<HtmlPreviewAdminMetadata | undefined>;
+  remove(id: string, now?: number, guard?: MutationGuard): Promise<boolean>;
+}
+
+type ImagePreviewStatus = "available" | "expired" | "deleted";
+
+/**
+ * Deliberately redacted metadata returned by list, delete, and bulk paths.
+ * Full prompts are available only through the separately authorized detail
+ * endpoint and must never enter audit or bulk-preview payloads.
+ */
+interface ImagePreviewAdminMetadata {
+  id: string;
+  groupId: string;
+  creatorUserId?: string;
+  promptSummary: string;
+  modelId?: string;
+  model?: string;
+  fallbackUsed?: boolean;
+  mimeType: string;
+  byteSize: number;
+  status: ImagePreviewStatus;
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+}
+
+interface ImagePreviewAdminDetail extends ImagePreviewAdminMetadata {
+  prompt?: string;
+}
+
+interface ImagePreviewAdminService {
+  listPage(args: {
+    groupId?: string;
+    visibleGroupIds?: string[];
+    page?: number;
+    pageSize?: number;
+    status?: ImagePreviewStatus;
+  }): Promise<{
+    items: ImagePreviewAdminMetadata[];
+    pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  }>;
+  get(id: string): Promise<ImagePreviewAdminMetadata | undefined>;
+  getDetail(id: string): Promise<ImagePreviewAdminDetail | undefined>;
+  loadImage(id: string): Promise<{ data: Buffer; mimeType: string; byteSize: number } | undefined>;
   remove(id: string, now?: number, guard?: MutationGuard): Promise<boolean>;
 }
 
@@ -969,6 +1018,23 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/image-previews") {
+      await this.handleImagePreviews(req, res, url, session);
+      return;
+    }
+
+    const imagePreviewFileRoute = matchRoute(pathname, /^\/api\/image-previews\/([^/]+)\/preview$/);
+    if (imagePreviewFileRoute) {
+      await this.handleImagePreviewFile(req, res, imagePreviewFileRoute.id, session);
+      return;
+    }
+
+    const imagePreviewRoute = matchRoute(pathname, /^\/api\/image-previews\/([^/]+)$/);
+    if (imagePreviewRoute) {
+      await this.handleImagePreviewItem(req, res, imagePreviewRoute.id, session);
+      return;
+    }
+
     if (pathname === "/api/memories") {
       await this.handleMemories(req, res, url, session);
       return;
@@ -1085,7 +1151,7 @@ export class AdminHttpServer {
       const adapter = this.bulkAdapter(session);
       if (pathname === "/api/bulk-operations/preview") {
         const resource = requiredString(body.resource), action = requiredString(body.action);
-        const allowed: Record<string, string[]> = { "group-config": ["copy"], memories: ["enable", "disable", "delete"], knowledge: ["enable", "disable", "delete"], memes: ["enable", "disable", "tags"], "html-previews": ["delete"] };
+        const allowed: Record<string, string[]> = { "group-config": ["copy"], memories: ["enable", "disable", "delete"], knowledge: ["enable", "disable", "delete"], memes: ["enable", "disable", "tags"], "html-previews": ["delete"], "image-previews": ["delete"] };
         if (!allowed[resource]?.includes(action)) throw new BulkError("invalid_bulk_action");
         if ((resource === "group-config" || resource === "memes") && !this.requireRecentSuperAdminReauth(session, res)) return true;
         let ids = normalizeIds(body.ids), patch: Record<string, unknown> | undefined;
@@ -1133,14 +1199,21 @@ export class AdminHttpServer {
         else if (payload.resource === "knowledge") value = await this.options.knowledgeBaseStore.get(id);
         else if (payload.resource === "memes") { if (!this.options.memeLibraryService?.isAvailable()) throw new BulkError("meme_library_unavailable", 503); value = await this.options.memeLibraryService.getAsset(id); }
         else if (payload.resource === "html-previews") value = await this.options.htmlPreviewService?.get(id);
+        else if (payload.resource === "image-previews") value = await this.options.imagePreviewService?.get(id);
         if (!value) return undefined;
         if (payload.resource === "memes" && value.protected) throw new BulkError("protected_asset");
         if (payload.resource === "memes" && payload.action === "tags" && ((value.scope === "normal_chat" && !(payload.patch?.tags as string[] | undefined)?.length) || (value.scope === "blacklisted_at" && (payload.patch?.tags as string[] | undefined)?.length))) throw new BulkError("invalid_asset_tags");
         if (payload.resource === "html-previews" && ["pending", "processing", "deleted"].includes(value.status)) throw new BulkError("target_not_deletable", 409);
+        if (payload.resource === "image-previews" && value.status === "deleted") throw new BulkError("target_not_deletable", 409);
         let before: unknown, after: unknown;
         if (payload.resource === "group-config") { const normalized = normalizeGroupConfigPatch(value, payload.patch ?? {}); before = Object.fromEntries(Object.keys(payload.patch ?? {}).map(k => [k, value[k] ?? null])); after = Object.fromEntries(Object.keys(payload.patch ?? {}).map(k => [k, (normalized as any)[k] ?? null])); }
-        else { before = { enabled: value.enabled ?? null, ...(payload.action === "tags" ? { tags: value.tags } : {}), ...(payload.resource === "html-previews" ? { status: value.status } : {}) }; after = payload.action === "delete" ? { deleted: true } : payload.action === "tags" ? payload.patch : { enabled: payload.action === "enable" }; }
-        return { id, groupId: value.groupId ?? "", label: value.title ?? value.name ?? value.groupName ?? id, revision: revision(value), before, after };
+        else {
+          before = ["html-previews", "image-previews"].includes(payload.resource)
+            ? { status: value.status }
+            : { enabled: value.enabled ?? null, ...(payload.action === "tags" ? { tags: value.tags } : {}) };
+          after = payload.action === "delete" ? { deleted: true } : payload.action === "tags" ? payload.patch : { enabled: payload.action === "enable" };
+        }
+        return { id, groupId: value.groupId ?? "", label: payload.resource === "image-previews" ? id : value.title ?? value.name ?? value.groupName ?? id, revision: revision(value), before, after };
       },
       apply: async (target: BulkTarget, payload: BulkPayload, committed?: () => void): Promise<void> => {
         const atomic = this.options.adminOperationLogService.supportsAtomicRecord;
@@ -1153,6 +1226,7 @@ export class AdminHttpServer {
         else if (payload.resource === "knowledge") { if (payload.action === "delete") await this.options.knowledgeBaseStore.remove(target.id, guard); else await this.options.knowledgeBaseStore.update(target.id, { enabled: payload.action === "enable" }, guard); }
         else if (payload.resource === "memes") await this.options.memeLibraryService!.updateAsset(target.id, payload.action === "tags" ? { tags: payload.patch?.tags as string[] } : { enabled: payload.action === "enable" }, guard);
         else if (payload.resource === "html-previews") await this.options.htmlPreviewService!.remove(target.id, Date.now(), guard);
+        else if (payload.resource === "image-previews") await this.options.imagePreviewService!.remove(target.id, Date.now(), guard);
       },
       audit: async (target: BulkTarget, payload: BulkPayload): Promise<void> => this.recordOperation({ session, groupId: target.groupId, action: `bulk_${payload.resource}_${payload.action}`, target: target.id, detail: JSON.stringify({ before: target.before, after: target.after }) }),
     };
@@ -1312,6 +1386,44 @@ export class AdminHttpServer {
     // user-visible metadata.
     this.sendJson(res, {
       previews: page.items.map(formatHtmlPreviewForAdmin),
+      pagination: page.pagination,
+    });
+  }
+
+  private async handleImagePreviews(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
+    const service = this.options.imagePreviewService;
+    if (!service) {
+      this.sendJson(res, { error: "image_previews_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "GET") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+
+    const requestedGroupId = url.searchParams.get("groupId") ?? undefined;
+    const groupId = await this.normalizeAccessibleGroupId(session, requestedGroupId);
+    if (groupId === false) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const status = normalizeImagePreviewStatus(url.searchParams.get("status") ?? undefined);
+    if ((url.searchParams.get("status") ?? "") && !status) {
+      this.sendJson(res, { error: "invalid_image_preview_status" }, 400);
+      return;
+    }
+
+    const visibleGroupIds = session.role === "super_admin"
+      ? undefined
+      : (await this.visibleGroups(session)).map((group) => group.groupId);
+    const page = await service.listPage({
+      ...(groupId ? { groupId } : {}),
+      ...(visibleGroupIds ? { visibleGroupIds } : {}),
+      ...(status ? { status } : {}),
+      ...paginationParams(url, 20, 100),
+    });
+    this.sendJson(res, {
+      previews: page.items.map(formatImagePreviewForAdmin),
       pagination: page.pagination,
     });
   }
@@ -1588,6 +1700,95 @@ export class AdminHttpServer {
       detail: "manual_delete",
     });
     this.sendJson(res, { ok: true });
+  }
+
+  private async handleImagePreviewItem(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    const service = this.options.imagePreviewService;
+    if (!service) {
+      this.sendJson(res, { error: "image_previews_unavailable" }, 503);
+      return;
+    }
+
+    if (req.method === "GET") {
+      const preview = await service.getDetail(id);
+      if (!preview) {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
+      if (!(await this.canAccessGroup(session, preview.groupId))) {
+        this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      if (preview.status !== "available" || typeof preview.prompt !== "string") {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
+      this.sendJson(res, { preview: formatImagePreviewDetailForAdmin({ ...preview, prompt: preview.prompt }) });
+      return;
+    }
+
+    if (req.method !== "DELETE") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+
+    // Use redacted metadata here. In particular, do not load a full prompt
+    // merely to delete an item because operation logs and bulk state must not
+    // contain prompt text.
+    const preview = await service.get(id);
+    if (!preview) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (!(await this.canAccessGroup(session, preview.groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    const removed = await service.remove(id);
+    if (!removed) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    await this.recordOperation({
+      session,
+      groupId: preview.groupId,
+      action: "image_preview_delete",
+      target: preview.id,
+      detail: "manual_delete",
+    });
+    this.sendJson(res, { ok: true });
+  }
+
+  private async handleImagePreviewFile(req: IncomingMessage, res: ServerResponse, id: string, session: AdminSession): Promise<void> {
+    const service = this.options.imagePreviewService;
+    if (!service) {
+      this.sendJson(res, { error: "image_previews_unavailable" }, 503);
+      return;
+    }
+    if (req.method !== "GET") {
+      this.sendJson(res, { error: "method_not_allowed" }, 405);
+      return;
+    }
+
+    const preview = await service.get(id);
+    if (!preview) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    if (!(await this.canAccessGroup(session, preview.groupId))) {
+      this.sendJson(res, { error: "forbidden" }, 403);
+      return;
+    }
+    if (preview.status !== "available") {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    const image = await service.loadImage(id);
+    if (!image || !image.data.byteLength || !isImagePreviewContentType(image.mimeType)) {
+      this.sendJson(res, { error: "not_found" }, 404);
+      return;
+    }
+    this.sendBuffer(res, image.data, image.mimeType, { cacheControl: ADMIN_API_CACHE_CONTROL });
   }
 
   private async handleTasks(req: IncomingMessage, res: ServerResponse, url: URL, session: AdminSession): Promise<void> {
@@ -3822,6 +4023,60 @@ function formatHtmlPreviewForAdmin(preview: HtmlPreviewAdminMetadata): {
     ...(typeof preview.byteSize === "number" && Number.isFinite(preview.byteSize) && preview.byteSize >= 0
       ? { byteSize: Math.floor(preview.byteSize!) }
       : {}),
+  };
+}
+
+function normalizeImagePreviewStatus(value: string | undefined): ImagePreviewStatus | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "available" || normalized === "expired" || normalized === "deleted"
+    ? normalized
+    : undefined;
+}
+
+function isImagePreviewContentType(value: string): boolean {
+  return value === "image/png" || value === "image/jpeg" || value === "image/webp";
+}
+
+function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
+  id: string;
+  groupId: string;
+  creatorUserId?: string;
+  promptSummary: string;
+  modelId?: string;
+  model?: string;
+  fallbackUsed?: boolean;
+  mimeType: string;
+  byteSize: number;
+  status: ImagePreviewStatus;
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+} {
+  return {
+    id: preview.id,
+    groupId: preview.groupId,
+    ...(preview.creatorUserId ? { creatorUserId: preview.creatorUserId } : {}),
+    // The archive service already creates the bounded summary. Trim here too
+    // so an old/malformed record cannot inflate an administrative list view.
+    promptSummary: preview.promptSummary.slice(0, 160),
+    ...(preview.modelId ? { modelId: preview.modelId.slice(0, 240) } : {}),
+    ...(preview.model ? { model: preview.model.slice(0, 240) } : {}),
+    ...(typeof preview.fallbackUsed === "boolean" ? { fallbackUsed: preview.fallbackUsed } : {}),
+    mimeType: isImagePreviewContentType(preview.mimeType) ? preview.mimeType : "application/octet-stream",
+    byteSize: Number.isFinite(preview.byteSize) && preview.byteSize >= 0 ? Math.floor(preview.byteSize) : 0,
+    status: normalizeImagePreviewStatus(preview.status) ?? "deleted",
+    createdAt: preview.createdAt,
+    expiresAt: preview.expiresAt,
+    ...(preview.deletedAt ? { deletedAt: preview.deletedAt } : {}),
+  };
+}
+
+function formatImagePreviewDetailForAdmin(preview: ImagePreviewAdminDetail & { prompt: string }): ReturnType<typeof formatImagePreviewForAdmin> & { prompt: string } {
+  return {
+    ...formatImagePreviewForAdmin(preview),
+    // The repository enforces the 5,000-code-point maximum. This defensive
+    // bound also protects clients during rolling upgrades or malformed rows.
+    prompt: Array.from(preview.prompt).slice(0, 5_000).join(""),
   };
 }
 

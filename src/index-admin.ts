@@ -1,4 +1,5 @@
 import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
+import path from "node:path";
 import { loadConfig } from "./config.js";
 import { logError, logInfo } from "./logger.js";
 import { AdminHttpServer } from "./admin-http-server.js";
@@ -24,6 +25,7 @@ import { openSharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { HtmlPreviewService } from "./services/html-preview-service.js";
+import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
 
 /**
@@ -91,6 +93,11 @@ export async function main(): Promise<void> {
     rootDir: config.htmlPreviewRoot,
     publicBaseUrl: config.htmlPreviewPublicBaseUrl,
   });
+  const imagePreviewService = new ImagePreviewArchiveService({
+    sharedDb,
+    rootDir: path.join(config.dataDir, "generated-image-previews"),
+    stagedRoot: path.join(config.dataDir, "generated-images"),
+  });
   // The library is intentionally unavailable on a non-V3 rollback runtime.
   // This prevents an admin process from accepting image uploads that a worker
   // on the other side of a rolling upgrade cannot safely consume.
@@ -115,6 +122,7 @@ export async function main(): Promise<void> {
     adminTaskStore,
     modelHealthHistoryStore,
     htmlPreviewService,
+    imagePreviewService,
     ...(memeLibraryService ? { memeLibraryService } : {}),
     adminOperationLogService,
     getTransportHealthStatus: () => readClient.getHealth(),

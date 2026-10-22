@@ -52,6 +52,126 @@ type HtmlPreviewTestService = {
   remove(id: string): Promise<boolean>;
 };
 
+type ImagePreviewTestItem = {
+  id: string;
+  groupId: string;
+  creatorUserId: string;
+  promptSummary: string;
+  prompt: string;
+  modelId: string;
+  model: string;
+  fallbackUsed: boolean;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  byteSize: number;
+  status: "available" | "expired" | "deleted";
+  createdAt: string;
+  expiresAt: string;
+  deletedAt?: string;
+  /** Deliberately present in the fake to prove the API filters it out. */
+  sourceMessageId: string;
+};
+
+type ImagePreviewTestService = {
+  listPage(args: {
+    groupId?: string;
+    visibleGroupIds?: string[];
+    page?: number;
+    pageSize?: number;
+    status?: string;
+  }): Promise<{ items: Omit<ImagePreviewTestItem, "prompt">[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }>;
+  get(id: string): Promise<Omit<ImagePreviewTestItem, "prompt"> | undefined>;
+  getDetail(id: string): Promise<ImagePreviewTestItem | undefined>;
+  loadImage(id: string): Promise<{ data: Buffer; mimeType: ImagePreviewTestItem["mimeType"]; byteSize: number } | undefined>;
+  remove(id: string): Promise<boolean>;
+};
+
+const IMAGE_PREVIEW_TEST_DATA = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cfc0000004010100e7a3255b0000000049454e44ae426082", "hex");
+
+function redactImagePreview(item: ImagePreviewTestItem): Omit<ImagePreviewTestItem, "prompt"> {
+  const { prompt: _prompt, ...metadata } = item;
+  return metadata;
+}
+
+function createImagePreviewTestService(): ImagePreviewTestService {
+  let items: ImagePreviewTestItem[] = [
+    {
+      id: "image-allowed",
+      groupId: "67890",
+      creatorUserId: "20001",
+      promptSummary: "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷",
+      prompt: "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷，侧面视角，2D 动画风格。",
+      modelId: "image-primary",
+      model: "gpt-image-1",
+      fallbackUsed: false,
+      mimeType: "image/png",
+      byteSize: IMAGE_PREVIEW_TEST_DATA.byteLength,
+      status: "available",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-31T00:00:00.000Z",
+      sourceMessageId: "source-image-allowed",
+    },
+    {
+      id: "image-forbidden",
+      groupId: "100200",
+      creatorUserId: "20002",
+      promptSummary: "未授权群的生图提示词摘要",
+      prompt: "未授权群的完整生图提示词。",
+      modelId: "image-fallback",
+      model: "gpt-image-1",
+      fallbackUsed: true,
+      mimeType: "image/webp",
+      byteSize: 2048,
+      status: "available",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      expiresAt: "2026-02-01T00:00:00.000Z",
+      sourceMessageId: "source-image-forbidden",
+    },
+  ];
+
+  return {
+    async listPage(args) {
+      const filtered = items.filter((item) => (
+        (!args.groupId || item.groupId === args.groupId) &&
+        (!args.visibleGroupIds || args.visibleGroupIds.includes(item.groupId)) &&
+        (!args.status || item.status === args.status)
+      ));
+      const pageSize = args.pageSize ?? 20;
+      const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+      const page = Math.min(Math.max(1, args.page ?? 1), totalPages);
+      return {
+        items: filtered.slice((page - 1) * pageSize, page * pageSize).map(redactImagePreview),
+        pagination: { page, pageSize, total: filtered.length, totalPages },
+      };
+    },
+    async get(id) {
+      const item = items.find((candidate) => candidate.id === id);
+      return item ? redactImagePreview(item) : undefined;
+    },
+    async getDetail(id) {
+      return items.find((candidate) => candidate.id === id);
+    },
+    async loadImage(id) {
+      const item = items.find((candidate) => candidate.id === id);
+      return item?.status === "available"
+        ? { data: IMAGE_PREVIEW_TEST_DATA, mimeType: item.mimeType, byteSize: IMAGE_PREVIEW_TEST_DATA.byteLength }
+        : undefined;
+    },
+    async remove(id) {
+      const index = items.findIndex((candidate) => candidate.id === id);
+      if (index < 0 || items[index]!.status === "deleted") return false;
+      const previous = items[index]!;
+      items[index] = {
+        ...previous,
+        prompt: "",
+        promptSummary: "",
+        status: "deleted",
+        deletedAt: "2026-01-03T00:00:00.000Z",
+      };
+      return true;
+    },
+  };
+}
+
 function createHtmlPreviewTestService(): HtmlPreviewTestService {
   let items: HtmlPreviewTestItem[] = [
     {
@@ -121,6 +241,7 @@ async function startFixture(
   options: {
     listGroupMembers?: (groupId: string) => Promise<NapcatGroupMember[]>;
     htmlPreviewService?: HtmlPreviewTestService;
+    imagePreviewService?: ImagePreviewTestService;
   } = {},
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "admin-v3-"));
@@ -158,6 +279,7 @@ async function startFixture(
   const settings = new SystemSettingsStore(path.join(dir, "settings.json"), [], undefined, repository);
   const characterProfileService = new CharacterProfileService(repository, { bootstrapProfile: huixian });
   const htmlPreviewService = options.htmlPreviewService ?? createHtmlPreviewTestService();
+  const imagePreviewService = options.imagePreviewService ?? createImagePreviewTestService();
   await characterProfileService.ensureHuixianProfile("test-bootstrap");
   await memeLibraryService.initialize();
   await memories.create({
@@ -186,6 +308,7 @@ async function startFixture(
     systemSettingsStore: settings,
     adminTaskStore: tasks,
     htmlPreviewService,
+    imagePreviewService,
     memeLibraryService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
@@ -213,7 +336,7 @@ async function startFixture(
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, db, memories, operations, tasks, htmlPreviewService, memeLibraryService };
+  return { baseUrl, db, memories, operations, tasks, htmlPreviewService, imagePreviewService, memeLibraryService };
 }
 
 function createStartupOnlyServer(port: number, ensureInitialized: () => Promise<void>): AdminHttpServer {
@@ -873,6 +996,142 @@ test("HTML preview admin endpoints expose metadata only, enforce group scope, CS
     headers: { Cookie: superAdmin.cookie },
   });
   assert.equal((await afterDelete.json() as { pagination: { total: number } }).pagination.total, 0);
+});
+
+test("image preview APIs keep prompts private by default, serve private bytes, and clear prompt data on deletion", async (t) => {
+  const { baseUrl, operations } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const prompt = "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷，侧面视角，2D 动画风格。";
+  const summary = "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷";
+
+  const list = await request(baseUrl, "/api/image-previews?groupId=67890", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(list.status, 200);
+  const listData = await list.json() as {
+    previews: Array<Record<string, unknown>>;
+    pagination: { total: number };
+  };
+  assert.equal(listData.pagination.total, 1);
+  assert.deepEqual(Object.keys(listData.previews[0]!).sort(), [
+    "byteSize",
+    "createdAt",
+    "creatorUserId",
+    "expiresAt",
+    "fallbackUsed",
+    "groupId",
+    "id",
+    "mimeType",
+    "model",
+    "modelId",
+    "promptSummary",
+    "status",
+  ]);
+  assert.equal(listData.previews[0]?.promptSummary, summary);
+  assert.equal(Object.hasOwn(listData.previews[0]!, "prompt"), false);
+  assert.equal(Object.hasOwn(listData.previews[0]!, "sourceMessageId"), false);
+
+  const detail = await request(baseUrl, "/api/image-previews/image-allowed", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(detail.status, 200);
+  assert.equal((await detail.json() as { preview: { prompt: string } }).preview.prompt, prompt);
+
+  const image = await request(baseUrl, "/api/image-previews/image-allowed/preview", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/png");
+  assert.equal(image.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), IMAGE_PREVIEW_TEST_DATA);
+
+  const missingCsrf = await request(baseUrl, "/api/image-previews/image-allowed", {
+    method: "DELETE",
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(missingCsrf.status, 403);
+
+  const deleted = await request(baseUrl, "/api/image-previews/image-allowed", {
+    method: "DELETE",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf },
+  });
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(await deleted.json(), { ok: true });
+  const audit = await operations.list({ groupId: "67890" });
+  const entry = audit.find((candidate) => candidate.action === "image_preview_delete" && candidate.target === "image-allowed");
+  assert.ok(entry);
+  assert.equal(JSON.stringify(entry).includes(prompt), false);
+  assert.equal(JSON.stringify(entry).includes(summary), false);
+
+  const afterDeleteDetail = await request(baseUrl, "/api/image-previews/image-allowed", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(afterDeleteDetail.status, 404);
+  const afterDeleteImage = await request(baseUrl, "/api/image-previews/image-allowed/preview", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(afterDeleteImage.status, 404);
+});
+
+test("group administrators cannot access image previews outside their grants and bulk previews omit prompt text", async (t) => {
+  const { baseUrl, operations } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const inviteResponse = await request(baseUrl, "/api/admin-accounts/invites", {
+    method: "POST",
+    headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" },
+    body: JSON.stringify({ role: "group_admin", groupIds: ["67890"], expiresHours: 1 }),
+  });
+  const invite = await inviteResponse.json() as { token: string };
+  const groupAdmin = await acceptInviteAsAdmin(baseUrl, invite.token, "image-preview-operator");
+  const headers = { Cookie: groupAdmin.cookie, "X-CSRF-Token": groupAdmin.csrf, "Content-Type": "application/json" };
+
+  const allowedList = await request(baseUrl, "/api/image-previews?groupId=67890", { headers: { Cookie: groupAdmin.cookie } });
+  assert.equal(allowedList.status, 200);
+  assert.equal((await allowedList.json() as { pagination: { total: number } }).pagination.total, 1);
+  const crossGroupList = await request(baseUrl, "/api/image-previews?groupId=100200", { headers: { Cookie: groupAdmin.cookie } });
+  assert.equal(crossGroupList.status, 403);
+  const crossGroupDetail = await request(baseUrl, "/api/image-previews/image-forbidden", { headers: { Cookie: groupAdmin.cookie } });
+  assert.equal(crossGroupDetail.status, 403);
+  const crossGroupImage = await request(baseUrl, "/api/image-previews/image-forbidden/preview", { headers: { Cookie: groupAdmin.cookie } });
+  assert.equal(crossGroupImage.status, 403);
+  const crossGroupDelete = await request(baseUrl, "/api/image-previews/image-forbidden", { method: "DELETE", headers });
+  assert.equal(crossGroupDelete.status, 403);
+
+  const previewResponse = await request(baseUrl, "/api/bulk-operations/preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ resource: "image-previews", action: "delete", groupId: "67890", ids: ["image-allowed"] }),
+  });
+  assert.equal(previewResponse.status, 200);
+  const previewText = await previewResponse.text();
+  assert.equal(previewText.includes("一只戴棕色蝴蝶结"), false);
+  const preview = JSON.parse(previewText) as { id: string; targets: Array<{ label: string; before: { status: string }; after: { deleted: boolean } }> };
+  assert.equal(preview.targets.length, 1);
+  assert.equal(preview.targets[0]?.label, "image-allowed");
+  assert.deepEqual(preview.targets[0]?.before, { status: "available" });
+  assert.deepEqual(preview.targets[0]?.after, { deleted: true });
+
+  const execution = await request(baseUrl, "/api/bulk-operations/apply", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ previewId: preview.id }),
+  });
+  assert.equal(execution.status, 202);
+  const { taskId } = await execution.json() as { taskId: string };
+  let task: { status: string; result?: { items?: Array<{ id: string; status: string }> } } | undefined;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}`, { headers: { Cookie: groupAdmin.cookie } });
+    assert.equal(response.status, 200);
+    task = await response.json() as typeof task;
+    if (task && !["queued", "running"].includes(task.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(task?.status, "succeeded");
+  assert.deepEqual(task?.result?.items?.map((item) => [item.id, item.status]), [["image-allowed", "succeeded"]]);
+  const audit = await operations.list({ groupId: "67890" });
+  const bulkAudit = audit.find((entry) => entry.action === "bulk_image-previews_delete" && entry.target === "image-allowed");
+  assert.ok(bulkAudit);
+  assert.equal(JSON.stringify(bulkAudit).includes("一只戴棕色蝴蝶结"), false);
 });
 
 test("meme library APIs restrict reads and previews to super admins, require recent reauth for changes, and audit uploads", async (t) => {
