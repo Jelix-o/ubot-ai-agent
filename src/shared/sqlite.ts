@@ -1093,6 +1093,37 @@ const MIGRATIONS: readonly SqliteMigration[] = [
       CREATE INDEX IF NOT EXISTS conversation_reply_tasks_branch ON conversation_reply_tasks(group_id,user_id,branch_id,source_row_id);
     `),
   },
+  {
+    version: 22,
+    name: "add-generated-image-preview-archive",
+    apply: (db) => db.exec(`
+      CREATE TABLE IF NOT EXISTS image_previews (
+        id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        creator_user_id TEXT NOT NULL,
+        source_message_id TEXT NOT NULL,
+        prompt TEXT,
+        prompt_summary TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        fallback_used INTEGER NOT NULL DEFAULT 0 CHECK (fallback_used IN (0, 1)),
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/webp')),
+        byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+        content_sha256 TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'expired', 'deleted')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        expired_at INTEGER,
+        deleted_at INTEGER,
+        UNIQUE (group_id, source_message_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_image_previews_group_created
+        ON image_previews (group_id, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_image_previews_status_expiry
+        ON image_previews (status, expires_at, id);
+    `),
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;

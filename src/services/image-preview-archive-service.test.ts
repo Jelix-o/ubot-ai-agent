@@ -1,0 +1,191 @@
+import assert from "node:assert/strict";
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { SharedDb } from "../shared/sqlite.js";
+import {
+  IMAGE_PREVIEW_ORPHAN_MIN_AGE_MS,
+  ImagePreviewArchiveError,
+  ImagePreviewArchiveService,
+} from "./image-preview-archive-service.js";
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+test("archives a verified staged image privately and returns only a redacted list record", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "source.png");
+  const prompt = `draw ${"x".repeat(200)}`;
+  const preview = await fixture.service.archive({
+    groupId: "group-1",
+    creatorUserId: "member-1",
+    sourceMessageId: "message-1",
+    prompt,
+    filePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: true,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    now: fixture.now.value,
+  });
+
+  assert.equal(preview.status, "available");
+  assert.equal(Array.from(preview.promptSummary).length, 160);
+  assert.equal("prompt" in preview, false);
+  const privateFile = path.join(fixture.archiveRoot, `${preview.id}.png`);
+  assert.deepEqual(await readFile(privateFile), PNG);
+
+  const [listed, detail, image] = await Promise.all([
+    fixture.service.listPage({ groupId: "group-1" }),
+    fixture.service.getDetail(preview.id),
+    fixture.service.loadImage(preview.id),
+  ]);
+  assert.equal(listed.items.length, 1);
+  assert.equal("prompt" in listed.items[0]!, false);
+  assert.equal(detail?.prompt, prompt);
+  assert.deepEqual(image?.data, PNG);
+  assert.equal(image?.mimeType, "image/png");
+
+  const stored = fixture.db.db.prepare(
+    "SELECT prompt, prompt_summary, fallback_used, mime_type, byte_size, content_sha256 FROM image_previews WHERE id = ?",
+  ).get(preview.id) as {
+    prompt: string;
+    prompt_summary: string;
+    fallback_used: number;
+    mime_type: string;
+    byte_size: number;
+    content_sha256: string;
+  };
+  assert.equal(stored.prompt, prompt);
+  assert.equal(stored.prompt_summary, preview.promptSummary);
+  assert.equal(stored.fallback_used, 1);
+  assert.equal(stored.mime_type, "image/png");
+  assert.equal(stored.byte_size, PNG.byteLength);
+  assert.match(stored.content_sha256, /^[a-f0-9]{64}$/);
+});
+
+test("refuses paths outside the managed staging root and mismatched image metadata", async (t) => {
+  const fixture = await createFixture(t);
+  const outside = path.join(fixture.root, "outside.png");
+  await writeFile(outside, PNG);
+  await assert.rejects(
+    fixture.service.archive({
+      groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "outside", prompt: "draw",
+      filePath: outside, modelId: "primary", model: "image-model", fallbackUsed: false,
+      mimeType: "image/png", byteSize: PNG.byteLength,
+    }),
+    (error: unknown) => error instanceof ImagePreviewArchiveError && error.code === "image_preview_source_path_invalid",
+  );
+
+  const staged = await stage(fixture, "wrong-type.png");
+  await assert.rejects(
+    fixture.service.archive({
+      groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "wrong-type", prompt: "draw",
+      filePath: staged, modelId: "primary", model: "image-model", fallbackUsed: false,
+      mimeType: "image/jpeg", byteSize: PNG.byteLength,
+    }),
+    (error: unknown) => error instanceof ImagePreviewArchiveError && error.code === "image_preview_source_type_invalid",
+  );
+  assert.equal((fixture.db.db.prepare("SELECT COUNT(*) AS count FROM image_previews").get() as { count: number }).count, 0);
+});
+
+test("expiry removes private bytes and clears both the prompt and its summary", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "expires.png");
+  const preview = await fixture.service.archive({
+    groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "expires", prompt: "private prompt",
+    filePath: source, modelId: "primary", model: "image-model", fallbackUsed: false,
+    mimeType: "image/png", byteSize: PNG.byteLength,
+    now: fixture.now.value, expiresAt: fixture.now.value + 10,
+  });
+  const privateFile = path.join(fixture.archiveRoot, `${preview.id}.png`);
+  fixture.now.value += 10;
+  const result = await fixture.service.cleanup(fixture.now.value);
+  assert.equal(result.expired, 1);
+  await assert.rejects(access(privateFile));
+  assert.equal((await fixture.service.get(preview.id))?.status, "expired");
+  assert.equal(await fixture.service.getDetail(preview.id), undefined);
+  assert.equal(await fixture.service.loadImage(preview.id), undefined);
+  const stored = fixture.db.db.prepare(
+    "SELECT prompt, prompt_summary, status FROM image_previews WHERE id = ?",
+  ).get(preview.id) as { prompt: string | null; prompt_summary: string; status: string };
+  assert.equal(stored.prompt, null);
+  assert.equal(stored.prompt_summary, "");
+  assert.equal(stored.status, "expired");
+});
+
+test("manual deletion clears the prompt and orphan cleanup only removes untracked stale files", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "delete.png");
+  const preview = await fixture.service.archive({
+    groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "delete", prompt: "delete me",
+    filePath: source, modelId: "primary", model: "image-model", fallbackUsed: false,
+    mimeType: "image/png", byteSize: PNG.byteLength,
+    now: fixture.now.value,
+  });
+  assert.equal(await fixture.service.remove(preview.id, fixture.now.value + 1), true);
+  assert.equal((await fixture.service.get(preview.id))?.status, "deleted");
+  assert.equal(await fixture.service.getDetail(preview.id), undefined);
+  const stored = fixture.db.db.prepare(
+    "SELECT prompt, prompt_summary, status FROM image_previews WHERE id = ?",
+  ).get(preview.id) as { prompt: string | null; prompt_summary: string; status: string };
+  assert.equal(stored.prompt, null);
+  assert.equal(stored.prompt_summary, "");
+  assert.equal(stored.status, "deleted");
+
+  const orphan = path.join(fixture.archiveRoot, `${"a".repeat(43)}.png`);
+  const temporary = path.join(fixture.archiveRoot, `.${"b".repeat(43)}.1234-deadbeef.tmp`);
+  await writeFile(orphan, PNG);
+  await writeFile(temporary, PNG);
+  const old = new Date(fixture.now.value - IMAGE_PREVIEW_ORPHAN_MIN_AGE_MS - 1);
+  await Promise.all([utimes(orphan, old, old), utimes(temporary, old, old)]);
+  const cleanup = await fixture.service.cleanup(fixture.now.value);
+  assert.equal(cleanup.orphans, 1);
+  assert.equal(cleanup.temp, 1);
+  await assert.rejects(access(orphan));
+  await assert.rejects(access(temporary));
+});
+
+async function createFixture(t: test.TestContext): Promise<{
+  root: string;
+  archiveRoot: string;
+  stagedRoot: string;
+  db: SharedDb;
+  now: { value: number };
+  service: ImagePreviewArchiveService;
+}> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "image-preview-archive-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  const now = { value: Date.UTC(2026, 9, 22, 12, 0, 0) };
+  const archiveRoot = path.join(root, "generated-image-previews");
+  const stagedRoot = path.join(root, "generated-images");
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  return {
+    root,
+    archiveRoot,
+    stagedRoot,
+    db,
+    now,
+    service: new ImagePreviewArchiveService({
+      sharedDb: db,
+      rootDir: archiveRoot,
+      stagedRoot,
+      now: () => now.value,
+    }),
+  };
+}
+
+async function stage(fixture: { stagedRoot: string }, name: string): Promise<string> {
+  const target = path.join(fixture.stagedRoot, name);
+  await mkdir(fixture.stagedRoot, { recursive: true });
+  await writeFile(target, PNG, { mode: 0o600 });
+  return target;
+}
