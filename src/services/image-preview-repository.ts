@@ -102,7 +102,7 @@ export class ImagePreviewRepository {
     const contentSha256 = normalizeSha256(input.contentSha256);
     const now = input.now ?? Date.now();
     const expiresAt = input.expiresAt ?? now + IMAGE_PREVIEW_RETENTION_MS;
-    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > now + IMAGE_PREVIEW_RETENTION_MS) {
       throw new Error("image_preview_expiry_invalid");
     }
 
@@ -221,6 +221,18 @@ export class ImagePreviewRepository {
     return (this.sharedDb.db.prepare(
       "SELECT id FROM image_previews WHERE status = 'available'",
     ).all() as Array<{ id: string }>).map(row => row.id);
+  }
+
+  /** Terminal records retain their ids so cleanup can retry their private bytes. */
+  listIds(): string[] {
+    return (this.sharedDb.db.prepare("SELECT id FROM image_previews").all() as Array<{ id: string }>).map(row => row.id);
+  }
+
+  listTerminal(): ImagePreviewRecord[] {
+    const rows = this.sharedDb.db.prepare(
+      "SELECT * FROM image_previews WHERE status IN ('expired', 'deleted') ORDER BY updated_at, id",
+    ).all() as unknown as ImagePreviewRow[];
+    return rows.map(fromRow);
   }
 
   private withImmediateTransaction<T>(callback: () => T): T {

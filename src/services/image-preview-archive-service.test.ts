@@ -94,6 +94,20 @@ test("refuses paths outside the managed staging root and mismatched image metada
   assert.equal((fixture.db.db.prepare("SELECT COUNT(*) AS count FROM image_previews").get() as { count: number }).count, 0);
 });
 
+test("does not allow an archive caller to extend the thirty-day retention window", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "retention.png");
+  await assert.rejects(
+    fixture.service.archive({
+      groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "retention", prompt: "draw",
+      filePath: source, modelId: "primary", model: "image-model", fallbackUsed: false,
+      mimeType: "image/png", byteSize: PNG.byteLength, now: fixture.now.value,
+      expiresAt: fixture.now.value + 30 * 24 * 60 * 60 * 1_000 + 1,
+    }),
+    (error: unknown) => error instanceof ImagePreviewArchiveError && error.code === "image_preview_expiry_invalid",
+  );
+});
+
 test("expiry removes private bytes and clears both the prompt and its summary", async (t) => {
   const fixture = await createFixture(t);
   const source = await stage(fixture, "expires.png");
@@ -149,6 +163,45 @@ test("manual deletion clears the prompt and orphan cleanup only removes untracke
   assert.equal(cleanup.temp, 1);
   await assert.rejects(access(orphan));
   await assert.rejects(access(temporary));
+});
+
+test("purges metadata even when the private image path cannot be removed", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "blocked-delete.png");
+  const preview = await fixture.service.archive({
+    groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "blocked-delete", prompt: "remove now",
+    filePath: source, modelId: "primary", model: "image-model", fallbackUsed: false,
+    mimeType: "image/png", byteSize: PNG.byteLength, now: fixture.now.value,
+  });
+  const privatePath = path.join(fixture.archiveRoot, `${preview.id}.png`);
+  await rm(privatePath);
+  await mkdir(privatePath);
+
+  assert.equal(await fixture.service.remove(preview.id, fixture.now.value + 1), true);
+  const deleted = fixture.db.db.prepare("SELECT prompt, prompt_summary, status FROM image_previews WHERE id = ?").get(preview.id) as {
+    prompt: string | null; prompt_summary: string; status: string;
+  };
+  assert.equal(deleted.prompt, null);
+  assert.equal(deleted.prompt_summary, "");
+  assert.equal(deleted.status, "deleted");
+
+  const expiringSource = await stage(fixture, "blocked-expiry.png");
+  const expiring = await fixture.service.archive({
+    groupId: "group-1", creatorUserId: "member-1", sourceMessageId: "blocked-expiry", prompt: "expire now",
+    filePath: expiringSource, modelId: "primary", model: "image-model", fallbackUsed: false,
+    mimeType: "image/png", byteSize: PNG.byteLength, now: fixture.now.value, expiresAt: fixture.now.value + 10,
+  });
+  const expiringPath = path.join(fixture.archiveRoot, `${expiring.id}.png`);
+  await rm(expiringPath);
+  await mkdir(expiringPath);
+  const cleanup = await fixture.service.cleanup(fixture.now.value + 10);
+  assert.equal(cleanup.expired, 1);
+  const expired = fixture.db.db.prepare("SELECT prompt, prompt_summary, status FROM image_previews WHERE id = ?").get(expiring.id) as {
+    prompt: string | null; prompt_summary: string; status: string;
+  };
+  assert.equal(expired.prompt, null);
+  assert.equal(expired.prompt_summary, "");
+  assert.equal(expired.status, "expired");
 });
 
 async function createFixture(t: test.TestContext): Promise<{

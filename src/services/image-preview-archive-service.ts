@@ -95,6 +95,7 @@ export class ImagePreviewArchiveService {
     const prompt = normalizePrompt(input.prompt);
     const declaredMime = normalizeMimeType(input.mimeType);
     const declaredByteSize = normalizeByteSize(input.byteSize);
+    const expiresAt = normalizeExpiresAt(input.expiresAt, now);
     const sourceInfo = await lstat(source);
     if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink()) {
       throw new ImagePreviewArchiveError("image_preview_source_unsafe");
@@ -128,7 +129,7 @@ export class ImagePreviewArchiveService {
         byteSize: declaredByteSize,
         contentSha256,
         now,
-        expiresAt: input.expiresAt ?? now + IMAGE_PREVIEW_RETENTION_MS,
+        expiresAt,
       });
       return toMetadata(metadata, now);
     } catch (error) {
@@ -181,34 +182,42 @@ export class ImagePreviewArchiveService {
     }
   }
 
-  /** Deletes the image copy before making the record unavailable to readers. */
+  /**
+   * Makes the metadata terminal before best-effort byte removal. A filesystem
+   * fault must never keep a private prompt readable; hourly cleanup retries
+   * the private-byte removal for terminal records.
+   */
   async remove(id: string, now = this.now(), guard?: MutationGuard): Promise<boolean> {
     const record = this.repository.get(id);
     if (!record || record.status === "deleted") return false;
     assertRevision(toMetadata(record, now), guard);
-    await this.removeImageFile(record);
-    return this.repository.runAtomically(() => {
+    const removed = this.repository.runAtomically(() => {
       const current = this.repository.get(id);
       assertRevision(current ? toMetadata(current, now) : undefined, guard);
       const removed = this.repository.markDeleted(record.id, now);
       if (removed) guard?.committed?.();
       return removed;
     });
+    if (removed) await this.removeImageFile(record).catch(() => undefined);
+    return removed;
   }
 
   /** Removes expired images and stale unknown files without exposing private paths. */
   async cleanup(now = this.now()): Promise<{ expired: number; temp: number; orphans: number }> {
     await this.ensureStorageReady();
     let expired = 0;
+    const purgeCandidates = new Map<string, ImagePreviewRecord>();
     for (const record of this.repository.listExpired(now)) {
-      try {
-        await this.removeImageFile(record);
-        if (this.repository.markExpired(record.id, now)) expired += 1;
-      } catch {
-        // Keep it available for a later retry if deleting its private bytes failed.
-      }
+      // Clear prompt metadata before byte removal. The record is no longer
+      // readable through the API even if a damaged private path needs a retry.
+      if (this.repository.markExpired(record.id, now)) expired += 1;
+      purgeCandidates.set(record.id, record);
     }
-    const knownIds = new Set(this.repository.listAvailableIds());
+    for (const record of this.repository.listTerminal()) purgeCandidates.set(record.id, record);
+    for (const record of purgeCandidates.values()) {
+      await this.removeImageFile(record).catch(() => undefined);
+    }
+    const knownIds = new Set(this.repository.listIds());
     let temp = 0;
     let orphans = 0;
     for (const entry of await readdir(this.rootDir, { withFileTypes: true })) {
@@ -353,6 +362,15 @@ function normalizeByteSize(value: number): number {
     throw new ImagePreviewArchiveError("image_preview_byte_size_invalid");
   }
   return value;
+}
+
+function normalizeExpiresAt(value: number | undefined, now: number): number {
+  const maximum = now + IMAGE_PREVIEW_RETENTION_MS;
+  const expiresAt = value ?? maximum;
+  if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > maximum) {
+    throw new ImagePreviewArchiveError("image_preview_expiry_invalid");
+  }
+  return expiresAt;
 }
 
 function normalizeMimeType(value: string): ImagePreviewMimeType {
