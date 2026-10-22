@@ -126,6 +126,24 @@ function createImagePreviewTestService(): ImagePreviewTestService {
       expiresAt: "2026-02-01T00:00:00.000Z",
       sourceMessageId: "source-image-forbidden",
     },
+    {
+      id: "image-expired",
+      groupId: "67890",
+      creatorUserId: "20001",
+      // The fake deliberately retains cleared fields to prove the API never
+      // exposes stale terminal metadata from a rolling-upgrade service.
+      promptSummary: "已过期的提示词摘要不应从后台返回",
+      prompt: "已过期的完整提示词不应从后台返回。",
+      modelId: "image-primary",
+      model: "gpt-image-1",
+      fallbackUsed: false,
+      mimeType: "image/jpeg",
+      byteSize: 1024,
+      status: "expired",
+      createdAt: "2025-12-01T00:00:00.000Z",
+      expiresAt: "2025-12-31T00:00:00.000Z",
+      sourceMessageId: "source-image-expired-must-not-leak",
+    },
   ];
 
   return {
@@ -148,7 +166,12 @@ function createImagePreviewTestService(): ImagePreviewTestService {
       return item ? redactImagePreview(item) : undefined;
     },
     async getDetail(id) {
-      return items.find((candidate) => candidate.id === id);
+      const item = items.find((candidate) => candidate.id === id);
+      // The API must consult redacted metadata first for terminal records.
+      // Throwing here makes this fixture fail if a future handler loads a
+      // terminal prompt before it returns the expected 404.
+      if (item?.status !== "available") throw new Error("terminal_prompt_read_forbidden");
+      return item;
     },
     async loadImage(id) {
       const item = items.find((candidate) => candidate.id === id);
@@ -1004,7 +1027,7 @@ test("image preview APIs keep prompts private by default, serve private bytes, a
   const prompt = "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷，侧面视角，2D 动画风格。";
   const summary = "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷";
 
-  const list = await request(baseUrl, "/api/image-previews?groupId=67890", {
+  const list = await request(baseUrl, "/api/image-previews?groupId=67890&status=available", {
     headers: { Cookie: superAdmin.cookie },
   });
   assert.equal(list.status, 200);
@@ -1073,6 +1096,77 @@ test("image preview APIs keep prompts private by default, serve private bytes, a
   assert.equal(afterDeleteImage.status, 404);
 });
 
+test("terminal image preview records are redacted from list, detail, preview, bulk, and audit responses", async (t) => {
+  const { baseUrl, operations } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const headers = { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" };
+  const terminalSummary = "已过期的提示词摘要不应从后台返回";
+  const terminalPrompt = "已过期的完整提示词不应从后台返回。";
+  const sourceMessageId = "source-image-expired-must-not-leak";
+
+  const list = await request(baseUrl, "/api/image-previews?groupId=67890&status=expired", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(list.status, 200);
+  const listText = await list.text();
+  assert.equal(listText.includes(terminalSummary), false);
+  assert.equal(listText.includes(terminalPrompt), false);
+  assert.equal(listText.includes(sourceMessageId), false);
+  const listed = JSON.parse(listText) as { previews: Array<{ id: string; status: string; promptSummary?: string }> };
+  assert.deepEqual(listed.previews, [{
+    id: "image-expired",
+    groupId: "67890",
+    creatorUserId: "20001",
+    promptSummary: "",
+    modelId: "image-primary",
+    model: "gpt-image-1",
+    fallbackUsed: false,
+    mimeType: "image/jpeg",
+    byteSize: 1024,
+    status: "expired",
+    createdAt: "2025-12-01T00:00:00.000Z",
+    expiresAt: "2025-12-31T00:00:00.000Z",
+  }]);
+
+  const detail = await request(baseUrl, "/api/image-previews/image-expired", { headers: { Cookie: superAdmin.cookie } });
+  assert.equal(detail.status, 404);
+  const image = await request(baseUrl, "/api/image-previews/image-expired/preview", { headers: { Cookie: superAdmin.cookie } });
+  assert.equal(image.status, 404);
+
+  const bulkPreviewResponse = await request(baseUrl, "/api/bulk-operations/preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ resource: "image-previews", action: "delete", ids: ["image-expired"] }),
+  });
+  assert.equal(bulkPreviewResponse.status, 200);
+  const bulkPreviewText = await bulkPreviewResponse.text();
+  assert.equal(bulkPreviewText.includes(terminalSummary), false);
+  assert.equal(bulkPreviewText.includes(terminalPrompt), false);
+  assert.equal(bulkPreviewText.includes(sourceMessageId), false);
+  const bulkPreview = JSON.parse(bulkPreviewText) as { id: string };
+  const execution = await request(baseUrl, "/api/bulk-operations/apply", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ previewId: bulkPreview.id }),
+  });
+  assert.equal(execution.status, 202);
+  const { taskId } = await execution.json() as { taskId: string };
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const task = await request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}`, { headers: { Cookie: superAdmin.cookie } });
+    assert.equal(task.status, 200);
+    const value = await task.json() as { status: string };
+    if (!['queued', 'running'].includes(value.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const audit = await operations.list({ groupId: "67890" });
+  const auditEntry = audit.find((entry) => entry.action === "bulk_image-previews_delete" && entry.target === "image-expired");
+  assert.ok(auditEntry);
+  const auditText = JSON.stringify(auditEntry);
+  assert.equal(auditText.includes(terminalSummary), false);
+  assert.equal(auditText.includes(terminalPrompt), false);
+  assert.equal(auditText.includes(sourceMessageId), false);
+});
+
 test("group administrators cannot access image previews outside their grants and bulk previews omit prompt text", async (t) => {
   const { baseUrl, operations } = await startFixture(t);
   const superAdmin = await login(baseUrl);
@@ -1085,7 +1179,7 @@ test("group administrators cannot access image previews outside their grants and
   const groupAdmin = await acceptInviteAsAdmin(baseUrl, invite.token, "image-preview-operator");
   const headers = { Cookie: groupAdmin.cookie, "X-CSRF-Token": groupAdmin.csrf, "Content-Type": "application/json" };
 
-  const allowedList = await request(baseUrl, "/api/image-previews?groupId=67890", { headers: { Cookie: groupAdmin.cookie } });
+  const allowedList = await request(baseUrl, "/api/image-previews?groupId=67890&status=available", { headers: { Cookie: groupAdmin.cookie } });
   assert.equal(allowedList.status, 200);
   assert.equal((await allowedList.json() as { pagination: { total: number } }).pagination.total, 1);
   const crossGroupList = await request(baseUrl, "/api/image-previews?groupId=100200", { headers: { Cookie: groupAdmin.cookie } });

@@ -1710,13 +1710,25 @@ export class AdminHttpServer {
     }
 
     if (req.method === "GET") {
-      const preview = await service.getDetail(id);
-      if (!preview) {
+      // Consult redacted metadata first. Terminal records must not cause the
+      // archive service to load a full prompt merely to return a 404.
+      const metadata = await service.get(id);
+      if (!metadata) {
         this.sendJson(res, { error: "not_found" }, 404);
         return;
       }
-      if (!(await this.canAccessGroup(session, preview.groupId))) {
+      if (!(await this.canAccessGroup(session, metadata.groupId))) {
         this.sendJson(res, { error: "forbidden" }, 403);
+        return;
+      }
+      if (metadata.status !== "available") {
+        this.sendJson(res, { error: "not_found" }, 404);
+        return;
+      }
+
+      const preview = await service.getDetail(id);
+      if (!preview) {
+        this.sendJson(res, { error: "not_found" }, 404);
         return;
       }
       if (preview.status !== "available" || typeof preview.prompt !== "string") {
@@ -4052,19 +4064,22 @@ function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
   expiresAt: string;
   deletedAt?: string;
 } {
+  const status = normalizeImagePreviewStatus(preview.status) ?? "deleted";
   return {
     id: preview.id,
     groupId: preview.groupId,
     ...(preview.creatorUserId ? { creatorUserId: preview.creatorUserId } : {}),
     // The archive service already creates the bounded summary. Trim here too
     // so an old/malformed record cannot inflate an administrative list view.
-    promptSummary: preview.promptSummary.slice(0, 160),
+    // Treat terminal rows as redacted even if an older service returns stale
+    // metadata before its cleanup transaction has completed.
+    promptSummary: status === "available" ? preview.promptSummary.slice(0, 160) : "",
     ...(preview.modelId ? { modelId: preview.modelId.slice(0, 240) } : {}),
     ...(preview.model ? { model: preview.model.slice(0, 240) } : {}),
     ...(typeof preview.fallbackUsed === "boolean" ? { fallbackUsed: preview.fallbackUsed } : {}),
     mimeType: isImagePreviewContentType(preview.mimeType) ? preview.mimeType : "application/octet-stream",
     byteSize: Number.isFinite(preview.byteSize) && preview.byteSize >= 0 ? Math.floor(preview.byteSize) : 0,
-    status: normalizeImagePreviewStatus(preview.status) ?? "deleted",
+    status,
     createdAt: preview.createdAt,
     expiresAt: preview.expiresAt,
     ...(preview.deletedAt ? { deletedAt: preview.deletedAt } : {}),
