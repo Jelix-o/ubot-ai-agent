@@ -144,6 +144,25 @@ function createImagePreviewTestService(): ImagePreviewTestService {
       expiresAt: "2025-12-31T00:00:00.000Z",
       sourceMessageId: "source-image-expired-must-not-leak",
     },
+    {
+      id: "image-deleted",
+      groupId: "67890",
+      creatorUserId: "20001",
+      // As above, retain stale fields in the fake to verify API redaction
+      // independently of the archive service's own database cleanup.
+      promptSummary: "已删除的提示词摘要不应从后台返回",
+      prompt: "已删除的完整提示词不应从后台返回。",
+      modelId: "image-primary",
+      model: "gpt-image-1",
+      fallbackUsed: false,
+      mimeType: "image/png",
+      byteSize: 512,
+      status: "deleted",
+      createdAt: "2025-11-01T00:00:00.000Z",
+      expiresAt: "2025-12-01T00:00:00.000Z",
+      deletedAt: "2025-11-02T00:00:00.000Z",
+      sourceMessageId: "source-image-deleted-must-not-leak",
+    },
   ];
 
   return {
@@ -1165,6 +1184,46 @@ test("terminal image preview records are redacted from list, detail, preview, bu
   assert.equal(auditText.includes(terminalSummary), false);
   assert.equal(auditText.includes(terminalPrompt), false);
   assert.equal(auditText.includes(sourceMessageId), false);
+});
+
+test("deleted image preview records stay redacted and cannot be reopened or bulk deleted", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const superAdmin = await login(baseUrl);
+  const headers = { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "application/json" };
+  const terminalSummary = "已删除的提示词摘要不应从后台返回";
+  const terminalPrompt = "已删除的完整提示词不应从后台返回。";
+  const sourceMessageId = "source-image-deleted-must-not-leak";
+
+  const list = await request(baseUrl, "/api/image-previews?groupId=67890&status=deleted", {
+    headers: { Cookie: superAdmin.cookie },
+  });
+  assert.equal(list.status, 200);
+  const listText = await list.text();
+  assert.equal(listText.includes(terminalSummary), false);
+  assert.equal(listText.includes(terminalPrompt), false);
+  assert.equal(listText.includes(sourceMessageId), false);
+  const listed = JSON.parse(listText) as { previews: Array<{ id: string; promptSummary?: string }> };
+  assert.equal(listed.previews.length, 1);
+  assert.equal(listed.previews[0]?.id, "image-deleted");
+  assert.equal(listed.previews[0]?.promptSummary, "");
+
+  const detail = await request(baseUrl, "/api/image-previews/image-deleted", { headers: { Cookie: superAdmin.cookie } });
+  assert.equal(detail.status, 404);
+  const image = await request(baseUrl, "/api/image-previews/image-deleted/preview", { headers: { Cookie: superAdmin.cookie } });
+  assert.equal(image.status, 404);
+  const deletion = await request(baseUrl, "/api/image-previews/image-deleted", { method: "DELETE", headers });
+  assert.equal(deletion.status, 404);
+
+  const bulk = await request(baseUrl, "/api/bulk-operations/preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ resource: "image-previews", action: "delete", ids: ["image-deleted"] }),
+  });
+  assert.equal(bulk.status, 409);
+  const bulkText = await bulk.text();
+  assert.equal(bulkText.includes(terminalSummary), false);
+  assert.equal(bulkText.includes(terminalPrompt), false);
+  assert.equal(bulkText.includes(sourceMessageId), false);
 });
 
 test("group administrators cannot access image previews outside their grants and bulk previews omit prompt text", async (t) => {
