@@ -28,6 +28,10 @@ import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { ImageGenerationError, type ImageGenerationRuntime } from "./services/image-generation-service.js";
+import type {
+  ImagePreviewArchiveInput,
+  ImagePreviewArchiveService,
+} from "./services/image-preview-archive-service.js";
 import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-service.js";
 import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
 import { BT_ADULT_CONTENT_WARNING } from "./services/bt-search-renderer.js";
@@ -1087,6 +1091,7 @@ function createApp(options?: {
   privateEnterpriseRanking?: PrivateEnterpriseRanking;
   knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
   btSearchService?: BtSearchRuntime;
+  imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup">;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1196,6 +1201,7 @@ function createApp(options?: {
     options?.privateEnterpriseRanking,
     options?.knowledgeSourceBindingStore,
     options?.btSearchService,
+    options?.imagePreviewArchiveService,
   );
 
   return {
@@ -1815,6 +1821,126 @@ test("#画图 queues the generated file without invoking conversational AI", asy
   assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
   assert.equal(aiService.calls.length, 0);
   assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
+});
+
+test("#画图 archives the validated request before handing the image to QQ", async () => {
+  const calls: string[] = [];
+  const archived: ImagePreviewArchiveInput[] = [];
+  const transport = new FakeTransport();
+  const sendGeneratedGroupImage = transport.sendGeneratedGroupImage.bind(transport);
+  transport.sendGeneratedGroupImage = async (groupId, imagePath) => {
+    calls.push("qq_delivery");
+    return sendGeneratedGroupImage(groupId, imagePath);
+  };
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      calls.push("generation");
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-fallback",
+        model: "gpt-image-test",
+        fallbackUsed: true,
+        mimeType: "image/png",
+        byteLength: 123,
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const imagePreviewArchiveService: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> = {
+    async archive(input) {
+      calls.push("archive");
+      archived.push({ ...input });
+      return {} as never;
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+  }], ["20001"]);
+  const { app } = createApp({
+    transport,
+    groupConfigService,
+    imageGenerationService,
+    imagePreviewArchiveService,
+  });
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图  海边\n灯塔  " } }], 20001, 67890, 731));
+
+  assert.deepEqual(calls, ["generation", "archive", "qq_delivery"]);
+  assert.deepEqual(archived, [{
+    groupId: "67890",
+    creatorUserId: "20001",
+    sourceMessageId: "731",
+    prompt: "海边 灯塔",
+    filePath: "D:\\managed\\generated.png",
+    modelId: "image-fallback",
+    model: "gpt-image-test",
+    fallbackUsed: true,
+    mimeType: "image/png",
+    byteSize: 123,
+  }]);
+});
+
+test("a private image archive failure does not block QQ delivery or log the prompt", async t => {
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (line: string) => warnings.push(line));
+  let archiveCalls = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      await input.onStarted?.();
+      return {
+        filePath: "D:\\managed\\generated.png",
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/webp",
+        byteLength: 456,
+      };
+    },
+    async discard() { throw new Error("delivery must own the staged file"); },
+    async cleanup() { return 0; },
+  };
+  const imagePreviewArchiveService: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> = {
+    async archive() {
+      archiveCalls += 1;
+      throw new Error("archive storage unavailable");
+    },
+    async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+  };
+  const { app, transport } = createApp({ imageGenerationService, imagePreviewArchiveService });
+
+  await app.handleGroupMessage(createEvent("#画图 只应发送到模型的私密提示词", 20001, 67890, 732));
+
+  assert.equal(archiveCalls, 1);
+  assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["正在生成图片，请稍候…"]);
+  assert.match(warnings.join("\n"), /Private generated-image archive failed/);
+  assert.doesNotMatch(warnings.join("\n"), /只应发送到模型的私密提示词/);
+});
+
+test("private image preview archive cleanup is part of BotApplication maintenance", async () => {
+  let cleanupCalls = 0;
+  const imagePreviewArchiveService: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> = {
+    async archive() { return {} as never; },
+    async cleanup() {
+      cleanupCalls += 1;
+      return { expired: 1, temp: 0, orphans: 2 };
+    },
+  };
+  const { app } = createApp({ imagePreviewArchiveService });
+
+  await (app as unknown as {
+    runImagePreviewCleanupTick(): Promise<void>;
+  }).runImagePreviewCleanupTick();
+
+  assert.equal(cleanupCalls, 1);
+  await app.stop();
 });
 
 test("#画图 explains missing prompts and ignores the retired per-group switch", async () => {

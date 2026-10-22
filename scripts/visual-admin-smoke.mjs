@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,6 +13,7 @@ import { GroupMemoryStore } from "../dist/services/group-memory-store.js";
 import { KnowledgeBaseStore } from "../dist/services/knowledge-base-store.js";
 import { KnowledgeSourceBindingStore } from "../dist/services/knowledge-source-binding-store.js";
 import { MemeLibraryService } from "../dist/services/meme-library-service.js";
+import { ImagePreviewArchiveService } from "../dist/services/image-preview-archive-service.js";
 import { loadPrivateEnterpriseRanking } from "../dist/services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "../dist/services/system-settings-store.js";
 import { V3StateRepository } from "../dist/services/v3-state-repository.js";
@@ -21,6 +22,10 @@ const TEST_STATE_KEY = "0".repeat(64);
 const GROUP_ID = "866209871";
 const USERNAME = "smoke-admin";
 const PASSWORD = "smoke-password";
+const IMAGE_PREVIEW_SMOKE_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==",
+  "base64",
+);
 const runBrowserSmoke = process.argv.includes("--browser");
 const useLayoutFixture = runBrowserSmoke || process.argv.includes("--layout-fixture");
 
@@ -97,6 +102,27 @@ try {
   const characterProfileService = new CharacterProfileService(v3State);
   const memeLibraryService = new MemeLibraryService(path.join(root, "data"), v3State);
   await memeLibraryService.initialize();
+  const imagePreviewStagedRoot = path.join(root, "data", "generated-images");
+  const imagePreviewService = new ImagePreviewArchiveService({
+    sharedDb,
+    rootDir: path.join(root, "data", "generated-image-previews"),
+    stagedRoot: imagePreviewStagedRoot,
+  });
+  const imagePreviewStagedFile = path.join(imagePreviewStagedRoot, "visual-smoke.png");
+  await mkdir(imagePreviewStagedRoot, { recursive: true });
+  await writeFile(imagePreviewStagedFile, IMAGE_PREVIEW_SMOKE_PNG, { mode: 0o600 });
+  await imagePreviewService.archive({
+    groupId: GROUP_ID,
+    creatorUserId: "20001",
+    sourceMessageId: "visual-smoke-image",
+    prompt: "后台视觉冒烟使用的私有生图提示词",
+    filePath: imagePreviewStagedFile,
+    modelId: "image",
+    model: "image-test",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: IMAGE_PREVIEW_SMOKE_PNG.byteLength,
+  });
 
   await memoryStore.create({
     groupId: GROUP_ID,
@@ -130,6 +156,7 @@ try {
     characterProfileService,
     systemSettingsStore: settingsStore,
     adminTaskStore: taskStore,
+    imagePreviewService,
     memeLibraryService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
@@ -179,12 +206,17 @@ try {
   }, { Cookie: cookie, "X-CSRF-Token": csrf });
   if (!restoreSettings.response.ok) throw new Error("Reply token budget smoke fixture could not restore its settings.");
 
-  const pages = ["/", "/login", "/analytics", "/groups", "/groups/bulk", "/members", "/memories", "/knowledge", "/html-previews", "/memes", "/tasks", "/audit", "/security", "/health", "/persona", "/commands", "/settings"];
+  const pages = ["/", "/login", "/analytics", "/groups", "/groups/bulk", "/members", "/memories", "/knowledge", "/html-previews", "/image-previews", "/memes", "/tasks", "/audit", "/security", "/health", "/persona", "/commands", "/settings"];
   for (const page of pages) {
     const response = await fetch(`${baseUrl}${page}`, { headers: { Cookie: cookie } });
     if (!response.ok) throw new Error(`Admin page failed: ${page} ${response.status}`);
     const html = await response.text();
     if (!html.includes('id="app"')) throw new Error(`Admin page shell missing: ${page}`);
+  }
+
+  const imagePreviewList = await getJson(baseUrl, `/api/image-previews?groupId=${GROUP_ID}`, cookie);
+  if (imagePreviewList.pagination?.total !== 1 || imagePreviewList.previews?.[0]?.prompt !== undefined) {
+    throw new Error("Image preview list did not keep the full prompt private.");
   }
 
   const overview = await getJson(baseUrl, `/api/overview?groupId=${GROUP_ID}`, cookie);
@@ -393,6 +425,22 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     expectedAuthRejections = false;
     await desktop.reload({ waitUntil: "networkidle" });
     if (await timeoutInput.inputValue() !== "46") throw new Error("Session refresh lost saved form contents.");
+
+    await desktop.setViewportSize({ width: 1440, height: 960 });
+    await desktop.goto(`${baseUrl}/image-previews`, { waitUntil: "networkidle" });
+    await desktop.getByRole("heading", { name: "生图预览" }).waitFor();
+    await desktop.getByRole("button", { name: "打开预览" }).waitFor();
+    await assertNoHorizontalOverflow(desktop, "desktop image previews");
+    await desktop.screenshot({ path: path.join(screenshotDir, "image-previews-desktop.png"), fullPage: true });
+    await desktop.getByRole("button", { name: "打开预览" }).click();
+    const imageDialog = desktop.getByRole("dialog", { name: "生图预览" });
+    await imageDialog.locator(".image-frame img").waitFor();
+    const imageLoaded = await imageDialog.locator(".image-frame img").evaluate((image) => image.naturalWidth > 0);
+    if (!imageLoaded) throw new Error("Private image preview did not load its image bytes.");
+    const prompt = await imageDialog.locator(".prompt-detail pre").textContent();
+    if (prompt !== "后台视觉冒烟使用的私有生图提示词") throw new Error("Image preview detail did not render the retained prompt safely.");
+    await desktop.screenshot({ path: path.join(screenshotDir, "image-preview-dialog-desktop.png"), fullPage: true });
+    await imageDialog.getByRole("button", { name: "关闭详情" }).click();
 
     await desktop.setViewportSize({ width: 390, height: 844 });
     await desktop.goto(`${baseUrl}/`, { waitUntil: "networkidle" });

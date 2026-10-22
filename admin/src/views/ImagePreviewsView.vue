@@ -296,6 +296,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 </template>
 
 <style scoped>
+.page,.panel { min-width:0; }
 .preview-summary,.preview-toolbar { display:grid; gap:12px; margin-bottom:12px; }
 .preview-summary { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .preview-summary article,.preview-toolbar { border:1px solid var(--line); border-radius:var(--radius-md); background:var(--surface); padding:12px 14px; }
@@ -305,7 +306,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 .preview-toolbar { grid-template-columns:minmax(160px,220px) minmax(140px,180px) auto; align-items:end; }
 .preview-toolbar label { display:grid; gap:6px; color:var(--muted); font-size:12.5px; font-weight:650; }
 .toolbar-actions { display:flex; justify-content:flex-end; }
-.preview-table { overflow:auto; border:1px solid var(--line); border-radius:var(--radius-md); background:var(--surface); }
+.preview-table { min-width:0; max-width:100%; overflow-x:auto; overflow-y:hidden; border:1px solid var(--line); border-radius:var(--radius-md); background:var(--surface); }
 .preview-table-head,.preview-row { display:grid; grid-template-columns:30px minmax(230px,1.55fr) 92px minmax(130px,.75fr) 120px 160px 160px 78px minmax(180px,auto); gap:12px; align-items:center; min-width:1430px; padding:12px 14px; }
 .preview-table-head { background:var(--surface-soft); color:var(--muted); font-size:12.5px; font-weight:650; }
 .preview-row { border-top:1px solid var(--line); background:var(--surface); }

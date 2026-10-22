@@ -96,6 +96,10 @@ import {
   ImageGenerationError,
   type ImageGenerationRuntime,
 } from "./services/image-generation-service.js";
+import {
+  ImagePreviewArchiveError,
+  type ImagePreviewArchiveService,
+} from "./services/image-preview-archive-service.js";
 import type {
   ProviderCapabilityFeature,
   ProviderProtocol,
@@ -507,6 +511,8 @@ export class BotApplication {
     private readonly privateEnterpriseRanking?: PrivateEnterpriseRanking,
     private readonly knowledgeSourceBindingStore = new KnowledgeSourceBindingStore(),
     private readonly btSearchService?: BtSearchRuntime,
+    /** Private successful-image archive, absent only for compatibility embeddings. */
+    private readonly imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup">,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -522,6 +528,7 @@ export class BotApplication {
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
         { id: "html-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runHtmlPreviewCleanupTick() },
         { id: "image-generation-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runImageGenerationCleanupTick() },
+        { id: "image-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runImagePreviewCleanupTick() },
       ],
       pollIntervalMs: BOT_MAINTENANCE_INTERVALS.poll,
     });
@@ -1600,6 +1607,20 @@ export class BotApplication {
     }
   }
 
+  private async runImagePreviewCleanupTick(): Promise<void> {
+    if (!this.imagePreviewArchiveService) return;
+    try {
+      const result = await this.imagePreviewArchiveService.cleanup();
+      if (result.expired || result.orphans) {
+        logInfo("Cleaned private generated-image previews.", result);
+      }
+    } catch (error) {
+      logWarn("Failed to clean private generated-image previews.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async handleBtSearchCommand(groupConfig: GroupBotConfig, command: BtCommandMatch, signal?: AbortSignal): Promise<void> {
     const groupId = groupConfig.groupId;
     // Every segment is excluded from later conversation evidence.
@@ -1720,6 +1741,32 @@ export class BotApplication {
         },
       });
       stagedFile = generated.filePath;
+      if (this.imagePreviewArchiveService) {
+        try {
+          await this.imagePreviewArchiveService.archive({
+            groupId,
+            creatorUserId: userId,
+            sourceMessageId: String(event.message_id),
+            prompt,
+            filePath: generated.filePath,
+            modelId: generated.modelId,
+            model: generated.model,
+            fallbackUsed: generated.fallbackUsed,
+            mimeType: generated.mimeType,
+            byteSize: generated.byteLength,
+          });
+        } catch (archiveError) {
+          // Preview retention must never block delivery of an otherwise valid
+          // generated image. Keep the log metadata-only: prompts stay private.
+          logWarn("Private generated-image archive failed; continuing QQ delivery.", {
+            groupId,
+            userId,
+            errorCode: archiveError instanceof ImagePreviewArchiveError
+              ? archiveError.code
+              : archiveError instanceof Error ? archiveError.name : "unknown",
+          });
+        }
+      }
       await this.transport.sendGeneratedGroupImage(groupId, generated.filePath);
       stagedFile = undefined;
       logInfo("Generated image queued for group delivery.", {

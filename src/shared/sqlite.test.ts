@@ -258,6 +258,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 19, name: "add-outbox-forward-payload" },
       { version: 20, name: "add-durable-message-recalls" },
       { version: 21, name: "add-conversation-orchestration" },
+      { version: 22, name: "add-generated-image-preview-archive" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -274,12 +275,13 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   assert.equal(tables.some((table) => table.name === "model_daily_usage"), true);
   assert.equal(tables.some((table) => table.name === "admin_bulk_previews"), true);
   assert.equal(tables.some((table) => table.name === "admin_bulk_results"), true);
+  assert.equal(tables.some((table) => table.name === "image_previews"), true);
   first.close();
 
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
     "reopening must not apply or record the same migration twice",
   );
   second.close();

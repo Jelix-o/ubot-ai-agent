@@ -49,6 +49,7 @@ import { QqAdminAuthorizationService } from "./services/qq-admin-authorization-s
 import { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
 import { ConfiguredImageGenerationService } from "./services/image-generation-service.js";
+import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
 
@@ -652,6 +653,11 @@ async function buildBotApp(
       "SELECT text FROM outbox WHERE kind = 'generated_image' AND status IN ('pending', 'sending')",
     ).all() as Array<{ text: string }>).map((row) => row.text),
   );
+  const imagePreviewArchiveService = new ImagePreviewArchiveService({
+    sharedDb,
+    rootDir: path.join(dataDir, "generated-image-previews"),
+    stagedRoot: path.join(dataDir, "generated-images"),
+  });
   // Keep the existing fixed blacklist response active until V3 cutover. The
   // library itself deliberately has no legacy persistence fallback.
   const memeLibraryService = v3State ? new MemeLibraryService(dataDir, v3State) : undefined;
@@ -715,6 +721,7 @@ async function buildBotApp(
     loadPrivateEnterpriseRanking(),
     new KnowledgeSourceBindingStore(v3State),
     new BtSearchService({ dataDir: path.join(dataDir, "bt") }),
+    imagePreviewArchiveService,
   );
   return { botApp, groupConfigService };
 }
