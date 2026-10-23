@@ -101,6 +101,18 @@ import {
   type ImageGenerationRuntime,
 } from "./services/image-generation-service.js";
 import {
+  avatarEditRequestParseErrorMessage,
+  avatarEditTargetErrorMessage,
+  buildAvatarEditPrompt,
+  parseAvatarEditRequest,
+  resolveAvatarEditTarget,
+  type AvatarEditRequest,
+} from "./services/avatar-edit-request.js";
+import {
+  QqAvatarReferenceError,
+  type QqAvatarReferenceResolver,
+} from "./services/qq-avatar-reference-service.js";
+import {
   ImagePreviewArchiveError,
   type ImagePreviewArchiveService,
 } from "./services/image-preview-archive-service.js";
@@ -518,6 +530,8 @@ export class BotApplication {
     private readonly btSearchService?: BtSearchRuntime,
     /** Private successful-image archive, absent only for compatibility embeddings. */
     private readonly imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference">>,
+    /** Resolves a verified current group member's QQ avatar for #改图 avatar mode. */
+    private readonly avatarReferenceResolver?: QqAvatarReferenceResolver,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -680,7 +694,7 @@ export class BotApplication {
 
     if (editOnly) {
       if (groupConfig.botMuted !== true && !this.isBlacklistedUser(groupConfig, userId)) {
-        await this.handleImageGenerationCommand(groupConfig, event, commandText.replace(/^#改图\s*/u, ""), signal, true);
+        await this.handleImageGenerationCommand(groupConfig, event, commandText.replace(/^#改图\s*/u, ""), signal, true, parsedMessage);
       }
       return;
     }
@@ -1717,6 +1731,7 @@ export class BotApplication {
     rawPrompt: string,
     signal?: AbortSignal,
     editOnly = false,
+    parsedMessage?: ReturnType<typeof parseGroupMessage>,
   ): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
@@ -1724,18 +1739,39 @@ export class BotApplication {
       await this.rejectCapability(groupId, "image_generation");
       return;
     }
+    let avatarRequest: AvatarEditRequest | undefined;
+    let promptInput = rawPrompt;
+    if (editOnly) {
+      // Command text intentionally excludes non-text segments. Only avatar
+      // syntax needs the parsed form so a real @ can be verified; ordinary
+      // #改图 prompts retain their historical text-only behavior.
+      const avatarParse = parseAvatarEditRequest(
+        parsedMessage?.text.replace(/^#改图\s*/u, "") ?? rawPrompt,
+      );
+      if (avatarParse.kind === "invalid_avatar_edit") {
+        await this.sendText(groupId, avatarEditRequestParseErrorMessage(avatarParse.code));
+        return;
+      }
+      if (avatarParse.kind === "avatar_edit") {
+        avatarRequest = avatarParse.request;
+        promptInput = avatarRequest.action;
+      }
+    }
+
     let parsed: ReturnType<typeof parseImagePrompt>;
-    try { parsed = parseImagePrompt(rawPrompt); } catch {
+    try { parsed = parseImagePrompt(promptInput); } catch {
       await this.sendText(groupId, "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"); return;
     }
-    const prompt = parsed.prompt;
-    if (!prompt) {
+    if (!parsed.prompt) {
       const commands = await this.getRuntimeCommands();
-      await this.sendText(groupId, editOnly
+      await this.sendText(groupId, avatarRequest
+        ? "头像改图格式：#改图 让<目标>（的）头像去<动作>"
+        : editOnly
         ? "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"
         : `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
       return;
     }
+    const prompt = avatarRequest ? buildAvatarEditPrompt(parsed.prompt) : parsed.prompt;
     const promptCharacters = countImagePromptCharacters(prompt);
     if (promptCharacters > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
       await this.sendText(
@@ -1758,7 +1794,9 @@ export class BotApplication {
     let stagedFile: string | undefined;
     let editing = editOnly;
     try {
-      const referenceImages = await this.resolveImageEditReferences(groupId, event);
+      const referenceImages = avatarRequest
+        ? await this.resolveAvatarEditReferences(groupConfig, event, avatarRequest, parsedMessage)
+        : await this.resolveImageEditReferences(groupId, event);
       editing ||= referenceImages.length > 0;
       if (editOnly && referenceImages.length === 0) {
         await this.sendText(groupId, "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"); return;
@@ -1854,7 +1892,74 @@ export class BotApplication {
     }
   }
 
-  private async resolveImageEditReferences(groupId: string, event: NapcatGroupMessageEvent): Promise<ImageReference[]> {
+  private async resolveAvatarEditReferences(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    request: AvatarEditRequest,
+    parsedMessage?: ReturnType<typeof parseGroupMessage>,
+  ): Promise<ImageReference[]> {
+    const groupId = groupConfig.groupId;
+    const parsed = parsedMessage ?? parseGroupMessage(event.message, this.botQq);
+    let members: NapcatGroupMember[] = [];
+    let memberDirectoryAvailable = true;
+    try {
+      if (!this.transport.listGroupMembers) {
+        memberDirectoryAvailable = false;
+      } else {
+        members = await this.transport.listGroupMembers(groupId, { refresh: true });
+      }
+    } catch (error) {
+      memberDirectoryAvailable = false;
+      logWarn("Avatar edit member directory lookup failed.", {
+        groupId,
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+    }
+
+    const target = resolveAvatarEditTarget({
+      request,
+      requesterUserId: String(event.user_id),
+      botUserId: this.botQq,
+      verifiedMentionUserIds: parsed.verifiedMentionUserIds,
+      members,
+      manualIdentities: groupConfig.manualIdentities,
+      memoryDisabledUserIds: groupConfig.memoryDisabledUserIds,
+      memberDirectoryAvailable,
+    });
+    if (!target.ok) {
+      throw new ImageEditReferenceError(avatarEditTargetErrorMessage(target.code));
+    }
+
+    const extraReferences = await this.resolveImageEditReferences(groupId, event, {
+      maxReferences: 3,
+      referenceNumberOffset: 1,
+      tooManyMessage: "头像改图最多还可附 3 张参考图，请减少图片数量",
+    });
+    if (!this.avatarReferenceResolver) {
+      throw new ImageEditReferenceError("头像改图暂不可用，请稍后再试");
+    }
+    try {
+      const avatarReference = await this.avatarReferenceResolver.resolve(target.target.userId);
+      return [avatarReference, ...extraReferences];
+    } catch (error) {
+      logWarn("Avatar edit reference download failed.", {
+        groupId,
+        errorCode: error instanceof QqAvatarReferenceError ? error.code : "unknown",
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+      throw new ImageEditReferenceError("目标头像暂时无法读取，请稍后重试或让对方直接附图");
+    }
+  }
+
+  private async resolveImageEditReferences(
+    groupId: string,
+    event: NapcatGroupMessageEvent,
+    options: {
+      maxReferences?: number;
+      referenceNumberOffset?: number;
+      tooManyMessage?: string;
+    } = {},
+  ): Promise<ImageReference[]> {
     const parsed = parseGroupMessage(event.message, this.botQq);
     const images: ImageReference[] = [];
     let quotedImages: MessageImageInput[] = [];
@@ -1875,9 +1980,12 @@ export class BotApplication {
       }
     }
     const pending = [...quotedImages, ...parsed.images];
-    if (images.length + pending.length > 4) throw new ImageEditReferenceError("最多支持 4 张参考图，请减少图片数量");
+    const maxReferences = options.maxReferences ?? 4;
+    if (images.length + pending.length > maxReferences) {
+      throw new ImageEditReferenceError(options.tooManyMessage ?? "最多支持 4 张参考图，请减少图片数量");
+    }
     for (const image of pending) {
-      const index = images.length + 1;
+      const index = (options.referenceNumberOffset ?? 0) + images.length + 1;
       try {
         if (!this.imagePipeline) throw new Error("image_pipeline_unavailable");
         const resolved = await this.imagePipeline.resolveForVision([image]);
@@ -5962,7 +6070,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
         "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
-        `编辑：附图或引用图片后发送 #改图 <修改要求>，最多 4 张；--比例 9:16 可设置比例`,
+        "编辑：附图或引用图片后发送 #改图 <修改要求>；也可用 #改图 让<目标>（的）头像去<动作>，最多 4 张参考图。",
         `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；文生图冷却 60 秒，图生图与改图冷却 15 秒`,
       ],
     }] : []),
@@ -6036,7 +6144,7 @@ function buildHelpOverviewMessage(
   const features = [
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用后 #改图 <修改要求>`] : []),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图、引用或 #改图 让<目标>头像去<动作> 可编辑`] : []),
     ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
     ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
     ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),

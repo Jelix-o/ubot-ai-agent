@@ -45,6 +45,7 @@ import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { V3CapabilityPolicyService } from "./services/capability-policy-service.js";
 import { extractImagesFromMessage, parseGroupMessage } from "./utils/message-parser.js";
 import { MessageRecallService } from "./message-recall-service.js";
+import { QqAvatarReferenceService } from "./services/qq-avatar-reference-service.js";
 
 type NapCatRuntime = MessageTransport & {
   start(): void | Promise<void>;
@@ -191,6 +192,8 @@ async function startLegacyBot(): Promise<BotApplication> {
     loadPrivateEnterpriseRanking(),
     new KnowledgeSourceBindingStore(v3State),
     new BtSearchService({ dataDir: path.join(config.dataDir, "bt") }),
+    undefined,
+    new QqAvatarReferenceService(),
   );
 
   const adminHttpServer = config.adminHttpEnabled

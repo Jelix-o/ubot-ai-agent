@@ -50,6 +50,7 @@ import { RecentGroupEvidenceService } from "./services/recent-group-evidence-ser
 import { MemeLibraryService } from "./services/meme-library-service.js";
 import { ConfiguredImageGenerationService } from "./services/image-generation-service.js";
 import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
+import { QqAvatarReferenceService } from "./services/qq-avatar-reference-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
 
@@ -722,6 +723,7 @@ async function buildBotApp(
     new KnowledgeSourceBindingStore(v3State),
     new BtSearchService({ dataDir: path.join(dataDir, "bt") }),
     imagePreviewArchiveService,
+    new QqAvatarReferenceService(),
   );
   return { botApp, groupConfigService };
 }

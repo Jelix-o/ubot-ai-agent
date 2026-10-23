@@ -27,7 +27,8 @@ import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { SharedDb } from "./shared/sqlite.js";
-import { ImageGenerationError, type ImageGenerationRuntime } from "./services/image-generation-service.js";
+import { ImageGenerationError, type ImageGenerationRuntime, type ImageReference } from "./services/image-generation-service.js";
+import type { QqAvatarReferenceResolver } from "./services/qq-avatar-reference-service.js";
 import type {
   ImagePreviewArchiveInput,
   ImagePreviewArchiveService,
@@ -91,6 +92,8 @@ class FakeTransport implements MessageTransport {
       { user_id: 20001, nickname: "Tester", card: "测试同学" },
     ],
   };
+  memberDirectoryError?: Error;
+  readonly memberDirectoryCalls: Array<{ groupId: string; options?: { refresh?: boolean } }> = [];
   healthStatus = { ok: true, detail: "测试传输层已连接" };
   imageResolutionCalls = 0;
 
@@ -174,7 +177,9 @@ class FakeTransport implements MessageTransport {
     return this.healthStatus;
   }
 
-  async listGroupMembers(groupId: string): Promise<NapcatGroupMember[]> {
+  async listGroupMembers(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]> {
+    this.memberDirectoryCalls.push({ groupId, options });
+    if (this.memberDirectoryError) throw this.memberDirectoryError;
     return this.memberDirectoryByGroup[groupId] ?? [];
   }
 }
@@ -924,6 +929,7 @@ function cloneGroup(group: GroupBotConfig): GroupBotConfig {
       userIds: [...identity.userIds],
       names: [...identity.names],
     })),
+  memoryDisabledUserIds: group.memoryDisabledUserIds ? [...group.memoryDisabledUserIds] : undefined,
   };
 }
 
@@ -1093,6 +1099,7 @@ function createApp(options?: {
   knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
   btSearchService?: BtSearchRuntime;
   imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference">>;
+  avatarReferenceResolver?: QqAvatarReferenceResolver;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1203,6 +1210,7 @@ function createApp(options?: {
     options?.knowledgeSourceBindingStore,
     options?.btSearchService,
     options?.imagePreviewArchiveService,
+    options?.avatarReferenceResolver,
   );
 
   return {
@@ -7923,6 +7931,167 @@ test("retained image references preserve parent versions and unavailable archive
   await app.handleGroupMessage(createEvent([{ type: "reply", data: { id: "version-1" } }, { type: "text", data: { text: "#改图 变成日落" } }]));
   assert.equal(inputs.length, 3);
   assert.match(transport.sent.at(-1)?.text ?? "", /删除、过期/);
+});
+
+test("avatar edit uses a verified current member avatar as image 1 and appends quote and attachment references", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const archived: ImagePreviewArchiveInput[] = [];
+  const avatar: ImageReference = {
+    data: Buffer.from(editTestPng.split(",")[1]!, "base64"),
+    mimeType: "image/png",
+  };
+  const resolvedAvatarIds: string[] = [];
+  const avatarReferenceResolver: QqAvatarReferenceResolver = {
+    async resolve(userId) {
+      resolvedAvatarIds.push(userId);
+      return avatar;
+    },
+  };
+  const transport = new FakeTransport();
+  transport.messagesById.old = {
+    messageId: "old",
+    groupId: "67890",
+    text: "",
+    images: [{ url: editTestPng, summary: "quoted" }],
+  };
+  const pipeline = new FakeImagePipeline();
+  const { app } = createApp({
+    transport,
+    imagePipeline: pipeline,
+    imageGenerationService: imageEditTestRuntime(inputs),
+    avatarReferenceResolver,
+    imagePreviewArchiveService: {
+      async archive(input) { archived.push(input); return { id: "avatar-child" } as never; },
+      async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+    },
+  });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "old" } },
+    { type: "text", data: { text: "#改图 让" } },
+    { type: "at", data: { qq: "55667788" } },
+    { type: "text", data: { text: "的头像去 --比例 9:16 海边散步" } },
+    { type: "image", data: { url: editTestPng, summary: "attached" } },
+  ]));
+
+  assert.deepEqual(resolvedAvatarIds, ["55667788"]);
+  assert.deepEqual(transport.memberDirectoryCalls, [{ groupId: "67890", options: { refresh: true } }]);
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]?.size, "864x1536");
+  assert.equal(inputs[0]?.referenceImages?.length, 3);
+  assert.equal(inputs[0]?.referenceImages?.[0], avatar);
+  assert.deepEqual(pipeline.calls.flat().map(image => image.summary), ["quoted", "attached"]);
+  assert.match(inputs[0]?.prompt ?? "", /海边散步/);
+  assert.doesNotMatch(inputs[0]?.prompt ?? "", /55667788|老张|张三/);
+  assert.deepEqual(archived.map(input => ({
+    operation: input.operation,
+    referenceCount: input.referenceCount,
+    parentIds: input.parentIds,
+    prompt: input.prompt,
+  })), [{
+    operation: "edit",
+    referenceCount: 3,
+    parentIds: [],
+    prompt: inputs[0]?.prompt,
+  }]);
+});
+
+test("avatar edit rejects unverified or unavailable targets, honors privacy, and reports extra reference failures by their final number", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const resolvedAvatarIds: string[] = [];
+  const avatarReferenceResolver: QqAvatarReferenceResolver = {
+    async resolve(userId) {
+      resolvedAvatarIds.push(userId);
+      return { data: Buffer.from(editTestPng.split(",")[1]!, "base64"), mimeType: "image/png" };
+    },
+  };
+  const transport = new FakeTransport();
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    memoryDisabledUserIds: ["55667788"],
+  }]);
+  const pipeline = new FakeImagePipeline();
+  const { app } = createApp({
+    transport,
+    groupConfigService,
+    imagePipeline: pipeline,
+    imageGenerationService: imageEditTestRuntime(inputs),
+    avatarReferenceResolver,
+  });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(createEvent("#改图 让@55667788头像去跳舞"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /真实 @/);
+  await app.handleGroupMessage(createEvent([
+    { type: "text", data: { text: "#改图 让" } },
+    { type: "at", data: { qq: "55667788" } },
+    { type: "text", data: { text: "头像去跳舞" } },
+  ]));
+  assert.match(transport.sent.at(-1)?.text ?? "", /已关闭/);
+  assert.deepEqual(resolvedAvatarIds, []);
+
+  groupConfigService.groups[0]!.memoryDisabledUserIds = ["20001"];
+  await app.handleGroupMessage(createEvent("#改图 让我头像去跳舞"));
+  assert.deepEqual(resolvedAvatarIds, ["20001"]);
+  assert.equal(inputs.length, 1);
+
+  await app.handleGroupMessage(createEvent([
+    { type: "text", data: { text: "#改图 让我头像去跳舞" } },
+    ...Array.from({ length: 4 }, () => ({ type: "image" as const, data: { url: editTestPng } })),
+  ]));
+  assert.match(transport.sent.at(-1)?.text ?? "", /最多还可附 3 张/);
+  assert.deepEqual(resolvedAvatarIds, ["20001"]);
+
+  pipeline.resolveForVision = async images => images.map(input => ({ input, dataUrl: "data:image/png;base64,YmFk" }));
+  await app.handleGroupMessage(createEvent([
+    { type: "text", data: { text: "#改图 让我头像去跳舞" } },
+    { type: "image", data: { url: editTestPng } },
+  ]));
+  assert.match(transport.sent.at(-1)?.text ?? "", /参考图2无法读取/);
+  assert.deepEqual(resolvedAvatarIds, ["20001"]);
+
+  transport.memberDirectoryError = new Error("directory unavailable");
+  await app.handleGroupMessage(createEvent("#改图 让55667788头像去跳舞"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /无法核验群成员/);
+  assert.equal(inputs.length, 1);
+});
+
+test("avatar edit refuses unavailable downloads without falling back to text-only generation", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const { app, transport } = createApp({
+    imageGenerationService: imageEditTestRuntime(inputs),
+    avatarReferenceResolver: {
+      async resolve() { throw new Error("avatar unavailable"); },
+    },
+  });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(createEvent("#改图 让我头像去散步"));
+  assert.equal(inputs.length, 0);
+  assert.match(transport.sent.at(-1)?.text ?? "", /目标头像暂时无法读取/);
+});
+
+test("ordinary image edit keeps its historical text-only command prompt when a message also contains a real @", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const { app } = createApp({ imagePipeline: pipeline, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(createEvent([
+    { type: "text", data: { text: "#改图 " } },
+    { type: "at", data: { qq: "55667788" } },
+    { type: "text", data: { text: " 加上夕阳" } },
+    { type: "image", data: { url: editTestPng } },
+  ]));
+
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]?.prompt, "加上夕阳");
+  assert.equal(inputs[0]?.referenceImages?.length, 1);
 });
 
 test("image requests stay isolated across interleaved members and hold the lock while loading references", async t => {
