@@ -94,6 +94,9 @@ import {
   countImagePromptCharacters,
   IMAGE_GENERATION_MAX_PROMPT_CHARS,
   ImageGenerationError,
+  parseImagePrompt,
+  imageReferenceFromDataUrl,
+  type ImageReference,
   type ImageGenerationRuntime,
 } from "./services/image-generation-service.js";
 import {
@@ -335,7 +338,7 @@ export interface MessageTransport {
   deleteMessage?(messageId: string): Promise<void>;
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
   /** Queues a worker-local generated image for ingress delivery and cleanup. */
-  sendGeneratedGroupImage?(groupId: string, imagePath: string): Promise<void | MessageReceipt>;
+  sendGeneratedGroupImage?(groupId: string, imagePath: string, options?: { imagePreviewId?: string }): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
   listGroupMembers?(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]>;
   listGroups?(): Promise<NapcatGroupInfo[]>;
@@ -450,6 +453,7 @@ export class BotApplication {
   private readonly knowledgeLatestMessages = new Map<string, string>();
   private readonly recoveredReplyContexts = new Map<string, { context: AiReplyContext; expiresAt: number }>();
   private readonly identityQueryLock = new GroupLock(1);
+  private readonly activeImageRequests = new Set<string>();
   private readonly opsAlertState: OpsAlertRuntimeState = {
     startupSent: false,
     memoryAlertActive: false,
@@ -512,7 +516,7 @@ export class BotApplication {
     private readonly knowledgeSourceBindingStore = new KnowledgeSourceBindingStore(),
     private readonly btSearchService?: BtSearchRuntime,
     /** Private successful-image archive, absent only for compatibility embeddings. */
-    private readonly imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup">,
+    private readonly imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference">>,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -661,15 +665,23 @@ export class BotApplication {
     }
 
     // Recognize denied and disabled commands before any chat or evidence path.
-    const configuredCommand = runtimeCommands.find(command => matchCommandPrefix(commandText, [command.primary, ...command.aliases], command.primary));
+    const editOnly = /^#改图(?:\s|$)/u.test(commandText);
+    const configuredCommand = editOnly ? runtimeCommands.find(command => command.id === "image_generation") : runtimeCommands.find(command => matchCommandPrefix(commandText, [command.primary, ...command.aliases], command.primary));
     if (configuredCommand && !this.isBlacklistedUser(groupConfig, userId)) {
       if (!configuredCommand.enabled) return;
-      const match = matchCommandPrefix(commandText, [configuredCommand.primary, ...configuredCommand.aliases], configuredCommand.primary)!;
+      const match = matchCommandPrefix(commandText, [configuredCommand.primary, ...configuredCommand.aliases, ...(editOnly ? ["#改图"] : [])], configuredCommand.primary)!;
       const modelRead = configuredCommand.id === "model" && /^(?:状态|列表)?$/.test(match.suffix.trim());
       if (!modelRead && !(await this.canUseRuntimeCommand(configuredCommand, groupConfig, event))) {
         if (!groupConfig.botMuted) await this.sendText(groupId, "你没有使用这条指令的权限");
         return;
       }
+    }
+
+    if (editOnly) {
+      if (groupConfig.botMuted !== true && !this.isBlacklistedUser(groupConfig, userId)) {
+        await this.handleImageGenerationCommand(groupConfig, event, commandText.replace(/^#改图\s*/u, ""), signal, true);
+      }
+      return;
     }
 
     const btCommand = matchBtCommand(commandText, runtimeCommands);
@@ -922,7 +934,7 @@ export class BotApplication {
 
     const imageGenerationCommand = matchRuntimeCommand(commandText, runtimeCommands, "image_generation");
     if (imageGenerationCommand) {
-      await this.handleImageGenerationCommand(groupConfig, event, imageGenerationCommand.suffix, signal);
+      await this.handleImageGenerationCommand(groupConfig, event, imageGenerationCommand.suffix, signal, editOnly);
       return;
     }
 
@@ -1703,6 +1715,7 @@ export class BotApplication {
     event: NapcatGroupMessageEvent,
     rawPrompt: string,
     signal?: AbortSignal,
+    editOnly = false,
   ): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
@@ -1710,10 +1723,16 @@ export class BotApplication {
       await this.rejectCapability(groupId, "image_generation");
       return;
     }
-    const prompt = rawPrompt.trim();
+    let parsed: ReturnType<typeof parseImagePrompt>;
+    try { parsed = parseImagePrompt(rawPrompt); } catch {
+      await this.sendText(groupId, "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"); return;
+    }
+    const prompt = parsed.prompt;
     if (!prompt) {
       const commands = await this.getRuntimeCommands();
-      await this.sendText(groupId, `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
+      await this.sendText(groupId, editOnly
+        ? "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"
+        : `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
       return;
     }
     const promptCharacters = countImagePromptCharacters(prompt);
@@ -1729,25 +1748,44 @@ export class BotApplication {
       return;
     }
 
+    const requestKey = JSON.stringify([groupId, userId]);
+    if (this.activeImageRequests.has(requestKey)) {
+      await this.sendText(groupId, "你的上一条图片请求仍在处理中，请完成后再试");
+      return;
+    }
+    this.activeImageRequests.add(requestKey);
     let stagedFile: string | undefined;
+    let editing = editOnly;
     try {
+      const referenceImages = await this.resolveImageEditReferences(groupId, event);
+      editing ||= referenceImages.length > 0;
+      if (editOnly && referenceImages.length === 0) {
+        await this.sendText(groupId, "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"); return;
+      }
       const generated = await this.imageGenerationService.generate({
         groupId,
         userId,
         prompt,
+        referenceImages,
+        size: parsed.size,
         signal,
         onStarted: async () => {
           await this.sendText(groupId, "正在生成图片，请稍候…");
         },
       });
       stagedFile = generated.filePath;
+      let imagePreviewId: string | undefined;
       if (this.imagePreviewArchiveService) {
         try {
-          await this.imagePreviewArchiveService.archive({
+          const archived = await this.imagePreviewArchiveService.archive({
             groupId,
             creatorUserId: userId,
             sourceMessageId: String(event.message_id),
             prompt,
+            operation: referenceImages.length ? "edit" : "generation",
+            referenceCount: referenceImages.length,
+            parentIds: referenceImages.flatMap(image => image.previewId ? [image.previewId] : []),
+            outputSize: generated.outputSize ?? parsed.size ?? (referenceImages.length ? "auto" : "1024x1024"),
             filePath: generated.filePath,
             modelId: generated.modelId,
             model: generated.model,
@@ -1755,6 +1793,7 @@ export class BotApplication {
             mimeType: generated.mimeType,
             byteSize: generated.byteLength,
           });
+          imagePreviewId = archived.id;
         } catch (archiveError) {
           // Preview retention must never block delivery of an otherwise valid
           // generated image. Keep the log metadata-only: prompts stay private.
@@ -1767,7 +1806,7 @@ export class BotApplication {
           });
         }
       }
-      await this.transport.sendGeneratedGroupImage(groupId, generated.filePath);
+      await this.transport.sendGeneratedGroupImage(groupId, generated.filePath, imagePreviewId ? { imagePreviewId } : undefined);
       stagedFile = undefined;
       logInfo("Generated image queued for group delivery.", {
         groupId,
@@ -1779,7 +1818,11 @@ export class BotApplication {
     } catch (error) {
       if (stagedFile) await this.imageGenerationService.discard(stagedFile);
       if (signal?.aborted) return;
+      if (error instanceof ImageEditReferenceError) { await this.sendText(groupId, error.message); return; }
       if (error instanceof ImageGenerationError) {
+        if (error.code === "busy") { await this.sendText(groupId, "你的上一条图片请求仍在处理中，请完成后再试"); return; }
+        if (error.code === "editing_not_configured") { await this.sendText(groupId, "尚未配置支持图片编辑的模型，请联系管理员"); return; }
+        if (error.code === "invalid_reference") { await this.sendText(groupId, "参考图格式或大小不受支持，请使用 PNG、JPEG 或 WebP"); return; }
         if (error.code === "cooldown") {
           await this.sendText(groupId, `图片生成冷却中，请 ${error.retryAfterSeconds ?? 1} 秒后再试`);
           return;
@@ -1802,8 +1845,48 @@ export class BotApplication {
       });
       await this.sendText(groupId, error instanceof ImageGenerationError && error.code === "content_blocked"
         ? "本次图片未通过上游内容审核，请调整描述后重试"
-        : "图片生成失败，请稍后再试");
+        : editing
+          ? "图片编辑失败，请稍后重试或重新附图"
+          : "图片生成失败，请稍后再试");
+    } finally {
+      this.activeImageRequests.delete(requestKey);
     }
+  }
+
+  private async resolveImageEditReferences(groupId: string, event: NapcatGroupMessageEvent): Promise<ImageReference[]> {
+    const parsed = parseGroupMessage(event.message, this.botQq);
+    const images: ImageReference[] = [];
+    let quotedImages: MessageImageInput[] = [];
+    if (parsed.replyMessageId) {
+      if (this.conversationContextRepository?.orchestration?.isReferenceRetracted(groupId, parsed.replyMessageId)) {
+        throw new ImageEditReferenceError("引用的图片已撤回，请重新附图");
+      }
+      try {
+        const retained = await this.imagePreviewArchiveService?.resolveReference?.(groupId, parsed.replyMessageId);
+        if (retained) images.push(retained);
+        else {
+          const quoted = await this.transport.getMessage?.(parsed.replyMessageId);
+          if (!quoted || quoted.groupId !== groupId) throw new Error("unverified_reference");
+          quotedImages = quoted.images;
+        }
+      } catch {
+        throw new ImageEditReferenceError("引用的图片无法使用，可能已删除、过期或无法确认属于本群，请重新附图");
+      }
+    }
+    const pending = [...quotedImages, ...parsed.images];
+    if (images.length + pending.length > 4) throw new ImageEditReferenceError("最多支持 4 张参考图，请减少图片数量");
+    for (const image of pending) {
+      const index = images.length + 1;
+      try {
+        if (!this.imagePipeline) throw new Error("image_pipeline_unavailable");
+        const resolved = await this.imagePipeline.resolveForVision([image]);
+        if (resolved.length !== 1) throw new Error("image_unavailable");
+        images.push(imageReferenceFromDataUrl(resolved[0]!.dataUrl));
+      } catch {
+        throw new ImageEditReferenceError(`参考图${index}无法读取或格式不支持，请重新上传 PNG、JPEG 或 WebP 图片`);
+      }
+    }
+    return images;
   }
 
   private async handleHtmlPreviewRequest(
@@ -5300,6 +5383,7 @@ function matchRuntimeCommand(
   const prefixes = configured
     ? [configured.primary, ...configured.aliases]
     : [spec.builtinPrefix, ...spec.builtinAliases];
+  if (commandId === "image_generation") prefixes.push("#改图");
   return matchCommandPrefix(commandText, normalizeCommandPrefixes(prefixes), spec.builtinPrefix);
 }
 
@@ -5867,7 +5951,8 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
         "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
-        `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；成功生成后冷却 60 秒`,
+        `编辑：附图或引用图片后发送 #改图 <修改要求>，最多 4 张；--比例 9:16 可设置比例`,
+        `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；文生图冷却 60 秒，图生图与改图冷却 15 秒`,
       ],
     }] : []),
     {
@@ -5940,7 +6025,7 @@ function buildHelpOverviewMessage(
   const features = [
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>`] : []),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用后 #改图 <修改要求>`] : []),
     ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
     ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
     ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),
@@ -6428,3 +6513,5 @@ function formatModelPurpose(purpose: string): string {
   return labels[purpose] ?? purpose;
 }
 
+
+class ImageEditReferenceError extends Error {}

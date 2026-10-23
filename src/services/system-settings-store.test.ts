@@ -354,3 +354,19 @@ test("SystemSettingsStore retains the JSON shadow only before V3 cutover", async
     assert.equal(snapshots[1]?.onlineLookupEnabled, true);
   });
 });
+
+
+test("image editing is opt-in and survives public model configuration round trips", async () => {
+  await withDir(async dir => {
+    const file = path.join(dir, "settings.json");
+    const store = new SystemSettingsStore(file, [model("legacy-image", "image")]);
+    assert.notEqual((await store.get()).models[0]?.capabilities?.imageEditing, true);
+    await store.update({ models: [{ ...model("edit", "image"), capabilities: { imageEditing: true } }] });
+    const visible = (await store.get()).models;
+    assert.equal(visible[0]?.capabilities?.imageEditing, true);
+    await store.update({ models: visible });
+    const saved = await new SystemSettingsStore(file).getInternal();
+    assert.equal(saved.models[0]?.capabilities?.imageEditing, true);
+    assert.equal(saved.models[0]?.apiKey, "edit-key");
+  });
+});

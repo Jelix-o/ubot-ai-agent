@@ -4,6 +4,7 @@ import { chmod, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { logWarn } from "../logger.js";
+import { imageDimensions } from "../utils/image-dimensions.js";
 import type { SystemModelConfig } from "../types.js";
 import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
 import type { RuntimeCapabilityPolicy } from "./capability-policy-service.js";
@@ -13,6 +14,7 @@ import type { V3StateRepository } from "./v3-state-repository.js";
 export const IMAGE_GENERATION_MAX_PROMPT_CHARS = 5_000;
 export const IMAGE_GENERATION_MAX_BYTES = 20 * 1024 * 1024;
 export const IMAGE_GENERATION_COOLDOWN_SECONDS = 60;
+export const IMAGE_EDIT_COOLDOWN_SECONDS = 15;
 export const IMAGE_GENERATION_DEFAULT_TIMEOUT_MS = 180_000;
 export const IMAGE_GENERATION_ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 const COOLDOWN_DOCUMENT_TYPE = "image-generation-cooldown";
@@ -28,6 +30,13 @@ export interface GeneratedImageResult {
   fallbackUsed: boolean;
   mimeType: "image/png" | "image/jpeg" | "image/webp";
   byteLength: number;
+  outputSize?: string;
+}
+
+export interface ImageReference {
+  data: Buffer;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  previewId?: string;
 }
 
 export interface ImageGenerationRuntime {
@@ -35,6 +44,8 @@ export interface ImageGenerationRuntime {
     groupId: string;
     userId: string;
     prompt: string;
+    referenceImages?: ImageReference[];
+    size?: string;
     signal?: AbortSignal;
     onStarted?: () => void | Promise<void>;
   }): Promise<GeneratedImageResult>;
@@ -64,6 +75,10 @@ export class ImageGenerationError extends Error {
       | "not_configured"
       | "provider_disabled"
       | "cooldown"
+      | "busy"
+      | "editing_not_configured"
+      | "invalid_reference"
+      | "invalid_size"
       | "content_blocked"
       | "upstream_rejected"
       | "upstream_unavailable"
@@ -90,6 +105,7 @@ class ImageUpstreamError extends Error {
 }
 
 export class ConfiguredImageGenerationService implements ImageGenerationRuntime {
+  private readonly activeRequests = new Set<string>();
   private readonly legacyCooldowns = new Map<string, number>();
 
   constructor(
@@ -106,98 +122,117 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     groupId: string;
     userId: string;
     prompt: string;
+    referenceImages?: ImageReference[];
+    size?: string;
     signal?: AbortSignal;
     onStarted?: () => void | Promise<void>;
-  }): Promise<GeneratedImageResult> { return withModelOperation('image', input.groupId, async () => {
-    const prompt = input.prompt.trim();
-    if (!prompt) throw new ImageGenerationError("prompt_empty");
-    if (countImagePromptCharacters(prompt) > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
-      throw new ImageGenerationError("prompt_too_long");
-    }
-
-    const retryAfterSeconds = this.getRetryAfterSeconds(input.groupId, input.userId);
-    if (retryAfterSeconds > 0) {
-      throw new ImageGenerationError("cooldown", "cooldown", retryAfterSeconds);
-    }
-    if (this.capabilityPolicy && !this.capabilityPolicy.isEnabled("image_generation")) {
-      throw new ImageGenerationError("provider_disabled");
-    }
-    if (!this.providerSupportsImageGeneration()) {
-      throw new ImageGenerationError("provider_disabled");
-    }
-
-    const settings = await this.settingsStore.getInternal();
-    const enabled = settings.models.filter((model) =>
-      model.purpose === "image" &&
-      model.enabled &&
-      model.hasApiKey &&
-      Boolean(model.apiKey?.trim()) &&
-      model.apiProtocol !== "anthropic",
-    );
-    const selectedId = settings.selectedModelIds.image;
-    if (selectedId === "") throw new ImageGenerationError("not_configured");
-    const candidates = selectedId
-      ? [
-          ...enabled.filter((model) => model.id === selectedId),
-          ...enabled.filter((model) => model.id !== selectedId),
-        ]
-      : enabled;
-    if (candidates.length === 0) {
-      throw new ImageGenerationError("not_configured");
-    }
-    if (input.signal?.aborted) {
-      throw input.signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
-    }
-
-    await input.onStarted?.();
-
-    let lastRetryableError: unknown;
-    let lastDiagnostics: ImageGenerationDiagnostics | undefined;
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]!;
-      try {
-        const generated = await withModelOperation("image", input.groupId, () => requestGeneratedImage(candidate, prompt, {
-          signal: input.signal,
-          fetchImpl: this.fetchImpl,
-        }), candidate.id);
-        const filePath = await this.stage(generated.data, generated.extension);
-        this.recordSuccess(input.groupId, input.userId);
-        return {
-          filePath,
-          modelId: candidate.id,
-          model: candidate.model,
-          fallbackUsed: index > 0,
-          mimeType: generated.mimeType,
-          byteLength: generated.data.byteLength,
-        };
-      } catch (error) {
-        if (input.signal?.aborted) throw error;
-        const diagnostics = {
-          ...(error instanceof ImageUpstreamError || error instanceof ImageGenerationError ? error.diagnostics : {}),
-          modelId: candidate.id,
-          model: candidate.model,
-        };
-        if (!(error instanceof ImageUpstreamError) || !error.retryable) {
-          if (error instanceof ImageGenerationError) {
-            throw new ImageGenerationError(error.code, error.message, error.retryAfterSeconds, diagnostics);
-          }
-          throw new ImageGenerationError("upstream_rejected", error instanceof Error ? error.message : "upstream_rejected", undefined, diagnostics);
+  }): Promise<GeneratedImageResult> {
+    const requestKey = cooldownKey(input.groupId, input.userId);
+    if (this.activeRequests.has(requestKey)) throw new ImageGenerationError("busy");
+    this.activeRequests.add(requestKey);
+    try {
+      return await withModelOperation("image", input.groupId, async () => {
+        const references = input.referenceImages ?? [];
+        validateImageReferences(references);
+        validateImageSize(input.size);
+        const editing = references.length > 0;
+        const prompt = input.prompt.trim();
+        if (!prompt) throw new ImageGenerationError("prompt_empty");
+        if (countImagePromptCharacters(prompt) > IMAGE_GENERATION_MAX_PROMPT_CHARS) {
+          throw new ImageGenerationError("prompt_too_long");
         }
-        lastRetryableError = error;
-        lastDiagnostics = diagnostics;
-        logWarn("Image generation upstream failed; trying the next configured image model.", {
-          ...diagnostics,
-          fallbackAvailable: index + 1 < candidates.length,
-        });
-      }
+
+        const retryAfterSeconds = this.getRetryAfterSeconds(input.groupId, input.userId, editing ? IMAGE_EDIT_COOLDOWN_SECONDS : IMAGE_GENERATION_COOLDOWN_SECONDS);
+        if (retryAfterSeconds > 0) {
+          throw new ImageGenerationError("cooldown", "cooldown", retryAfterSeconds);
+        }
+        if (this.capabilityPolicy && !this.capabilityPolicy.isEnabled("image_generation")) {
+          throw new ImageGenerationError("provider_disabled");
+        }
+        if (!this.providerSupportsImageGeneration()) {
+          throw new ImageGenerationError("provider_disabled");
+        }
+
+        const settings = await this.settingsStore.getInternal();
+        const enabled = settings.models.filter((model) =>
+          model.purpose === "image" &&
+          model.enabled &&
+          model.hasApiKey &&
+          Boolean(model.apiKey?.trim()) &&
+          model.apiProtocol !== "anthropic" &&
+          (!editing || model.capabilities?.imageEditing === true),
+        );
+        const selectedId = settings.selectedModelIds.image;
+        if (selectedId === "") throw new ImageGenerationError("not_configured");
+        const candidates = selectedId
+          ? [
+              ...enabled.filter((model) => model.id === selectedId),
+              ...enabled.filter((model) => model.id !== selectedId),
+            ]
+          : enabled;
+        if (candidates.length === 0) {
+          throw new ImageGenerationError(editing ? "editing_not_configured" : "not_configured");
+        }
+        if (input.signal?.aborted) {
+          throw input.signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+        }
+
+        await input.onStarted?.();
+
+        let lastRetryableError: unknown;
+        let lastDiagnostics: ImageGenerationDiagnostics | undefined;
+        for (let index = 0; index < candidates.length; index += 1) {
+          const candidate = candidates[index]!;
+          try {
+            const generated = await withModelOperation("image", input.groupId, () => requestGeneratedImage(candidate, prompt, {
+              signal: input.signal,
+              fetchImpl: this.fetchImpl,
+              referenceImages: references,
+              size: input.size ?? (editing ? "auto" : "1024x1024"),
+            }), candidate.id);
+            const filePath = await this.stage(generated.data, generated.extension);
+            this.recordSuccess(input.groupId, input.userId);
+            return {
+              filePath,
+              modelId: candidate.id,
+              model: candidate.model,
+              fallbackUsed: index > 0,
+              mimeType: generated.mimeType,
+              byteLength: generated.data.byteLength,
+              outputSize: imageDimensions(generated.data),
+            };
+          } catch (error) {
+            if (input.signal?.aborted) throw error;
+            const diagnostics = {
+              ...(error instanceof ImageUpstreamError || error instanceof ImageGenerationError ? error.diagnostics : {}),
+              modelId: candidate.id,
+              model: candidate.model,
+            };
+            if (!(error instanceof ImageUpstreamError) || !error.retryable) {
+              if (error instanceof ImageGenerationError) {
+                throw new ImageGenerationError(error.code, error.message, error.retryAfterSeconds, diagnostics);
+              }
+              throw new ImageGenerationError("upstream_rejected", error instanceof Error ? error.message : "upstream_rejected", undefined, diagnostics);
+            }
+            lastRetryableError = error;
+            lastDiagnostics = diagnostics;
+            logWarn("Image generation upstream failed; trying the next configured image model.", {
+              ...diagnostics,
+              fallbackAvailable: index + 1 < candidates.length,
+            });
+          }
+        }
+        throw new ImageGenerationError(
+          "upstream_unavailable",
+          lastRetryableError instanceof Error ? lastRetryableError.message : "upstream_unavailable",
+          undefined,
+          lastDiagnostics,
+        );
+      });
+    } finally {
+      this.activeRequests.delete(requestKey);
     }
-    throw new ImageGenerationError(
-      "upstream_unavailable",
-      lastRetryableError instanceof Error ? lastRetryableError.message : "upstream_unavailable",
-      undefined,
-      lastDiagnostics,
-    );
-  }); }
+  }
 
   async discard(filePath: string): Promise<void> {
     if (!isPathInside(this.rootDir, filePath)) return;
@@ -232,13 +267,13 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     return filePath;
   }
 
-  private getRetryAfterSeconds(groupId: string, userId: string): number {
+  private getRetryAfterSeconds(groupId: string, userId: string, cooldownSeconds: number): number {
     const key = cooldownKey(groupId, userId);
     const lastSuccessAt = this.v3State
       ? this.v3State.getDocument<CooldownDocument>(COOLDOWN_DOCUMENT_TYPE, key, { lastSuccessAt: 0 }).lastSuccessAt
       : this.legacyCooldowns.get(key) ?? 0;
     if (!Number.isFinite(lastSuccessAt) || lastSuccessAt <= 0) return 0;
-    const remainingMs = IMAGE_GENERATION_COOLDOWN_SECONDS * 1_000 - (this.now() - lastSuccessAt);
+    const remainingMs = cooldownSeconds * 1_000 - (this.now() - lastSuccessAt);
     return remainingMs > 0 ? Math.ceil(remainingMs / 1_000) : 0;
   }
 
@@ -265,12 +300,18 @@ export async function requestGeneratedImage(
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
     quality?: "low" | "auto";
+    referenceImages?: ImageReference[];
+    size?: string;
   } = {},
 ): Promise<{
   data: Buffer;
   mimeType: "image/png" | "image/jpeg" | "image/webp";
   extension: "png" | "jpg" | "webp";
 }> {
+  const references = options.referenceImages ?? [];
+  validateImageReferences(references);
+  validateImageSize(options.size);
+  const editing = references.length > 0;
   const telemetryStartedAt = Date.now();
   let telemetryResponse: unknown;
   let telemetryStatus: "succeeded" | "failed" | "cancelled" = "failed";
@@ -286,20 +327,26 @@ export async function requestGeneratedImage(
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) controller.abort();
   try {
-    const response = await fetchImpl(imageGenerationEndpoint(model.baseUrl), {
+    const size = options.size ?? (editing ? "auto" : "1024x1024");
+    const parameters = { model: model.model, prompt: imagePromptWithSize(prompt, size), n: 1,
+      size,
+      quality: options.quality ?? "auto", output_format: "png" };
+    let body: string | FormData = JSON.stringify(parameters);
+    if (editing) {
+      const form = new FormData();
+      for (const [key, value] of Object.entries(parameters)) form.set(key, String(value));
+      references.forEach((image, index) => form.append(references.length === 1 ? "image" : "image[]",
+        new Blob([new Uint8Array(image.data)], { type: image.mimeType }),
+        `image${index + 1}.${image.mimeType === "image/jpeg" ? "jpg" : image.mimeType.split("/")[1]}`));
+      body = form;
+    }
+    const response = await fetchImpl(imageGenerationEndpoint(model.baseUrl, editing), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${model.apiKey ?? ""}`,
-        "Content-Type": "application/json",
+        ...(editing ? {} : { "Content-Type": "application/json" }),
       },
-      body: JSON.stringify({
-        model: model.model,
-        prompt,
-        n: 1,
-        size: "1024x1024",
-        quality: options.quality ?? "auto",
-        output_format: "png",
-      }),
+      body,
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -367,8 +414,8 @@ export function isSupportedGeneratedImage(data: Buffer): boolean {
   return detectImageType(data) !== undefined;
 }
 
-function imageGenerationEndpoint(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/images/generations`;
+function imageGenerationEndpoint(baseUrl: string, editing = false): string {
+  return `${baseUrl.replace(/\/+$/, "")}/images/${editing ? "edits" : "generations"}`;
 }
 
 function readUpstreamDiagnostics(response: Response, detail: string): {
@@ -459,4 +506,50 @@ function isPathInside(rootDir: string, filePath: string): boolean {
   const candidate = path.resolve(filePath);
   const relative = path.relative(root, candidate);
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+export function validateImageReferences(images: ImageReference[]): void {
+  if (images.length > 4) throw new ImageGenerationError("invalid_reference");
+  for (const image of images) {
+    const detected = detectImageType(image.data);
+    if (!detected || detected.mimeType !== image.mimeType || image.data.length > IMAGE_GENERATION_MAX_BYTES) {
+      throw new ImageGenerationError("invalid_reference");
+    }
+  }
+}
+export const IMAGE_ASPECT_SIZES: Record<string, string> = {
+  "1:1": "1024x1024", "2:3": "1024x1536", "3:2": "1536x1024",
+  "9:16": "864x1536", "16:9": "1536x864",
+};
+function validateImageSize(size?: string): void {
+  if (size !== undefined && size !== "auto" && !Object.values(IMAGE_ASPECT_SIZES).includes(size)) {
+    throw new ImageGenerationError("invalid_size");
+  }
+}
+export function parseImagePrompt(raw: string): { prompt: string; size?: string } {
+  const parameter = raw.match(/(?:^|\s)--比例\s+(\S+)/u);
+  if (/(?:^|\s)--比例(?:\s|$)/u.test(raw) && !parameter) throw new ImageGenerationError("invalid_size");
+  const leading = raw.trim().match(/^(\d+[:：]\d+)(?=\s|の|$)/u);
+  const ratio = (parameter?.[1] ?? leading?.[1])?.replace("：", ":");
+  if (ratio && !IMAGE_ASPECT_SIZES[ratio]) throw new ImageGenerationError("invalid_size");
+  return { prompt: (parameter ? raw.replace(parameter[0], " ") : raw).trim(),
+    ...(ratio ? { size: IMAGE_ASPECT_SIZES[ratio] } : {}) };
+}
+export function imageReferenceFromDataUrl(value: string): ImageReference {
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/i.exec(value);
+  if (!match) throw new ImageGenerationError("invalid_reference");
+  const image: ImageReference = { data: decodeBase64Image(match[2]!), mimeType: match[1]!.toLowerCase() as ImageReference["mimeType"] };
+  validateImageReferences([image]);
+  return image;
+}
+
+
+function imagePromptWithSize(prompt: string, size: string): string {
+  if (size === "auto") return prompt;
+  const [width, height] = size.split("x").map(Number) as [number, number];
+  const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+  const divisor = gcd(width, height);
+  // OAuth image gateways can normalize the tool's size to auto. Repeat the
+  // user's format in the prompt so framing follows it on those gateways too.
+  return `${prompt}\n\nOutput canvas: aspect ratio ${width / divisor}:${height / divisor} (${size} pixels). Adjust the framing to fill this canvas. This output format takes precedence over other aspect ratios in the description.`;
 }

@@ -66,6 +66,12 @@ export type ImagePreviewStatus = "available" | "expired" | "deleted";
 /** List responses intentionally omit the full prompt. */
 export interface ImagePreviewListItem {
   id: string;
+  operation?: "generation" | "edit";
+  referenceCount?: number;
+  parentIds?: string[];
+  outputSize?: string;
+  outputMessageId?: string;
+
   groupId: string;
   creatorUserId?: string;
   promptSummary: string;
@@ -325,6 +331,7 @@ export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {
   id: string;
+  capabilities?: { imageEditing?: boolean; [key: string]: unknown };
   name: string;
   shortName: string;
   baseUrl: string;

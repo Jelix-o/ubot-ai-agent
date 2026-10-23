@@ -56,6 +56,7 @@ export interface OutboxRow {
   kind: string;
   text: string;
   forward_payload_json?: string | null;
+  image_preview_id?: string | null;
   auto_recall_after_ms: number | null;
   auto_recall_deadline_ms: number | null;
   status: string;
@@ -754,6 +755,26 @@ function addOutboxAttemptColumn(db: DatabaseSync): void {
   }
 }
 
+function addImageEditLineage(db: DatabaseSync): void {
+  const additions = {
+    outbox: { image_preview_id: "TEXT" },
+    image_previews: {
+      operation: "TEXT NOT NULL DEFAULT 'generation'",
+      reference_count: "INTEGER NOT NULL DEFAULT 0",
+      parent_ids_json: "TEXT NOT NULL DEFAULT '[]'",
+      output_size: "TEXT NOT NULL DEFAULT '1024x1024'",
+      output_message_id: "TEXT",
+    },
+  };
+  for (const [table, columns] of Object.entries(additions)) {
+    const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name));
+    for (const [name, definition] of Object.entries(columns)) {
+      if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_image_previews_output_message ON image_previews(group_id, output_message_id)");
+}
+
 function addOutboxForwardPayloadColumn(db: DatabaseSync): void {
   const columns = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
   if (!columns.some(column => column.name === "forward_payload_json")) {
@@ -1123,6 +1144,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_image_previews_status_expiry
         ON image_previews (status, expires_at, id);
     `),
+  },
+  {
+    version: 23,
+    name: "add-image-edit-lineage-and-delivery",
+    apply: addImageEditLineage,
   },
 ];
 
@@ -1711,6 +1737,8 @@ export class SharedDb {
     this.db
       .prepare("INSERT OR REPLACE INTO retracted (msg_key, retracted_at) VALUES (?, ?)")
       .run(`${groupId}:${msgId}`, nowMs);
+    this.db.prepare("UPDATE image_previews SET status = 'deleted', prompt = NULL, prompt_summary = '', deleted_at = ?, updated_at = ? WHERE group_id = ? AND output_message_id = ? AND status = 'available'")
+      .run(nowMs, nowMs, groupId, msgId);
   }
 
   isRetracted(groupId: string, msgId: string): boolean {
@@ -1766,7 +1794,11 @@ export class SharedDb {
     context?: OutboxContext,
     forwardPayloadJson?: string,
     autoRecall?: OutboxAutoRecallPolicy,
+    imagePreviewId?: string,
   ): number {
+    if (imagePreviewId && (kind !== "generated_image" || !this.db.prepare(
+      "SELECT id FROM image_previews WHERE id = ? AND group_id = ? AND status = 'available' AND expires_at > ?",
+    ).get(imagePreviewId, groupId, Date.now()))) throw new Error("image_preview_delivery_invalid");
     const status = context && context.turnId === undefined ? "preparing" : "pending";
     const recallPolicy = normalizeOutboxAutoRecallPolicy(autoRecall);
     const result = this.db
@@ -1774,8 +1806,8 @@ export class SharedDb {
         `INSERT INTO outbox
            (group_id, reply_to, kind, text, status, topic_id, branch_id,
             source_turn_id, turn_id, created_at, forward_payload_json,
-            auto_recall_after_ms, auto_recall_deadline_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            auto_recall_after_ms, auto_recall_deadline_ms, image_preview_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         groupId,
@@ -1791,6 +1823,7 @@ export class SharedDb {
         forwardPayloadJson ?? null,
         recallPolicy?.afterMs ?? null,
         recallPolicy?.deadlineMs ?? null,
+        imagePreviewId ?? null,
       );
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${id}`, id);
@@ -1894,6 +1927,13 @@ export class SharedDb {
             WHERE id = ?`,
         )
         .run(normalizedMessageId, sentAt, sentAtMs, id);
+      if (row.image_preview_id) this.db.prepare(
+        "UPDATE image_previews SET output_message_id = ?, updated_at = ? WHERE id = ? AND group_id = ? AND (output_message_id IS NULL OR output_message_id = ?)",
+      ).run(normalizedMessageId, sentAtMs, row.image_preview_id, row.group_id, normalizedMessageId);
+      if (row.image_preview_id && this.isRetracted(row.group_id, normalizedMessageId)) {
+        this.db.prepare("UPDATE image_previews SET status = 'deleted', prompt = NULL, prompt_summary = '', deleted_at = ?, updated_at = ? WHERE id = ? AND status = 'available'")
+          .run(sentAtMs, sentAtMs, row.image_preview_id);
+      }
       this.db
         .prepare("INSERT OR REPLACE INTO bot_messages (group_id, msg_id, sent_at) VALUES (?, ?, ?)")
         .run(row.group_id, normalizedMessageId, sentAt);

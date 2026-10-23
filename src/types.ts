@@ -468,6 +468,7 @@ export interface ModelProviderCapabilities {
   requestTimeout: true;
   /** The provider exposes an OpenAI-compatible Images generation endpoint. */
   imageGeneration: boolean;
+  imageEditing?: boolean;
 }
 
 export interface SystemModelConfig {

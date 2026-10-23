@@ -191,6 +191,12 @@ type ImagePreviewStatus = "available" | "expired" | "deleted";
  */
 interface ImagePreviewAdminMetadata {
   id: string;
+  operation?: "generation" | "edit";
+  referenceCount?: number;
+  parentIds?: string[];
+  outputSize?: string;
+  outputMessageId?: string;
+
   groupId: string;
   creatorUserId?: string;
   promptSummary: string;
@@ -4051,6 +4057,12 @@ function isImagePreviewContentType(value: string): boolean {
 
 function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
   id: string;
+  operation?: "generation" | "edit";
+  referenceCount?: number;
+  parentIds?: string[];
+  outputSize?: string;
+  outputMessageId?: string;
+
   groupId: string;
   creatorUserId?: string;
   promptSummary: string;
@@ -4068,6 +4080,11 @@ function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
   return {
     id: preview.id,
     groupId: preview.groupId,
+    ...(preview.operation ? { operation: preview.operation } : {}),
+    ...(preview.referenceCount !== undefined ? { referenceCount: preview.referenceCount } : {}),
+    ...(preview.parentIds ? { parentIds: preview.parentIds } : {}),
+    ...(preview.outputSize ? { outputSize: preview.outputSize } : {}),
+    ...(preview.outputMessageId ? { outputMessageId: preview.outputMessageId } : {}),
     ...(preview.creatorUserId ? { creatorUserId: preview.creatorUserId } : {}),
     // The archive service already creates the bounded summary. Trim here too
     // so an old/malformed record cannot inflate an administrative list view.

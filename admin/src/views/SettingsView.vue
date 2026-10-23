@@ -437,6 +437,11 @@ function modelHealthLabel(model: SystemModelConfig): string {
   return health.ok ? `通过 ${health.latencyMs ?? 0}ms` : health.detail;
 }
 
+function setImageEditing(event: Event): void {
+  if (!editingModel.value) return;
+  editingModel.value.capabilities = { ...editingModel.value.capabilities, imageEditing: (event.target as HTMLInputElement).checked };
+}
+
 function modelIndex(model: SystemModelConfig): number {
   return settings.models.findIndex((item) => item === model);
 }
@@ -519,7 +524,11 @@ onMounted(() => {
           <label>上游模型名<input v-model="editingModel.model" class="input" placeholder="model-name" /></label>
           <label>API 协议<select v-model="editingModel.apiProtocol" class="select" :disabled="editingModel.purpose === 'image'"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
         </section>
+        <section v-if="editingModel.purpose === 'image'" class="model-edit-section"><h3>图片编辑</h3>
+          <label v-if="editingModel.purpose === 'image'" class="policy-toggle"><span><strong>支持图片编辑</strong><small>确认上游支持图生图后开启，用于附图生图和 #改图。</small></span><input type="checkbox" :checked="editingModel.capabilities?.imageEditing === true" @change="setImageEditing" /></label>
+        </section>
         <section v-if="editingModel.purpose === 'reply'" class="model-edit-section" aria-labelledby="model-parameters-title"><h3 id="model-parameters-title">调用参数</h3>
+
           <label class="policy-toggle"><span><strong>支持图片理解</strong><small>仅支持视觉的模型会参与看图请求。</small></span><input v-model="editingModel.supportsVision" type="checkbox" /></label>
           <div class="edit-field-pair"><label>请求超时（毫秒）<input v-model.number="editingModel.requestTimeoutMs" class="input" type="number" min="1000" max="300000" /></label><label>最大输出 Token<input v-model.number="editingModel.maxCompletionTokens" class="input" type="number" min="64" max="65536" :placeholder="editingModel.purpose === 'reply' ? '32768' : ''" /></label></div>
           <label>推理强度<select v-model="editingModel.reasoningEffort" class="select"><option :value="undefined">不指定</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>

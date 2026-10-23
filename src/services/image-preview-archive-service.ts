@@ -26,6 +26,12 @@ export interface ImagePreviewMetadata {
   groupId: string;
   creatorUserId: string;
   sourceMessageId: string;
+  operation?: "generation" | "edit";
+  referenceCount?: number;
+  parentIds?: string[];
+  outputSize?: string;
+  outputMessageId?: string;
+
   promptSummary: string;
   modelId: string;
   model: string;
@@ -57,6 +63,11 @@ export interface ImagePreviewArchiveInput {
   groupId: string;
   creatorUserId: string;
   sourceMessageId: string;
+  operation?: "generation" | "edit";
+  referenceCount?: number;
+  parentIds?: string[];
+  outputSize?: string;
+
   prompt: string;
   filePath: string;
   modelId: string;
@@ -129,6 +140,8 @@ export class ImagePreviewArchiveService {
         byteSize: declaredByteSize,
         contentSha256,
         now,
+        operation: input.operation, referenceCount: input.referenceCount,
+        parentIds: input.parentIds, outputSize: input.outputSize,
         expiresAt,
       });
       return toMetadata(metadata, now);
@@ -140,6 +153,14 @@ export class ImagePreviewArchiveService {
       }
       throw error;
     }
+  }
+
+  async resolveReference(groupId: string, messageId: string): Promise<{ previewId: string; data: Buffer; mimeType: ImagePreviewMimeType } | undefined> {
+    const record = this.repository.getByOutput(groupId, messageId);
+    if (!record) return undefined;
+    const image = await this.loadImage(record.id);
+    if (!image) throw new ImagePreviewArchiveError("image_preview_reference_unavailable");
+    return { previewId: record.id, data: image.data, mimeType: image.mimeType };
   }
 
   get(id: string): Promise<ImagePreviewMetadata | undefined> {
@@ -321,6 +342,9 @@ function toMetadata(record: ImagePreviewRecord, now = Date.now()): ImagePreviewM
     groupId: record.groupId,
     creatorUserId: record.creatorUserId,
     sourceMessageId: record.sourceMessageId,
+    operation: record.operation, referenceCount: record.referenceCount,
+    parentIds: record.parentIds, outputSize: record.outputSize,
+    outputMessageId: record.outputMessageId,
     promptSummary: status === "available" ? record.promptSummary : "",
     modelId: record.modelId,
     model: record.model,

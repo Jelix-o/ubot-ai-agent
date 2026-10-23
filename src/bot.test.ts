@@ -403,15 +403,16 @@ test("image permission covers renamed primary, aliases, help and disabled comman
   const settings = new FakeSystemSettingsStore([command]);
   let generated = 0;
   const { app, transport, aiService, conversationStore } = createApp({ systemSettingsStore: settings, imageGenerationService: { async generate() { generated++; return { stagedFile: "/tmp/test.png" }; }, async discard() {}, async cleanup() { return 0; } } as unknown as ImageGenerationRuntime });
-  for (const text of ["#绘图 test", "/draw test", "#生图 test"]) await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }]));
+  for (const text of ["#绘图 test", "/draw test", "#生图 test", "#改图 test"]) await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }]));
   assert.equal(generated, 0);
-  assert.equal(transport.sent.length, 3);
+  assert.equal(transport.sent.length, 4);
   assert.ok(transport.sent.every(message => message.text.includes("权限")));
   await app.handleGroupMessage(createEvent("#功能"));
   assert.doesNotMatch(transport.sent.at(-1)?.text ?? "", /画图：|#绘图|#生图/);
   command.permission = "member"; command.enabled = false;
   await app.handleGroupMessage(createEvent("/draw test"));
-  assert.equal(transport.sent.length, 4);
+  await app.handleGroupMessage(createEvent("#改图 test"));
+  assert.equal(transport.sent.length, 5);
   assert.equal(aiService.calls.length, 0);
   assert.deepEqual(conversationStore.turnsByKey, {});
 });
@@ -1091,7 +1092,7 @@ function createApp(options?: {
   privateEnterpriseRanking?: PrivateEnterpriseRanking;
   knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
   btSearchService?: BtSearchRuntime;
-  imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup">;
+  imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference">>;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1878,6 +1879,10 @@ test("#画图 archives the validated request before handing the image to QQ", as
     creatorUserId: "20001",
     sourceMessageId: "731",
     prompt: "海边 灯塔",
+    operation: "generation",
+    referenceCount: 0,
+    parentIds: [],
+    outputSize: "1024x1024",
     filePath: "D:\\managed\\generated.png",
     modelId: "image-fallback",
     model: "gpt-image-test",
@@ -7784,3 +7789,108 @@ test("records an @请记住 request but never stores ambient requests", async ()
   assert.match(transport.sent.at(-1)?.text ?? "", /记下了/);
 });
 
+
+
+const editTestPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==";
+function imageEditTestRuntime(inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]>): ImageGenerationRuntime {
+  return {
+    async generate(input) {
+      inputs.push(input);
+      await input.onStarted?.();
+      return { filePath: "/managed/edit.png", modelId: "edit", model: "image", fallbackUsed: false, mimeType: "image/png", byteLength: 70 };
+    },
+    async discard() {}, async cleanup() { return 0; },
+  };
+}
+
+test("image edit requires explicit references and uses quoted pictures before attachments with vision disabled", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const { app, transport, groupConfigService, aiService } = createApp({ imagePipeline: pipeline, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+  groupConfigService.groups[0]!.visionEnabled = false;
+  await app.handleGroupMessage(createEvent("#改图 加上帆船"));
+  assert.equal(inputs.length, 0);
+  assert.match(transport.sent.at(-1)?.text ?? "", /附图或引用/);
+  transport.messagesById["old"] = { messageId: "old", groupId: "67890", text: "", images: [{ url: editTestPng, summary: "quoted-1" }, { url: editTestPng, summary: "quoted-2" }] };
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "old" } },
+    { type: "text", data: { text: "#改图 --比例 9:16 加上帆船" } },
+    { type: "image", data: { url: editTestPng, summary: "attached" } },
+  ]));
+  assert.equal(inputs[0]?.referenceImages?.length, 3);
+  assert.equal(inputs[0]?.size, "864x1536");
+  assert.deepEqual(pipeline.calls.flat().map(image => image.summary), ["quoted-1", "quoted-2", "attached"]);
+  assert.equal(aiService.calls.length, 0);
+  await app.handleGroupMessage(createEvent("#改图 再加一艘"));
+  assert.equal(inputs.length, 1); // no implicit last-image session
+  await app.handleGroupMessage(createEvent([{ type: "image", data: { url: editTestPng } }, { type: "text", data: { text: "#生图 山水" } }]));
+  assert.equal(inputs[1]?.referenceImages?.length, 1);
+});
+
+test("image edit rejects too many, unreadable and unverified cross-group references without invoking a model", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const { app, transport } = createApp({ imagePipeline: pipeline, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图 山水" } }, ...Array.from({ length: 5 }, () => ({ type: "image", data: { url: editTestPng } }))]));
+  assert.match(transport.sent.at(-1)?.text ?? "", /最多支持 4/);
+  assert.equal(pipeline.calls.length, 0);
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#改图 山水" } }, { type: "image", data: { url: editTestPng } }, { type: "image", data: { url: "data:image/png;base64,YmFk" } }]));
+  assert.match(transport.sent.at(-1)?.text ?? "", /参考图2无法读取/);
+  for (const groupId of [undefined, "another-group"]) {
+    transport.messagesById["foreign"] = { messageId: "foreign", groupId, text: "", images: [{ url: editTestPng }] };
+    await app.handleGroupMessage(createEvent([{ type: "reply", data: { id: "foreign" } }, { type: "text", data: { text: "#改图 山水" } }]));
+    assert.match(transport.sent.at(-1)?.text ?? "", /无法确认属于本群/);
+  }
+  assert.equal(inputs.length, 0);
+});
+
+test("retained image references preserve parent versions and unavailable archives never fall back to QQ downloads", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const archived: ImagePreviewArchiveInput[] = [];
+  let unavailable = false;
+  const { app, transport } = createApp({
+    imageGenerationService: imageEditTestRuntime(inputs),
+    imagePreviewArchiveService: {
+      async resolveReference(groupId, messageId) {
+        assert.equal(groupId, "67890");
+        if (unavailable) throw new Error("expired");
+        return { previewId: messageId, data: Buffer.from(editTestPng.split(",")[1]!, "base64"), mimeType: "image/png" };
+      },
+      async archive(input) { archived.push(input); return { id: "child" } as never; },
+      async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+    },
+  });
+  t.after(() => app.stop());
+  transport.getMessage = async () => { throw new Error("must not re-download retained image"); };
+  for (const id of ["version-1", "version-2", "version-1"]) {
+    await app.handleGroupMessage(createEvent([{ type: "reply", data: { id } }, { type: "text", data: { text: "#改图 添加帆船" } }]));
+  }
+  assert.deepEqual(archived.map(image => image.parentIds), [["version-1"], ["version-2"], ["version-1"]]);
+  assert.ok(archived.every(image => image.operation === "edit" && image.referenceCount === 1));
+  unavailable = true;
+  await app.handleGroupMessage(createEvent([{ type: "reply", data: { id: "version-1" } }, { type: "text", data: { text: "#改图 变成日落" } }]));
+  assert.equal(inputs.length, 3);
+  assert.match(transport.sent.at(-1)?.text ?? "", /删除、过期/);
+});
+
+test("image requests stay isolated across interleaved members and hold the lock while loading references", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const loaded = deferred(), gate = deferred();
+  pipeline.resolveForVision = async images => {
+    if (images[0]?.summary === "member-a") { loaded.resolve(); await gate.promise; }
+    return images.map(input => ({ input, dataUrl: editTestPng }));
+  };
+  const { app, transport } = createApp({ imagePipeline: pipeline, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+  const event = (userId: number, summary: string) => createEvent([{ type: "text", data: { text: `#改图 ${summary}` } }, { type: "image", data: { url: editTestPng, summary } }], userId);
+  const pending = app.handleGroupMessage(event(20001, "member-a"));
+  await loaded.promise;
+  await app.handleGroupMessage(event(20001, "duplicate"));
+  assert.match(transport.sent.at(-1)?.text ?? "", /仍在处理中/);
+  await app.handleGroupMessage(event(20002, "member-b"));
+  gate.resolve(); await pending;
+  assert.deepEqual(inputs.map(input => [input.userId, input.prompt]), [["20002", "member-b"], ["20001", "member-a"]]);
+});

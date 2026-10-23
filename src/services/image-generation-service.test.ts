@@ -24,7 +24,7 @@ test("configured image generation calls the selected model and stages a validate
     const body = JSON.parse(String(init?.body));
     assert.deepEqual(body, {
       model: "image-primary",
-      prompt: "draw a lighthouse",
+      prompt: "draw a lighthouse\n\nOutput canvas: aspect ratio 1:1 (1024x1024 pixels). Adjust the framing to fill this canvas. This output format takes precedence over other aspect ratios in the description.",
       n: 1,
       size: "1024x1024",
       quality: "auto",

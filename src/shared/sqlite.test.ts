@@ -259,6 +259,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 20, name: "add-durable-message-recalls" },
       { version: 21, name: "add-conversation-orchestration" },
       { version: 22, name: "add-generated-image-preview-archive" },
+      { version: 23, name: "add-image-edit-lineage-and-delivery" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -281,7 +282,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -1016,4 +1017,24 @@ test("bot messages recorded and pruned", (t) => {
   assert.deepEqual(rows.map((row) => row.msg_id), ["b2"]);
   assert.equal(db.isKnownBotMessage("10001", "b1"), false);
   db.close();
+});
+
+
+test("image editing migration upgrades v4.1.12 archives and tolerates partial pre-application", t => {
+  const dbPath = tempDb(t);
+  const old = new SharedDb(dbPath);
+  old.db.exec("DELETE FROM schema_migrations WHERE version = 23");
+  old.db.exec("DROP INDEX idx_image_previews_output_message");
+  old.db.exec("ALTER TABLE outbox DROP COLUMN image_preview_id");
+  for (const column of ["operation", "reference_count", "parent_ids_json", "output_size", "output_message_id"]) old.db.exec(`ALTER TABLE image_previews DROP COLUMN ${column}`);
+  const id = Number(old.db.prepare("INSERT INTO outbox (group_id, kind, text, status, created_at) VALUES (?, ?, ?, ?, ?)").run("group", "text", "pending text", "pending", Date.now()).lastInsertRowid);
+  old.close();
+  const upgraded = new SharedDb(dbPath);
+  assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 23);
+  upgraded.db.exec("DELETE FROM schema_migrations WHERE version = 23");
+  upgraded.close();
+  const reapplied = new SharedDb(dbPath);
+  assert.equal(reapplied.listSchemaMigrations().filter(m => m.version === 23).length, 1);
+  reapplied.close();
 });

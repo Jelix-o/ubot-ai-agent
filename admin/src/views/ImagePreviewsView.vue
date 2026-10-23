@@ -279,6 +279,9 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
           <p v-else class="dialog-state error-state">原图目前无法读取，请刷新列表后重试。</p>
         </div>
         <dl class="detail-meta">
+          <div><dt>创作方式</dt><dd>{{ selectedPreview.operation === 'edit' ? '图片编辑' : '文字生图' }} · {{ selectedPreview.referenceCount || 0 }} 张参考图</dd></div>
+          <div><dt>输出尺寸</dt><dd>{{ selectedPreview.outputSize === 'auto' ? '自动' : selectedPreview.outputSize || '1024x1024' }}</dd></div>
+          <div v-if="selectedPreview.parentIds?.length"><dt>父版本</dt><dd v-for="id in selectedPreview.parentIds" :key="id">{{ id }}</dd></div>
           <div><dt>模型</dt><dd>{{ modelLabel(selectedPreview) }}<small v-if="selectedPreview.fallbackUsed">已切备用模型</small></dd></div>
           <div><dt>文件</dt><dd>{{ selectedPreview.mimeType }} · {{ formatBytes(selectedPreview.byteSize) }}</dd></div>
           <div><dt>创建者</dt><dd>{{ selectedPreview.creatorUserId || "-" }}</dd></div>
