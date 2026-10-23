@@ -4336,16 +4336,66 @@ test("identity comparisons refresh real names and answer without a model, profil
     refresh = options?.refresh;
     return [{ user_id: 1418509802, card: "成都林心如", nickname: "☉_☉" }];
   };
-  for (const [index, text] of ["鸡哥是不是成都林心如", "鸡哥是不是悠米", "鸡哥是不是陌生人", "同名是不是成都林心如"].entries()) {
+  for (const [index, text] of ["鸡哥是不是成都林心如", "鸡哥是不是悠米", "同名是不是成都林心如"].entries()) {
     await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }], 1569671790, 67890, 9900 + index));
   }
   assert.equal(refresh, true);
   assert.match(transport.sent[0]!.text, /^是同一位/);
   assert.match(transport.sent[1]!.text, /^不是同一位/);
   assert.match(transport.sent[2]!.text, /无法确认/);
-  assert.match(transport.sent[3]!.text, /无法确认/);
   assert.equal(aiService.calls.length, 0);
   assert.equal(reads.history + reads.memory + reads.ambient + reads.evidence, 0);
+});
+
+test("ordinary relationship questions retain verified mentions and reply context for the model", async () => {
+  const transport = new FakeTransport();
+  transport.memberDirectoryByGroup["67890"] = [{ user_id: 20002, card: "成员乙", nickname: "成员乙" }];
+  transport.messagesById["quoted-member"] = {
+    messageId: "quoted-member", userId: "20002", userName: "成员乙", text: "一条普通引用", images: [],
+  };
+  const { app, aiService } = createApp({ transport });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "reply", data: { id: "quoted-member" } },
+    { type: "at", data: { qq: "12345" } },
+    { type: "at", data: { qq: "20002" } },
+    { type: "text", data: { text: " 她是不是喜欢我？" } },
+  ], 20001, 67890, 9904));
+
+  assert.equal(aiService.calls.length, 1);
+  assert.deepEqual(aiService.calls[0]?.identityContext?.replyContext, {
+    messageId: "quoted-member", userId: "20002", userName: "成员乙", text: "一条普通引用", images: [],
+  });
+  assert.deepEqual(
+    [...new Set((aiService.calls[0]?.identityContext?.interactionTargets ?? []).map(target => target.userId))],
+    ["20002"],
+  );
+  assert.equal(transport.sent.length, 1);
+  assert.doesNotMatch(transport.sent[0]!.text, /暂时无法确认这两个称呼/);
+});
+
+test("unmatched member comparison candidates resume normal chat after one directory check", async () => {
+  const transport = new FakeTransport();
+  let directoryReads = 0;
+  transport.listGroupMembers = async () => {
+    directoryReads++;
+    return [];
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"], switcherUserIds: [], liveChatUserIds: [],
+    manualIdentities: [{ userIds: ["1418509802"], names: ["鸡哥"] }],
+  }]);
+  const { app, aiService } = createApp({ transport, groupConfigService });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "鸡哥是不是陌生人？" } },
+  ], 20001, 67890, 9905));
+
+  assert.equal(directoryReads, 1);
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(transport.sent.length, 1);
+  assert.doesNotMatch(transport.sent[0]!.text, /暂时无法确认这两个称呼/);
 });
 
 test("resolves a saved alias in natural person impression question '在你眼中xxx是个什么样的人'", async () => {
