@@ -622,6 +622,92 @@ test("Ingress -> WorkerApp -> outbox -> real QQ receipt -> quoted causal chain",
   assert.deepEqual(JSON.parse(persistedEvaluation.verified_mention_user_ids_json), ["2409332588"]);
 });
 
+test("Ingress and worker preserve a quoted member and real @ for ordinary relationship questions", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-identity-fallback-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const napcat = new FakeNapCatTransport();
+  const workerTransportDb = openSharedDb(dataDir);
+  const botContextDb = openSharedDb(dataDir);
+  const observerDb = openSharedDb(dataDir);
+  const repository = new ConversationContextRepository(botContextDb);
+  const aiService = new CapturingAiService(() => "正常对话回复");
+  const bot = createBot(new WorkerTransport(workerTransportDb), repository, aiService);
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, napcat);
+  const worker = new WorkerApp({
+    dataDir,
+    sharedDb: workerTransportDb,
+    botApp: bot,
+    consumerKey: "worker:identity-fallback",
+    isBlacklistedUser: async () => false,
+  });
+
+  t.after(async () => {
+    await worker.stop();
+    await bot.stop();
+    await ingress.stop();
+    observerDb.close();
+    botContextDb.close();
+    workerTransportDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await ingress.start();
+  worker.start();
+  const now = Math.floor(Date.now() / 1_000);
+  napcat.emit("groupMessage", inboundEvent({
+    messageId: 105,
+    userId: "20002",
+    text: "普通成员的引用内容",
+    hasAtBot: false,
+    eventTimeSeconds: now,
+  }));
+  await waitFor(() => Boolean(observerDb.db.prepare(
+    "SELECT 1 FROM messages WHERE group_id = ? AND msg_id = ?",
+  ).get(GROUP_ID, "105")));
+
+  const relationshipQuestion = inboundEvent({
+    messageId: 106,
+    text: "她是不是喜欢我？",
+    replyToMessageId: "105",
+    mentionTargetUserId: "20002",
+    eventTimeSeconds: now + 1,
+  });
+  relationshipQuestion.message = [
+    { type: "reply", data: { id: "105" } },
+    { type: "at", data: { qq: BOT_QQ } },
+    { type: "at", data: { qq: "20002" } },
+    { type: "text", data: { text: "她是不是喜欢我？" } },
+  ];
+  napcat.emit("groupMessage", relationshipQuestion);
+
+  await waitFor(() => aiService.calls.length === 1);
+  await waitFor(() => napcat.sent.length === 1);
+  const persisted = observerDb.db.prepare(
+    "SELECT verified_mention_user_ids_json FROM messages WHERE group_id = ? AND msg_id = ?",
+  ).get(GROUP_ID, "106") as { verified_mention_user_ids_json: string };
+  assert.deepEqual(JSON.parse(persisted.verified_mention_user_ids_json), ["20002"]);
+  const identity = aiService.calls[0]!.identityContext as {
+    replyContext?: { messageId: string; userId?: string };
+    interactionTargets?: Array<{ userId?: string }>;
+  };
+  assert.equal(identity.replyContext?.messageId, "105");
+  assert.equal(identity.replyContext?.userId, "20002");
+  assert.deepEqual(
+    [...new Set((identity.interactionTargets ?? []).map(target => target.userId).filter(Boolean))],
+    ["20002"],
+  );
+  const relationshipRoute = routeForMessage(observerDb, "106");
+  assert.equal(relationshipRoute?.reply_to_message_id, "105");
+  assert.match(relationshipRoute?.route_reason ?? "", /^explicit-reply/u);
+  assert.doesNotMatch(napcat.sent[0]!.text, /暂时无法确认这两个称呼/);
+});
+
 test("unquoted group question receives a short ambient window without joining the prior branch", async (t) => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-ambient-context-"));
   const readApiPort = await reservePort();

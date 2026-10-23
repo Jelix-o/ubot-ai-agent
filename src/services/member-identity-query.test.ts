@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answerIdentityCheck, identityCheckNeedsDirectory, isDeicticImagePersonQuestion, isExplicitImagePersonQuestion, parseIdentityCheck, refreshIdentityDirectory } from "./member-identity-query.js";
+import {
+  IDENTITY_UNCONFIRMED,
+  answerIdentityCheck,
+  identityCheckNeedsDirectory,
+  isDeicticImagePersonQuestion,
+  isExplicitImagePersonQuestion,
+  isMemberIdentityQuerySyntax,
+  isSavedIdentityComparisonSyntax,
+  parseIdentityCheck,
+  parseMemberIdentityQuery,
+  refreshIdentityDirectory,
+  resolveMemberIdentityQuery,
+} from "./member-identity-query.js";
 import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 
 const group: GroupBotConfig = {
@@ -37,20 +49,92 @@ test("identity checks require an exact saved anchor and compare exact QQ mapping
   assert.equal(answerIdentityCheck(same, group).reason, "same_qq");
   assert.equal(answerIdentityCheck(parseIdentityCheck("鸡哥是不是悠米", group, [], "99")!, group).reason, "different_qq");
   assert.equal(answerIdentityCheck(parseIdentityCheck("鸡哥是不是成都林心如", group, [], "99")!, group, members).reason, "same_qq");
+  const aliasAndCard = parseMemberIdentityQuery("鸡哥是不是成都林心如", group, [], "99")!;
+  const unresolvedAliasAndCard = resolveMemberIdentityQuery(aliasAndCard, { group, userId: "100", targets: [], botQq: "99" });
+  assert.equal(unresolvedAliasAndCard.handled, false);
+  assert.equal(unresolvedAliasAndCard.needsDirectory, true);
+  assert.equal(
+    resolveMemberIdentityQuery(aliasAndCard, { group, userId: "100", targets: [], botQq: "99", members }).reason,
+    "same_qq",
+  );
+  const unmatchedAliasAndCard = parseMemberIdentityQuery("鸡哥是不是陌生人", group, [], "99")!;
+  assert.equal(
+    resolveMemberIdentityQuery(unmatchedAliasAndCard, { group, userId: "100", targets: [], botQq: "99" }).needsDirectory,
+    true,
+  );
+  assert.equal(
+    resolveMemberIdentityQuery(unmatchedAliasAndCard, { group, userId: "100", targets: [], botQq: "99", members: [] }).handled,
+    false,
+  );
+  assert.equal(isSavedIdentityComparisonSyntax("鸡哥是不是鸡某", group), true);
+  assert.equal(isSavedIdentityComparisonSyntax("鸡哥是不是陌生人", group), false);
+  const mention = [{ userId: "1418509802", names: [], source: "mention" as const }];
+  assert.equal(answerIdentityCheck(parseIdentityCheck("@1418509802 他是不是鸡哥", group, mention, "99")!, group).reason, "same_qq");
+  assert.equal(answerIdentityCheck(parseIdentityCheck("他是不是鸡哥", group, [{ userId: "1418509802", names: [], source: "reply" }], "99")!, group).reason, "same_qq");
+});
+
+test("ordinary comparison candidates explicitly fall back without an identity clarification", () => {
+  const mention = [{ userId: "1418509802", names: [], source: "mention" as const }];
+  const resolve = (text: string) => resolveMemberIdentityQuery(
+    parseMemberIdentityQuery(text, group, mention, "99")!,
+    { group, userId: "100", targets: mention, botQq: "99" },
+  );
+  const relationship = resolve("@1418509802 她是不是暗恋我");
+  assert.equal(relationship.status, "fallback");
+  assert.equal(relationship.handled, false);
+  assert.equal(relationship.needsDirectory, false);
+  const narrative = resolve("@1418509802 先说一句，她是不是喜欢我");
+  assert.equal(narrative.status, "fallback");
+  assert.equal(narrative.handled, false);
+  assert.equal(isMemberIdentityQuerySyntax("她是不是喜欢我"), false);
+  assert.equal(isMemberIdentityQuerySyntax("@1418509802 她是不是喜欢我"), false);
+  assert.equal(isMemberIdentityQuerySyntax("@1418509802 他是谁"), true);
+
+  const typedAtWithReply = [{ userId: "1418509802", names: [], source: "reply" as const }];
+  const typedAt = resolveMemberIdentityQuery(
+    parseMemberIdentityQuery("@1418509802是不是鸡哥", group, typedAtWithReply, "99")!,
+    { group, userId: "100", targets: typedAtWithReply, botQq: "99", members: [] },
+  );
+  assert.equal(typedAt.status, "fallback", "a reply does not authorize a typed @QQ operand");
+  assert.equal(typedAt.handled, false);
 });
 
 test("directory duplicates, unknowns and explicit conflicting objects never guess", () => {
   const check = parseIdentityCheck("鸡哥是不是成都林心如", group, [], "99")!;
   assert.equal(answerIdentityCheck(check, group, [...members, { user_id: 20001, card: "成都林心如" }]).reason, "mapping_not_unique");
-  assert.equal(answerIdentityCheck(check, group, []).reason, "mapping_not_unique");
+  assert.equal(answerIdentityCheck(check, group, []).handled, false);
   assert.equal(answerIdentityCheck(parseIdentityCheck("重名是不是成都林心如", group, [], "99")!, group, members).reason, "mapping_not_unique");
   const mention = [{ userId: "1418509802", names: [], source: "mention" as const }];
   assert.equal(answerIdentityCheck(parseIdentityCheck("他是不是成都林心如", group, mention, "99")!, group, members).reason, "same_qq");
   assert.equal(answerIdentityCheck({ ...check, explicitIds: ["429462108"] }, group, members).reason, "target_conflict");
+  const multipleTargets = parseIdentityCheck("他是不是鸡哥", group, [
+    { userId: "1418509802", names: [], source: "mention" },
+    { userId: "429462108", names: [], source: "reply" },
+  ], "99")!;
+  assert.equal(identityCheckNeedsDirectory(multipleTargets, group), false);
+  const multipleTargetAnswer = answerIdentityCheck(multipleTargets, group);
+  assert.equal(multipleTargetAnswer.handled, true);
+  assert.equal(multipleTargetAnswer.reason, "target_conflict");
+  assert.equal(multipleTargetAnswer.text, IDENTITY_UNCONFIRMED);
+  const unknownWithMultipleTargets = parseIdentityCheck("他是不是陌生人", group, [
+    { userId: "1418509802", names: [], source: "mention" },
+    { userId: "429462108", names: [], source: "reply" },
+  ], "99")!;
+  const unknownWithMultipleTargetsAnswer = answerIdentityCheck(unknownWithMultipleTargets, group);
+  assert.equal(unknownWithMultipleTargetsAnswer.handled, true);
+  assert.equal(unknownWithMultipleTargetsAnswer.reason, "target_conflict");
+  assert.equal(unknownWithMultipleTargetsAnswer.text, IDENTITY_UNCONFIRMED);
+  const unknownWithConflictingTarget = parseIdentityCheck("鸡哥是不是陌生人", group, [
+    { userId: "429462108", names: [], source: "mention" },
+  ], "99")!;
+  const unknownWithConflictingTargetAnswer = answerIdentityCheck(unknownWithConflictingTarget, group);
+  assert.equal(unknownWithConflictingTargetAnswer.handled, true);
+  assert.equal(unknownWithConflictingTargetAnswer.reason, "target_conflict");
+  assert.equal(unknownWithConflictingTargetAnswer.text, IDENTITY_UNCONFIRMED);
   assert.equal(answerIdentityCheck(parseIdentityCheck("鸡哥是不是@1418509802", group, mention, "99")!, group).reason, "same_qq");
   assert.equal(answerIdentityCheck(parseIdentityCheck("@1418509802是不是鸡哥", group, mention, "99")!, group).reason, "same_qq");
   assert.equal(answerIdentityCheck(parseIdentityCheck("鸡哥是不是@429462108", group, [{ userId: "429462108", names: [], source: "mention" }], "99")!, group).reason, "different_qq");
-  assert.equal(answerIdentityCheck(parseIdentityCheck("鸡哥是不是@1418509802", group, [], "99")!, group).reason, "mapping_not_unique", "typed @ alone cannot authorize identity mapping");
+  assert.equal(answerIdentityCheck(parseIdentityCheck("鸡哥是不是@1418509802", group, [], "99")!, group).handled, false, "typed @ alone cannot authorize identity mapping");
 });
 
 test("directory refresh is bounded, propagates failure and ignores late completions", async () => {

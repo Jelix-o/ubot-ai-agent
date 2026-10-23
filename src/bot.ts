@@ -72,6 +72,7 @@ import {
   parseMemberIdentityQuery,
   resolveMemberIdentityQuery,
   isMemberIdentityQuerySyntax,
+  isSavedIdentityComparisonSyntax,
   refreshIdentityDirectory,
 } from "./services/member-identity-query.js";
 import type { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
@@ -1193,7 +1194,7 @@ export class BotApplication {
       (deicticImagePersonQuestion && (
         Boolean(input.hasImages) || Boolean(input.replyToMessageId)
       ));
-    if (isMemberIdentityQuerySyntax(input.text) && !deferIdentityForImage) {
+    if ((isMemberIdentityQuerySyntax(input.text) || isSavedIdentityComparisonSyntax(input.text, group)) && !deferIdentityForImage) {
       return this.conversationContextRouter.resolve({ ...input, resolvedContext: { newTopic: true } });
     }
     const contextEnabled = group.ambientGroupContextEnabled !== false;
@@ -3106,8 +3107,8 @@ export class BotApplication {
       ? undefined
       : parseMemberIdentityQuery(normalizedUserInput, groupConfig, messageContext.interactionTargets, this.botQq);
     if (identityQuery) {
-      await this.identityQueryLock.run(`${groupConfig.groupId}:${conversationRoute?.turnId ?? messageContext.sourceMessageId ?? userId}`, async () => {
-        if (conversationRoute && this.conversationContextRepository?.hasAssistantReplyForTurn?.(conversationRoute.branchId, conversationRoute.turnId)) return;
+      const identityHandled = await this.identityQueryLock.run(`${groupConfig.groupId}:${conversationRoute?.turnId ?? messageContext.sourceMessageId ?? userId}`, async () => {
+        if (conversationRoute && this.conversationContextRepository?.hasAssistantReplyForTurn?.(conversationRoute.branchId, conversationRoute.turnId)) return true;
         const identityArgs = {
           group: groupConfig, userId, targets: messageContext.interactionTargets, botQq: this.botQq,
           senderCard: messageContext.senderCard, senderNickname: messageContext.senderNickname,
@@ -3126,7 +3127,16 @@ export class BotApplication {
             directoryStatus = error instanceof Error && error.message === "identity_directory_timeout" ? "timeout" : "unavailable";
           }
         }
-        if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) return;
+        if (!answer.handled) {
+          logInfo("Member identity comparison resumed normal conversation.", {
+            groupId: groupConfig.groupId, memberQueryType: "identity_check", identityQueryKind: answer.kind,
+            identityQueryStatus: answer.status, targetUserIds: answer.targetIds,
+            memberQueryResolutionSource: answer.source, memberQueryUnresolvedReason: answer.reason,
+            identityDirectoryStatus: directoryStatus, memorySubjectUserIds: [],
+          });
+          return Boolean(signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId)));
+        }
+        if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) return true;
         const receipt = await this.sendTextWithContext(groupConfig.groupId, answer.text, conversationRoute);
         await this.persistAssistantContext(conversationRoute, answer.text, receipt ? [receipt] : []);
         logInfo("Completed verified member identity query.", {
@@ -3135,8 +3145,9 @@ export class BotApplication {
           memberQueryResolutionSource: answer.source, memberQueryUnresolvedReason: answer.reason,
           identityDirectoryStatus: directoryStatus, memorySubjectUserIds: [],
         });
+        return true;
       });
-      return;
+      if (identityHandled) return;
     }
     if (isExplicitUnauthorizedCyberIntrusionRequest(normalizedUserInput)) {
       const receipt = await this.sendTextWithContext(groupConfig.groupId, MSG_UNAUTHORIZED_CYBER_REFUSAL, conversationRoute);

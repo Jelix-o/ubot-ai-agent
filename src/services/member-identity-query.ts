@@ -19,17 +19,22 @@ export interface MemberIdentityQuery {
 
 export interface MemberIdentityResolution {
   kind: MemberIdentityQuery["kind"];
-  status: "resolved" | "ambiguous" | "unknown" | "conflict";
+  status: "resolved" | "ambiguous" | "unknown" | "conflict" | "fallback";
   source: "saved_alias" | "member_object" | "current_speaker" | "directory";
   targetIds: string[];
   reason: string;
   text: string;
   needsDirectory: boolean;
+  /** Whether the caller should send the deterministic identity response. */
+  handled: boolean;
 }
 
 const personPronoun = /^(?:他|她|这位|这人|这个人|这位群友)$/u;
 const realTargetIds = (targets: AiInteractionTarget[], botQq: string) => [...new Set(targets
   .filter(target => target.source === "mention" || target.source === "reply")
+  .flatMap(target => target.userId && target.userId !== botQq ? [target.userId] : []))];
+const realMentionIds = (targets: AiInteractionTarget[], botQq: string) => [...new Set(targets
+  .filter(target => target.source === "mention")
   .flatMap(target => target.userId && target.userId !== botQq ? [target.userId] : []))];
 
 function normalizeDeicticImagePersonQuestion(text: string): string {
@@ -73,7 +78,17 @@ function identityLabel(text: string): { kind: "who" | "recognize"; label: string
 
 /** A cheap syntactic check for queue routing; it never authorizes member data reads. */
 export function isMemberIdentityQuerySyntax(text: string): boolean {
-  return Boolean(identityLabel(text.replace(/@\d+\b/gu, "").trim())) || /(?:是不是|是否是)/u.test(text);
+  return Boolean(identityLabel(text.replace(/@\d+\b/gu, "").trim()));
+}
+
+/** Saved aliases can be isolated before routing because both operands are already verified. */
+export function isSavedIdentityComparisonSyntax(text: string, group: GroupBotConfig): boolean {
+  const check = parseIdentityCheck(text, group, [], "");
+  return Boolean(
+    check && !check.fallbackReason &&
+    exactAliasIds(group, check.left).length > 0 &&
+    exactAliasIds(group, check.right).length > 0,
+  );
 }
 
 /** Unknown unanchored names stay ordinary questions, including public figures. */
@@ -97,13 +112,18 @@ export function resolveMemberIdentityQuery(query: MemberIdentityQuery, args: {
   const explicit = realTargetIds(args.targets, args.botQq);
   if (query.kind === "compare") {
     const answer = answerIdentityCheck(query.check!, group, members);
-    return { kind: query.kind, status: ["same_qq", "different_qq"].includes(answer.reason) ? "resolved" : answer.reason === "target_conflict" ? "conflict" : "ambiguous",
-      source: explicit.length ? "member_object" : "saved_alias", ...answer, needsDirectory: members.length === 0 && identityCheckNeedsDirectory(query.check!, group) };
+    return {
+      kind: query.kind,
+      status: !answer.handled ? "fallback" : ["same_qq", "different_qq"].includes(answer.reason) ? "resolved" : answer.reason === "target_conflict" ? "conflict" : "ambiguous",
+      source: explicit.length ? "member_object" : "saved_alias",
+      ...answer,
+      needsDirectory: !answer.handled && args.members === undefined && identityCheckNeedsDirectory(query.check!, group),
+    };
   }
   let ids = query.kind === "self" ? [args.userId] : exactAliasIds(group, query.label);
   let source: MemberIdentityResolution["source"] = query.kind === "self" ? "current_speaker" : ids.length ? "saved_alias" : "member_object";
   const result = (status: MemberIdentityResolution["status"], reason: string, text: string, needsDirectory = false): MemberIdentityResolution =>
-    ({ kind: query.kind, status, source, targetIds: ids, reason, text, needsDirectory });
+    ({ kind: query.kind, status, source, targetIds: ids, reason, text, needsDirectory, handled: true });
   if (ids.length > 1) return result("ambiguous", "ambiguous_saved_alias", "这个称呼对应不止一位群友，你 @ 一下要问的那位？");
   if (query.kind !== "self" && ids.length && explicit.some(id => id !== ids[0])) return result("conflict", "target_conflict", "你问的是这个外号对应的人，还是你 @ 或引用的那位？");
   if (/^\d+$/u.test(query.label)) return result("unknown", "unverified_numeric_label", "请用真实 @ 或引用消息指定成员。");
@@ -140,31 +160,59 @@ export interface IdentityCheck {
   left: string;
   right: string;
   explicitIds: string[];
+  /** Only platform mention segments can authorize a literal @QQ operand. */
+  mentionIds: string[];
+  /** The comparison is ordinary prose and must resume the normal chat path. */
+  fallbackReason?: "narrative" | "relationship_or_intent";
+}
+
+const comparisonNarrative = /[，,；;：:。]/u;
+const comparisonRelationshipOrIntent = /(?:暗恋|喜欢|爱慕|讨厌|在乎|追(?:我|他|她)?|想(?:要|让|跟|我|他|她)|会不会|有没有|觉得|认为|说(?:我|他|她)?|骂(?:我|他|她)?|吊(?:我|他|她)?|配不配|能不能|愿不愿意)/u;
+
+function stripVerifiedMentionPrefix(text: string, mentionIds: string[]): string {
+  const prefix = text.match(/^(?:(?:@\d+)\s*)+/u);
+  if (!prefix) return text;
+  const ids = [...prefix[0].matchAll(/@(\d+)\b/gu)].map(match => match[1]!);
+  if (!ids.length || ids.some(id => !mentionIds.includes(id))) return text;
+  return text.slice(prefix[0].length).trim();
+}
+
+function comparisonFallbackReason(left: string, right: string, group: GroupBotConfig): IdentityCheck["fallbackReason"] {
+  if (comparisonNarrative.test(left) || comparisonNarrative.test(right)) return "narrative";
+  const unresolvedOperands = [left, right].filter(label => !exactAliasIds(group, label).length).join(" ");
+  return comparisonRelationshipOrIntent.test(unresolvedOperands) ? "relationship_or_intent" : undefined;
 }
 
 /** Only a saved identity or a real member object can activate this lookup. */
 export function parseIdentityCheck(
   text: string, group: GroupBotConfig, targets: AiInteractionTarget[], botQq: string,
 ): IdentityCheck | undefined {
-  const match = text.normalize("NFKC").trim().match(/^(?:请问|请确认|确认一下)?(.{0,30}?)(?:是不是|是否是)(.{1,30}?)(?:[?？。！!]|吗|嘛|呢)*$/u);
+  const explicitIds = realTargetIds(targets, botQq);
+  const mentionIds = realMentionIds(targets, botQq);
+  const value = stripVerifiedMentionPrefix(text.normalize("NFKC").trim(), mentionIds);
+  const match = value.match(/^(?:请问|请确认|确认一下)?(.{0,30}?)(?:是不是|是否是)(.{1,30}?)(?:[?？。！!]|吗|嘛|呢)*$/u);
   if (!match) return undefined;
   const left = match[1]!.trim();
   const right = match[2]!.trim();
-  const explicitIds = realTargetIds(targets, botQq);
   if (!exactAliasIds(group, left).length && !exactAliasIds(group, right).length && !explicitIds.length) return undefined;
-  return { left, right, explicitIds };
+  const fallbackReason = comparisonFallbackReason(left, right, group);
+  return { left, right, explicitIds, mentionIds, ...(fallbackReason ? { fallbackReason } : {}) };
 }
 
 export function identityCheckNeedsDirectory(check: IdentityCheck, group: GroupBotConfig): boolean {
+  if (check.fallbackReason) return false;
   const anchored = (label: string) => exactAliasIds(group, label).length > 0 ||
-    (label.startsWith("@") && check.explicitIds.includes(label.slice(1))) ||
-    ((!label || /^(?:他|她|这位|这人|这个人|这位群友)$/u.test(label)) && check.explicitIds.length === 1);
-  return !anchored(check.left) || !anchored(check.right);
+    (label.startsWith("@") && check.mentionIds.includes(label.slice(1))) ||
+    ((!label || /^(?:他|她|这位|这人|这个人|这位群友)$/u.test(label)) && check.explicitIds.length > 0);
+  const cannotResolveFromDirectory = (label: string) => /^@?\d+$/u.test(label) && !check.mentionIds.includes(label.replace(/^@/u, ""));
+  return [check.left, check.right].some(label => !anchored(label) && !cannotResolveFromDirectory(label));
 }
 
 export function answerIdentityCheck(check: IdentityCheck, group: GroupBotConfig, members: NapcatGroupMember[] = []) {
+  const fallback = (reason: string, targetIds: string[]) => ({ handled: false, text: "", targetIds, reason });
+  if (check.fallbackReason) return fallback(check.fallbackReason, check.explicitIds);
   const resolve = (label: string, left: boolean): string[] => {
-    if (/^@\d+$/u.test(label) && check.explicitIds.includes(label.slice(1))) return [label.slice(1)];
+    if (/^@\d+$/u.test(label) && check.mentionIds.includes(label.slice(1))) return [label.slice(1)];
     const aliases = exactAliasIds(group, label);
     // Never let a platform name silently disambiguate a duplicated saved alias.
     if (aliases.length) return aliases;
@@ -177,10 +225,14 @@ export function answerIdentityCheck(check: IdentityCheck, group: GroupBotConfig,
   const right = resolve(check.right, false);
   const targetIds = [...new Set([...left, ...right, ...check.explicitIds])];
   const explicitConflict = check.explicitIds.some(id => !left.includes(id) && !right.includes(id));
-  if (left.length !== 1 || right.length !== 1 || explicitConflict) {
-    return { text: IDENTITY_UNCONFIRMED, targetIds, reason: explicitConflict ? "target_conflict" : "mapping_not_unique" };
+  if (check.explicitIds.length > 1 || explicitConflict || left.length > 1 || right.length > 1) {
+    return { handled: true, text: IDENTITY_UNCONFIRMED, targetIds, reason: explicitConflict || check.explicitIds.length > 1 ? "target_conflict" : "mapping_not_unique" };
+  }
+  if (left.length === 0 || right.length === 0) {
+    return fallback("unmatched_member", targetIds);
   }
   return {
+    handled: true,
     text: left[0] === right[0] ? "是同一位群友，这两个称呼对应同一个 QQ。" : "不是同一位群友，这两个称呼对应不同的 QQ。",
     targetIds, reason: left[0] === right[0] ? "same_qq" : "different_qq",
   };
