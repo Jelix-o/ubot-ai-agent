@@ -116,6 +116,11 @@ import {
   ImagePreviewArchiveError,
   type ImagePreviewArchiveService,
 } from "./services/image-preview-archive-service.js";
+import {
+  parseNaturalImageRequest,
+  type NaturalImageRequest,
+} from "./services/natural-image-request.js";
+import type { ImageRequestKind, ImageRequestRepository, ImageRequestTriggerSource } from "./services/image-request-repository.js";
 import type {
   ProviderCapabilityFeature,
   ProviderProtocol,
@@ -351,7 +356,11 @@ export interface MessageTransport {
   deleteMessage?(messageId: string): Promise<void>;
   sendGroupImage(groupId: string, imageFile: string): Promise<void | MessageReceipt>;
   /** Queues a worker-local generated image for ingress delivery and cleanup. */
-  sendGeneratedGroupImage?(groupId: string, imagePath: string, options?: { imagePreviewId?: string }): Promise<void | MessageReceipt>;
+  sendGeneratedGroupImage?(groupId: string, imagePath: string, options?: {
+    imagePreviewId?: string;
+    /** Durable ledger record that must be atomically linked to the Outbox row. */
+    imageRequestId?: string;
+  }): Promise<void | MessageReceipt>;
   resolveImageInputs?(images: MessageImageInput[]): Promise<MessageImageInput[]>;
   listGroupMembers?(groupId: string, options?: { refresh?: boolean }): Promise<NapcatGroupMember[]>;
   listGroups?(): Promise<NapcatGroupInfo[]>;
@@ -441,7 +450,26 @@ interface HandleGroupMessageOptions {
    * that the incoming reply quotes one of this bot's own group messages.
    */
   allowReplyWithoutMention?: boolean;
+  /** Source row and trusted ingress facts supplied by Worker special routing. */
+  imageRequestSourceRowId?: number;
+  hasTrustedBotMention?: boolean;
+  hasTrustedReply?: boolean;
+  replyIsGeneratedImage?: boolean;
 }
+
+interface ImageRequestExecutionOptions {
+  avatarRequest?: AvatarEditRequest;
+  parsedPrompt?: ReturnType<typeof parseImagePrompt>;
+  /** Durable ingress row when the Worker owns this message. */
+  sourceRowId?: number;
+  triggerSource?: "command" | "natural";
+  requestKind?: "generation" | "edit" | "avatar_edit";
+}
+
+type ImageRequestLedgerRuntime = Pick<
+  ImageRequestRepository,
+  "claim" | "beginSubmission" | "recordGenerated" | "markFailed" | "markOutcomeUnknown"
+>;
 
 type OpsAlertType = "startup" | "napcat-down" | "memory-high" | "send-failure" | "send-recovered";
 
@@ -529,9 +557,11 @@ export class BotApplication {
     private readonly knowledgeSourceBindingStore = new KnowledgeSourceBindingStore(),
     private readonly btSearchService?: BtSearchRuntime,
     /** Private successful-image archive, absent only for compatibility embeddings. */
-    private readonly imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference">>,
+    private readonly imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference" | "hasAvailableOutput" | "discardUnpublished">>,
     /** Resolves a verified current group member's QQ avatar for #改图 avatar mode. */
     private readonly avatarReferenceResolver?: QqAvatarReferenceResolver,
+    /** Durable idempotency boundary for Worker-owned image requests. */
+    private readonly imageRequestRepository?: ImageRequestLedgerRuntime,
   ) {
     this.participationService = new GroupParticipationService(
       this.groupConfigService,
@@ -585,6 +615,15 @@ export class BotApplication {
   }
 
   /**
+   * Lets the Worker select the dedicated image queue before generic command
+   * routing. This deliberately uses the same runtime command matcher as the
+   * command handler, including the always-supported #改图 alias.
+   */
+  async isImageGenerationCommand(text: string): Promise<boolean> {
+    return Boolean(matchRuntimeCommand(text, await this.getRuntimeCommands(), "image_generation"));
+  }
+
+  /**
    * Kept public for the Worker key selector so an explicit page request gets
    * the dedicated per-group FIFO queue before generic participation routing.
    */
@@ -600,6 +639,52 @@ export class BotApplication {
       return undefined;
     }
     return parseHtmlPreviewRequest(text, hasAtBot);
+  }
+
+  /**
+   * Pure, bounded natural-image classification for Worker routing. It accepts
+   * only trust facts established from canonical ingress segments and retained
+   * generated-image receipts; normal chat remains outside this path.
+   */
+  async getNaturalImageRequest(
+    event: NapcatGroupMessageEvent,
+    facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean },
+  ): Promise<NaturalImageRequest | undefined> {
+    const groupId = String(event.group_id);
+    const groupConfig = await this.groupConfigService.getGroup(groupId);
+    if (!groupConfig || groupConfig.enabled === false || groupConfig.naturalImageRequestsEnabled === false) return undefined;
+    const parsed = parseGroupMessage(event.message, this.botQq);
+    const commandText = extractCommandText(event.message);
+    const runtimeCommands = await this.getRuntimeCommands();
+    // The Worker normally supplies this fact from canonical ingress segments.
+    // Keep direct callers conservative: only a structured reply segment can
+    // stand in for the Worker fact; raw CQ-looking text never can.
+    const hasTrustedReply = facts.hasTrustedReply ?? Boolean(
+      parsed.replyMessageId && Array.isArray(event.message) && event.message.some((segment) =>
+        typeof segment !== "string" && segment.type === "reply" &&
+        String(segment.data?.id ?? "").trim() === parsed.replyMessageId,
+      ),
+    );
+    const replyIsGeneratedImage = hasTrustedReply && (facts.replyIsGeneratedImage ??
+      this.isAvailableGeneratedImageReply(groupId, parsed.replyMessageId));
+    return parseNaturalImageRequest({
+      message: parsed,
+      hasTrustedBotMention: facts.hasTrustedBotMention,
+      hasTrustedReply,
+      replyIsGeneratedImage,
+      isExplicitCommand: isSystemCommandText(commandText, runtimeCommands),
+    });
+  }
+
+  /**
+   * A reply is eligible for continuous editing only after QQ has acknowledged
+   * the generated-image outbox row and its private archive still exists.
+   */
+  isAvailableGeneratedImageReply(groupId: string, messageId: string | undefined): boolean {
+    if (!messageId || this.conversationContextRepository?.orchestration?.isReferenceRetracted(groupId, messageId)) {
+      return false;
+    }
+    return this.imagePreviewArchiveService?.hasAvailableOutput?.(groupId, messageId) === true;
   }
 
   private async getTokenCostControl(): Promise<TokenCostControlSettings> {
@@ -694,7 +779,11 @@ export class BotApplication {
 
     if (editOnly) {
       if (groupConfig.botMuted !== true && !this.isBlacklistedUser(groupConfig, userId)) {
-        await this.handleImageGenerationCommand(groupConfig, event, commandText.replace(/^#改图\s*/u, ""), signal, true, parsedMessage);
+        await this.handleImageGenerationCommand(groupConfig, event, commandText.replace(/^#改图\s*/u, ""), signal, true, parsedMessage, {
+          sourceRowId: options.imageRequestSourceRowId,
+          triggerSource: "command",
+          requestKind: "edit",
+        });
       }
       return;
     }
@@ -949,7 +1038,21 @@ export class BotApplication {
 
     const imageGenerationCommand = matchRuntimeCommand(commandText, runtimeCommands, "image_generation");
     if (imageGenerationCommand) {
-      await this.handleImageGenerationCommand(groupConfig, event, imageGenerationCommand.suffix, signal, editOnly);
+      await this.handleImageGenerationCommand(groupConfig, event, imageGenerationCommand.suffix, signal, editOnly, parsedMessage, {
+        sourceRowId: options.imageRequestSourceRowId,
+        triggerSource: "command",
+        requestKind: "generation",
+      });
+      return;
+    }
+
+    const naturalImageRequest = await this.getNaturalImageRequest(event, {
+      hasTrustedBotMention: options.hasTrustedBotMention === true,
+      hasTrustedReply: options.hasTrustedReply,
+      replyIsGeneratedImage: options.replyIsGeneratedImage,
+    });
+    if (naturalImageRequest) {
+      await this.handleNaturalImageRequest(groupConfig, event, naturalImageRequest, signal, parsedMessage, options);
       return;
     }
 
@@ -1732,6 +1835,7 @@ export class BotApplication {
     signal?: AbortSignal,
     editOnly = false,
     parsedMessage?: ReturnType<typeof parseGroupMessage>,
+    executionOptions: ImageRequestExecutionOptions = {},
   ): Promise<void> {
     const groupId = groupConfig.groupId;
     const userId = String(event.user_id);
@@ -1739,9 +1843,9 @@ export class BotApplication {
       await this.rejectCapability(groupId, "image_generation");
       return;
     }
-    let avatarRequest: AvatarEditRequest | undefined;
+    let avatarRequest: AvatarEditRequest | undefined = executionOptions.avatarRequest;
     let promptInput = rawPrompt;
-    if (editOnly) {
+    if (editOnly && !avatarRequest) {
       // Command text intentionally excludes non-text segments. Only avatar
       // syntax needs the parsed form so a real @ can be verified; ordinary
       // #改图 prompts retain their historical text-only behavior.
@@ -1759,13 +1863,13 @@ export class BotApplication {
     }
 
     let parsed: ReturnType<typeof parseImagePrompt>;
-    try { parsed = parseImagePrompt(promptInput); } catch {
+    try { parsed = executionOptions.parsedPrompt ?? parseImagePrompt(promptInput); } catch {
       await this.sendText(groupId, "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"); return;
     }
     if (!parsed.prompt) {
       const commands = await this.getRuntimeCommands();
       await this.sendText(groupId, avatarRequest
-        ? "头像改图格式：#改图 让<目标>（的）头像去<动作>"
+        ? "头像改图格式：#改图 让<目标>（的）头像（去）<动作>"
         : editOnly
         ? "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"
         : `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
@@ -1792,6 +1896,10 @@ export class BotApplication {
     }
     this.activeImageRequests.add(requestKey);
     let stagedFile: string | undefined;
+    let ledgerRequestId: string | undefined;
+    let upstreamRequestId: string | undefined;
+    let imagePreviewId: string | undefined;
+    let generatedImageOutboxLinked = false;
     let editing = editOnly;
     try {
       const referenceImages = avatarRequest
@@ -1801,10 +1909,64 @@ export class BotApplication {
       if (editOnly && referenceImages.length === 0) {
         await this.sendText(groupId, "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"); return;
       }
+      const requestKind: ImageRequestKind = avatarRequest
+        ? "avatar_edit"
+        : editing
+          ? "edit"
+          : "generation";
+      const triggerSource: ImageRequestTriggerSource = executionOptions.triggerSource ?? "command";
+      if (this.imageRequestRepository) {
+        const claim = this.imageRequestRepository.claim({
+          groupId,
+          sourceMessageId: String(event.message_id),
+          ...(executionOptions.sourceRowId === undefined ? {} : { sourceRowId: executionOptions.sourceRowId }),
+          creatorUserId: userId,
+          requestKind,
+          triggerSource,
+        });
+        if (!claim.created) {
+          // A restart can find a record between accepting and submitting it.
+          // We deliberately quarantine that ambiguous state rather than risk a
+          // second upstream call for the same QQ message.
+          if (["accepted", "submitting", "generated"].includes(claim.request.status)) {
+            // Mark the request first. If another worker won the race to create
+            // an Outbox row, this conditional update returns nothing and we
+            // must leave its staged image alone for delivery.
+            const quarantined = this.imageRequestRepository.markOutcomeUnknown(claim.request.id, "result_unknown");
+            if (quarantined?.status === "outcome_unknown" && quarantined.stagedFilePath) {
+              try {
+                await this.imageGenerationService.discard(quarantined.stagedFilePath);
+              } catch (discardError) {
+                logWarn("Failed to remove a quarantined staged image.", {
+                  groupId,
+                  userId,
+                  requestKind: quarantined.requestKind,
+                  error: discardError instanceof Error ? discardError.message : String(discardError),
+                });
+              }
+            }
+          }
+          logInfo("Reused durable image request without resubmitting upstream.", {
+            groupId,
+            userId,
+            requestKind: claim.request.requestKind,
+            status: claim.request.status,
+          });
+          return;
+        }
+        const submitted = this.imageRequestRepository.beginSubmission(claim.request.id);
+        if (!submitted) {
+          this.imageRequestRepository.markOutcomeUnknown(claim.request.id, "result_unknown");
+          return;
+        }
+        ledgerRequestId = submitted.id;
+        upstreamRequestId = submitted.upstreamRequestKey;
+      }
       const generated = await this.imageGenerationService.generate({
         groupId,
         userId,
         prompt,
+        ...(upstreamRequestId ? { requestId: upstreamRequestId } : {}),
         referenceImages,
         size: parsed.size,
         signal,
@@ -1813,7 +1975,19 @@ export class BotApplication {
         },
       });
       stagedFile = generated.filePath;
-      let imagePreviewId: string | undefined;
+      if (ledgerRequestId) {
+        const recorded = this.imageRequestRepository?.recordGenerated({
+          id: ledgerRequestId,
+          stagedFilePath: generated.filePath,
+          modelId: generated.modelId,
+          model: generated.model,
+          fallbackUsed: generated.fallbackUsed,
+          mimeType: generated.mimeType,
+          byteSize: generated.byteLength,
+          outputSize: generated.outputSize ?? parsed.size ?? (referenceImages.length ? "auto" : "1024x1024"),
+        });
+        if (!recorded) throw new Error("image_request_record_generated_failed");
+      }
       if (this.imagePreviewArchiveService) {
         try {
           const archived = await this.imagePreviewArchiveService.archive({
@@ -1831,6 +2005,7 @@ export class BotApplication {
             fallbackUsed: generated.fallbackUsed,
             mimeType: generated.mimeType,
             byteSize: generated.byteLength,
+            ...(ledgerRequestId ? { publicationState: "pending" as const } : {}),
           });
           imagePreviewId = archived.id;
         } catch (archiveError) {
@@ -1843,9 +2018,22 @@ export class BotApplication {
               ? archiveError.code
               : archiveError instanceof Error ? archiveError.name : "unknown",
           });
+          // A Worker-owned request must retain a durable private preview so
+          // the preview and its QQ Outbox row can be linked atomically.
+          if (ledgerRequestId) throw archiveError;
         }
       }
-      await this.transport.sendGeneratedGroupImage(groupId, generated.filePath, imagePreviewId ? { imagePreviewId } : undefined);
+      if (ledgerRequestId && !imagePreviewId) {
+        throw new ImagePreviewArchiveError("image_request_archive_required");
+      }
+      await this.transport.sendGeneratedGroupImage(
+        groupId,
+        generated.filePath,
+        imagePreviewId
+          ? { imagePreviewId, ...(ledgerRequestId ? { imageRequestId: ledgerRequestId } : {}) }
+          : undefined,
+      );
+      generatedImageOutboxLinked = Boolean(ledgerRequestId && imagePreviewId);
       stagedFile = undefined;
       logInfo("Generated image queued for group delivery.", {
         groupId,
@@ -1855,7 +2043,35 @@ export class BotApplication {
         byteLength: generated.byteLength,
       });
     } catch (error) {
-      if (stagedFile) await this.imageGenerationService.discard(stagedFile);
+      let unpublishedPreviewDiscarded = false;
+      if (ledgerRequestId && imagePreviewId) {
+        try {
+          unpublishedPreviewDiscarded = await this.imagePreviewArchiveService?.discardUnpublished?.(imagePreviewId) === true;
+        } catch (recoveryError) {
+          logWarn("Failed to discard an unpublished generated-image preview.", {
+            groupId,
+            userId,
+            errorName: recoveryError instanceof Error ? recoveryError.name : typeof recoveryError,
+          });
+        }
+      }
+      // If a custom transport committed its durable Outbox row before throwing,
+      // preserving the staged file lets ingress finish that already-owned send.
+      if (stagedFile && (!ledgerRequestId || unpublishedPreviewDiscarded || !imagePreviewId) && !generatedImageOutboxLinked) {
+        await this.imageGenerationService.discard(stagedFile);
+      }
+      if (ledgerRequestId) {
+        // `discardUnpublished` made the absence of an Outbox link durable in
+        // the same transaction as deleting the private preview. Do not
+        // overwrite that precise terminal reason with a generic transport
+        // error from the failed enqueue call.
+        const errorCode = unpublishedPreviewDiscarded ? "delivery_not_queued" : imageRequestLedgerErrorCode(error);
+        if (!unpublishedPreviewDiscarded && isImageRequestOutcomeUnknown(error, signal)) {
+          this.imageRequestRepository?.markOutcomeUnknown(ledgerRequestId, errorCode);
+        } else {
+          this.imageRequestRepository?.markFailed(ledgerRequestId, errorCode);
+        }
+      }
       if (signal?.aborted) return;
       if (error instanceof ImageEditReferenceError) { await this.sendText(groupId, error.message); return; }
       if (error instanceof ImageGenerationError) {
@@ -1890,6 +2106,64 @@ export class BotApplication {
     } finally {
       this.activeImageRequests.delete(requestKey);
     }
+  }
+
+  private async handleNaturalImageRequest(
+    groupConfig: GroupBotConfig,
+    event: NapcatGroupMessageEvent,
+    request: NaturalImageRequest,
+    signal?: AbortSignal,
+    parsedMessage?: ReturnType<typeof parseGroupMessage>,
+    handleOptions: HandleGroupMessageOptions = {},
+  ): Promise<void> {
+    const groupId = groupConfig.groupId;
+    if (groupConfig.naturalImageRequestsEnabled === false) return;
+    if (request.kind === "clarification") {
+      const text = request.reason === "missing_reference"
+        ? "改图请附图，或回复会仙已生成的图片后说明要怎么改"
+        : request.reason === "reference_requires_edit_instruction"
+          ? "附图后请明确说明怎么改，例如“把天空改成晚霞”"
+          : request.reason === "avatar_syntax"
+            ? "头像改图格式：让<目标>（的）头像（去）<动作>"
+            : request.reason === "invalid_ratio"
+              ? "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"
+              : "可说“生成一张 <描述>”，或附图后说“把这张图改成 <要求>”";
+      await this.sendText(groupId, text);
+      return;
+    }
+    const commands = await this.getRuntimeCommands();
+    const imageCommand = commands.find(command => command.id === "image_generation");
+    // With no persisted command settings, explicit image commands use the
+    // built-in matcher. Natural requests must retain that same compatibility
+    // path instead of treating an absent persisted row as a disabled feature.
+    if (imageCommand && !(await this.canUseRuntimeCommand(imageCommand, groupConfig, event))) {
+      await this.sendText(groupId, "你没有使用图片生成的权限");
+      return;
+    }
+    if (request.kind === "avatar_edit") {
+      await this.handleImageGenerationCommand(groupConfig, event, request.request.action, signal, true, parsedMessage, {
+        avatarRequest: request.request,
+        parsedPrompt: { prompt: request.prompt, ...(request.size ? { size: request.size } : {}) },
+        sourceRowId: handleOptions.imageRequestSourceRowId,
+        triggerSource: "natural",
+        requestKind: "avatar_edit",
+      });
+      return;
+    }
+    await this.handleImageGenerationCommand(
+      groupConfig,
+      event,
+      request.prompt,
+      signal,
+      request.kind === "edit",
+      parsedMessage,
+      {
+        parsedPrompt: { prompt: request.prompt, ...(request.size ? { size: request.size } : {}) },
+        sourceRowId: handleOptions.imageRequestSourceRowId,
+        triggerSource: "natural",
+        requestKind: request.kind === "edit" ? "edit" : "generation",
+      },
+    );
   }
 
   private async resolveAvatarEditReferences(
@@ -6070,7 +6344,8 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
         "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
-        "编辑：附图或引用图片后发送 #改图 <修改要求>；也可用 #改图 让<目标>（的）头像去<动作>，最多 4 张参考图。",
+        "编辑：附图或引用图片后发送 #改图 <修改要求>；也可用 #改图 让<目标>（的）头像（去）<动作>，最多 4 张参考图。",
+        "自然语言：真实 @会仙 后说“生成一张 <描述>”或附图后说“把这张图改成 <要求>”；回复会仙已生成图也可连续改图。",
         `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；文生图冷却 60 秒，图生图与改图冷却 15 秒`,
       ],
     }] : []),
@@ -6144,7 +6419,7 @@ function buildHelpOverviewMessage(
   const features = [
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图、引用或 #改图 让<目标>头像去<动作> 可编辑`] : []),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图、引用或 #改图 让<目标>头像（去）<动作> 可编辑；真实 @会仙 可用明确自然语言请求`] : []),
     ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
     ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
     ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),
@@ -6632,5 +6907,20 @@ function formatModelPurpose(purpose: string): string {
   return labels[purpose] ?? purpose;
 }
 
+function imageRequestLedgerErrorCode(error: unknown): string {
+  if (error instanceof ImageGenerationError) return error.code;
+  if (error instanceof ImageEditReferenceError) return "invalid_reference";
+  if (error instanceof ImagePreviewArchiveError) return "archive_failed";
+  if (error instanceof NapCatActionOutcomeUnknownError) return "delivery_unknown";
+  return "image_request_failed";
+}
+
+function isImageRequestOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) return true;
+  if (error instanceof NapCatActionOutcomeUnknownError) return true;
+  return error instanceof ImageGenerationError &&
+    error.code === "upstream_unavailable" &&
+    error.diagnostics?.failureKind !== "rate_limit";
+}
 
 class ImageEditReferenceError extends Error {}

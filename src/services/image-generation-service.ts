@@ -44,6 +44,8 @@ export interface ImageGenerationRuntime {
     groupId: string;
     userId: string;
     prompt: string;
+    /** Stable local request identity, forwarded to supporting image gateways. */
+    requestId?: string;
     referenceImages?: ImageReference[];
     size?: string;
     signal?: AbortSignal;
@@ -122,6 +124,7 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
     groupId: string;
     userId: string;
     prompt: string;
+    requestId?: string;
     referenceImages?: ImageReference[];
     size?: string;
     signal?: AbortSignal;
@@ -187,6 +190,7 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
             const generated = await withModelOperation("image", input.groupId, () => requestGeneratedImage(candidate, prompt, {
               signal: input.signal,
               fetchImpl: this.fetchImpl,
+              requestId: input.requestId,
               referenceImages: references,
               size: input.size ?? (editing ? "auto" : "1024x1024"),
             }), candidate.id);
@@ -208,11 +212,27 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
               modelId: candidate.id,
               model: candidate.model,
             };
-            if (!(error instanceof ImageUpstreamError) || !error.retryable) {
+            if (!(error instanceof ImageUpstreamError)) {
               if (error instanceof ImageGenerationError) {
                 throw new ImageGenerationError(error.code, error.message, error.retryAfterSeconds, diagnostics);
               }
               throw new ImageGenerationError("upstream_rejected", error instanceof Error ? error.message : "upstream_rejected", undefined, diagnostics);
+            }
+            // A request that timed out, lost its connection, or received a
+            // gateway/server failure may already have reached the image
+            // provider. Retrying it against another model could create a
+            // second image for one inbound QQ message, and an idempotency key
+            // is not portable across gateways. Only an explicit 429 proves
+            // this candidate did not accept the request, so it may use the
+            // configured alternative.
+            if (!canFallBackToAnotherImageModel(error)) {
+              const code = error.retryable ? "upstream_unavailable" : "upstream_rejected";
+              throw new ImageGenerationError(
+                code,
+                error.message,
+                undefined,
+                diagnostics,
+              );
             }
             lastRetryableError = error;
             lastDiagnostics = diagnostics;
@@ -288,6 +308,12 @@ export class ConfiguredImageGenerationService implements ImageGenerationRuntime 
   }
 }
 
+function canFallBackToAnotherImageModel(error: ImageUpstreamError): boolean {
+  return error.retryable &&
+    error.statusCode === 429 &&
+    error.diagnostics?.failureKind === "rate_limit";
+}
+
 /** Counts user-visible Unicode code points instead of UTF-16 code units. */
 export function countImagePromptCharacters(prompt: string): number {
   return Array.from(prompt).length;
@@ -300,6 +326,8 @@ export async function requestGeneratedImage(
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
     quality?: "low" | "auto";
+    /** Sent as the conventional idempotency header; never included in prompt or form data. */
+    requestId?: string;
     referenceImages?: ImageReference[];
     size?: string;
   } = {},
@@ -344,6 +372,7 @@ export async function requestGeneratedImage(
       method: "POST",
       headers: {
         Authorization: `Bearer ${model.apiKey ?? ""}`,
+        ...(options.requestId ? { "Idempotency-Key": options.requestId } : {}),
         ...(editing ? {} : { "Content-Type": "application/json" }),
       },
       body,
@@ -392,9 +421,12 @@ export async function requestGeneratedImage(
     if (options.signal?.aborted) throw error;
     if (timedOut) throw new ImageUpstreamError("image_upstream_timeout", true, undefined, { failureKind: "timeout" });
     const kind = classifyUpstreamFailure({ error });
+    // The transport failed after fetch was invoked, so the gateway may have
+    // accepted the request even when its error is not recognizable. Preserve
+    // the ambiguity for the request ledger instead of trying another model.
     throw new ImageUpstreamError(
       "image_upstream_network_error",
-      kind === "network" || kind === "timeout" || kind === "unavailable" || kind === "rate_limit",
+      true,
       undefined,
       { failureKind: kind },
     );

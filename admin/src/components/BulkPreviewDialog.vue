@@ -4,7 +4,7 @@ import AdminDialog from "./AdminDialog.vue";
 const props = defineProps<{ preview: any; busy?: boolean }>();
 defineEmits<{ close: []; execute: [] }>();
 const expires = computed(() => new Date(props.preview.expiresAt).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai" }));
-const labels: Record<string,string> = { enabled:"启用",tags:"标签",replyModelMode:"回复模型",replyModelSource:"模型来源",participationMode:"参与方式",triggerKeywords:"触发词",deleted:"删除",onlineLookupEnabled:"实时查询",visionEnabled:"图片理解",ambientGroupContextEnabled:"短时语境",htmlPreviewEnabled:"网页生成",dailyReportEnabled:"日报",dailyReportTime:"日报时间",scheduledRemindersEnabled:"定时提醒",holidayCountdownEnabled:"节日倒计时",botMuted:"静音" };
+const labels: Record<string,string> = { enabled:"启用",tags:"标签",replyModelMode:"回复模型",replyModelSource:"模型来源",participationMode:"参与方式",triggerKeywords:"触发词",deleted:"删除",onlineLookupEnabled:"实时查询",visionEnabled:"图片理解",ambientGroupContextEnabled:"短时语境",htmlPreviewEnabled:"网页生成",naturalImageRequestsEnabled:"自然语言生图与改图",dailyReportEnabled:"日报",dailyReportTime:"日报时间",scheduledRemindersEnabled:"定时提醒",holidayCountdownEnabled:"节日倒计时",botMuted:"静音" };
 function lines(value: any): string { if (value === null || value === undefined) return "—"; if (typeof value !== "object") return String(value); return Object.entries(value).map(([key,item]) => `${labels[key] || key}：${typeof item === 'boolean' ? item ? '是' : '否' : typeof item === 'object' ? JSON.stringify(item) : item}`).join("\n"); }
 </script>
 <template>

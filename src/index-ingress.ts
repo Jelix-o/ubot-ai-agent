@@ -15,6 +15,10 @@ import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
 import { MessageRecallService } from "./message-recall-service.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
+import {
+  restoreCanonicalMessageSegments,
+  serializeCanonicalMessageSegments,
+} from "./utils/persisted-message-segments.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 import type { MessageReceipt, MessageTransport } from "./bot.js";
 import {
@@ -337,12 +341,23 @@ export class IngressApp {
       return;
     }
 
-    const parsed = parseGroupMessage(event.message, this.options.botQq);
+    // Parse only the controlled representation. Raw CQ-looking text cannot
+    // establish a bot mention, a reply relationship, an image input, or an
+    // avatar target: those privileges require a structured platform segment.
+    const canonicalSegmentsJson = serializeCanonicalMessageSegments(event.message);
+    const parsed = parseGroupMessage(
+      restoreCanonicalMessageSegments(canonicalSegmentsJson) ?? [],
+      this.options.botQq,
+    );
     const blacklistedAtBot = parsed.hasAtBot && this.isV3BlacklistedUser(groupId, userId);
     // A lone platform @ segment normally remains an empty message. The sole
     // exception is a current V3 blacklisted member, whose @ needs to reach the
     // worker for the fixed image response.
-    if (!parsed.text && parsed.images.length === 0 && !blacklistedAtBot) {
+    // Keep a genuine bare @bot long enough for the natural-image parser to
+    // return its compact usage hint.  It is still an ordinary empty message
+    // when that entry point is disabled, so the Worker drops it before any
+    // participation or chat handling.
+    if (!parsed.text && parsed.images.length === 0 && !parsed.hasAtBot && !blacklistedAtBot) {
       return;
     }
     const { images } = parsed;
@@ -396,6 +411,7 @@ export class IngressApp {
       senderRole: event.sender?.role,
       replyTo: parsed.replyMessageId,
       verifiedMentionUserIds: parsed.verifiedMentionUserIds,
+      canonicalSegmentsJson,
       hasAtBot: parsed.hasAtBot,
       isBotMsg: false,
       processable: !dropReason,

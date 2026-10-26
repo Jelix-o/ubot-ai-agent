@@ -167,6 +167,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal((await service.getGroup("67890"))?.onlineLookupEnabled, false);
       assert.equal((await service.getGroup("67890"))?.visionEnabled, true);
       assert.equal((await service.getGroup("67890"))?.ambientGroupContextEnabled, true);
+      assert.equal((await service.getGroup("67890"))?.naturalImageRequestsEnabled, true);
       assert.equal((await service.getGroup("67890"))?.imageGenerationEnabled, true);
       assert.equal((await service.getGroup("67890"))?.participationMode, "mentions_only");
 
@@ -178,6 +179,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
         onlineLookupEnabled: true,
         visionEnabled: false,
         ambientGroupContextEnabled: false,
+        naturalImageRequestsEnabled: false,
       });
       assert.equal(enabled.dailyReportEnabled, true);
       assert.equal(enabled.holidayCountdownEnabled, true);
@@ -188,6 +190,7 @@ test("group config defaults and normalizes blacklisted user ids", async () => {
       assert.equal(enabled.onlineLookupEnabled, true);
       assert.equal(enabled.visionEnabled, false);
       assert.equal(enabled.ambientGroupContextEnabled, false);
+      assert.equal(enabled.naturalImageRequestsEnabled, false);
       assert.equal(enabled.imageGenerationEnabled, true);
       const legacyPatch = await service.updateGroupConfig("67891", {
         imageGenerationEnabled: false,
@@ -208,6 +211,7 @@ test("NapCat bootstrap uses the packaged huixian skill and inactive broadcasts",
       assert.equal(groups[0]?.enabled, false);
       assert.equal(groups[0]?.opsAlertsEnabled, false);
       assert.equal(groups[0]?.visionEnabled, true);
+      assert.equal(groups[0]?.naturalImageRequestsEnabled, true);
       assert.equal(groups[0]?.imageGenerationEnabled, true);
     },
   );
@@ -275,6 +279,7 @@ test("group config updates full editable config with validation", async () => {
         onlineLookupEnabled: false,
         visionEnabled: true,
         ambientGroupContextEnabled: false,
+        naturalImageRequestsEnabled: false,
       });
 
       assert.equal(updated.currentSkillId, "huixian");
@@ -302,6 +307,7 @@ test("group config updates full editable config with validation", async () => {
       assert.equal(updated.onlineLookupEnabled, false);
       assert.equal(updated.visionEnabled, true);
       assert.equal(updated.ambientGroupContextEnabled, false);
+      assert.equal(updated.naturalImageRequestsEnabled, false);
       assert.equal(updated.imageGenerationEnabled, true);
       assert.deepEqual(updated.manualIdentities?.[0], { userIds: ["20001"], names: ["Tester"], note: "note" });
 
@@ -332,6 +338,10 @@ test("group config updates full editable config with validation", async () => {
       await assert.rejects(
         () => service.updateGroupConfig("67890", { participationMode: "noisy" as never }),
         /invalid_group_config/,
+      );
+      await assert.rejects(
+        () => service.updateGroupConfig("67890", { naturalImageRequestsEnabled: "invalid" as never }),
+        { code: "invalid_group_config" },
       );
       await assert.rejects(
         () => service.updateGroupConfig("67890", { manualIdentities: [{ userIds: ["20001"], names: [] }] }),

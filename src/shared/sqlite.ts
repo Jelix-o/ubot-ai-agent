@@ -25,6 +25,7 @@ export interface IngressMessageRow {
   msg_time: number;
   text: string;
   images_json: string;
+  canonical_segments_json: string | null;
   sender_card: string | null;
   sender_nickname: string | null;
   sender_role: string | null;
@@ -78,6 +79,13 @@ export interface OutboxContext {
   branchId: string;
   sourceTurnId?: number;
   turnId?: number;
+}
+
+/** Result of atomically associating one generated-image request with Outbox. */
+export interface GeneratedImageRequestOutbox {
+  outboxId: number;
+  /** False means a retry found the original durable delivery row. */
+  created: boolean;
 }
 
 /**
@@ -829,6 +837,77 @@ function addVerifiedMentionUserIdsColumn(db: DatabaseSync): void {
   }
 }
 
+function addCanonicalMessageSegmentsColumn(db: DatabaseSync): void {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>).map((row) => row.name),
+  );
+  if (!columns.has("canonical_segments_json")) {
+    db.exec("ALTER TABLE messages ADD COLUMN canonical_segments_json TEXT");
+  }
+}
+
+function addImageRequestLedger(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS image_requests (
+      id TEXT PRIMARY KEY,
+      group_id TEXT NOT NULL,
+      source_message_id TEXT NOT NULL,
+      source_row_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+      creator_user_id TEXT NOT NULL,
+      request_kind TEXT NOT NULL CHECK (request_kind IN ('generation', 'edit', 'avatar_edit')),
+      trigger_source TEXT NOT NULL CHECK (trigger_source IN ('command', 'natural')),
+      status TEXT NOT NULL CHECK (status IN (
+        'accepted', 'submitting', 'generated', 'queued', 'delivered',
+        'failed', 'outcome_unknown', 'delivery_unknown'
+      )),
+      upstream_request_key TEXT NOT NULL UNIQUE,
+      staged_file_path TEXT,
+      model_id TEXT,
+      model TEXT,
+      fallback_used INTEGER CHECK (fallback_used IN (0, 1)),
+      mime_type TEXT CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/webp')),
+      byte_size INTEGER CHECK (byte_size > 0),
+      output_size TEXT,
+      image_preview_id TEXT REFERENCES image_previews(id) ON DELETE SET NULL,
+      outbox_id INTEGER UNIQUE REFERENCES outbox(id) ON DELETE SET NULL,
+      error_code TEXT,
+      submitted_at INTEGER,
+      completed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (group_id, source_message_id),
+      UNIQUE (source_row_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_image_requests_group_created
+      ON image_requests (group_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_image_requests_status_updated
+      ON image_requests (status, updated_at, id);
+    CREATE INDEX IF NOT EXISTS idx_image_requests_outbox
+      ON image_requests (outbox_id) WHERE outbox_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_image_requests_preview
+      ON image_requests (image_preview_id) WHERE image_preview_id IS NOT NULL;
+  `);
+}
+
+/**
+ * A retained generated image is private, but it must also stay unavailable
+ * until the request ledger and its QQ Outbox row have been committed together.
+ * This additive column avoids rebuilding the older status CHECK constraint.
+ */
+function addImagePreviewPublicationState(db: DatabaseSync): void {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!columns.has("publication_state")) {
+    db.exec(
+      "ALTER TABLE image_previews ADD COLUMN publication_state TEXT NOT NULL DEFAULT 'published' CHECK (publication_state IN ('pending', 'published'))",
+    );
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_image_previews_publication_state ON image_previews(publication_state, status, updated_at, id)",
+  );
+}
+
 function retireAdminMfa(db: DatabaseSync): void {
   const now = Date.now();
   const sessionColumns = new Set((db.prepare("PRAGMA table_info(admin_sessions)").all() as Array<{ name: string }>).map((row) => row.name));
@@ -1150,6 +1229,21 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "add-image-edit-lineage-and-delivery",
     apply: addImageEditLineage,
   },
+  {
+    version: 24,
+    name: "persist-canonical-message-segments",
+    apply: addCanonicalMessageSegmentsColumn,
+  },
+  {
+    version: 25,
+    name: "add-durable-image-request-ledger",
+    apply: addImageRequestLedger,
+  },
+  {
+    version: 26,
+    name: "stage-image-previews-until-outbox-link",
+    apply: addImagePreviewPublicationState,
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
@@ -1390,6 +1484,7 @@ export class SharedDb {
     msgTime: number;
     text: string;
     imagesJson: string;
+    canonicalSegmentsJson?: string;
     senderCard?: string;
     senderNickname?: string;
     senderRole?: string;
@@ -1405,10 +1500,10 @@ export class SharedDb {
       const result = this.db
         .prepare(
           `INSERT INTO messages
-             (group_id, user_id, self_id, msg_id, msg_time, text, images_json,
+             (group_id, user_id, self_id, msg_id, msg_time, text, images_json, canonical_segments_json,
               sender_card, sender_nickname, sender_role, reply_to, verified_mention_user_ids_json,
               has_at_bot, is_bot_msg, processable, drop_reason, created_at, dedup_key)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.groupId,
@@ -1418,6 +1513,7 @@ export class SharedDb {
           row.msgTime,
           row.text,
           row.imagesJson,
+          normalizeCanonicalSegmentsJson(row.canonicalSegmentsJson),
           normalizeOptionalText(row.senderCard),
           normalizeOptionalText(row.senderNickname),
           normalizeSenderRole(row.senderRole),
@@ -1608,7 +1704,7 @@ export class SharedDb {
     const rows = this.db
       .prepare(
         `SELECT m.id, m.group_id, m.user_id, m.self_id, m.msg_id, m.msg_time, m.text,
-                m.images_json, m.sender_card, m.sender_nickname, m.sender_role, m.reply_to,
+                m.images_json, m.canonical_segments_json, m.sender_card, m.sender_nickname, m.sender_role, m.reply_to,
                 m.verified_mention_user_ids_json,
                 m.has_at_bot, m.is_bot_msg, m.processable, m.drop_reason, m.created_at,
                 r.topic_id AS context_topic_id,
@@ -1797,7 +1893,7 @@ export class SharedDb {
     imagePreviewId?: string,
   ): number {
     if (imagePreviewId && (kind !== "generated_image" || !this.db.prepare(
-      "SELECT id FROM image_previews WHERE id = ? AND group_id = ? AND status = 'available' AND expires_at > ?",
+      "SELECT id FROM image_previews WHERE id = ? AND group_id = ? AND status = 'available' AND publication_state = 'published' AND expires_at > ?",
     ).get(imagePreviewId, groupId, Date.now()))) throw new Error("image_preview_delivery_invalid");
     const status = context && context.turnId === undefined ? "preparing" : "pending";
     const recallPolicy = normalizeOutboxAutoRecallPolicy(autoRecall);
@@ -1828,6 +1924,101 @@ export class SharedDb {
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${id}`, id);
     return id;
+  }
+
+  /**
+   * Creates the generated-image Outbox row and binds it to an already staged
+   * image-request ledger record in one transaction. A retry returns the
+   * original row rather than creating another QQ delivery.
+   */
+  enqueueGeneratedImageOutboxForRequest(input: {
+    requestId: string;
+    groupId: string;
+    imagePath: string;
+    imagePreviewId: string;
+    context?: OutboxContext;
+    now?: number;
+  }): GeneratedImageRequestOutbox {
+    const requestId = input.requestId.trim();
+    const groupId = input.groupId.trim();
+    const imagePath = input.imagePath.trim();
+    const imagePreviewId = input.imagePreviewId.trim();
+    const now = normalizeEpochMs(input.now ?? Date.now(), "generated image outbox created_at");
+    if (!/^imgreq_[a-f0-9-]{36}$/.test(requestId)) throw new Error("image_request_id_invalid");
+    if (!groupId || groupId.length > 160) throw new Error("image_request_group_id_invalid");
+    if (!imagePath || imagePath.length > 4_096) throw new Error("image_request_staged_path_invalid");
+    if (!/^[A-Za-z0-9_-]{43}$/.test(imagePreviewId)) throw new Error("image_request_preview_id_invalid");
+
+    return this.withImmediateTransaction(() => {
+      const request = this.db.prepare(
+        `SELECT id, group_id, source_message_id, status, image_preview_id, outbox_id
+           FROM image_requests WHERE id = ?`,
+      ).get(requestId) as {
+        id: string;
+        group_id: string;
+        source_message_id: string;
+        status: string;
+        image_preview_id: string | null;
+        outbox_id: number | null;
+      } | undefined;
+      if (!request) throw new Error("image_request_not_found");
+      if (request.group_id !== groupId) throw new Error("image_request_group_mismatch");
+      if (["queued", "delivered", "delivery_unknown"].includes(request.status)) {
+        if (request.outbox_id === null) throw new Error("image_request_outbox_missing");
+        if (request.image_preview_id !== imagePreviewId) throw new Error("image_request_preview_conflict");
+        const outbox = this.db.prepare("SELECT group_id FROM outbox WHERE id = ?").get(request.outbox_id) as { group_id: string } | undefined;
+        if (!outbox || outbox.group_id !== groupId) throw new Error("image_request_outbox_missing");
+        return { outboxId: request.outbox_id, created: false };
+      }
+      if (request.status !== "generated") throw new Error("image_request_not_generated");
+      if (request.image_preview_id && request.image_preview_id !== imagePreviewId) {
+        throw new Error("image_request_preview_conflict");
+      }
+      const preview = this.db.prepare(
+        `SELECT group_id, source_message_id, publication_state
+           FROM image_previews
+          WHERE id = ? AND status = 'available' AND expires_at > ?`,
+      ).get(imagePreviewId, now) as { group_id: string; source_message_id: string; publication_state: string } | undefined;
+      if (!preview || preview.group_id !== groupId || preview.source_message_id !== request.source_message_id) {
+        throw new Error("image_request_preview_invalid");
+      }
+      if (preview.publication_state !== "pending") {
+        throw new Error("image_request_preview_not_pending");
+      }
+
+      const status = input.context && input.context.turnId === undefined ? "preparing" : "pending";
+      const inserted = this.db.prepare(
+        `INSERT INTO outbox
+           (group_id, reply_to, kind, text, status, topic_id, branch_id,
+            source_turn_id, turn_id, created_at, image_preview_id)
+         VALUES (?, NULL, 'generated_image', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        groupId,
+        imagePath,
+        status,
+        input.context?.topicId ?? null,
+        input.context?.branchId ?? null,
+        input.context?.sourceTurnId ?? null,
+        input.context?.turnId ?? null,
+        now,
+        imagePreviewId,
+      );
+      const outboxId = Number(inserted.lastInsertRowid);
+      this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${outboxId}`, outboxId);
+      const linked = this.db.prepare(
+        `UPDATE image_requests
+            SET status = 'queued', image_preview_id = ?, outbox_id = ?, updated_at = ?, error_code = NULL
+          WHERE id = ? AND status = 'generated' AND (image_preview_id IS NULL OR image_preview_id = ?) AND outbox_id IS NULL`,
+      ).run(imagePreviewId, outboxId, now, requestId, imagePreviewId);
+      if (Number(linked.changes) !== 1) throw new Error("image_request_outbox_link_failed");
+      const published = this.db.prepare(
+        `UPDATE image_previews
+            SET publication_state = 'published', updated_at = ?
+          WHERE id = ? AND group_id = ? AND status = 'available' AND publication_state = 'pending'`,
+      ).run(now, imagePreviewId, groupId);
+      if (Number(published.changes) !== 1) throw new Error("image_request_preview_publish_failed");
+      return { outboxId, created: true };
+    });
   }
 
   /**
@@ -1877,16 +2068,19 @@ export class SharedDb {
    */
   recoverStaleSendingOutbox(nowMs = Date.now(), staleAfterMs = 60_000): number {
     const cutoff = nowMs - Math.max(1_000, staleAfterMs);
-    const result = this.db
-      .prepare(
-        `UPDATE outbox
-            SET status = 'failed', retry_after = NULL, updated_at = ?
-          WHERE status = 'sending'
-            AND updated_at IS NOT NULL
-            AND updated_at <= ?`,
-      )
-      .run(nowMs, cutoff);
-    return Number(result.changes);
+    return this.withImmediateTransaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE outbox
+              SET status = 'failed', retry_after = NULL, updated_at = ?
+            WHERE status = 'sending'
+              AND updated_at IS NOT NULL
+              AND updated_at <= ?`,
+        )
+        .run(nowMs, cutoff);
+      this.markImageRequestDeliveryUnknownForTerminalOutbox(nowMs);
+      return Number(result.changes);
+    });
   }
 
   markOutboxSent(id: number): void {
@@ -1934,6 +2128,12 @@ export class SharedDb {
         this.db.prepare("UPDATE image_previews SET status = 'deleted', prompt = NULL, prompt_summary = '', deleted_at = ?, updated_at = ? WHERE id = ? AND status = 'available'")
           .run(sentAtMs, sentAtMs, row.image_preview_id);
       }
+      this.db.prepare(
+        `UPDATE image_requests
+            SET status = 'delivered', error_code = NULL,
+                completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE outbox_id = ? AND status IN ('queued', 'delivery_unknown')`,
+      ).run(sentAtMs, sentAtMs, row.id);
       this.db
         .prepare("INSERT OR REPLACE INTO bot_messages (group_id, msg_id, sent_at) VALUES (?, ?, ?)")
         .run(row.group_id, normalizedMessageId, sentAt);
@@ -2057,22 +2257,25 @@ export class SharedDb {
 
   markOutboxFailed(id: number, retryAfterMs: number | null = 2_000): void {
     const now = Date.now();
-    if (retryAfterMs === null) {
-      this.db
-        .prepare("UPDATE outbox SET status = 'failed', retry_after = NULL, updated_at = ? WHERE id = ?")
-        .run(now, id);
-      return;
-    }
-    const retryAfter = now + Math.max(1_000, retryAfterMs);
-    this.db
-      .prepare(
-        `UPDATE outbox
-            SET status = 'failed',
-                retry_after = CASE WHEN attempts >= ? THEN NULL ELSE ? END,
-                updated_at = ?
-          WHERE id = ?`,
-      )
-      .run(MAX_OUTBOX_DELIVERY_ATTEMPTS, retryAfter, now, id);
+    this.withImmediateTransaction(() => {
+      if (retryAfterMs === null) {
+        this.db
+          .prepare("UPDATE outbox SET status = 'failed', retry_after = NULL, updated_at = ? WHERE id = ?")
+          .run(now, id);
+      } else {
+        const retryAfter = now + Math.max(1_000, retryAfterMs);
+        this.db
+          .prepare(
+            `UPDATE outbox
+                SET status = 'failed',
+                    retry_after = CASE WHEN attempts >= ? THEN NULL ELSE ? END,
+                    updated_at = ?
+              WHERE id = ?`,
+          )
+          .run(MAX_OUTBOX_DELIVERY_ATTEMPTS, retryAfter, now, id);
+      }
+      this.markImageRequestDeliveryUnknownForTerminalOutbox(now, id);
+    });
   }
 
   // ---- durable bot-message recalls ----
@@ -2437,6 +2640,28 @@ export class SharedDb {
     }
   }
 
+  /**
+   * A terminal QQ send failure is delivery-ambiguous for a generated image.
+   * Keep that fact on the ledger so replay cannot enqueue another card; a late
+   * verified receipt may still promote it to delivered.
+   */
+  private markImageRequestDeliveryUnknownForTerminalOutbox(now: number, outboxId?: number): void {
+    const byId = outboxId === undefined ? "" : "AND outbox_id = ?";
+    this.db.prepare(
+      `UPDATE image_requests
+          SET status = 'delivery_unknown', error_code = COALESCE(error_code, 'delivery_unknown'),
+              completed_at = COALESCE(completed_at, ?), updated_at = ?
+        WHERE status = 'queued'
+          ${byId}
+          AND EXISTS (
+            SELECT 1 FROM outbox
+             WHERE outbox.id = image_requests.outbox_id
+               AND outbox.status = 'failed'
+               AND outbox.retry_after IS NULL
+          )`,
+    ).run(now, now, ...(outboxId === undefined ? [] : [outboxId]));
+  }
+
   private withImmediateTransaction<T>(callback: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -2505,6 +2730,18 @@ function addEpochMs(baseMs: number, offsetMs: number, name: string): number {
 function normalizeOptionalText(value: string | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function normalizeCanonicalSegmentsJson(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 64 * 1024) return null;
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    return Array.isArray(parsed) && parsed.length <= 64 ? normalized : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSenderRole(value: string | undefined): "owner" | "admin" | "member" | null {

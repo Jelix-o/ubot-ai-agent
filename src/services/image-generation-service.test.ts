@@ -21,6 +21,7 @@ test("configured image generation calls the selected model and stages a validate
     assert.equal(started, 1);
     assert.equal(url, "https://primary.example/v1/images/generations");
     assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer primary-key");
+    assert.equal((init?.headers as Record<string, string>)["Idempotency-Key"], "image-request-1");
     const body = JSON.parse(String(init?.body));
     assert.deepEqual(body, {
       model: "image-primary",
@@ -37,6 +38,7 @@ test("configured image generation calls the selected model and stages a validate
     groupId: "100",
     userId: "200",
     prompt: " draw a lighthouse ",
+    requestId: "image-request-1",
     onStarted: () => { started += 1; },
   });
   assert.equal(result.modelId, "primary");
@@ -74,18 +76,21 @@ test("prompt limits count Unicode code points and do not announce rejected work"
   assert.equal(started, 1);
 });
 
-test("configured image generation falls back only after a retryable failure", async (t) => {
+test("configured image generation falls back only after an explicit rate-limit rejection", async (t) => {
   const urls: string[] = [];
-  const fixture = await makeFixture(t, async (url) => {
+  const idempotencyKeys: Array<string | undefined> = [];
+  const fixture = await makeFixture(t, async (url, init) => {
     urls.push(String(url));
+    idempotencyKeys.push((init?.headers as Record<string, string>)["Idempotency-Key"]);
     return urls.length === 1
-      ? jsonResponse(503, { error: { message: "temporarily unavailable" } })
+      ? jsonResponse(429, { error: { code: "rate_limit_exceeded", type: "rate_limit_error" } })
       : jsonResponse(200, { data: [{ b64_json: PNG.toString("base64") }] });
   });
-  const result = await fixture.service.generate({ groupId: "100", userId: "200", prompt: "fallback" });
+  const result = await fixture.service.generate({ groupId: "100", userId: "200", prompt: "fallback", requestId: "image-request-fallback" });
   assert.equal(result.modelId, "backup");
   assert.equal(result.fallbackUsed, true);
   assert.equal(urls.length, 2);
+  assert.deepEqual(idempotencyKeys, ["image-request-fallback", "image-request-fallback"]);
 });
 
 test("authentication and invalid image responses remain attached to the selected upstream", async (t) => {
@@ -112,7 +117,7 @@ test("authentication and invalid image responses remain attached to the selected
   }
 });
 
-test("an upstream timeout switches to the next configured image model", async (t) => {
+test("an upstream timeout does not submit the same image request to another model", async (t) => {
   let calls = 0;
   const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-timeout-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -127,15 +132,41 @@ test("an upstream timeout switches to the next configured image model", async (t
   } as unknown as SystemSettingsStore;
   const service = new ConfiguredImageGenerationService(settings, path.join(root, "images"), undefined, undefined, async (_url, init) => {
     calls += 1;
-    if (calls > 1) return jsonResponse(200, { data: [{ b64_json: PNG.toString("base64") }] });
     return await new Promise<Response>((_resolve, reject) => {
       if (init?.signal?.aborted) return reject(new DOMException("aborted", "AbortError"));
       init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     });
   });
-  const result = await service.generate({ groupId: "timeout", userId: "200", prompt: "timeout" });
-  assert.equal(result.modelId, "backup");
-  assert.equal(calls, 2);
+  await assert.rejects(
+    service.generate({ groupId: "timeout", userId: "200", prompt: "timeout" }),
+    (error: unknown) => {
+      assert.ok(error instanceof ImageGenerationError);
+      assert.equal(error.code, "upstream_unavailable");
+      assert.equal(error.diagnostics?.modelId, "primary");
+      assert.equal(error.diagnostics?.failureKind, "timeout");
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
+test("an unclassified transport failure does not submit the same image request to another model", async (t) => {
+  let calls = 0;
+  const fixture = await makeFixture(t, async () => {
+    calls += 1;
+    throw new Error("opaque_transport_failure");
+  });
+  await assert.rejects(
+    fixture.service.generate({ groupId: "transport", userId: "200", prompt: "draw" }),
+    (error: unknown) => {
+      assert.ok(error instanceof ImageGenerationError);
+      assert.equal(error.code, "upstream_unavailable");
+      assert.equal(error.diagnostics?.modelId, "primary");
+      assert.equal(error.diagnostics?.failureKind, "unknown");
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
 });
 
 test("structured moderation errors take priority over transient wording and retain safe diagnostics", async (t) => {

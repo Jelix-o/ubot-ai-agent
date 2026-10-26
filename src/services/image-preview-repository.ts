@@ -8,6 +8,7 @@ export const IMAGE_PREVIEW_TOKEN_LENGTH = 43;
 export const IMAGE_PREVIEW_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export type ImagePreviewStatus = "available" | "expired" | "deleted";
+export type ImagePreviewPublicationState = "pending" | "published";
 
 export interface ImagePreviewRecord {
   id: string;
@@ -29,6 +30,8 @@ export interface ImagePreviewRecord {
   byteSize: number;
   contentSha256: string;
   status: ImagePreviewStatus;
+  /** Pending previews remain private until their QQ Outbox link commits. */
+  publicationState: ImagePreviewPublicationState;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -65,6 +68,7 @@ interface ImagePreviewRow {
   byte_size: number;
   content_sha256: string;
   status: ImagePreviewStatus;
+  publication_state: ImagePreviewPublicationState;
   created_at: number;
   updated_at: number;
   expires_at: number;
@@ -104,6 +108,8 @@ export class ImagePreviewRepository {
     referenceCount?: number;
     parentIds?: string[];
     outputSize?: string;
+    /** Worker-owned images are staged until their Outbox row is durable. */
+    publicationState?: ImagePreviewPublicationState;
   }): ImagePreviewRecord {
     const id = requirePreviewId(input.id);
     const groupId = requireIdentifier(input.groupId, "image_preview_group_id_invalid");
@@ -119,9 +125,11 @@ export class ImagePreviewRepository {
     const referenceCount = input.referenceCount ?? 0;
     const parentIds = input.parentIds ?? [];
     const outputSize = input.outputSize ?? "1024x1024";
+    const publicationState = input.publicationState ?? "published";
     if (!["generation", "edit"].includes(operation) || !Number.isInteger(referenceCount) || referenceCount < 0 || referenceCount > 4 ||
         (operation === "edit") !== (referenceCount > 0) || parentIds.length > referenceCount || parentIds.some(id => !isImagePreviewToken(id)) ||
-        !(outputSize === "auto" || /^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(outputSize))) throw new Error("image_preview_edit_metadata_invalid");
+        !(outputSize === "auto" || /^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(outputSize)) ||
+        (publicationState !== "pending" && publicationState !== "published")) throw new Error("image_preview_edit_metadata_invalid");
     const now = input.now ?? Date.now();
     const expiresAt = input.expiresAt ?? now + IMAGE_PREVIEW_RETENTION_MS;
     if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt > now + IMAGE_PREVIEW_RETENTION_MS) {
@@ -131,7 +139,10 @@ export class ImagePreviewRepository {
     return this.withImmediateTransaction(() => {
       for (const parentId of parentIds) {
         const parent = this.get(parentId);
-        if (!parent || parent.groupId !== groupId || parent.status !== "available" || parent.expiresAt <= now) throw new Error("image_preview_parent_unavailable");
+        if (!parent || parent.groupId !== groupId || parent.status !== "available" ||
+            parent.publicationState !== "published" || parent.expiresAt <= now) {
+          throw new Error("image_preview_parent_unavailable");
+        }
       }
       const existing = this.getBySource(groupId, sourceMessageId);
       if (existing) throw new Error("image_preview_source_conflict");
@@ -139,12 +150,12 @@ export class ImagePreviewRepository {
         `INSERT INTO image_previews
            (id, group_id, creator_user_id, source_message_id, prompt, prompt_summary,
             model_id, model, fallback_used, mime_type, byte_size, content_sha256, status,
-            created_at, updated_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, ?)`,
+             publication_state, created_at, updated_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, ?, ?)`,
       ).run(
         id, groupId, creatorUserId, sourceMessageId, prompt, promptSummary,
         modelId, model, input.fallbackUsed ? 1 : 0, input.mimeType, byteSize, contentSha256,
-        now, now, expiresAt,
+        publicationState, now, now, expiresAt,
       );
       this.sharedDb.db.prepare("UPDATE image_previews SET operation = ?, reference_count = ?, parent_ids_json = ?, output_size = ? WHERE id = ?")
         .run(operation, referenceCount, JSON.stringify(parentIds), outputSize, id);
@@ -182,6 +193,9 @@ export class ImagePreviewRepository {
     const now = args.now ?? Date.now();
     const where: string[] = [];
     const parameters: SQLInputValue[] = [];
+    // A worker-owned preview is not an archive the user can see or reuse until
+    // its ledger record and generated-image Outbox row commit together.
+    where.push("publication_state = 'published'");
     if (args.groupId?.trim()) {
       where.push("group_id = ?");
       parameters.push(args.groupId.trim());
@@ -252,8 +266,16 @@ export class ImagePreviewRepository {
 
   listAvailableIds(): string[] {
     return (this.sharedDb.db.prepare(
-      "SELECT id FROM image_previews WHERE status = 'available'",
+      "SELECT id FROM image_previews WHERE status = 'available' AND publication_state = 'published'",
     ).all() as Array<{ id: string }>).map(row => row.id);
+  }
+
+  /** Pending rows have no durable QQ delivery and must never survive recovery. */
+  listPending(): ImagePreviewRecord[] {
+    const rows = this.sharedDb.db.prepare(
+      "SELECT * FROM image_previews WHERE publication_state = 'pending' AND status = 'available' ORDER BY created_at, id",
+    ).all() as unknown as ImagePreviewRow[];
+    return rows.map(fromRow);
   }
 
   /** Terminal records retain their ids so cleanup can retry their private bytes. */
@@ -357,6 +379,7 @@ function fromRow(row: ImagePreviewRow): ImagePreviewRecord {
     byteSize: row.byte_size,
     contentSha256: row.content_sha256,
     status: row.status,
+    publicationState: row.publication_state,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,

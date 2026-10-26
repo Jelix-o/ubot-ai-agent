@@ -57,6 +57,10 @@ test("parses the avatar-edit form with optional command, 的 and 头像", () => 
     kind: "avatar_edit",
     request: { targetText: "我", action: "弹吉他", hasExplicitAvatarWord: false },
   });
+  assert.deepEqual(parseAvatarEditRequest("让@40001的头像吐舌头"), {
+    kind: "avatar_edit",
+    request: { targetText: "@40001", action: "吐舌头", hasExplicitAvatarWord: true },
+  });
   assert.deepEqual(parseAvatarEditRequest("给图片加一条狗"), { kind: "not_avatar_edit" });
   assert.deepEqual(parseAvatarEditRequest("让小王头像"), { kind: "invalid_avatar_edit", code: "action_missing" });
   assert.deepEqual(parseAvatarEditRequest("让头像去跑步"), { kind: "invalid_avatar_edit", code: "target_missing" });

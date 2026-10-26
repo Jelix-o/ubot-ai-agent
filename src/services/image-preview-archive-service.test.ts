@@ -69,6 +69,187 @@ test("archives a verified staged image privately and returns only a redacted lis
   assert.match(stored.content_sha256, /^[a-f0-9]{64}$/);
 });
 
+test("projects only safe linked request-ledger status into archived image metadata", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "ledger.png");
+  const claim = fixture.service.imageRequestRepository.claim({
+    groupId: "group-1",
+    sourceMessageId: "ledger-source",
+    creatorUserId: "member-1",
+    requestKind: "avatar_edit",
+    triggerSource: "natural",
+    now: fixture.now.value,
+  });
+  assert.equal(claim.created, true);
+  assert.ok(fixture.service.imageRequestRepository.beginSubmission(claim.request.id, fixture.now.value + 1));
+  assert.ok(fixture.service.imageRequestRepository.recordGenerated({
+    id: claim.request.id,
+    stagedFilePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    outputSize: "1024x1024",
+    now: fixture.now.value + 2,
+  }));
+  const preview = await fixture.service.archive({
+    groupId: "group-1",
+    creatorUserId: "member-1",
+    sourceMessageId: "ledger-source",
+    prompt: "private avatar edit prompt",
+    filePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    now: fixture.now.value + 3,
+  });
+  assert.ok(fixture.service.imageRequestRepository.linkPreview(claim.request.id, preview.id, fixture.now.value + 4));
+  fixture.db.db.prepare(
+    "UPDATE image_requests SET status = 'delivery_unknown', error_code = 'delivery_unknown' WHERE id = ?",
+  ).run(claim.request.id);
+
+  const [listed, detail] = await Promise.all([
+    fixture.service.listPage({ groupId: "group-1" }),
+    fixture.service.getDetail(preview.id),
+  ]);
+  const metadata = listed.items[0]!;
+  assert.equal(metadata.requestKind, "avatar_edit");
+  assert.equal(metadata.triggerSource, "natural");
+  assert.equal(metadata.requestStatus, "delivery_unknown");
+  assert.equal(metadata.failureReason, "delivery_unknown");
+  assert.equal(detail?.requestKind, "avatar_edit");
+  assert.equal(detail?.failureReason, "delivery_unknown");
+  assert.equal("sourceMessageId" in metadata, true);
+  assert.equal("upstreamRequestKey" in metadata, false);
+  assert.equal("stagedFilePath" in metadata, false);
+  assert.equal("requestId" in metadata, false);
+});
+
+test("keeps a Worker-owned preview invisible until its outbox link commits and reclaims it after a crash", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "pending-recovery.png");
+  const claim = fixture.service.imageRequestRepository.claim({
+    groupId: "group-1",
+    sourceMessageId: "pending-recovery",
+    creatorUserId: "member-1",
+    requestKind: "generation",
+    triggerSource: "natural",
+    now: fixture.now.value,
+  });
+  assert.ok(fixture.service.imageRequestRepository.beginSubmission(claim.request.id, fixture.now.value + 1));
+  assert.ok(fixture.service.imageRequestRepository.recordGenerated({
+    id: claim.request.id,
+    stagedFilePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    outputSize: "1024x1024",
+    now: fixture.now.value + 2,
+  }));
+  const preview = await fixture.service.archive({
+    groupId: "group-1",
+    creatorUserId: "member-1",
+    sourceMessageId: "pending-recovery",
+    prompt: "private pending image",
+    filePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    publicationState: "pending",
+    now: fixture.now.value + 3,
+  });
+  const privateFile = path.join(fixture.archiveRoot, `${preview.id}.png`);
+  assert.deepEqual(await readFile(privateFile), PNG);
+  assert.equal(await fixture.service.get(preview.id), undefined);
+  assert.equal(await fixture.service.getDetail(preview.id), undefined);
+  assert.equal(await fixture.service.loadImage(preview.id), undefined);
+  assert.equal((await fixture.service.listPage({ groupId: "group-1" })).items.length, 0);
+
+  assert.equal(await fixture.service.recoverUnpublished(fixture.now.value + 4), 1);
+  await assert.rejects(access(privateFile), { code: "ENOENT" });
+  await assert.rejects(access(source), { code: "ENOENT" });
+  const stored = fixture.db.db.prepare(
+    "SELECT status, publication_state, prompt FROM image_previews WHERE id = ?",
+  ).get(preview.id) as { status: string; publication_state: string; prompt: string | null };
+  assert.deepEqual({ ...stored }, { status: "deleted", publication_state: "pending", prompt: null });
+  const request = fixture.service.imageRequestRepository.get(claim.request.id);
+  assert.deepEqual({ status: request?.status, errorCode: request?.errorCode }, {
+    status: "failed",
+    errorCode: "delivery_not_queued",
+  });
+});
+
+test("never republishes a pending preview from an incomplete legacy Outbox link", async (t) => {
+  const fixture = await createFixture(t);
+  const source = await stage(fixture, "partial-outbox.png");
+  const claim = fixture.service.imageRequestRepository.claim({
+    groupId: "group-1",
+    sourceMessageId: "partial-outbox",
+    creatorUserId: "member-1",
+    requestKind: "generation",
+    triggerSource: "natural",
+    now: fixture.now.value,
+  });
+  assert.ok(fixture.service.imageRequestRepository.beginSubmission(claim.request.id, fixture.now.value + 1));
+  assert.ok(fixture.service.imageRequestRepository.recordGenerated({
+    id: claim.request.id,
+    stagedFilePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    outputSize: "1024x1024",
+    now: fixture.now.value + 2,
+  }));
+  const preview = await fixture.service.archive({
+    groupId: "group-1",
+    creatorUserId: "member-1",
+    sourceMessageId: "partial-outbox",
+    prompt: "private partial image",
+    filePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    publicationState: "pending",
+    now: fixture.now.value + 3,
+  });
+  const outboxId = Number(fixture.db.db.prepare(
+    `INSERT INTO outbox (group_id, kind, text, status, image_preview_id, created_at)
+     VALUES (?, 'generated_image', ?, 'pending', ?, ?)`,
+  ).run("group-1", source, preview.id, fixture.now.value + 4).lastInsertRowid);
+  fixture.db.db.prepare(
+    `UPDATE image_requests
+        SET status = 'queued', image_preview_id = ?, outbox_id = ?
+      WHERE id = ?`,
+  ).run(preview.id, outboxId, claim.request.id);
+
+  assert.equal(await fixture.service.recoverUnpublished(fixture.now.value + 5), 1);
+  const stored = fixture.db.db.prepare(
+    "SELECT status, publication_state FROM image_previews WHERE id = ?",
+  ).get(preview.id) as { status: string; publication_state: string };
+  assert.deepEqual({ ...stored }, { status: "deleted", publication_state: "pending" });
+  const outbox = fixture.db.db.prepare(
+    "SELECT status, retry_after FROM outbox WHERE id = ?",
+  ).get(outboxId) as { status: string; retry_after: number | null };
+  assert.deepEqual({ ...outbox }, { status: "failed", retry_after: null });
+  const request = fixture.service.imageRequestRepository.get(claim.request.id);
+  assert.deepEqual({ status: request?.status, errorCode: request?.errorCode }, {
+    status: "delivery_unknown",
+    errorCode: "delivery_unknown",
+  });
+  assert.deepEqual(fixture.db.claimOutbox(1, fixture.now.value + 6), []);
+});
+
 test("refuses paths outside the managed staging root and mismatched image metadata", async (t) => {
   const fixture = await createFixture(t);
   const outside = path.join(fixture.root, "outside.png");

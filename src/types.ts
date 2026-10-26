@@ -352,6 +352,8 @@ export interface GroupBotConfig {
   ambientGroupContextEnabled?: boolean;
   /** Static HTML preview publishing is enabled for configured groups by default. */
   htmlPreviewEnabled?: boolean;
+  /** Natural-language image requests are enabled for configured groups by default. */
+  naturalImageRequestsEnabled?: boolean;
   /** @deprecated Image generation is globally available and super-admin only. */
   imageGenerationEnabled?: boolean;
 }

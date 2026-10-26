@@ -17,11 +17,13 @@ const response = () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toSt
 test("image edit uploads real files in order and preserves explicit aspect ratio", async () => {
   for (const count of [1, 2, 4]) {
     await requestGeneratedImage(model, "combine image1 and image2", {
+      requestId: `image-edit-${count}`,
       referenceImages: Array.from({ length: count }, () => reference), size: "864x1536",
       fetchImpl: async (url, init) => {
         assert.equal(url, "https://image.example/v1/images/edits");
         assert.ok(init?.body instanceof FormData);
         assert.equal((init?.headers as Record<string, string>)["Content-Type"], undefined);
+        assert.equal((init?.headers as Record<string, string>)["Idempotency-Key"], `image-edit-${count}`);
         const form = init.body;
         assert.equal(form.get("size"), "864x1536");
         assert.match(String(form.get("prompt")), /aspect ratio 9:16/);
@@ -98,6 +100,11 @@ test("receipt binds retained output atomically, survives restart, and blocks del
   const archive = async (id: string, parentIds: string[] = []) => service.archive({ groupId: "g", creatorUserId: "u", sourceMessageId: id, prompt: "landscape", filePath, modelId: "edit", model: "image", fallbackUsed: false, mimeType: "image/png", byteSize: PNG.length, ...(parentIds.length ? { operation: "edit", referenceCount: 1, parentIds, outputSize: "864x1536" } as const : {}) });
   const parent = await archive("first");
   const receipt = await new WorkerTransport(db).sendGeneratedGroupImage("g", filePath, { imagePreviewId: parent.id });
+  assert.equal(
+    await service.resolveReference("g", "ordinary-unarchived-image"),
+    undefined,
+    "only a message with no generated-image archive record may use the QQ image fallback",
+  );
   assert.equal(await service.resolveReference("g", "qq-1"), undefined);
   db.ackOutboxDelivery(Number(receipt?.deliveryId?.split(":")[1]), "qq-1");
   db.ackOutboxDelivery(Number(receipt?.deliveryId?.split(":")[1]), "qq-1");
@@ -105,6 +112,24 @@ test("receipt binds retained output atomically, survives restart, and blocks del
   service = new ImagePreviewArchiveService({ sharedDb: db, rootDir: path.join(root, "archive"), stagedRoot });
   assert.deepEqual((await service.resolveReference("g", "qq-1"))?.data, PNG);
   assert.equal(await service.resolveReference("other-group", "qq-1"), undefined);
+  const pending = await service.archive({
+    groupId: "g",
+    creatorUserId: "u",
+    sourceMessageId: "pending-known-output",
+    prompt: "landscape",
+    filePath,
+    modelId: "edit",
+    model: "image",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.length,
+    publicationState: "pending",
+  });
+  // An output id can exist after an interrupted/legacy delivery path. It is
+  // still a known generated preview, so it must never become QQ-downloadable.
+  db.db.prepare("UPDATE image_previews SET output_message_id = ? WHERE id = ?")
+    .run("qq-pending", pending.id);
+  await assert.rejects(service.resolveReference("g", "qq-pending"));
   const child = await archive("second", [parent.id]);
   assert.deepEqual((await service.getDetail(child.id))?.parentIds, [parent.id]);
   assert.equal((await service.getDetail(child.id))?.operation, "edit");

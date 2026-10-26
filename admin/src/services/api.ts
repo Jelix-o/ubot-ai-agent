@@ -42,6 +42,7 @@ export interface GroupConfig {
   visionEnabled?: boolean;
   ambientGroupContextEnabled?: boolean;
   htmlPreviewEnabled?: boolean;
+  naturalImageRequestsEnabled?: boolean;
 }
 
 export type HtmlPreviewStatus = "pending" | "published" | "failed" | "expired" | "deleted";
@@ -62,6 +63,9 @@ export interface HtmlPreviewMetadata {
 }
 
 export type ImagePreviewStatus = "available" | "expired" | "deleted";
+export type ImageRequestKind = "generation" | "edit" | "avatar_edit";
+export type ImageRequestTriggerSource = "command" | "natural";
+export type ImageRequestStatus = "accepted" | "submitting" | "generated" | "queued" | "delivered" | "failed" | "outcome_unknown" | "delivery_unknown";
 
 /** List responses intentionally omit the full prompt. */
 export interface ImagePreviewListItem {
@@ -71,6 +75,11 @@ export interface ImagePreviewListItem {
   parentIds?: string[];
   outputSize?: string;
   outputMessageId?: string;
+  requestKind?: ImageRequestKind;
+  triggerSource?: ImageRequestTriggerSource;
+  requestStatus?: ImageRequestStatus;
+  /** Safe, code-like diagnostic only. It never contains a provider message. */
+  failureReason?: string;
 
   groupId: string;
   creatorUserId?: string;

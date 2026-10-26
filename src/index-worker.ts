@@ -2,7 +2,7 @@ import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-te
 import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
-import { logError, logInfo } from "./logger.js";
+import { logError, logInfo, logWarn } from "./logger.js";
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
 import { Metrics } from "./shared/metrics.js";
 import { ConsumerRunner } from "./shared/consumer-runner.js";
@@ -50,9 +50,21 @@ import { RecentGroupEvidenceService } from "./services/recent-group-evidence-ser
 import { MemeLibraryService } from "./services/meme-library-service.js";
 import { ConfiguredImageGenerationService } from "./services/image-generation-service.js";
 import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
+import { ImageRequestRepository, type ImageRequestStatus } from "./services/image-request-repository.js";
 import { QqAvatarReferenceService } from "./services/qq-avatar-reference-service.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
+import {
+  rebuildLegacyGroupMessageSegments,
+  restoreCanonicalMessageSegments,
+} from "./utils/persisted-message-segments.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
+
+interface NaturalImageRoute {
+  event: NapcatGroupMessageEvent;
+  hasTrustedBotMention: boolean;
+  hasTrustedReply: boolean;
+  replyIsGeneratedImage: boolean;
+}
 
 /**
  * Worker process (plan section 1):
@@ -69,6 +81,7 @@ export class WorkerApp {
   private readonly contextRepository: ConversationContextRepository;
   private readonly contextRouter: ConversationContextRouter;
   private readonly atmosphere: AtmosphereSummarizer;
+  private readonly imageRequests: ImageRequestRepository;
   private readonly runner: ConsumerRunner;
   private maxQueueDepthSeen = 0;
   readonly llmGate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>;
@@ -92,6 +105,7 @@ export class WorkerApp {
     this.inflight = new InflightManager(this.sharedDb);
     this.contextRepository = new ConversationContextRepository(this.sharedDb);
     this.contextRouter = new ConversationContextRouter(this.contextRepository);
+    this.imageRequests = new ImageRequestRepository(this.sharedDb);
     const v3State = resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey);
     v3State?.retireRoastModeForExistingGroupsOnce();
     this.atmosphere = new AtmosphereSummarizer(
@@ -154,6 +168,25 @@ export class WorkerApp {
         if (previewRequest) {
           return `${message.group_id}:html-preview`;
         }
+        const naturalImageRoute = await this.getNaturalImageRoute(message);
+        if (naturalImageRoute) {
+          // Natural image requests use a separate group/member queue. This
+          // preserves a member's one-at-a-time image work without holding up
+          // unrelated group conversation or another member's request.
+          return `${message.group_id}:image:${message.user_id}`;
+        }
+        // A bare real @bot is retained by ingress only so an enabled natural
+        // image entry point can provide a usage hint.  With no matching
+        // request it must not create a participation decision or a chat turn.
+        if (!message.text.trim() && parseImages(message.images_json).length === 0) {
+          return `${message.group_id}:passive`;
+        }
+        if (await this.isImageGenerationCommand(message.text)) {
+          // Explicit #生图/#改图 requests share the same per-member image
+          // queue as natural requests. This also makes their durable request
+          // ledger source row available before an upstream call.
+          return `${message.group_id}:image:${message.user_id}`;
+        }
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
         // 等指令全部被当成自由发言跳过，指令不生效）。
         const isCommand = await this.options.botApp.isSystemCommand(message.text);
@@ -201,6 +234,7 @@ export class WorkerApp {
       sender_card?: string | null;
       sender_nickname?: string | null;
       reply_to?: string | null;
+      canonical_segments_json?: string | null;
       has_at_bot?: number;
       processable?: number;
       drop_reason?: string | null;
@@ -257,9 +291,24 @@ export class WorkerApp {
       Boolean(message.has_at_bot),
     );
     const isPreview = Boolean(previewRequest);
+    const naturalImageRoute = await this.getNaturalImageRoute(message);
+    const isNaturalImage = Boolean(naturalImageRoute);
+    if (isNaturalImage) this.metrics.inc("natural_image_request_matched");
+    if (!isNaturalImage && !message.text.trim() && parseImages(message.images_json).length === 0) {
+      await done();
+      return;
+    }
+    const isImageCommand = await this.isImageGenerationCommand(message.text);
+    const isImageRequest = isNaturalImage || isImageCommand;
+    // This is a status-only lookup. It lets metrics distinguish a replay from
+    // a first submission without recording a prompt or any member metadata.
+    const hadExistingImageRequest = isImageRequest && this.hasImageRequest(
+      message.group_id,
+      message.msg_id,
+    );
     const isBt = Boolean(await this.options.botApp.getBtCommand(message.text));
     const isCommand = await this.options.botApp.isSystemCommand(message.text);
-    const participation = isCommand || isPreview
+    const participation = isCommand || isPreview || isNaturalImage || isImageCommand
       ? undefined
       : await this.getOrRecordParticipationDecision(message);
     const isRoutedConversation = participation?.action === "reply";
@@ -282,6 +331,10 @@ export class WorkerApp {
       ? `${message.group_id}:bt-search:${message.id}`
       : isPreview
       ? `${message.group_id}:html-preview`
+      : isNaturalImage
+        ? `${message.group_id}:image:${message.user_id}`
+      : isImageCommand
+        ? `${message.group_id}:image:${message.user_id}`
       : isCommand
         ? `${message.group_id}:command`
       : route
@@ -314,25 +367,55 @@ export class WorkerApp {
       return;
     }
 
-    if (isPreview) {
+    if (isPreview || isImageRequest) {
       // ConsumerRunner owns strict serial execution for this key. Do not put
-      // preview work in InflightManager: its conversation-oriented cancel and
-      // merge rules would violate the one-request-per-page publication model.
+      // image or preview work in InflightManager: its conversation-oriented
+      // cancel and merge rules would violate image publication semantics.
       const taskStartedAt = Date.now();
       try {
-        await this.options.botApp.handleGroupMessage(this.buildEvent(message));
+        await this.options.botApp.handleGroupMessage(
+          naturalImageRoute?.event ?? this.buildEvent(message),
+          undefined,
+          undefined,
+          naturalImageRoute
+            ? {
+                imageRequestSourceRowId: message.id,
+                hasTrustedBotMention: naturalImageRoute.hasTrustedBotMention,
+                hasTrustedReply: naturalImageRoute.hasTrustedReply,
+                replyIsGeneratedImage: naturalImageRoute.replyIsGeneratedImage,
+              }
+            : isImageCommand
+              ? { imageRequestSourceRowId: message.id }
+            : undefined,
+        );
+        if (isNaturalImage) this.metrics.inc("natural_image_request_handled");
         this.metrics.inc("tasks_completed");
         this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
         await done();
       } catch (error) {
-        logError("Worker HTML preview handling failed.", {
-          key,
-          msgId: message.msg_id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logError(
+          isNaturalImage
+            ? "Worker natural image handling failed."
+            : isImageCommand
+              ? "Worker image command handling failed."
+              : "Worker HTML preview handling failed.",
+          {
+            key,
+            msgId: message.msg_id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
         this.metrics.inc("tasks_failed");
         throw error;
       } finally {
+        if (isImageRequest) {
+          this.recordImageRequestMetrics({
+            isNaturalImage,
+            hadExistingImageRequest,
+            groupId: message.group_id,
+            sourceMessageId: message.msg_id,
+          });
+        }
         const queueDepth = this.runner.queueDepth;
         this.maxQueueDepthSeen = Math.max(this.maxQueueDepthSeen, queueDepth);
         this.metrics.setGauge("per_key_queue_depth_max", this.maxQueueDepthSeen);
@@ -396,6 +479,123 @@ export class WorkerApp {
         await done();
       }
     }
+  }
+
+  /**
+   * Natural image text is never authorized by the normalized text column or
+   * legacy `has_at_bot` flag. A real bot mention must survive as a canonical
+   * platform segment. Continuous edits are separately authorized by a live
+   * generated-image receipt in the same group.
+   */
+  private async getNaturalImageRoute(message: {
+    group_id: string;
+    user_id: string;
+    msg_id: string;
+    msg_time: number;
+    text: string;
+    images_json?: string;
+    sender_card?: string | null;
+    sender_nickname?: string | null;
+    sender_role?: string | null;
+    reply_to?: string | null;
+    verified_mention_user_ids_json?: string;
+    canonical_segments_json?: string | null;
+    has_at_bot?: number;
+  }): Promise<NaturalImageRoute | undefined> {
+    const event = this.buildEvent(message);
+    const canonicalSegments = restoreCanonicalMessageSegments(message.canonical_segments_json);
+    const hasTrustedBotMention = Boolean(canonicalSegments?.some((segment) =>
+      typeof segment !== "string" &&
+      segment.type === "at" &&
+      String(segment.data?.qq ?? "").trim() === this.options.botApp.getBotQq(),
+    ));
+    // A legacy `reply_to` has no ordered segment provenance. Do not let it
+    // authorize a continuous natural edit; current ingress rows always carry
+    // this matching structured reply segment.
+    const hasTrustedReply = Boolean(
+      message.reply_to && canonicalSegments?.some((segment) =>
+        typeof segment !== "string" &&
+        segment.type === "reply" &&
+        String(segment.data?.id ?? "").trim() === message.reply_to,
+      ),
+    );
+    const replyIsGeneratedImage = hasTrustedReply && this.isAvailableGeneratedImageReply(
+      message.group_id,
+      message.reply_to,
+    );
+    const request = await this.options.botApp.getNaturalImageRequest(event, {
+      hasTrustedBotMention,
+      hasTrustedReply,
+      replyIsGeneratedImage,
+    });
+    if (!request) return undefined;
+    return { event, hasTrustedBotMention, hasTrustedReply, replyIsGeneratedImage };
+  }
+
+  /**
+   * Older focused Worker fakes do not implement this newer BotApplication
+   * method. Production always does, while the optional call keeps those
+   * structural test doubles faithful to the legacy interface.
+   */
+  private async isImageGenerationCommand(text: string): Promise<boolean> {
+    return (await this.options.botApp.isImageGenerationCommand?.(text)) ?? false;
+  }
+
+  private hasImageRequest(groupId: string, sourceMessageId: string): boolean {
+    try {
+      return Boolean(this.imageRequests.getSafeBySource(groupId, sourceMessageId));
+    } catch {
+      // Metrics must never make a message fail if the observability lookup is
+      // unavailable. The durable ledger remains the request authority.
+      return false;
+    }
+  }
+
+  /**
+   * Status-only accounting for image requests. Counter names are deliberately
+   * fixed and the lookup does not emit source ids, prompts, or display names.
+   */
+  private recordImageRequestMetrics(input: {
+    isNaturalImage: boolean;
+    hadExistingImageRequest: boolean;
+    groupId: string;
+    sourceMessageId: string;
+  }): void {
+    let status: ImageRequestStatus | undefined;
+    try {
+      status = this.imageRequests.getSafeBySource(input.groupId, input.sourceMessageId)?.status;
+    } catch {
+      // See hasImageRequest: observability is intentionally best effort.
+      status = undefined;
+    }
+
+    if (input.hadExistingImageRequest) {
+      this.metrics.inc("image_request_duplicate_reused");
+    }
+    if (input.isNaturalImage && (status === undefined || status === "failed")) {
+      this.metrics.inc("natural_image_request_rejected");
+    }
+    if (status === "outcome_unknown") {
+      this.metrics.inc("image_request_outcome_unknown");
+    }
+    if (status === "delivery_unknown") {
+      this.metrics.inc("image_request_delivery_unknown");
+    }
+  }
+
+  private isAvailableGeneratedImageReply(groupId: string, replyTo: string | null | undefined): boolean {
+    const messageId = replyTo?.trim();
+    if (!messageId || this.sharedDb.isRetracted(groupId, messageId)) return false;
+    return Boolean(this.sharedDb.db.prepare(
+      `SELECT 1
+         FROM image_previews
+        WHERE group_id = ?
+          AND output_message_id = ?
+          AND status = 'available'
+          AND publication_state = 'published'
+          AND expires_at > ?
+        LIMIT 1`,
+    ).get(groupId, messageId, Date.now()));
   }
 
   private async resolveRoute(message: {
@@ -509,37 +709,20 @@ export class WorkerApp {
     sender_role?: string | null;
     reply_to?: string | null;
     verified_mention_user_ids_json?: string;
+    canonical_segments_json?: string | null;
     has_at_bot?: number;
   }): NapcatGroupMessageEvent {
-    const images = JSON.parse(message.images_json ?? "[]") as Array<{ url?: string; file?: string; summary?: string }>;
+    const images = parseImages(message.images_json);
     const verifiedMentionUserIds = parseVerifiedMentionUserIds(message.verified_mention_user_ids_json);
-    const segments: Array<{ type: string; data: Record<string, string> }> = [];
-    if (message.reply_to) {
-      segments.push({ type: "reply", data: { id: message.reply_to } });
-    }
-    if (message.has_at_bot) {
-      segments.push({ type: "at", data: { qq: this.options.botApp.getBotQq() } });
-    }
-    for (const userId of verifiedMentionUserIds) {
-      segments.push({ type: "at", data: { qq: userId } });
-    }
-    const text = removePersistedMentionEchoes(message.text, verifiedMentionUserIds);
-    if (text) {
-      segments.push({ type: "text", data: { text } });
-    }
-    for (const image of images) {
-      const data: Record<string, string> = {};
-      if (image.url) {
-        data.url = image.url;
-      }
-      if (image.file) {
-        data.file = image.file;
-      }
-      if (image.summary) {
-        data.summary = image.summary;
-      }
-      segments.push({ type: "image", data });
-    }
+    const segments = restoreCanonicalMessageSegments(message.canonical_segments_json)
+      ?? rebuildLegacyGroupMessageSegments({
+        text: message.text,
+        images,
+        replyTo: message.reply_to,
+        hasAtBot: Boolean(message.has_at_bot),
+        botQq: this.options.botApp.getBotQq(),
+        verifiedMentionUserIds,
+      });
     return {
       post_type: "message",
       message_type: "group",
@@ -659,6 +842,19 @@ async function buildBotApp(
     rootDir: path.join(dataDir, "generated-image-previews"),
     stagedRoot: path.join(dataDir, "generated-images"),
   });
+  // ConsumerRunner begins polling from its constructor. Reclaim a pending
+  // pre-crash archive before the WorkerApp exists so an active request can
+  // never be mistaken for an abandoned preview.
+  try {
+    const recovered = await imagePreviewArchiveService.recoverUnpublished();
+    if (recovered) {
+      logWarn("Discarded unpublished generated-image previews during worker startup.", { recovered });
+    }
+  } catch (error) {
+    logWarn("Failed to recover unpublished generated-image previews during worker startup.", {
+      errorName: error instanceof Error ? error.name : typeof error,
+    });
+  }
   // Keep the existing fixed blacklist response active until V3 cutover. The
   // library itself deliberately has no legacy persistence fallback.
   const memeLibraryService = v3State ? new MemeLibraryService(dataDir, v3State) : undefined;
@@ -724,6 +920,7 @@ async function buildBotApp(
     new BtSearchService({ dataDir: path.join(dataDir, "bt") }),
     imagePreviewArchiveService,
     new QqAvatarReferenceService(),
+    new ImageRequestRepository(sharedDb),
   );
   return { botApp, groupConfigService };
 }
@@ -742,14 +939,6 @@ function parseVerifiedMentionUserIds(value: string | undefined): string[] {
   } catch {
     return [];
   }
-}
-
-function removePersistedMentionEchoes(text: string, userIds: string[]): string {
-  let result = text;
-  for (const userId of userIds) {
-    result = result.replace(new RegExp(`(^|\\s)@${userId}(?=\\s|$)`, "g"), "$1");
-  }
-  return result.replace(/\s+/g, " ").trim();
 }
 
 /** Stage-1 image localization pipeline; NapCat get_image is the localize callback (plan §4). */

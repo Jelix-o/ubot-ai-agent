@@ -119,6 +119,8 @@ test("admin manages HTML preview metadata without embedding generated page conte
   assert.match(api, /interface HtmlPreviewMetadata/);
   assert.match(groups, /htmlPreviewEnabled/);
   assert.match(groups, /ambientGroupContextEnabled/);
+  assert.match(groups, /naturalImageRequestsEnabled/);
+  assert.match(groups, /自然语言生图与改图/);
   assert.match(groups, /短时群聊语境/);
   assert.doesNotMatch(groups, /imageGenerationEnabled|图片生成/);
   assert.match(previewView, /\/api\/html-previews/);

@@ -645,7 +645,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "bt_search", title: "BT 资源搜索", primary: "#bt", aliases: ["/bt"], permission: "member", help: "搜索动漫、影视和成人资源，返回磁力与种子链接；支持 --fast、--full 和来源筛选" },
     { id: "conversation", title: "对话", primary: "#对话", aliases: ["#clear"], permission: "member", help: "清空或管理当前群对话上下文" },
     { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
-    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图", "#改图"], permission: "member", help: "根据文字生成图片；附图、引用或 #改图 让<目标>头像去<动作> 可编辑，最多 4 张参考图" },
+    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图", "#改图"], permission: "member", help: "根据文字生成图片；真实 @会仙 的明确请求或回复会仙生成图的明确改图也可触发；附图、引用或 #改图 让<目标>头像（去）<动作> 可编辑，最多 4 张参考图" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
     { id: "model", title: "模型", primary: "#模型", permission: "super_admin", help: "查看模型状态；超级管理员可切换模型或恢复跟随统一默认" },
     { id: "mute", title: "静默模式", primary: "#闭嘴", aliases: ["#说话"], permission: "group_admin", help: "让机器人进入或退出静默模式" },

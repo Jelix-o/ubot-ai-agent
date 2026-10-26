@@ -54,9 +54,10 @@ export interface ResolveAvatarEditTargetInput {
 }
 
 /**
- * Parses only the explicit "让<目标>（的）头像去<动作>" form. `头像` and
- * `的` are optional, but the leading "让" and the action separator "去" are
- * required so ordinary #改图 text keeps its existing route.
+ * Parses the explicit avatar-edit forms. Once the user explicitly says
+ * `头像`, `去` is optional (`让<目标>头像吐舌头` is intentional). Without
+ * `头像`, `去` remains required so ordinary #改图 text keeps its existing
+ * route.
  */
 export function parseAvatarEditRequest(input: string): AvatarEditRequestParseResult {
   const text = stripLeadingEditCommand(normalizeWhitespace(input));
@@ -65,19 +66,29 @@ export function parseAvatarEditRequest(input: string): AvatarEditRequestParseRes
   }
 
   const body = text.slice("让".length).trim();
+  const explicitAvatar = /^([\s\S]*?)(?:\s*的)?\s*头像\s*(?:去\s*)?([\s\S]*)$/u.exec(body);
+  if (explicitAvatar) {
+    const targetText = explicitAvatar[1]!.replace(/的\s*$/u, "").trim();
+    const action = explicitAvatar[2]!.trim();
+    if (!targetText) {
+      return { kind: "invalid_avatar_edit", code: "target_missing" };
+    }
+    if (!action) {
+      return { kind: "invalid_avatar_edit", code: "action_missing" };
+    }
+    return {
+      kind: "avatar_edit",
+      request: { targetText, action, hasExplicitAvatarWord: true },
+    };
+  }
+
   const actionIndex = body.indexOf("去");
   if (actionIndex < 0) {
-    return body.includes("头像")
-      ? { kind: "invalid_avatar_edit", code: "action_missing" }
-      : { kind: "not_avatar_edit" };
+    return { kind: "not_avatar_edit" };
   }
 
   const action = body.slice(actionIndex + "去".length).trim();
   let targetText = body.slice(0, actionIndex).trim();
-  const hasExplicitAvatarWord = /头像\s*$/u.test(targetText);
-  if (hasExplicitAvatarWord) {
-    targetText = targetText.replace(/头像\s*$/u, "").trim();
-  }
   targetText = targetText.replace(/的\s*$/u, "").trim();
 
   if (!targetText) {
@@ -89,7 +100,7 @@ export function parseAvatarEditRequest(input: string): AvatarEditRequestParseRes
 
   return {
     kind: "avatar_edit",
-    request: { targetText, action, hasExplicitAvatarWord },
+    request: { targetText, action, hasExplicitAvatarWord: false },
   };
 }
 
@@ -210,7 +221,7 @@ export function avatarEditTargetErrorMessage(code: AvatarEditTargetErrorCode): s
 export function avatarEditRequestParseErrorMessage(
   _code: Extract<AvatarEditRequestParseResult, { kind: "invalid_avatar_edit" }> ["code"],
 ): string {
-  return "头像改图格式：#改图 让<目标>（的）头像去<动作>";
+  return "头像改图格式：#改图 让<目标>（的）头像（去）<动作>";
 }
 
 function resolveDirectoryTarget(

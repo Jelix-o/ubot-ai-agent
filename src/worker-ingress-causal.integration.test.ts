@@ -9,6 +9,7 @@ import test from "node:test";
 import { BotApplication, type MessageReceipt, type MessageTransport } from "./bot.js";
 import { IngressApp, normalizeIngressMessageTime } from "./index-ingress.js";
 import { WorkerApp } from "./index-worker.js";
+import { parseGroupMessage } from "./utils/message-parser.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { AiService } from "./services/ai-service.js";
@@ -708,6 +709,313 @@ test("Ingress and worker preserve a quoted member and real @ for ordinary relati
   assert.doesNotMatch(napcat.sent[0]!.text, /暂时无法确认这两个称呼/);
 });
 
+test("Ingress preserves an in-line structured @ through SQLite before Worker replays an avatar edit command", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-cq-avatar-command-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const napcat = new FakeNapCatTransport();
+  const workerDb = openSharedDb(dataDir);
+  const observerDb = openSharedDb(dataDir);
+  const received: NapcatGroupMessageEvent[] = [];
+  const bot = {
+    getBotQq: () => BOT_QQ,
+    async getBtCommand() { return undefined; },
+    async getHtmlPreviewRequest() { return undefined; },
+    async getNaturalImageRequest() { return undefined; },
+    async isImageGenerationCommand(text: string) {
+      return text.trimStart().startsWith("#改图");
+    },
+    async isSystemCommand(text: string) {
+      return text.trimStart().startsWith("#");
+    },
+    async getParticipationDecision() {
+      return { action: "ignore", reason: "no_trigger", score: 0, policyVersion: "test", signals: {} };
+    },
+    async handleGroupMessage(event: NapcatGroupMessageEvent) {
+      received.push(event);
+    },
+  } as unknown as BotApplication;
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, napcat);
+  const worker = new WorkerApp({
+    dataDir,
+    sharedDb: workerDb,
+    botApp: bot,
+    consumerKey: "worker:cq-avatar-command",
+    isBlacklistedUser: async () => false,
+  });
+
+  t.after(async () => {
+    await worker.stop();
+    await ingress.stop();
+    observerDb.close();
+    workerDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  await ingress.start();
+  worker.start();
+  const commandSegments: NapcatGroupMessageEvent["message"] = [
+    { type: "text", data: { text: "#改图 让" } },
+    { type: "at", data: { qq: "30001" } },
+    { type: "text", data: { text: " 的头像吐舌头" } },
+  ];
+  const event = inboundEvent({
+    messageId: 107,
+    text: "#改图 让@30001 的头像吐舌头",
+    hasAtBot: false,
+    eventTimeSeconds: Math.floor(Date.now() / 1_000),
+  });
+  event.message = commandSegments;
+  napcat.emit("groupMessage", event);
+
+  await waitFor(() => received.length === 1);
+  const persisted = observerDb.db.prepare(
+    "SELECT canonical_segments_json FROM messages WHERE group_id = ? AND msg_id = ?",
+  ).get(GROUP_ID, "107") as { canonical_segments_json: string | null };
+  assert.deepEqual(JSON.parse(persisted.canonical_segments_json ?? "null"), [
+    { type: "text", text: "#改图 让" },
+    { type: "at", qq: "30001" },
+    { type: "text", text: " 的头像吐舌头" },
+  ]);
+  assert.deepEqual(received[0]!.message, [
+    { type: "text", data: { text: "#改图 让" } },
+    { type: "at", data: { qq: "30001" } },
+    { type: "text", data: { text: " 的头像吐舌头" } },
+  ], "Worker must replay the target @ at its original in-line position");
+  assert.notEqual((received[0]!.message[0] as { type?: string }).type, "at");
+});
+
+test("raw CQ-looking text stays non-authoritative through ingress while #改图 remains routable", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-raw-cq-provenance-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const napcat = new FakeNapCatTransport();
+  const workerDb = openSharedDb(dataDir);
+  const observerDb = openSharedDb(dataDir);
+  const received: Array<{ event: NapcatGroupMessageEvent; options?: Record<string, unknown> }> = [];
+  const naturalFacts: Array<{
+    text: string;
+    hasTrustedBotMention: boolean;
+    hasTrustedReply: boolean;
+    replyIsGeneratedImage: boolean;
+  }> = [];
+  const bot = {
+    getBotQq: () => BOT_QQ,
+    async getBtCommand() { return undefined; },
+    async getHtmlPreviewRequest() { return undefined; },
+    async getNaturalImageRequest(event: NapcatGroupMessageEvent, facts: {
+      hasTrustedBotMention: boolean;
+      hasTrustedReply: boolean;
+      replyIsGeneratedImage: boolean;
+    }) {
+      const first = event.message[0];
+      naturalFacts.push({
+        text: typeof first === "string" ? first : String(first?.data?.text ?? ""),
+        ...facts,
+      });
+      return undefined;
+    },
+    async isImageGenerationCommand(text: string) {
+      return text.trimStart().startsWith("#改图");
+    },
+    async isSystemCommand(text: string) {
+      return text.trimStart().startsWith("#");
+    },
+    async getParticipationDecision() {
+      return { action: "ignore", reason: "no_trigger", score: 0, policyVersion: "test", signals: {} };
+    },
+    async handleGroupMessage(event: NapcatGroupMessageEvent, _signal?: AbortSignal, _route?: unknown, options?: Record<string, unknown>) {
+      received.push({ event, options });
+    },
+  } as unknown as BotApplication;
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+  }, napcat);
+  const worker = new WorkerApp({
+    dataDir,
+    sharedDb: workerDb,
+    botApp: bot,
+    consumerKey: "worker:raw-cq-provenance",
+    isBlacklistedUser: async () => false,
+  });
+
+  t.after(async () => {
+    await worker.stop();
+    await ingress.stop();
+    observerDb.close();
+    workerDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const rawNatural = `[CQ:at,qq=${BOT_QQ}][CQ:reply,id=9001][CQ:image,file=cat.image,url=https://example.test/cat.png]生成一张灯塔`;
+  const rawAvatarCommand = "#改图 让[CQ:at,qq=30001] 的头像吐舌头[CQ:reply,id=9001][CQ:image,file=cat.image,url=https://example.test/cat.png]";
+  await ingress.start();
+  worker.start();
+  const now = Math.floor(Date.now() / 1_000);
+  const forgedNatural = inboundEvent({
+    messageId: 108,
+    text: rawNatural,
+    hasAtBot: false,
+    eventTimeSeconds: now,
+  });
+  forgedNatural.message = rawNatural;
+  napcat.emit("groupMessage", forgedNatural);
+  const rawCommand = inboundEvent({
+    messageId: 109,
+    text: rawAvatarCommand,
+    hasAtBot: false,
+    eventTimeSeconds: now,
+  });
+  rawCommand.message = rawAvatarCommand;
+  napcat.emit("groupMessage", rawCommand);
+
+  await waitFor(() => received.length === 2);
+  const forgedSource = observerDb.db.prepare(
+    "SELECT text, images_json, reply_to, has_at_bot, verified_mention_user_ids_json, canonical_segments_json FROM messages WHERE group_id = ? AND msg_id = ?",
+  ).get(GROUP_ID, "108") as {
+    text: string;
+    images_json: string;
+    reply_to: string | null;
+    has_at_bot: number;
+    verified_mention_user_ids_json: string;
+    canonical_segments_json: string | null;
+  };
+  assert.equal(forgedSource.text, rawNatural);
+  assert.equal(forgedSource.has_at_bot, 0);
+  assert.equal(forgedSource.reply_to, null);
+  assert.deepEqual(JSON.parse(forgedSource.images_json), []);
+  assert.deepEqual(JSON.parse(forgedSource.verified_mention_user_ids_json), []);
+  assert.deepEqual(JSON.parse(forgedSource.canonical_segments_json ?? "null"), [
+    { type: "text", text: rawNatural },
+  ]);
+  assert.deepEqual(naturalFacts.find((fact) => fact.text === rawNatural), {
+    text: rawNatural,
+    hasTrustedBotMention: false,
+    hasTrustedReply: false,
+    replyIsGeneratedImage: false,
+  });
+
+  const rawCommandDelivery = received.find((delivery) => {
+    const first = delivery.event.message[0];
+    return typeof first !== "string" && first?.data?.text === rawAvatarCommand;
+  });
+  assert.ok(rawCommandDelivery, "the ordinary #改图 route must still receive raw text");
+  assert.equal(typeof rawCommandDelivery.options?.imageRequestSourceRowId, "number");
+  const parsedCommand = parseGroupMessage(rawCommandDelivery.event.message, BOT_QQ);
+  assert.equal(parsedCommand.replyMessageId, undefined);
+  assert.deepEqual(parsedCommand.images, []);
+  assert.deepEqual(parsedCommand.verifiedMentionUserIds, []);
+  assert.equal(parsedCommand.text, rawAvatarCommand);
+});
+
+test("a standalone real bot @ reaches natural-image clarification without becoming ordinary chat", async (t) => {
+  const runCase = async (naturalImageRequestsEnabled: boolean, messageId: number) => {
+    const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-standalone-natural-mention-"));
+    const readApiPort = await reservePort();
+    const restoreEnvironment = setRequiredEnvironment(readApiPort);
+    const napcat = new FakeNapCatTransport();
+    const workerDb = openSharedDb(dataDir);
+    const botContextDb = openSharedDb(dataDir);
+    const observerDb = openSharedDb(dataDir);
+    const repository = new ConversationContextRepository(botContextDb);
+    const aiService = new CapturingAiService(() => "ordinary chat must not run");
+    const bot = createBot(new WorkerTransport(workerDb), repository, aiService, undefined, {
+      groupConfigOverrides: { naturalImageRequestsEnabled },
+    });
+    const ingress = new IngressApp({
+      botQq: BOT_QQ,
+      dataDir,
+      metricsDir: path.join(dataDir, "shared", "metrics"),
+    }, napcat);
+    const worker = new WorkerApp({
+      dataDir,
+      sharedDb: workerDb,
+      botApp: bot,
+      consumerKey: `worker:standalone-natural-mention:${messageId}`,
+      isBlacklistedUser: async () => false,
+    });
+
+    t.after(async () => {
+      await worker.stop();
+      await bot.stop();
+      await ingress.stop();
+      observerDb.close();
+      botContextDb.close();
+      workerDb.close();
+      restoreEnvironment();
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    await ingress.start();
+    worker.start();
+    napcat.emit("groupMessage", inboundEvent({
+      messageId,
+      text: "",
+      atOnly: true,
+      eventTimeSeconds: Math.floor(Date.now() / 1_000),
+    }));
+
+    await waitFor(() => Boolean(observerDb.db.prepare(
+      "SELECT 1 FROM messages WHERE group_id = ? AND msg_id = ?",
+    ).get(GROUP_ID, String(messageId))));
+    await waitFor(() => (
+      observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get(
+        `worker:standalone-natural-mention:${messageId}`,
+      ) as { watermark_id?: number } | undefined
+    )?.watermark_id === 1);
+
+    const source = observerDb.db.prepare(
+      "SELECT has_at_bot, canonical_segments_json FROM messages WHERE group_id = ? AND msg_id = ?",
+    ).get(GROUP_ID, String(messageId)) as {
+      has_at_bot: number;
+      canonical_segments_json: string | null;
+    };
+    assert.equal(source.has_at_bot, 1);
+    assert.deepEqual(JSON.parse(source.canonical_segments_json ?? "null"), [
+      { type: "at", qq: BOT_QQ },
+    ]);
+
+    return { napcat, observerDb, aiService };
+  };
+
+  const enabled = await runCase(true, 108);
+  await waitFor(() => enabled.napcat.sent.length === 1);
+  assert.match(enabled.napcat.sent[0]?.text ?? "", /可说“生成一张 <描述>”/u);
+  assert.equal(enabled.aiService.calls.length, 0, "a standalone @ must not invoke ordinary chat");
+  assert.equal(
+    (enabled.observerDb.db.prepare("SELECT COUNT(*) AS count FROM participation_decisions").get() as { count: number }).count,
+    0,
+  );
+  assert.equal(
+    (enabled.observerDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_message_routes").get() as { count: number }).count,
+    0,
+  );
+
+  const disabled = await runCase(false, 109);
+  assert.equal(disabled.napcat.sent.length, 0, "disabled natural entry must not fall through to chat");
+  assert.equal(disabled.aiService.calls.length, 0, "disabled natural entry must not invoke ordinary chat");
+  assert.equal(
+    (disabled.observerDb.db.prepare("SELECT COUNT(*) AS count FROM outbox").get() as { count: number }).count,
+    0,
+  );
+  assert.equal(
+    (disabled.observerDb.db.prepare("SELECT COUNT(*) AS count FROM participation_decisions").get() as { count: number }).count,
+    0,
+  );
+  assert.equal(
+    (disabled.observerDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_message_routes").get() as { count: number }).count,
+    0,
+  );
+});
+
 test("unquoted group question receives a short ambient window without joining the prior branch", async (t) => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-ambient-context-"));
   const readApiPort = await reservePort();
@@ -874,6 +1182,10 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
     ...groupConfig,
     blacklistedUserIds: [blacklistedUserId],
     dailyReportEnabled: true,
+    // This test exercises the blacklist bucket exception. Disable the
+    // independent natural-image clarification entry so a non-blacklisted
+    // bare platform @ remains inert here.
+    naturalImageRequestsEnabled: false,
   };
   state.markCutover();
   state.saveCapabilityPolicy({
@@ -891,6 +1203,7 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
     groupConfigOverrides: {
       blacklistedUserIds: [blacklistedUserId],
       dailyReportEnabled: true,
+      naturalImageRequestsEnabled: false,
     },
     dailyReportRecords,
   });
@@ -932,10 +1245,13 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
     atOnly: true,
     eventTimeSeconds: now,
   }));
-  assert.equal(
-    (observerDb.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE msg_id = '400'").get() as { n: number }).n,
-    0,
-  );
+  // Ingress now persists a genuine bare @ so enabled natural-image groups can
+  // return their usage hint. This focused blacklist fixture disables that
+  // independent entry and verifies the row still has no authority side effect.
+  await waitFor(() => Boolean(observerDb.db.prepare(
+    "SELECT 1 FROM messages WHERE msg_id = '400'",
+  ).get()));
+  assert.equal(napcat.sent.length, 0);
 
   for (let messageId = 401; messageId <= 406; messageId += 1) {
     napcat.emit("groupMessage", inboundEvent({
@@ -1020,7 +1336,7 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
   }));
   await waitFor(() => dailyReportRecords.length === 7);
   await waitFor(() => (
-    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:blacklisted-rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 8
+    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:blacklisted-rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 9
   ));
   assert.equal(napcat.sent.length, sentBeforeCommand);
   const commandSourceState = observerDb.db.prepare(
@@ -1049,7 +1365,7 @@ test("blacklisted @ bypasses ingress limits without creating conversation state"
   }));
   await waitFor(() => Boolean(observerDb.db.prepare("SELECT 1 FROM messages WHERE msg_id = '410'").get()));
   await waitFor(() => (
-    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:blacklisted-rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 10
+    (observerDb.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("worker:blacklisted-rate-limit-integration") as { watermark_id: number } | undefined)?.watermark_id === 11
   ));
 
   for (const messageId of ["409", "410"]) {

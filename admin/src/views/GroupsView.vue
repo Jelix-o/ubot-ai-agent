@@ -58,7 +58,7 @@ const blacklistedUserIds = computed<string[]>({
     form.blacklistedUserIds = userIds;
   },
 });
-const editableFields = ["enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+const editableFields = ["enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
 function configValues(): Record<string, unknown> {
   return Object.fromEntries(editableFields.filter(key => app.role === "super_admin" || !["replyModelMode", "replyModelSource"].includes(key)).map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
 }
@@ -71,6 +71,7 @@ const capabilities = [
   { key: "visionEnabled", label: "图片理解", detail: "理解群聊中提供的图片。" },
   { key: "ambientGroupContextEnabled", label: "短时群聊语境", detail: "使用近期群聊上下文组织回复。" },
   { key: "htmlPreviewEnabled", label: "静态网页预览", detail: "允许生成并分享网页预览。" },
+  { key: "naturalImageRequestsEnabled", label: "自然语言生图与改图", detail: "仅真实 @会仙 或回复会仙生成的图片时，允许使用自然语言请求图片。" },
   { key: "opsAlertsEnabled", label: "运维告警", detail: "向当前群发送运行告警。" },
 ] as const;
 
@@ -122,6 +123,7 @@ function defaultGroupConfig(): GroupConfig {
     visionEnabled: true,
     ambientGroupContextEnabled: true,
     htmlPreviewEnabled: true,
+    naturalImageRequestsEnabled: true,
   };
 }
 

@@ -33,6 +33,7 @@ const reverseUrl = requiredValue("--reverse-url");
 const requestedPath = optional("--napcat-url-path");
 const htmlPreviewRoot = optional("--html-preview-root");
 const approvedNapcatUrlPath = "network.websocketClients.0.url";
+const approvedNapcatMessageFormatPath = "network.websocketClients.0.messagePostFormat";
 const managedPreviewRoot = path.resolve(process.env.UBOT_MANAGED_PREVIEW_ROOT ?? "/var/lib/ubot-preview");
 const appDataRoot = path.resolve(path.dirname(envPath), "data");
 const releaseRoot = path.resolve(process.env.UBOT_RELEASE_ROOT ?? "/opt/ai-project-releases");
@@ -84,6 +85,13 @@ if (!target || typeof target.container[target.key] !== "string" || !/^wss?:\/\//
   throw new Error(`Could not validate ${approvedNapcatUrlPath} in the supplied NapCat JSON.`);
 }
 target.container[target.key] = reverseUrl;
+// Preserve message segment order and trust boundaries in the ingress store.
+// Raw CQ strings cannot establish a real @, reply, or image reference.
+const messageFormat = resolvePath(napcat, approvedNapcatMessageFormatPath);
+if (!messageFormat || !messageFormat.container || typeof messageFormat.container !== "object") {
+  throw new Error(`Could not validate ${approvedNapcatMessageFormatPath} in the supplied NapCat JSON.`);
+}
+messageFormat.container[messageFormat.key] = "array";
 
 // Validate both documents before modifying either one. If the dotenv replacement
 // fails after NapCat was atomically replaced, restore the exact original NapCat
@@ -99,7 +107,7 @@ await writePairedAtomically({
   metadata: envMetadata,
 });
 
-process.stdout.write("V3 ingress and NapCat reverse URL configuration updated.\n");
+process.stdout.write("V3 ingress, structured NapCat messages, and reverse URL configuration updated.\n");
 
 function optional(name) {
   const index = args.indexOf(name);

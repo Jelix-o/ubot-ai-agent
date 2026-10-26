@@ -49,6 +49,7 @@ test("V3 network configuration updates only the approved NapCat endpoint and loo
   assert.match(env, /^KEEP_THIS=value$/m);
   const napcat = JSON.parse(readFileSync(napcatPath, "utf8"));
   assert.equal(napcat.network.websocketClients[0].url, reverseUrl);
+  assert.equal(napcat.network.websocketClients[0].messagePostFormat, "array");
   assert.equal(napcat.unrelated.url, "ws://unchanged.example/endpoint");
 });
 

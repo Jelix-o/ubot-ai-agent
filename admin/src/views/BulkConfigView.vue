@@ -9,7 +9,7 @@ const groups=shallowRef<Array<{groupId:string;groupName?:string;enabled?:boolean
 const selectedGroups=computed(()=>groups.value.filter(group=>targetIds.value.has(group.groupId)));
 const sections=[
   {title:"回复策略",items:[{id:"replyModelMode",label:"回复模型（含跟随策略）"},{id:"replyModelSource",label:"跟随统一默认／指定模型"},{id:"participationMode",label:"参与方式"},{id:"liveChatDelaySeconds",label:"实时对话延迟"},{id:"triggerKeywords",label:"触发关键词"}]},
-  {title:"能力开关",items:[{id:"onlineLookupEnabled",label:"自动查询实时资料"},{id:"visionEnabled",label:"图片理解"},{id:"ambientGroupContextEnabled",label:"短时群聊语境"},{id:"htmlPreviewEnabled",label:"静态网页预览"},{id:"opsAlertsEnabled",label:"运维告警"},{id:"botMuted",label:"机器人静音"}]},
+  {title:"能力开关",items:[{id:"onlineLookupEnabled",label:"自动查询实时资料"},{id:"visionEnabled",label:"图片理解"},{id:"ambientGroupContextEnabled",label:"短时群聊语境"},{id:"htmlPreviewEnabled",label:"静态网页预览"},{id:"naturalImageRequestsEnabled",label:"自然语言生图与改图"},{id:"opsAlertsEnabled",label:"运维告警"},{id:"botMuted",label:"机器人静音"}]},
   {title:"排程",items:[{id:"dailyReportEnabled",label:"群聊日报"},{id:"dailyReportTime",label:"日报时间"},{id:"dailyReportDateRule",label:"日报日期规则"},{id:"dailyReportWeekdays",label:"日报星期"},{id:"dailyReportTopUserCount",label:"日报人数"},{id:"holidayCountdownEnabled",label:"节日倒计时"},{id:"holidayCountdownTime",label:"倒计时时间"},{id:"holidayCountdownDateRule",label:"倒计时日期规则"},{id:"holidayCountdownWeekdays",label:"倒计时星期"},{id:"scheduledRemindersEnabled",label:"定时提醒"}]},
 ];
 watch(sourceId, (id) => { const next=new Set(targetIds.value);next.delete(id);targetIds.value=next;preview.value=null; });

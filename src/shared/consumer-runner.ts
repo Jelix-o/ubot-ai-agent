@@ -35,6 +35,7 @@ export interface IngressMessageRowLike {
   msg_time: number;
   text: string;
   images_json?: string;
+  canonical_segments_json?: string | null;
   sender_card?: string | null;
   sender_nickname?: string | null;
   reply_to?: string | null;

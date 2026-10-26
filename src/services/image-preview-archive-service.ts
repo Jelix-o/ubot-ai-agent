@@ -13,12 +13,52 @@ import {
   type ImagePreviewRecord,
   type ImagePreviewStatus,
 } from "./image-preview-repository.js";
+import {
+  ImageRequestRepository,
+  isSafeImageRequestErrorCode,
+  type ImageRequestKind,
+  type ImageRequestSafeStatus,
+  type ImageRequestStatus,
+  type ImageRequestTriggerSource,
+} from "./image-request-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
 
 export const IMAGE_PREVIEW_PROMPT_SUMMARY_CHARS = 160;
 export const IMAGE_PREVIEW_ORPHAN_MIN_AGE_MS = 15 * 60 * 1_000;
+const SAFE_IMAGE_REQUEST_FAILURE_REASONS = new Set([
+  "archive_failed",
+  "busy",
+  "content_blocked",
+  "cooldown",
+  "delivery_failed",
+  "delivery_not_queued",
+  "delivery_unknown",
+  "editing_not_configured",
+  "invalid_image_response",
+  "invalid_reference",
+  "invalid_size",
+  "not_configured",
+  "provider_disabled",
+  "result_unknown",
+  "upstream_network",
+  "upstream_rejected",
+  "upstream_timeout",
+  "upstream_unavailable",
+]);
 
 export type ImagePreviewMimeType = "image/png" | "image/jpeg" | "image/webp";
+
+/**
+ * Bounded ledger metadata that may be shown in the admin image list/detail.
+ * It deliberately has no source message id, request id, upstream key, staged
+ * path, target identity, raw provider response, or prompt.
+ */
+export interface ImagePreviewRequestMetadata {
+  requestKind: ImageRequestKind;
+  triggerSource: ImageRequestTriggerSource;
+  requestStatus: ImageRequestStatus;
+  failureReason?: string;
+}
 
 /** Safe for list, bulk-operation and audit paths. It excludes the raw prompt. */
 export interface ImagePreviewMetadata {
@@ -31,6 +71,10 @@ export interface ImagePreviewMetadata {
   parentIds?: string[];
   outputSize?: string;
   outputMessageId?: string;
+  requestKind?: ImageRequestKind;
+  triggerSource?: ImageRequestTriggerSource;
+  requestStatus?: ImageRequestStatus;
+  failureReason?: string;
 
   promptSummary: string;
   modelId: string;
@@ -75,6 +119,11 @@ export interface ImagePreviewArchiveInput {
   fallbackUsed: boolean;
   mimeType: ImagePreviewMimeType;
   byteSize: number;
+  /**
+   * Worker-owned images remain non-public until the request ledger and QQ
+   * Outbox row are committed in the same SQLite transaction.
+   */
+  publicationState?: "pending" | "published";
   now?: number;
   expiresAt?: number;
 }
@@ -85,12 +134,16 @@ export interface ImagePreviewArchiveInput {
  */
 export class ImagePreviewArchiveService {
   readonly repository: ImagePreviewRepository;
+  readonly imageRequestRepository: ImageRequestRepository;
+  private readonly sharedDb: SharedDb;
   private readonly rootDir: string;
   private readonly stagedRoot: string;
   private readonly now: () => number;
 
   constructor(options: ImagePreviewArchiveOptions) {
+    this.sharedDb = options.sharedDb;
     this.repository = new ImagePreviewRepository(options.sharedDb);
+    this.imageRequestRepository = new ImageRequestRepository(options.sharedDb);
     this.rootDir = path.resolve(options.rootDir);
     this.stagedRoot = path.resolve(options.stagedRoot);
     this.now = options.now ?? Date.now;
@@ -142,14 +195,15 @@ export class ImagePreviewArchiveService {
         now,
         operation: input.operation, referenceCount: input.referenceCount,
         parentIds: input.parentIds, outputSize: input.outputSize,
+        publicationState: input.publicationState,
         expiresAt,
       });
-      return toMetadata(metadata, now);
+      return this.metadataFor(metadata, now);
     } catch (error) {
       await this.removeImageFileById(id, declaredMime).catch(() => undefined);
       if (error instanceof Error && error.message === "image_preview_source_conflict") {
         const existing = this.repository.getBySource(input.groupId.trim(), input.sourceMessageId.trim());
-        if (existing) return toMetadata(existing, now);
+        if (existing) return this.metadataFor(existing, now);
       }
       throw error;
     }
@@ -157,22 +211,43 @@ export class ImagePreviewArchiveService {
 
   async resolveReference(groupId: string, messageId: string): Promise<{ previewId: string; data: Buffer; mimeType: ImagePreviewMimeType } | undefined> {
     const record = this.repository.getByOutput(groupId, messageId);
+    // `undefined` is reserved for a message which was never one of our
+    // archived outputs, so callers may still resolve an ordinary quoted group
+    // image through QQ. Once an output record exists, however, expiry,
+    // deletion, recall, or an unpublished state must not silently fall back to
+    // QQ and make a retired private archive editable again.
     if (!record) return undefined;
+    if (!isPublishedAvailable(record, this.now())) {
+      throw new ImagePreviewArchiveError("image_preview_reference_unavailable");
+    }
     const image = await this.loadImage(record.id);
     if (!image) throw new ImagePreviewArchiveError("image_preview_reference_unavailable");
     return { previewId: record.id, data: image.data, mimeType: image.mimeType };
   }
 
+  /**
+   * A reply can enter natural continuous-edit mode only after QQ acknowledged
+   * a generated image and its retained archive remains available. This is a
+   * metadata check; it does not read private image bytes.
+   */
+  hasAvailableOutput(groupId: string, messageId: string): boolean {
+    const record = this.repository.getByOutput(groupId, messageId);
+    return isPublishedAvailable(record, this.now());
+  }
+
   get(id: string): Promise<ImagePreviewMetadata | undefined> {
     const record = this.repository.get(id);
-    return Promise.resolve(record ? toMetadata(record, this.now()) : undefined);
+    const now = this.now();
+    // Retain existing admin visibility for published terminal records while
+    // keeping unpublished work completely outside every external surface.
+    return Promise.resolve(record?.publicationState === "published" ? this.metadataFor(record, now) : undefined);
   }
 
   getDetail(id: string): Promise<ImagePreviewDetail | undefined> {
     const record = this.repository.get(id);
     const now = this.now();
-    if (!record || effectiveStatus(record, now) !== "available") return Promise.resolve(undefined);
-    return Promise.resolve(toDetail(record, now));
+    if (!isPublishedAvailable(record, now)) return Promise.resolve(undefined);
+    return Promise.resolve(this.detailFor(record, now));
   }
 
   listPage(args: ImagePreviewListArgs = {}): Promise<{
@@ -181,13 +256,13 @@ export class ImagePreviewArchiveService {
   }> {
     const now = this.now();
     const page = this.repository.listPage({ ...args, now });
-    return Promise.resolve({ ...page, items: page.items.map(record => toMetadata(record, now)) });
+    return Promise.resolve({ ...page, items: page.items.map(record => this.metadataFor(record, now)) });
   }
 
   /** Loads bytes only after the caller checks both group authorization and status. */
   async loadImage(id: string): Promise<{ data: Buffer; mimeType: ImagePreviewMimeType; byteSize: number } | undefined> {
     const record = this.repository.get(id);
-    if (!record || record.status !== "available" || record.expiresAt <= this.now()) return undefined;
+    if (!isPublishedAvailable(record, this.now())) return undefined;
     const target = this.imagePath(record.id, extensionForMime(record.mimeType));
     try {
       const info = await lstat(target);
@@ -211,10 +286,10 @@ export class ImagePreviewArchiveService {
   async remove(id: string, now = this.now(), guard?: MutationGuard): Promise<boolean> {
     const record = this.repository.get(id);
     if (!record || record.status === "deleted") return false;
-    assertRevision(toMetadata(record, now), guard);
+    assertRevision(this.metadataFor(record, now), guard);
     const removed = this.repository.runAtomically(() => {
       const current = this.repository.get(id);
-      assertRevision(current ? toMetadata(current, now) : undefined, guard);
+      assertRevision(current ? this.metadataFor(current, now) : undefined, guard);
       const removed = this.repository.markDeleted(record.id, now);
       if (removed) guard?.committed?.();
       return removed;
@@ -264,6 +339,93 @@ export class ImagePreviewArchiveService {
     return { expired, temp, orphans };
   }
 
+  /**
+   * Crash recovery for the narrow interval after private bytes and metadata
+   * were stored but before the generated-image Outbox transaction committed.
+   * Pending records have never been visible or delivered, so discard them
+   * rather than trying a second delivery after restart. The worker invokes
+   * this before creating its consumer, so it cannot race a live enqueue.
+   */
+  async recoverUnpublished(now = this.now()): Promise<number> {
+    let recovered = 0;
+    for (const record of this.repository.listPending()) {
+      if (await this.discardUnpublished(record.id, now)) recovered += 1;
+    }
+    return recovered;
+  }
+
+  /**
+   * Idempotently makes an unpublished worker preview terminal. A committed
+   * generated-image transaction can never leave this state: it publishes the
+   * preview together with its ledger and Outbox links. If an older build or
+   * manual repair did leave a partial link, quarantine that delivery rather
+   * than publishing the private archive outside that transaction.
+   */
+  async discardUnpublished(id: string, now = this.now()): Promise<boolean> {
+    const record = this.repository.get(id);
+    if (!record || record.publicationState !== "pending") return false;
+
+    const result = this.repository.runAtomically(() => {
+      const current = this.repository.get(id);
+      if (!current || current.publicationState !== "pending") return { state: "unchanged" } as const;
+
+      const linked = this.imageRequestRepository.getBySource(current.groupId, current.sourceMessageId);
+      const outbox = this.sharedDb.db.prepare(
+        `SELECT id, status, text
+           FROM outbox
+          WHERE group_id = ? AND image_preview_id = ?
+          ORDER BY id DESC LIMIT 1`,
+      ).get(current.groupId, current.id) as { id: number; status: string; text: string } | undefined;
+
+      if (outbox) {
+        // A partial link cannot be safely resumed. It may have reached QQ
+        // before the process failed, so retain delivery ambiguity rather than
+        // creating a second send or exposing the pending preview.
+        this.sharedDb.db.prepare(
+          `UPDATE outbox
+              SET status = 'failed', retry_after = NULL, updated_at = ?
+            WHERE group_id = ? AND image_preview_id = ?
+              AND status IN ('preparing', 'pending', 'sending', 'failed')`,
+        ).run(now, current.groupId, current.id);
+        if (linked) {
+          this.sharedDb.db.prepare(
+            `UPDATE image_requests
+                SET status = CASE WHEN status = 'delivered' THEN status ELSE 'delivery_unknown' END,
+                    error_code = CASE WHEN status = 'delivered' THEN error_code ELSE 'delivery_unknown' END,
+                    completed_at = COALESCE(completed_at, ?), updated_at = ?
+              WHERE id = ?`,
+          ).run(now, now, linked.id);
+        }
+      } else {
+        this.sharedDb.db.prepare(
+          `UPDATE image_requests
+              SET status = 'failed', error_code = 'delivery_not_queued',
+                  completed_at = COALESCE(completed_at, ?), updated_at = ?
+            WHERE group_id = ? AND source_message_id = ?
+              AND status IN ('accepted', 'submitting', 'generated', 'queued')`,
+        ).run(now, now, current.groupId, current.sourceMessageId);
+      }
+      const deleted = this.sharedDb.db.prepare(
+        `UPDATE image_previews
+            SET prompt = NULL, prompt_summary = '', status = 'deleted',
+                deleted_at = COALESCE(deleted_at, ?), updated_at = ?
+          WHERE id = ? AND status = 'available' AND publication_state = 'pending'`,
+      ).run(now, now, current.id);
+      return Number(deleted.changes) === 1
+        ? { state: "discarded" as const, stagedFilePath: linked?.stagedFilePath ?? outbox?.text }
+        : { state: "unchanged" as const };
+    });
+
+    if (result.state === "discarded") {
+      await Promise.all([
+        this.removeImageFile(record).catch(() => undefined),
+        this.removeStagedFile(result.stagedFilePath).catch(() => undefined),
+      ]);
+      return true;
+    }
+    return false;
+  }
+
   private async ensureStorageReady(): Promise<void> {
     await mkdir(this.rootDir, { recursive: true, mode: 0o700 });
     await chmod(this.rootDir, 0o700).catch(() => undefined);
@@ -302,6 +464,12 @@ export class ImagePreviewArchiveService {
     await this.removeImageFileById(record.id, record.mimeType);
   }
 
+  /** Deletes only a known generated staging file after its delivery link failed. */
+  private async removeStagedFile(filePath: string | undefined): Promise<void> {
+    if (!filePath || !isGeneratedImagePath(this.stagedRoot, filePath)) return;
+    await rm(path.resolve(filePath), { force: true });
+  }
+
   private async removeImageFileById(id: string, mimeType: ImagePreviewMimeType): Promise<void> {
     const image = this.imagePath(id, extensionForMime(mimeType));
     try {
@@ -323,6 +491,22 @@ export class ImagePreviewArchiveService {
     const target = path.resolve(this.rootDir, `.${id}.${randomSuffix()}.tmp`);
     if (path.dirname(target) !== this.rootDir) throw new ImagePreviewArchiveError("image_preview_path_unsafe");
     return target;
+  }
+
+  private metadataFor(record: ImagePreviewRecord, now: number): ImagePreviewMetadata {
+    const request = this.imageRequestRepository.getForImagePreview(record.groupId, record.id);
+    return {
+      ...toMetadata(record, now),
+      ...(request ? toRequestMetadata(request) : {}),
+    };
+  }
+
+  private detailFor(record: ImagePreviewRecord, now: number): ImagePreviewDetail {
+    const metadata = this.metadataFor(record, now);
+    return {
+      ...metadata,
+      ...(metadata.status === "available" && record.prompt !== undefined ? { prompt: record.prompt } : {}),
+    };
   }
 }
 
@@ -359,16 +543,34 @@ function toMetadata(record: ImagePreviewRecord, now = Date.now()): ImagePreviewM
   };
 }
 
-function toDetail(record: ImagePreviewRecord, now = Date.now()): ImagePreviewDetail {
-  const metadata = toMetadata(record, now);
+function toRequestMetadata(record: ImageRequestSafeStatus): ImagePreviewRequestMetadata {
+  const failureReason = safeFailureReason(record.errorCode);
   return {
-    ...metadata,
-    ...(metadata.status === "available" && record.prompt !== undefined ? { prompt: record.prompt } : {}),
+    requestKind: record.requestKind,
+    triggerSource: record.triggerSource,
+    requestStatus: record.status,
+    ...(failureReason ? { failureReason } : {}),
   };
+}
+
+/**
+ * The ledger stores only token-shaped error codes, but it is still internal
+ * diagnostic data. Keep the admin contract to a small known vocabulary and
+ * collapse future or malformed values to a generic label.
+ */
+function safeFailureReason(value: string | undefined): string | undefined {
+  if (!value || !isSafeImageRequestErrorCode(value)) return undefined;
+  const code = value.slice(0, 80);
+  return SAFE_IMAGE_REQUEST_FAILURE_REASONS.has(code) ? code : "request_failed";
 }
 
 function effectiveStatus(record: ImagePreviewRecord, now: number): ImagePreviewStatus {
   return record.status === "available" && record.expiresAt <= now ? "expired" : record.status;
+}
+
+function isPublishedAvailable(record: ImagePreviewRecord | undefined, now: number): record is ImagePreviewRecord {
+  return Boolean(record && record.publicationState === "published" &&
+    record.status === "available" && record.expiresAt > now);
 }
 
 function normalizePrompt(value: string): string {

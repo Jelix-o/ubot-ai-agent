@@ -54,6 +54,12 @@ type HtmlPreviewTestService = {
 
 type ImagePreviewTestItem = {
   id: string;
+  operation?: "generation" | "edit";
+  referenceCount?: number;
+  requestKind?: "generation" | "edit" | "avatar_edit";
+  triggerSource?: "command" | "natural";
+  requestStatus?: "accepted" | "submitting" | "generated" | "queued" | "delivered" | "failed" | "outcome_unknown" | "delivery_unknown";
+  failureReason?: string;
   groupId: string;
   creatorUserId: string;
   promptSummary: string;
@@ -96,6 +102,12 @@ function createImagePreviewTestService(): ImagePreviewTestService {
   let items: ImagePreviewTestItem[] = [
     {
       id: "image-allowed",
+      operation: "edit",
+      referenceCount: 1,
+      requestKind: "avatar_edit",
+      triggerSource: "natural",
+      requestStatus: "delivery_unknown",
+      failureReason: "delivery_unknown",
       groupId: "67890",
       creatorUserId: "20001",
       promptSummary: "一只戴棕色蝴蝶结的鹈鹕骑自行车穿过街巷",
@@ -112,6 +124,11 @@ function createImagePreviewTestService(): ImagePreviewTestService {
     },
     {
       id: "image-forbidden",
+      requestKind: "generation",
+      triggerSource: "command",
+      requestStatus: "failed",
+      // Formatter must drop arbitrary text even if a stale service emits it.
+      failureReason: "provider response included user supplied prompt",
       groupId: "100200",
       creatorUserId: "20002",
       promptSummary: "未授权群的生图提示词摘要",
@@ -128,6 +145,10 @@ function createImagePreviewTestService(): ImagePreviewTestService {
     },
     {
       id: "image-expired",
+      requestKind: "edit",
+      triggerSource: "command",
+      requestStatus: "failed",
+      failureReason: "moderation_blocked",
       groupId: "67890",
       creatorUserId: "20001",
       // The fake deliberately retains cleared fields to prove the API never
@@ -820,13 +841,18 @@ test("group administrators are limited to authorized groups and operational feat
   const ambientContextUpdate = await request(baseUrl, "/api/groups/67890/config", {
     method: "PUT",
     headers: { Cookie: cookie, "X-CSRF-Token": groupCsrf, "Content-Type": "application/json" },
-    body: JSON.stringify({ ambientGroupContextEnabled: false }),
+    body: JSON.stringify({ ambientGroupContextEnabled: false, naturalImageRequestsEnabled: false }),
   });
   assert.equal(ambientContextUpdate.status, 200);
+  const updatedGroupConfig = await ambientContextUpdate.json() as {
+    ambientGroupContextEnabled?: boolean;
+    naturalImageRequestsEnabled?: boolean;
+  };
   assert.equal(
-    (await ambientContextUpdate.json() as { ambientGroupContextEnabled?: boolean }).ambientGroupContextEnabled,
+    updatedGroupConfig.ambientGroupContextEnabled,
     false,
   );
+  assert.equal(updatedGroupConfig.naturalImageRequestsEnabled, false);
 
   const optOut = await request(baseUrl, "/api/groups/67890/members/20001/privacy-opt-out", {
     method: "POST",
@@ -1060,24 +1086,39 @@ test("image preview APIs keep prompts private by default, serve private bytes, a
     "createdAt",
     "creatorUserId",
     "expiresAt",
+    "failureReason",
     "fallbackUsed",
     "groupId",
     "id",
     "mimeType",
     "model",
     "modelId",
+    "operation",
     "promptSummary",
+    "referenceCount",
+    "requestKind",
+    "requestStatus",
     "status",
+    "triggerSource",
   ]);
   assert.equal(listData.previews[0]?.promptSummary, summary);
   assert.equal(Object.hasOwn(listData.previews[0]!, "prompt"), false);
   assert.equal(Object.hasOwn(listData.previews[0]!, "sourceMessageId"), false);
+  assert.equal(listData.previews[0]?.requestKind, "avatar_edit");
+  assert.equal(listData.previews[0]?.triggerSource, "natural");
+  assert.equal(listData.previews[0]?.requestStatus, "delivery_unknown");
+  assert.equal(listData.previews[0]?.failureReason, "delivery_unknown");
 
   const detail = await request(baseUrl, "/api/image-previews/image-allowed", {
     headers: { Cookie: superAdmin.cookie },
   });
   assert.equal(detail.status, 200);
-  assert.equal((await detail.json() as { preview: { prompt: string } }).preview.prompt, prompt);
+  const detailData = await detail.json() as { preview: { prompt: string; requestKind?: string; requestStatus?: string; triggerSource?: string; failureReason?: string } };
+  assert.equal(detailData.preview.prompt, prompt);
+  assert.equal(detailData.preview.requestKind, "avatar_edit");
+  assert.equal(detailData.preview.triggerSource, "natural");
+  assert.equal(detailData.preview.requestStatus, "delivery_unknown");
+  assert.equal(detailData.preview.failureReason, "delivery_unknown");
 
   const image = await request(baseUrl, "/api/image-previews/image-allowed/preview", {
     headers: { Cookie: superAdmin.cookie },
@@ -1652,8 +1693,9 @@ test("group configuration patches require the current revision and return the ne
   const auth = await login(baseUrl);
   const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
   const initial = await request(baseUrl, "/api/groups/67890/config", { headers: { Cookie: auth.cookie } });
-  const current = await initial.json() as { revision: string; ambientGroupContextEnabled: boolean };
+  const current = await initial.json() as { revision: string; ambientGroupContextEnabled: boolean; naturalImageRequestsEnabled: boolean };
   assert.equal(typeof current.revision, "string");
+  assert.equal(current.naturalImageRequestsEnabled, true);
 
   const conflict = await request(baseUrl, "/api/groups/67890/config", {
     method: "PATCH", headers,
@@ -1664,12 +1706,51 @@ test("group configuration patches require the current revision and return the ne
 
   const update = await request(baseUrl, "/api/groups/67890/config", {
     method: "PATCH", headers,
-    body: JSON.stringify({ expectedRevision: current.revision, patch: { ambientGroupContextEnabled: !current.ambientGroupContextEnabled } }),
+    body: JSON.stringify({ expectedRevision: current.revision, patch: { ambientGroupContextEnabled: !current.ambientGroupContextEnabled, naturalImageRequestsEnabled: false } }),
   });
   assert.equal(update.status, 200);
-  const saved = await update.json() as { revision: string; ambientGroupContextEnabled: boolean };
+  const saved = await update.json() as { revision: string; ambientGroupContextEnabled: boolean; naturalImageRequestsEnabled: boolean };
   assert.notEqual(saved.revision, current.revision);
   assert.equal(saved.ambientGroupContextEnabled, !current.ambientGroupContextEnabled);
+  assert.equal(saved.naturalImageRequestsEnabled, false);
+});
+
+test("bulk group configuration preview accepts the natural image request switch", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  assert.equal((await reauth(baseUrl, auth)).status, 200);
+
+  const sourceUpdate = await request(baseUrl, "/api/groups/67890/config", {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ naturalImageRequestsEnabled: false }),
+  });
+  assert.equal(sourceUpdate.status, 200);
+
+  const previewResponse = await request(baseUrl, "/api/bulk-operations/preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      resource: "group-config",
+      action: "copy",
+      sourceGroupId: "67890",
+      ids: ["100200"],
+      fields: ["naturalImageRequestsEnabled"],
+    }),
+  });
+  assert.equal(previewResponse.status, 200);
+  const preview = await previewResponse.json() as {
+    targets: Array<{
+      id: string;
+      before: { naturalImageRequestsEnabled?: boolean };
+      after: { naturalImageRequestsEnabled?: boolean };
+    }>;
+  };
+  assert.equal(preview.targets.length, 1);
+  assert.equal(preview.targets[0]?.id, "100200");
+  assert.deepEqual(preview.targets[0]?.before, { naturalImageRequestsEnabled: true });
+  assert.deepEqual(preview.targets[0]?.after, { naturalImageRequestsEnabled: false });
 });
 
 test("group configuration API persists daily report counts through 20 and rejects invalid counts", async t => {

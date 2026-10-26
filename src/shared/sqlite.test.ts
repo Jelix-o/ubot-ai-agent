@@ -260,6 +260,9 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 21, name: "add-conversation-orchestration" },
       { version: 22, name: "add-generated-image-preview-archive" },
       { version: 23, name: "add-image-edit-lineage-and-delivery" },
+      { version: 24, name: "persist-canonical-message-segments" },
+      { version: 25, name: "add-durable-image-request-ledger" },
+      { version: 26, name: "stage-image-previews-until-outbox-link" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -282,7 +285,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -1020,21 +1023,37 @@ test("bot messages recorded and pruned", (t) => {
 });
 
 
-test("image editing migration upgrades v4.1.12 archives and tolerates partial pre-application", t => {
+test("image editing and image-request migrations upgrade v4.1.12 archives", t => {
   const dbPath = tempDb(t);
   const old = new SharedDb(dbPath);
-  old.db.exec("DELETE FROM schema_migrations WHERE version = 23");
+  old.db.exec("DELETE FROM schema_migrations WHERE version >= 23");
   old.db.exec("DROP INDEX idx_image_previews_output_message");
+  old.db.exec("DROP INDEX idx_image_previews_publication_state");
   old.db.exec("ALTER TABLE outbox DROP COLUMN image_preview_id");
+  old.db.exec("ALTER TABLE image_previews DROP COLUMN publication_state");
   for (const column of ["operation", "reference_count", "parent_ids_json", "output_size", "output_message_id"]) old.db.exec(`ALTER TABLE image_previews DROP COLUMN ${column}`);
   const id = Number(old.db.prepare("INSERT INTO outbox (group_id, kind, text, status, created_at) VALUES (?, ?, ?, ?, ?)").run("group", "text", "pending text", "pending", Date.now()).lastInsertRowid);
   old.close();
   const upgraded = new SharedDb(dbPath);
   assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
-  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 23);
-  upgraded.db.exec("DELETE FROM schema_migrations WHERE version = 23");
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 26);
+  const columns = upgraded.db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string; dflt_value: string | null }>;
+  assert.equal(columns.find(column => column.name === "publication_state")?.dflt_value, "'published'");
+  const now = Date.now();
+  upgraded.db.prepare(
+    `INSERT INTO image_previews
+       (id, group_id, creator_user_id, source_message_id, prompt, prompt_summary,
+        model_id, model, fallback_used, mime_type, byte_size, content_sha256,
+        created_at, updated_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("legacy-preview", "group", "creator", "legacy-source", "prompt", "prompt", "model", "model", 0, "image/png", 1, "a".repeat(64), now, now, now + 1_000);
+  assert.equal(
+    (upgraded.db.prepare("SELECT publication_state FROM image_previews WHERE id = ?").get("legacy-preview") as { publication_state: string }).publication_state,
+    "published",
+  );
+  upgraded.db.exec("DELETE FROM schema_migrations WHERE version = 26");
   upgraded.close();
   const reapplied = new SharedDb(dbPath);
-  assert.equal(reapplied.listSchemaMigrations().filter(m => m.version === 23).length, 1);
+  assert.equal(reapplied.listSchemaMigrations().filter(m => m.version === 26).length, 1);
   reapplied.close();
 });

@@ -51,6 +51,7 @@ try {
       reasoningEffort: false,
       requestTimeout: true,
       imageGeneration: true,
+      imageEditing: true,
     },
     requestTimeoutMs: 180_000,
     createdAt: existing?.createdAt || now,
@@ -72,7 +73,12 @@ try {
     const config = JSON.parse(row.config_json);
     return count + (config.imageGenerationEnabled === true ? 1 : 0);
   }, 0);
-  if (!configured?.hasApiKey || configured.apiKey !== apiKey || verified.selectedModelIds.image !== id) {
+  if (
+    !configured?.hasApiKey ||
+    configured.apiKey !== apiKey ||
+    configured.capabilities?.imageEditing !== true ||
+    verified.selectedModelIds.image !== id
+  ) {
     throw new Error("The encrypted image model configuration could not be verified.");
   }
   if (imageEnabledGroupCount !== 0) {
@@ -84,6 +90,7 @@ try {
     selected: true,
     enabled: configured.enabled,
     hasApiKey: configured.hasApiKey,
+    imageEditing: configured.capabilities?.imageEditing === true,
     replyModelCount: verified.models.filter((model) => model.purpose === "reply").length,
     imageModelCount: verified.models.filter((model) => model.purpose === "image").length,
     groupCount: groupRows.length,

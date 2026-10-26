@@ -7,7 +7,7 @@ import ContentBulkBar from "../components/ContentBulkBar.vue";
 import { confirmAction } from "../composables/useConfirm";
 import { useContentBulk } from "../composables/useContentBulk";
 import { useRefreshEvents } from "../composables/useRefreshEvents";
-import { api, queryString, type ImagePreviewDetail, type ImagePreviewListItem, type ImagePreviewStatus, type Pagination } from "../services/api";
+import { api, queryString, type ImagePreviewDetail, type ImagePreviewListItem, type ImagePreviewStatus, type ImageRequestKind, type ImageRequestStatus, type ImageRequestTriggerSource, type Pagination } from "../services/api";
 import { useAppStore } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
@@ -57,6 +57,56 @@ function statusClass(status: ImagePreviewStatus): string {
   if (status === "available") return "ok";
   if (status === "expired") return "pending";
   return "neutral";
+}
+
+function requestKindLabel(kind?: ImageRequestKind): string {
+  return ({ generation: "文字生图", edit: "图片编辑", avatar_edit: "头像改图" } as Record<ImageRequestKind, string>)[kind ?? "generation"] || "-";
+}
+
+function triggerSourceLabel(source?: ImageRequestTriggerSource): string {
+  return source === "natural" ? "自然语言" : source === "command" ? "指令" : "-";
+}
+
+function requestStatusLabel(status?: ImageRequestStatus): string {
+  return ({
+    accepted: "已受理",
+    submitting: "生成中",
+    generated: "已生成",
+    queued: "待投递",
+    delivered: "已投递",
+    failed: "请求失败",
+    outcome_unknown: "结果未知",
+    delivery_unknown: "投递未知",
+  } as Record<ImageRequestStatus, string>)[status ?? "accepted"] || "未记录";
+}
+
+function requestStatusClass(status?: ImageRequestStatus): string {
+  if (status === "delivered") return "ok";
+  if (status === "failed" || status === "outcome_unknown" || status === "delivery_unknown") return "neutral";
+  return "pending";
+}
+
+function failureReasonLabel(reason?: string): string {
+  return ({
+    archive_failed: "归档失败",
+    busy: "请求仍在处理",
+    content_blocked: "内容审核未通过",
+    cooldown: "冷却中",
+    delivery_failed: "投递失败",
+    delivery_not_queued: "投递未入队",
+    delivery_unknown: "投递结果未知",
+    editing_not_configured: "未配置图片编辑模型",
+    invalid_image_response: "上游图片响应无效",
+    invalid_reference: "参考图不可用",
+    invalid_size: "尺寸不支持",
+    not_configured: "未配置生图模型",
+    provider_disabled: "生图能力未启用",
+    result_unknown: "生成结果未知",
+    upstream_network: "上游网络异常",
+    upstream_rejected: "上游拒绝请求",
+    upstream_timeout: "上游超时",
+    upstream_unavailable: "上游暂不可用",
+  } as Record<string, string>)[reason ?? ""] || "请求失败";
 }
 
 function formatBytes(value?: number): string {
@@ -244,11 +294,12 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
       <div v-else class="preview-table">
         <div class="preview-table-head">
           <span><input type="checkbox" :checked="allVisibleSelected()" aria-label="选择当前页生图预览" @change="toggleSelectionPage(previews.filter(canDelete).map(selection))" /></span>
-          <span>提示词摘要</span><span>状态</span><span>模型</span><span>创建者</span><span>创建时间</span><span>到期时间</span><span>大小</span><span>操作</span>
+          <span>提示词摘要</span><span>请求</span><span>状态</span><span>模型</span><span>创建者</span><span>创建时间</span><span>到期时间</span><span>大小</span><span>操作</span>
         </div>
         <article v-for="item in previews" :key="item.id" class="preview-row">
           <span><input type="checkbox" :checked="selectedIds.has(item.id)" :disabled="app.readonly || !canDelete(item)" :aria-label="`选择生图预览 ${item.id}`" @change="toggleSelection(selection(item))" /></span>
           <div class="prompt-summary" :title="item.promptSummary"><strong>{{ item.promptSummary || "未记录提示词摘要" }}</strong><small>{{ item.mimeType || "-" }} · {{ item.id }}</small></div>
+          <div class="request-cell"><span>{{ requestKindLabel(item.requestKind || item.operation) }}</span><small>{{ triggerSourceLabel(item.triggerSource) }}</small></div>
           <span class="tag" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
           <div class="model-cell"><span>{{ modelLabel(item) }}</span><small v-if="item.fallbackUsed">已切备用</small></div>
           <span class="muted">{{ item.creatorUserId || "-" }}</span>
@@ -280,6 +331,9 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
         </div>
         <dl class="detail-meta">
           <div><dt>创作方式</dt><dd>{{ selectedPreview.operation === 'edit' ? '图片编辑' : '文字生图' }} · {{ selectedPreview.referenceCount || 0 }} 张参考图</dd></div>
+          <div v-if="selectedPreview.requestKind || selectedPreview.triggerSource"><dt>请求来源</dt><dd>{{ requestKindLabel(selectedPreview.requestKind || selectedPreview.operation) }} · {{ triggerSourceLabel(selectedPreview.triggerSource) }}</dd></div>
+          <div v-if="selectedPreview.requestStatus"><dt>投递状态</dt><dd><span class="tag" :class="requestStatusClass(selectedPreview.requestStatus)">{{ requestStatusLabel(selectedPreview.requestStatus) }}</span></dd></div>
+          <div v-if="selectedPreview.failureReason"><dt>失败原因</dt><dd>{{ failureReasonLabel(selectedPreview.failureReason) }}</dd></div>
           <div><dt>输出尺寸</dt><dd>{{ selectedPreview.outputSize === 'auto' ? '自动' : selectedPreview.outputSize || '1024x1024' }}</dd></div>
           <div v-if="selectedPreview.parentIds?.length"><dt>父版本</dt><dd v-for="id in selectedPreview.parentIds" :key="id">{{ id }}</dd></div>
           <div><dt>模型</dt><dd>{{ modelLabel(selectedPreview) }}<small v-if="selectedPreview.fallbackUsed">已切备用模型</small></dd></div>
@@ -310,11 +364,11 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
 .preview-toolbar label { display:grid; gap:6px; color:var(--muted); font-size:12.5px; font-weight:650; }
 .toolbar-actions { display:flex; justify-content:flex-end; }
 .preview-table { min-width:0; max-width:100%; overflow-x:auto; overflow-y:hidden; border:1px solid var(--line); border-radius:var(--radius-md); background:var(--surface); }
-.preview-table-head,.preview-row { display:grid; grid-template-columns:30px minmax(230px,1.55fr) 92px minmax(130px,.75fr) 120px 160px 160px 78px minmax(180px,auto); gap:12px; align-items:center; min-width:1430px; padding:12px 14px; }
+.preview-table-head,.preview-row { display:grid; grid-template-columns:30px minmax(230px,1.55fr) minmax(100px,.6fr) 92px minmax(130px,.75fr) 120px 160px 160px 78px minmax(180px,auto); gap:12px; align-items:center; min-width:1550px; padding:12px 14px; }
 .preview-table-head { background:var(--surface-soft); color:var(--muted); font-size:12.5px; font-weight:650; }
 .preview-row { border-top:1px solid var(--line); background:var(--surface); }
-.prompt-summary,.model-cell { display:grid; gap:4px; min-width:0; }
-.prompt-summary strong,.prompt-summary small,.model-cell span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.prompt-summary,.model-cell,.request-cell { display:grid; gap:4px; min-width:0; }
+.prompt-summary strong,.prompt-summary small,.model-cell span,.request-cell span,.request-cell small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .prompt-summary strong { color:var(--text-strong); font-size:14px; font-weight:650; }
 .model-cell span,.preview-row > span { font-size:12.5px; }
 .row-actions { display:flex; align-items:center; gap:8px; }.danger { color:var(--danger); }

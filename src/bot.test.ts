@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -31,8 +31,10 @@ import { ImageGenerationError, type ImageGenerationRuntime, type ImageReference 
 import type { QqAvatarReferenceResolver } from "./services/qq-avatar-reference-service.js";
 import type {
   ImagePreviewArchiveInput,
-  ImagePreviewArchiveService,
 } from "./services/image-preview-archive-service.js";
+import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
+import { ImageRequestRepository } from "./services/image-request-repository.js";
+import { WorkerTransport } from "./worker-transport.js";
 import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-service.js";
 import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
 import { BT_ADULT_CONTENT_WARNING } from "./services/bt-search-renderer.js";
@@ -1044,6 +1046,8 @@ function createEvent(
 function createApp(options?: {
   groupConfigService?: FakeGroupConfigService;
   transport?: FakeTransport;
+  /** Lets focused integration tests exercise the real worker Outbox adapter. */
+  messageTransport?: MessageTransport;
   aiService?: FakeAiService;
   conversationStore?: FakeConversationStore;
   ttsService?: FakeTtsService;
@@ -1100,6 +1104,7 @@ function createApp(options?: {
   btSearchService?: BtSearchRuntime;
   imagePreviewArchiveService?: Pick<ImagePreviewArchiveService, "archive" | "cleanup"> & Partial<Pick<ImagePreviewArchiveService, "resolveReference">>;
   avatarReferenceResolver?: QqAvatarReferenceResolver;
+  imageRequestRepository?: Pick<ImageRequestRepository, "claim" | "beginSubmission" | "recordGenerated" | "markFailed" | "markOutcomeUnknown">;
 }): {
   app: BotApplication;
   transport: FakeTransport;
@@ -1164,7 +1169,7 @@ function createApp(options?: {
   const knowledgeBaseStore = options?.knowledgeBaseStore ?? new FakeKnowledgeBaseStore();
 
   const app = new BotApplication(
-    transport,
+    options?.messageTransport ?? transport,
     groupConfigService as never,
     new FakeSkillService(options?.skills ?? [assistantSkill, teacherSkill]) as never,
     conversationStore as never,
@@ -1211,6 +1216,7 @@ function createApp(options?: {
     options?.btSearchService,
     options?.imagePreviewArchiveService,
     options?.avatarReferenceResolver,
+    options?.imageRequestRepository,
   );
 
   return {
@@ -1830,6 +1836,363 @@ test("#画图 queues the generated file without invoking conversational AI", asy
   assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
   assert.equal(aiService.calls.length, 0);
   assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
+});
+
+test("a Worker-owned image command persists one request, forwards its upstream key, and never resubmits a replay", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-request-bot-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  const stagedRoot = path.join(root, "generated-images");
+  const archiveRoot = path.join(root, "generated-image-previews");
+  const stagedFile = path.join(stagedRoot, "worker-owned.png");
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  await mkdir(stagedRoot, { recursive: true });
+  await writeFile(stagedFile, png, { mode: 0o600 });
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const sourceMessageId = "9001";
+  const now = Date.now();
+  const sourceRowId = db.insertMessage({
+    groupId: "67890",
+    userId: "20001",
+    selfId: "12345",
+    msgId: sourceMessageId,
+    msgTime: now,
+    text: "#生图 河畔灯塔",
+    imagesJson: "[]",
+    hasAtBot: false,
+    isBotMsg: false,
+    createdAt: now,
+  });
+  assert.ok(sourceRowId > 0);
+
+  const repository = new ImageRequestRepository(db);
+  const archive = new ImagePreviewArchiveService({
+    sharedDb: db,
+    rootDir: archiveRoot,
+    stagedRoot,
+  });
+  const generationInputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      generationInputs.push(input);
+      await input.onStarted?.();
+      return {
+        filePath: stagedFile,
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteLength: png.byteLength,
+        outputSize: "1024x1024",
+      };
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const workerTransport = new WorkerTransport(db);
+  const { app } = createApp({
+    messageTransport: workerTransport,
+    imageGenerationService,
+    imagePreviewArchiveService: archive,
+    imageRequestRepository: repository,
+  });
+  t.after(() => app.stop());
+
+  const event = createEvent("#生图 河畔灯塔", 20001, 67890, Number(sourceMessageId));
+  await app.handleGroupMessage(event, undefined, undefined, { imageRequestSourceRowId: sourceRowId });
+  await app.handleGroupMessage(event, undefined, undefined, { imageRequestSourceRowId: sourceRowId });
+
+  assert.equal(generationInputs.length, 1);
+  const request = repository.getSafeBySource("67890", sourceMessageId);
+  assert.ok(request);
+  assert.match(request.id, /^imgreq_[a-f0-9-]{36}$/);
+  const internalRequest = repository.get(request.id);
+  assert.ok(internalRequest);
+  assert.equal(generationInputs[0]?.requestId, internalRequest.upstreamRequestKey);
+  assert.notEqual(generationInputs[0]?.requestId, internalRequest.id);
+  assert.deepEqual(
+    {
+      requestKind: request.requestKind,
+      triggerSource: request.triggerSource,
+      status: request.status,
+      sourceRowId: request.sourceRowId,
+      outputSize: request.outputSize,
+    },
+    {
+      requestKind: "generation",
+      triggerSource: "command",
+      status: "queued",
+      sourceRowId,
+      outputSize: "1024x1024",
+    },
+  );
+  assert.ok(request.imagePreviewId);
+  assert.ok(request.outboxId);
+
+  const generatedOutbox = db.db.prepare(
+    "SELECT id, kind, status, image_preview_id FROM outbox WHERE id = ?",
+  ).get(request.outboxId) as {
+    id: number;
+    kind: string;
+    status: string;
+    image_preview_id: string | null;
+  };
+  assert.deepEqual({ ...generatedOutbox }, {
+    id: request.outboxId,
+    kind: "generated_image",
+    status: "pending",
+    image_preview_id: request.imagePreviewId,
+  });
+  const generatedOutboxCount = db.db.prepare(
+    "SELECT COUNT(*) AS count FROM outbox WHERE kind = 'generated_image'",
+  ).get() as { count: number };
+  assert.equal(generatedOutboxCount.count, 1);
+  const preview = await archive.get(request.imagePreviewId);
+  assert.equal(preview?.requestStatus, "queued");
+});
+
+test("a Worker replay quarantines ambiguous image requests without resubmitting and removes an unqueued staged file", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-request-replay-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  const stagedRoot = path.join(root, "generated-images");
+  const stagedFile = path.join(stagedRoot, "unqueued.png");
+  await mkdir(stagedRoot, { recursive: true });
+  await writeFile(stagedFile, "staged", { mode: 0o600 });
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const repository = new ImageRequestRepository(db);
+  const generatedInputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const discardedPaths: string[] = [];
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      generatedInputs.push(input);
+      throw new Error("a replayed image request must not reach the model");
+    },
+    async discard(filePath) {
+      discardedPaths.push(filePath);
+      await rm(filePath, { force: true });
+    },
+    async cleanup() { return 0; },
+  };
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890",
+    currentSkillId: "assistant",
+    allowedSkillIds: ["assistant"],
+    switcherUserIds: [],
+    liveChatUserIds: [],
+    imageGenerationEnabled: true,
+  }], ["20001"]);
+  const { app } = createApp({ groupConfigService, imageGenerationService, imageRequestRepository: repository });
+  t.after(() => app.stop());
+
+  const rows = [
+    { messageId: "9101", state: "accepted" as const },
+    { messageId: "9102", state: "submitting" as const },
+    { messageId: "9103", state: "generated" as const },
+  ];
+  for (const { messageId, state } of rows) {
+    const sourceRowId = db.insertMessage({
+      groupId: "67890",
+      userId: "20001",
+      selfId: "12345",
+      msgId: messageId,
+      msgTime: Date.now(),
+      text: "#生图 河畔灯塔",
+      imagesJson: "[]",
+      hasAtBot: false,
+      isBotMsg: false,
+      createdAt: Date.now(),
+    });
+    const request = repository.claim({
+      groupId: "67890",
+      sourceMessageId: messageId,
+      sourceRowId,
+      creatorUserId: "20001",
+      requestKind: "generation",
+      triggerSource: "command",
+    }).request;
+    if (state !== "accepted") {
+      assert.ok(repository.beginSubmission(request.id));
+    }
+    if (state === "generated") {
+      assert.ok(repository.recordGenerated({
+        id: request.id,
+        stagedFilePath: stagedFile,
+        modelId: "image-primary",
+        model: "gpt-image-test",
+        fallbackUsed: false,
+        mimeType: "image/png",
+        byteSize: 6,
+        outputSize: "1024x1024",
+      }));
+    }
+
+    await app.handleGroupMessage(
+      createEvent("#生图 河畔灯塔", 20001, 67890, Number(messageId)),
+      undefined,
+      undefined,
+      { imageRequestSourceRowId: sourceRowId },
+    );
+    assert.equal(repository.get(request.id)?.status, "outcome_unknown", `${state} replay should be quarantined`);
+  }
+
+  assert.equal(generatedInputs.length, 0);
+  assert.deepEqual(discardedPaths, [stagedFile]);
+  await assert.rejects(() => access(stagedFile), { code: "ENOENT" });
+});
+
+test("a Worker-owned uncertain upstream failure is quarantined without a replay submission", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-request-unknown-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const sourceRowId = db.insertMessage({
+    groupId: "67890", userId: "20001", selfId: "12345", msgId: "9201", msgTime: Date.now(),
+    text: "#生图 山间湖泊", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: Date.now(),
+  });
+  const repository = new ImageRequestRepository(db);
+  let submissions = 0;
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      submissions += 1;
+      await input.onStarted?.();
+      throw new ImageGenerationError("upstream_unavailable", "gateway_result_unknown");
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const { app } = createApp({ imageGenerationService, imageRequestRepository: repository });
+  t.after(() => app.stop());
+
+  const event = createEvent("#生图 山间湖泊", 20001, 67890, 9201);
+  await app.handleGroupMessage(event, undefined, undefined, { imageRequestSourceRowId: sourceRowId });
+  await app.handleGroupMessage(event, undefined, undefined, { imageRequestSourceRowId: sourceRowId });
+
+  assert.equal(submissions, 1);
+  const request = repository.getSafeBySource("67890", "9201");
+  assert.equal(request?.status, "outcome_unknown");
+  assert.equal(request?.errorCode, "upstream_unavailable");
+});
+
+test("a Worker-owned exhausted rate limit is recorded as a known failure", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-request-rate-limit-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const sourceRowId = db.insertMessage({
+    groupId: "67890", userId: "20001", selfId: "12345", msgId: "9202", msgTime: Date.now(),
+    text: "#生图 山间湖泊", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: Date.now(),
+  });
+  const repository = new ImageRequestRepository(db);
+  const imageGenerationService: ImageGenerationRuntime = {
+    async generate(input) {
+      await input.onStarted?.();
+      throw new ImageGenerationError("upstream_unavailable", "rate_limited", undefined, { failureKind: "rate_limit" });
+    },
+    async discard() {},
+    async cleanup() { return 0; },
+  };
+  const { app } = createApp({ imageGenerationService, imageRequestRepository: repository });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(
+    createEvent("#生图 山间湖泊", 20001, 67890, 9202),
+    undefined,
+    undefined,
+    { imageRequestSourceRowId: sourceRowId },
+  );
+
+  const request = repository.getSafeBySource("67890", "9202");
+  assert.equal(request?.status, "failed");
+  assert.equal(request?.errorCode, "upstream_unavailable");
+});
+
+test("a Worker-owned image archive is discarded when its generated-image Outbox link fails", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-request-outbox-failure-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  const stagedRoot = path.join(root, "generated-images");
+  const archiveRoot = path.join(root, "generated-image-previews");
+  const stagedFile = path.join(stagedRoot, "outbox-failure.png");
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  await mkdir(stagedRoot, { recursive: true });
+  await writeFile(stagedFile, png, { mode: 0o600 });
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const sourceRowId = db.insertMessage({
+    groupId: "67890", userId: "20001", selfId: "12345", msgId: "9051", msgTime: Date.now(),
+    text: "#生图 山间小屋", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: Date.now(),
+  });
+  const repository = new ImageRequestRepository(db);
+  const archive = new ImagePreviewArchiveService({
+    sharedDb: db,
+    rootDir: archiveRoot,
+    stagedRoot,
+  });
+  const runtime: ImageGenerationRuntime = {
+    async generate(input) {
+      await input.onStarted?.();
+      return {
+        filePath: stagedFile, modelId: "image-primary", model: "gpt-image-test", fallbackUsed: false,
+        mimeType: "image/png", byteLength: png.byteLength, outputSize: "1024x1024",
+      };
+    },
+    async discard(filePath) { await rm(filePath, { force: true }); },
+    async cleanup() { return 0; },
+  };
+  const transport = new WorkerTransport(db);
+  const originalSend = transport.sendGeneratedGroupImage.bind(transport);
+  transport.sendGeneratedGroupImage = async () => {
+    throw new Error("simulated_outbox_link_failure");
+  };
+  const { app } = createApp({
+    messageTransport: transport,
+    imageGenerationService: runtime,
+    imagePreviewArchiveService: archive,
+    imageRequestRepository: repository,
+  });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(
+    createEvent("#生图 山间小屋", 20001, 67890, 9051),
+    undefined,
+    undefined,
+    { imageRequestSourceRowId: sourceRowId },
+  );
+  transport.sendGeneratedGroupImage = originalSend;
+
+  const request = repository.getSafeBySource("67890", "9051");
+  assert.deepEqual({ status: request?.status, errorCode: request?.errorCode }, {
+    status: "failed",
+    errorCode: "delivery_not_queued",
+  });
+  assert.equal((db.db.prepare("SELECT COUNT(*) AS count FROM outbox WHERE kind = 'generated_image'").get() as { count: number }).count, 0);
+  const preview = db.db.prepare(
+    "SELECT status, publication_state, prompt FROM image_previews WHERE group_id = ? AND source_message_id = ?",
+  ).get("67890", "9051") as { status: string; publication_state: string; prompt: string | null };
+  assert.deepEqual({ ...preview }, { status: "deleted", publication_state: "pending", prompt: null });
+  const archiveFileCount = (await readdir(archiveRoot)).filter(name => /\.(?:png|jpg|webp)$/u.test(name)).length;
+  assert.equal(archiveFileCount, 0);
+  await assert.rejects(() => access(stagedFile), { code: "ENOENT" });
 });
 
 test("#画图 archives the validated request before handing the image to QQ", async () => {
@@ -7931,6 +8294,52 @@ test("retained image references preserve parent versions and unavailable archive
   await app.handleGroupMessage(createEvent([{ type: "reply", data: { id: "version-1" } }, { type: "text", data: { text: "#改图 变成日落" } }]));
   assert.equal(inputs.length, 3);
   assert.match(transport.sent.at(-1)?.text ?? "", /删除、过期/);
+});
+
+test("a real direct mention may edit a trusted ordinary quoted image through the verified QQ fallback", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const transport = new FakeTransport();
+  transport.messagesById["ordinary-quote"] = {
+    messageId: "ordinary-quote",
+    groupId: "67890",
+    text: "",
+    images: [{ url: editTestPng, summary: "ordinary-quoted-image" }],
+  };
+  const { app } = createApp({
+    transport,
+    imagePipeline: pipeline,
+    imageGenerationService: imageEditTestRuntime(inputs),
+    imagePreviewArchiveService: {
+      async resolveReference(groupId, messageId) {
+        assert.equal(groupId, "67890");
+        assert.equal(messageId, "ordinary-quote");
+        return undefined;
+      },
+      async archive() { return { id: "ordinary-child" } as never; },
+      async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+    },
+  });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "reply", data: { id: "ordinary-quote" } },
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " 把天空改成晚霞" } },
+    ]),
+    undefined,
+    undefined,
+    {
+      hasTrustedBotMention: true,
+      hasTrustedReply: true,
+      replyIsGeneratedImage: false,
+    },
+  );
+
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]?.referenceImages?.length, 1);
+  assert.deepEqual(pipeline.calls.flat().map((image) => image.summary), ["ordinary-quoted-image"]);
 });
 
 test("avatar edit uses a verified current member avatar as image 1 and appends quote and attachment references", async t => {

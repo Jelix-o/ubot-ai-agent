@@ -183,6 +183,14 @@ interface HtmlPreviewAdminService {
 }
 
 type ImagePreviewStatus = "available" | "expired" | "deleted";
+type ImageRequestKind = "generation" | "edit" | "avatar_edit";
+type ImageRequestTriggerSource = "command" | "natural";
+type ImageRequestStatus = "accepted" | "submitting" | "generated" | "queued" | "delivered" | "failed" | "outcome_unknown" | "delivery_unknown";
+const SAFE_IMAGE_REQUEST_FAILURE_REASONS = new Set([
+  "archive_failed", "busy", "content_blocked", "cooldown", "delivery_failed", "delivery_not_queued", "delivery_unknown",
+  "editing_not_configured", "invalid_image_response", "invalid_reference", "invalid_size", "not_configured",
+  "provider_disabled", "result_unknown", "upstream_network", "upstream_rejected", "upstream_timeout", "upstream_unavailable",
+]);
 
 /**
  * Deliberately redacted metadata returned by list, delete, and bulk paths.
@@ -196,6 +204,15 @@ interface ImagePreviewAdminMetadata {
   parentIds?: string[];
   outputSize?: string;
   outputMessageId?: string;
+  /**
+   * Request-ledger fields are deliberately limited to enum values. The
+   * original prompt, target identity, and provider response never leave the
+   * archive service through these properties.
+   */
+  requestKind?: ImageRequestKind;
+  triggerSource?: ImageRequestTriggerSource;
+  requestStatus?: ImageRequestStatus;
+  failureReason?: string;
 
   groupId: string;
   creatorUserId?: string;
@@ -1169,7 +1186,7 @@ export class AdminHttpServer {
           if (!source) throw new BulkError("source_not_found", 404);
           const fields = normalizeIds(body.fields);
           if (fields.includes("replyModelMode") && !fields.includes("replyModelSource")) fields.push("replyModelSource");
-          const copyFields = ["enabled", "botMuted", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
+          const copyFields = ["enabled", "botMuted", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
           if (!fields.length || fields.some(f => !copyFields.includes(f))) throw new BulkError("invalid_copy_fields");
           patch = Object.fromEntries(fields.map(f => [f, (source as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined));
           if (!Object.keys(patch ?? {}).length) throw new BulkError("empty_copy_fields");
@@ -4062,6 +4079,10 @@ function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
   parentIds?: string[];
   outputSize?: string;
   outputMessageId?: string;
+  requestKind?: ImageRequestKind;
+  triggerSource?: ImageRequestTriggerSource;
+  requestStatus?: ImageRequestStatus;
+  failureReason?: string;
 
   groupId: string;
   creatorUserId?: string;
@@ -4085,6 +4106,10 @@ function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
     ...(preview.parentIds ? { parentIds: preview.parentIds } : {}),
     ...(preview.outputSize ? { outputSize: preview.outputSize } : {}),
     ...(preview.outputMessageId ? { outputMessageId: preview.outputMessageId } : {}),
+    ...(status === "available" && normalizeImageRequestKind(preview.requestKind) ? { requestKind: normalizeImageRequestKind(preview.requestKind)! } : {}),
+    ...(status === "available" && normalizeImageRequestTriggerSource(preview.triggerSource) ? { triggerSource: normalizeImageRequestTriggerSource(preview.triggerSource)! } : {}),
+    ...(status === "available" && normalizeImageRequestStatus(preview.requestStatus) ? { requestStatus: normalizeImageRequestStatus(preview.requestStatus)! } : {}),
+    ...(status === "available" && normalizeImageRequestFailureReason(preview.failureReason) ? { failureReason: normalizeImageRequestFailureReason(preview.failureReason)! } : {}),
     ...(preview.creatorUserId ? { creatorUserId: preview.creatorUserId } : {}),
     // The archive service already creates the bounded summary. Trim here too
     // so an old/malformed record cannot inflate an administrative list view.
@@ -4101,6 +4126,31 @@ function formatImagePreviewForAdmin(preview: ImagePreviewAdminMetadata): {
     expiresAt: preview.expiresAt,
     ...(preview.deletedAt ? { deletedAt: preview.deletedAt } : {}),
   };
+}
+
+function normalizeImageRequestKind(value: string | undefined): ImageRequestKind | undefined {
+  return value === "generation" || value === "edit" || value === "avatar_edit" ? value : undefined;
+}
+
+function normalizeImageRequestTriggerSource(value: string | undefined): ImageRequestTriggerSource | undefined {
+  return value === "command" || value === "natural" ? value : undefined;
+}
+
+function normalizeImageRequestStatus(value: string | undefined): ImageRequestStatus | undefined {
+  return value === "accepted" || value === "submitting" || value === "generated" || value === "queued" || value === "delivered" || value === "failed" || value === "outcome_unknown" || value === "delivery_unknown"
+    ? value
+    : undefined;
+}
+
+/**
+ * Only code-like, bounded diagnostics can be returned to the admin UI. In
+ * particular, never expose a raw provider error because it can include the
+ * original prompt or other user supplied content.
+ */
+function normalizeImageRequestFailureReason(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || !/^[a-z][a-z0-9_]{0,79}$/.test(normalized)) return undefined;
+  return SAFE_IMAGE_REQUEST_FAILURE_REASONS.has(normalized) ? normalized : "request_failed";
 }
 
 function formatImagePreviewDetailForAdmin(preview: ImagePreviewAdminDetail & { prompt: string }): ReturnType<typeof formatImagePreviewForAdmin> & { prompt: string } {
@@ -4194,6 +4244,7 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "visionEnabled",
     "ambientGroupContextEnabled",
     "htmlPreviewEnabled",
+    "naturalImageRequestsEnabled",
   ]);
   const update = Object.fromEntries(Object.entries(body).filter(([key]) => permitted.has(key)));
   if ("memoryDisabledUserIds" in body) {

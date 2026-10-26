@@ -48,7 +48,12 @@ test("image model configuration stores only encrypted key material and is idempo
       encoding: "utf8",
       env,
       input: `${secret}\n`,
-    })) as { replyModelCount: number; imageModelCount: number; imageEnabledGroupCount: number };
+    })) as {
+      replyModelCount: number;
+      imageModelCount: number;
+      imageEnabledGroupCount: number;
+      imageEditing: boolean;
+    };
     assert.deepEqual(result, {
       configuredModelId: "gpt-image-sunburst",
       selected: true,
@@ -58,6 +63,7 @@ test("image model configuration stores only encrypted key material and is idempo
       imageModelCount: 1,
       groupCount: 1,
       imageEnabledGroupCount: 0,
+      imageEditing: true,
     });
   }
 
@@ -68,6 +74,7 @@ test("image model configuration stores only encrypted key material and is idempo
     assert.equal(settings?.models.length, 5);
     assert.equal(settings?.selectedModelIds.image, "gpt-image-sunburst");
     assert.equal(settings?.models.find((model) => model.id === "gpt-image-sunburst")?.apiKey, secret);
+    assert.equal(settings?.models.find((model) => model.id === "gpt-image-sunburst")?.capabilities?.imageEditing, true);
     const rawSettings = verifiedDb.db.prepare(
       "SELECT settings_json FROM v3_system_settings WHERE settings_key = 'default'",
     ).get() as { settings_json: string };
