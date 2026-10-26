@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
+import { normalizeMemeTagSelector } from "./meme-reply-protocol.js";
 
 export const MEME_LIBRARY_DOCUMENT_TYPE = "meme-library";
 export const MEME_LIBRARY_DOCUMENT_KEY = "default";
@@ -629,7 +630,7 @@ export class MemeLibraryService {
         const assets = this.readAssetDocument(repository).assets.filter(asset => this.isPackActive(asset, policy));
         const tags = this.readTagDocument(repository).tags;
         const tagIds = policy.selectionMode === "model_tag"
-          ? tags.filter(tag => tag.id === args.tagId).map(tag => tag.id)
+          ? resolveModelTagIds(tags, args.tagId)
           : matchingNormalChatTagIds(tags, assets, normalizeMemeMatchText(args.userText));
         if (!policy.enabled || policy.probabilityPercent <= 0) { result = { reason: "policy_disabled", matchedTagIds: tagIds }; return cooldown; }
         if (isCooldownActive(cooldown, policy.cooldownSeconds, now)) { result = { reason: "cooldown", matchedTagIds: tagIds }; return cooldown; }
@@ -1041,6 +1042,21 @@ function normalizeMemeMatchText(value: string): string {
 
 function tagNameKey(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase("zh-CN").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Model replies use readable category names, while persisted assets continue
+ * to reference immutable tag ids.  Keep exact id matching for older model
+ * outputs and public callers; name matching must resolve exactly one tag.
+ */
+function resolveModelTagIds(tags: MemeTag[], selector: string | undefined): string[] {
+  if (!selector) return [];
+  const direct = tags.find(tag => tag.id === selector);
+  if (direct) return [direct.id];
+  const normalized = normalizeMemeTagSelector(selector);
+  if (!normalized) return [];
+  const matches = tags.filter(tag => tagNameKey(tag.name) === tagNameKey(normalized));
+  return matches.length === 1 ? [matches[0]!.id] : [];
 }
 
 function validateTagPatch(patch: MemeLibraryTagPatch): void {

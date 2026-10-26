@@ -445,20 +445,37 @@ test("model tags require an enabled pack and a valid choice, enforce probability
     assert.deepEqual((await service.readAssetBytes(asset.id))?.data, gif);
     assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food" })).reason, "no_match");
     assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food", tagId: "invalid" })).reason, "no_match");
+    const namedSelection = await service.claimNormalChatImage({ groupId: "10001", userText: "anything", tagId: " FOOD ", now: 99_000 });
+    assert.equal(namedSelection.reason, "sent_candidate", "model-facing category names resolve to the persisted UUID tag");
+    assert.deepEqual(namedSelection.matchedTagIds, [tag.id]);
     random = 0.35;
-    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "anything", tagId: tag.id })).reason, "probability_miss");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10002", userText: "anything", tagId: tag.id })).reason, "probability_miss");
     random = 0;
     await service.updatePolicy({ activePackIds: ["local"] });
     assert.equal((await service.getReplyTags()).length, 0);
-    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food", tagId: tag.id })).reason, "asset_unavailable");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id })).reason, "asset_unavailable");
     await service.updatePolicy({ activePackIds: ["blue-fat-fish-meme-pack"] });
     await rm(path.join(dataDir, "meme-library", `${asset.id}.gif`));
-    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food", tagId: tag.id, now: 100_000 })).reason, "asset_unavailable");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 100_000 })).reason, "asset_unavailable");
     await service.uploadAsset({ name: "恢复", scope: "normal_chat", tags: [tag.id], data: gif, packId: "blue-fat-fish-meme-pack" });
-    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food", tagId: tag.id, now: 100_001 })).reason, "sent_candidate", "missing files must not consume the cooldown");
-    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food", tagId: tag.id, now: 160_000 })).reason, "cooldown");
-    assert.equal((await service.claimNormalChatImage({ groupId: "10002", userText: "food", tagId: tag.id, now: 100_001 })).reason, "sent_candidate");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 100_001 })).reason, "sent_candidate", "missing files must not consume the cooldown");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 160_000 })).reason, "cooldown");
+    const legacyIdSelection = await service.claimNormalChatImage({ groupId: "10002", userText: "food", tagId: tag.id, now: 100_001 });
+    assert.equal(legacyIdSelection.reason, "sent_candidate", "existing UUID model selectors remain supported");
+    assert.deepEqual(legacyIdSelection.matchedTagIds, [tag.id]);
   }, { random: () => random });
+});
+
+test("model tags resolve readable Chinese category names while stored asset references remain opaque", async () => {
+  await withLibrary(async ({ service }) => {
+    const tag = (await service.createTag({ name: "摸鱼", keywords: ["摸鱼"] }))!;
+    const asset = await service.uploadAsset({ name: "漂着", scope: "normal_chat", tags: [tag.id], data: GIF });
+    assert.ok(asset);
+    const selection = await service.claimNormalChatImage({ groupId: "10001", userText: "anything", tagId: " 摸鱼 ", now: 1_000 });
+    assert.equal(selection.reason, "sent_candidate");
+    assert.deepEqual(selection.matchedTagIds, [tag.id]);
+    assert.equal(selection.selection?.assetId, asset.id);
+  }, { random: () => 0 });
 });
 
 test("collection deduplicates by content, merges categories and the policy migration saves an audited backup once", async () => {

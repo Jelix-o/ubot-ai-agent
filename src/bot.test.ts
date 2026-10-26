@@ -636,7 +636,7 @@ class FakeMemeLibraryService implements MemeLibraryRuntimeService {
   async getReplyTags(): Promise<MemeTag[]> { return this.tags; }
   async uploadAsset(input: MemeLibraryUploadInput) { this.collected.push(input); return {}; }
   blacklistedSelections: Array<{ groupId?: string }> = [];
-  claimCalls: Array<{ groupId: string; userText: string; now?: number }> = [];
+  claimCalls: Array<{ groupId: string; userText: string; tagId?: string; now?: number }> = [];
   onClaim?: () => void;
 
   constructor(
@@ -657,6 +657,7 @@ class FakeMemeLibraryService implements MemeLibraryRuntimeService {
   async claimNormalChatImage(input: {
     groupId: string;
     userText: string;
+    tagId?: string;
     now?: number;
   }): ReturnType<MemeLibraryRuntimeService["claimNormalChatImage"]> {
     this.claimCalls.push({ ...input });
@@ -3558,13 +3559,14 @@ test("normal text replies append a locally matched meme after the text without a
 
 test("model category controls are stripped from QQ text and passed only to meme selection", async () => {
   const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://happy" });
-  const aiService = new FakeAiService(async () => ({ text: "开饭咯 [[meme:happy-tag]]", model: "test", skillId: "assistant" }));
+  const aiService = new FakeAiService(async () => ({ text: "开饭咯 [[meme:happy]]", model: "test", skillId: "assistant" }));
   const { app, transport } = createApp({ aiService, memeLibraryService });
   await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "今天吃啥" } }]));
   assert.equal(transport.sent[0]?.text, "开饭咯");
-  assert.equal((memeLibraryService.claimCalls[0] as { tagId?: string })?.tagId, "happy-tag");
+  assert.equal(memeLibraryService.claimCalls[0]?.tagId, "happy");
   assert.equal(transport.images.length, 1);
-  assert.ok(aiService.calls[0]?.scenarioInstruction?.includes("happy-tag"));
+  assert.ok(aiService.calls[0]?.scenarioInstruction?.includes("\"category\":\"happy\""));
+  assert.equal(aiService.calls[0]?.scenarioInstruction?.includes("happy-tag"), false);
   await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "帮我排查生产故障" } }], 20001, 67890, 2));
   assert.equal(transport.images.length, 1, "serious help must not attach entertainment memes even if the model selects one");
 });

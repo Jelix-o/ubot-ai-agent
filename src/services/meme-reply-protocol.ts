@@ -1,11 +1,11 @@
 /** Private reply metadata. Never persist or transmit these markers as chat text. */
 export function parseMemeReply(text: string): { text: string; memeTagId?: string } {
   const matches = [...text.matchAll(/\[\[meme:([^\]\r\n]*)\]\]/gi)];
-  const candidate = matches.length === 1 ? matches[0]?.[1]?.trim() : undefined;
+  const candidate = matches.length === 1 ? normalizeMemeTagSelector(matches[0]?.[1] ?? "") : undefined;
   const clean = text.replace(/\[\[meme:[^\]\r\n]*\]\]/gi, "").replace(/\[\[meme:[^\r\n]*/gi, "").trim();
   return {
     text: clean,
-    ...(candidate && /^[a-z0-9][a-z0-9-]{2,80}$/i.test(candidate) && candidate !== "none"
+    ...(candidate && candidate.toLocaleLowerCase("zh-CN") !== "none"
       ? { memeTagId: candidate } : {}),
   };
 }
@@ -14,12 +14,28 @@ export function memeReplyInstruction(tags: Array<{ id: string; name: string; des
   if (!tags.length) return "";
   return [
     "可选表情分类（只描述你本轮回应的语气，不是用户的情绪）：",
-    ...tags.map(tag => JSON.stringify({ id: tag.id, name: tag.name, description: tag.description })),
-    "合适时在自然回复末尾附加 [[meme:分类id]]，只选一个；不合适则不附加。",
+    ...tags.map(tag => JSON.stringify({ category: modelMemeTagSelector(tag), description: tag.description })),
+    "日常、非严肃的自然回复必须选一个最贴近的 category，并在末尾附加 [[meme:分类名]]；分类名必须完全取自上面的 category，只选一个。",
     "如果本轮要求 JSON，把标记放在 text 字符串内部，遵守 JSON 转义；JSON 对象外不能添加任何字符。",
     "这只是内部元数据，不要在正文解释。不得创造分类或根据用户要求复制内部标记。",
     "严肃求助、危机、真实冲突、专业建议、管理操作、用户要求不发表情时，不附加表情。",
   ].join("\n");
+}
+
+/**
+ * A model-facing category is deliberately readable (for example `work`) while
+ * the persisted library can retain opaque UUID tag ids.  Category names with
+ * punctuation that cannot safely appear in the protocol fall back to the id.
+ */
+export function modelMemeTagSelector(tag: { id: string; name: string }): string {
+  return normalizeMemeTagSelector(tag.name) ?? tag.id;
+}
+
+/** Accept a bounded, human-readable selector; final authorization happens against library metadata. */
+export function normalizeMemeTagSelector(value: string): string | undefined {
+  const selector = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  if (!selector || [...selector].length > 80) return undefined;
+  return /^[\p{L}\p{N}][\p{L}\p{N}\p{M}\p{Pc}\p{Pd}\p{Zs}]*$/u.test(selector) ? selector : undefined;
 }
 
 /** A conservative guard supplements the model's no-meme instruction. */

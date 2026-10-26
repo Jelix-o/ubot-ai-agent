@@ -191,7 +191,7 @@ test("meme metadata is extracted from the validated conversation text while stat
   const service = new AiService("https://invalid.example", "test", "test", {
     async create() {
       const text = JSON.stringify({
-        text: "我先低调漂一会儿。\n[[meme:work-tag]]", stateUpdate: { coveredPoints: ["摸鱼接话"] }, review: { repeatsAnswered: false },
+        text: "我先低调漂一会儿。\n[[meme:work]]", stateUpdate: { coveredPoints: ["摸鱼接话"] }, review: { repeatsAnswered: false },
       });
       return streaming
         ? (async function* () { yield { choices: [{ delta: { content: text }, finish_reason: "stop" }] }; })()
@@ -200,7 +200,7 @@ test("meme metadata is extracted from the validated conversation text while stat
   } as never, { providerCapabilities: { streaming } });
   const reply = await service.generateReply({ skill, history: [], userInput: "一起摸鱼", identityContext: { groupId: "g", currentUserId: "a", replyPlan: plan } });
   assert.equal(reply.text, "我先低调漂一会儿。");
-  assert.equal(reply.memeTagId, "work-tag");
+  assert.equal(reply.memeTagId, "work");
   assert.deepEqual(reply.conversationUpdate, { coveredPoints: ["摸鱼接话"] });
   assert.doesNotMatch(reply.text, /stateUpdate|review|meme:/);
   }
