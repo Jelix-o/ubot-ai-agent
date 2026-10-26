@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, shallowRef } from "vue";
+import { computed, onMounted, onUnmounted, reactive, shallowRef } from "vue";
 
-import { api, type MemeAsset, type MemeLibraryPolicy, type MemeLibrarySnapshot, type MemeScope, type MemeTag } from "../services/api";
+import { api, type MemeAsset, type MemePackPreset, type AdminTaskRecord, type MemeLibraryPolicy, type MemeLibrarySnapshot, type MemeScope, type MemeTag } from "../services/api";
 import { confirmAction } from "../composables/useConfirm";
 import { useContentBulk } from "../composables/useContentBulk";
 import AdminDialog from "../components/AdminDialog.vue";
@@ -27,9 +27,36 @@ const MAX_TAG_KEYWORD_LENGTH = 64;
 
 const policy = reactive<MemeLibraryPolicy>({
   enabled: true,
-  probabilityPercent: 30,
-  cooldownSeconds: 600,
+  probabilityPercent: 35,
+  cooldownSeconds: 60,
+  selectionMode: "model_tag",
+  activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"],
 });
+const packs = shallowRef<MemePackPreset[]>([]);
+const importTask = shallowRef<AdminTaskRecord>();
+const importBusy = computed(() => importTask.value?.status === "queued" || importTask.value?.status === "running");
+const importFailures = computed(() => (importTask.value?.result as { failed?: Array<{ path: string; error: string }> } | undefined)?.failed ?? []);
+let importTimer: ReturnType<typeof setTimeout> | undefined;
+let disposed = false;
+onUnmounted(() => { disposed = true; clearTimeout(importTimer); });
+async function pollImport(id: string): Promise<void> {
+  try {
+    const response = await api<AdminTaskRecord>("/api/tasks/" + encodeURIComponent(id));
+    if (disposed) return;
+    importTask.value = response;
+    if (importBusy.value) importTimer = setTimeout(() => { void pollImport(id); }, 1500);
+    else { localStorage.removeItem("ubot-meme-import-task"); await load(); }
+  } catch (error) { app.showToast(actionError(error), "error"); }
+}
+async function importPack(packId: string): Promise<void> {
+  try {
+    const response = await api<{ task: AdminTaskRecord; taskId: string }>("/api/meme-library/packs/import", { method: "POST", body: JSON.stringify({ packId }) });
+    importTask.value = response.task;
+    localStorage.setItem("ubot-meme-import-task", response.taskId);
+    await pollImport(response.taskId);
+  } catch (error) { app.showToast(actionError(error), "error"); }
+}
+onMounted(() => { const id = localStorage.getItem("ubot-meme-import-task"); if (id) void pollImport(id); });
 const tags = shallowRef<MemeTag[]>([]);
 const assets = shallowRef<MemeAsset[]>([]);
 const { selectedIds, selectedGroupCount, preview: bulkPreview, bulkBusy, eligible, toggleSelection, toggleSelectionPage, clearSelection, prepareBulk, executeBulk } = useContentBulk("memes");
@@ -88,6 +115,7 @@ function previewBulkTags(): void {
 
 function applySnapshot(snapshot: MemeLibrarySnapshot): void {
   Object.assign(policy, snapshot.policy);
+  packs.value = snapshot.packs ?? [];
   tags.value = snapshot.tags;
   assets.value = snapshot.assets;
   const selected = snapshot.assets.find((asset) => asset.id === selectedAssetId.value);
@@ -114,6 +142,8 @@ function actionError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const messages: Record<string, string> = {
     recent_reauth_required: "此操作需要近期密码复验，请先到「账号与安全」完成验证。",
+    meme_pack_import_busy: "已有素材包正在导入，请等待任务完成后重试。",
+    meme_pack_unknown: "素材包不可用，请刷新页面。",
     meme_tag_keywords_required: "请至少填写一个触发关键词。",
     meme_tag_keywords_invalid: "触发关键词格式无效，请检查后重试。",
     meme_asset_tags_required: "普通对话素材至少选择一个标签。",
@@ -178,6 +208,8 @@ async function savePolicy(): Promise<void> {
       method: "PUT",
       body: JSON.stringify({
         enabled: policy.enabled,
+        selectionMode: policy.selectionMode,
+        activePackIds: policy.activePackIds,
         probabilityPercent: Math.max(0, Math.min(100, Number(policy.probabilityPercent) || 0)),
         cooldownSeconds: Math.max(0, Math.min(86_400, Number(policy.cooldownSeconds) || 0)),
       }),
@@ -230,8 +262,8 @@ async function upload(): Promise<void> {
     app.showToast("普通对话素材至少选择一个标签", "error");
     return;
   }
-  if (file.size > 5 * 1024 * 1024) {
-    app.showToast("单张图片不能超过 5 MiB", "error");
+  if (file.size > 10 * 1024 * 1024) {
+    app.showToast("单张图片不能超过 10 MiB", "error");
     return;
   }
 
@@ -400,17 +432,27 @@ onMounted(() => {
       <div class="section-head">
         <div>
           <h2>随机发送策略</h2>
-          <p>普通对话在文字回复后按此策略附加一张关键词匹配的表情包。黑名单 @ 专用图库不受此策略影响。</p>
+          <p>普通对话在文字回复后，按模型所选分类或兼容关键词模式配图，每轮最多一张。黑名单 @ 专用图库不受此策略影响。</p>
         </div>
         <button class="ghost-btn" type="button" :disabled="loading" @click="load">{{ loading ? "刷新中..." : "刷新" }}</button>
       </div>
 
+      <div v-if="packs.length" class="preset-packs">
+        <p>大肥鱼预置素材：保留原始分类与动画，下载到持久化数据目录。重复导入会跳过已有文件，重试会补齐失败文件。</p>
+        <div v-for="pack in packs" :key="pack.id" class="preset-pack">
+          <span><strong>{{ pack.name }}</strong> · v{{ pack.version }} · {{ assets.filter(asset => asset.packId === pack.id).length }} / {{ pack.count }} 张</span>
+          <button class="ghost-btn" :disabled="readonly || importBusy" @click="importPack(pack.id)">导入 / 重试</button>
+        </div>
+        <div v-if="importTask" role="status"><progress :value="importTask.progress" max="100" /> {{ importTask.progress }}% · {{ importTask.detail || importTask.title }}<p v-if="importTask.error">{{ importTask.error }}</p><details v-if="importFailures.length"><summary>失败文件 {{ importFailures.length }} 个</summary><p v-for="failure in importFailures" :key="failure.path">{{ failure.path }}：{{ failure.error }}</p></details></div>
+      </div>
       <div v-if="readonly" class="readonly-policy">
         <span class="tag">只读</span>
         <strong>{{ policy.enabled ? "普通对话表情包已启用" : "普通对话表情包已停用" }}</strong>
         <span>发送概率 {{ policy.probabilityPercent }}%，同群冷却 {{ policy.cooldownSeconds }} 秒</span>
       </div>
       <div v-else class="policy-grid">
+        <label>选图方式<select v-model="policy.selectionMode" class="input"><option value="model_tag">模型选择分类</option><option value="keyword">关键词匹配（兼容）</option></select></label>
+        <label v-for="pack in [...packs, { id: 'local', name: '管理员收藏 / 上传' }]" :key="pack.id"><span>{{ pack.name }}</span><input v-model="policy.activePackIds" type="checkbox" :value="pack.id" /></label>
         <label class="policy-switch">
           <span>
             <strong>启用普通对话表情包</strong>
@@ -434,7 +476,7 @@ onMounted(() => {
           <div class="section-head">
             <div>
               <h2>上传表情包</h2>
-              <p>支持 PNG、JPEG、GIF、WebP，单张最大 5 MiB。服务器会复核真实文件格式。</p>
+              <p>支持 PNG、JPEG、GIF、WebP，单张最大 10 MiB。服务器会复核真实文件格式。</p>
             </div>
           </div>
           <div class="upload-form">
@@ -452,7 +494,7 @@ onMounted(() => {
               <div v-if="tags.length" class="tag-checkboxes">
                 <label v-for="tag in tags" :key="tag.id"><input type="checkbox" :checked="assetForm.tags.includes(tag.id)" @change="toggleUploadTag(tag.id)" /> {{ tag.name }}</label>
               </div>
-              <small v-if="tags.length">普通对话素材必须关联标签；用户消息命中标签关键词后才会发送。</small>
+              <small v-if="tags.length">普通对话素材必须关联标签；模型根据分类选择配图，兼容模式使用关键词匹配。</small>
               <small v-else>先在右侧创建标签；普通对话素材必须关联至少一个标签才能上传。</small>
             </div>
             <p v-else class="wide muted">黑名单 @ 专用素材不使用普通对话标签，黑名单成员每次有效 @ 都会从该专用池随机选择。</p>
@@ -500,7 +542,7 @@ onMounted(() => {
       <aside class="meme-side">
         <section class="panel tag-panel">
           <div class="section-head">
-            <div><h2>标签目录</h2><p>用户消息按这里配置的关键词本地匹配，不会额外调用模型。</p></div>
+            <div><h2>标签目录</h2><p>回复模型根据分类名称和说明选图；关键词仅用于兼容模式，无需额外选图模型。</p></div>
           </div>
           <form v-if="!readonly" class="tag-create" @submit.prevent="createTag">
             <input v-model="tagForm.name" class="input" maxlength="60" placeholder="标签名称" />
@@ -533,6 +575,12 @@ onMounted(() => {
           <div class="section-head"><div><h2>素材详情</h2><p>{{ readonly ? "查看素材信息和原图预览。" : "素材变更会立即影响后续随机选择。" }}</p></div><button v-if="selectedAsset" class="ghost-btn" type="button" @click="clearAssetSelection">×</button></div>
           <template v-if="selectedAsset">
             <img class="editor-preview" :src="previewUrl(selectedAsset)" :alt="selectedAsset.name" />
+            <dl v-if="selectedAsset.packId" class="asset-meta">
+              <div><dt>来源</dt><dd>{{ packs.find(pack => pack.id === selectedAsset?.packId)?.name || '管理员收藏 / 上传' }}</dd></div>
+              <div v-if="selectedAsset.sourceRef"><dt>版本</dt><dd class="hash">{{ selectedAsset.sourceRef }}</dd></div>
+              <div v-if="selectedAsset.sourcePath"><dt>原文件</dt><dd class="hash">{{ selectedAsset.sourcePath }}</dd></div>
+              <div v-if="selectedAsset.sourceLicense"><dt>许可</dt><dd>{{ selectedAsset.sourceLicense }}</dd></div>
+            </dl>
             <dl v-if="readonly" class="asset-meta readonly-asset"><div><dt>名称</dt><dd>{{ selectedAsset.name }}</dd></div><div><dt>状态</dt><dd>{{ selectedAsset.enabled ? "已启用" : "已停用" }}</dd></div><div><dt>场景</dt><dd>{{ scopeLabel(selectedAsset.scope) }}</dd></div><div><dt>标签</dt><dd>{{ selectedAsset.tags.map(tagLabel).join("、") || "-" }}</dd></div><div><dt>类型</dt><dd>{{ selectedAsset.mimeType }}</dd></div><div><dt>大小</dt><dd>{{ formatBytes(selectedAsset.sizeBytes) }}</dd></div><div><dt>创建</dt><dd>{{ formatDateTime(selectedAsset.createdAt) }}</dd></div><div><dt>校验</dt><dd class="hash">{{ selectedAsset.sha256 }}</dd></div></dl>
             <div v-else class="editor-form">
               <label>素材名称<input v-model="assetForm.name" class="input" maxlength="100" :disabled="selectedAsset.protected" /></label>
@@ -563,6 +611,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.preset-packs { padding: 0 0 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+.preset-pack { display:flex; gap:16px; justify-content:space-between; align-items:center; margin:12px 0; flex-wrap:wrap; }
+.preset-packs progress { width: min(100%, 320px); }
 .meme-page { gap: 16px; }
 
 .policy-grid {

@@ -10,6 +10,12 @@ export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
 export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "selected_members";
 
 export interface GroupConfig {
+  ambientReplyEnabled?: boolean;
+  ambientReplyCooldownSeconds?: number;
+  pokeReplyEnabled?: boolean;
+  pokeReplyProbabilityPercent?: number;
+  pokeReplyUserCooldownSeconds?: number;
+  pokeReplyGroupCooldownSeconds?: number;
   revision?: string;
   groupId: string;
   groupName?: string;
@@ -102,6 +108,8 @@ export interface ImagePreviewDetail extends ImagePreviewListItem {
 export type MemeScope = "normal_chat" | "blacklisted_at";
 
 export interface MemeLibraryPolicy {
+  selectionMode?: "keyword" | "model_tag";
+  activePackIds?: string[];
   enabled: boolean;
   probabilityPercent: number;
   cooldownSeconds: number;
@@ -117,6 +125,10 @@ export interface MemeTag {
 }
 
 export interface MemeAsset {
+  packId?: string;
+  sourcePath?: string;
+  sourceRef?: string;
+  sourceLicense?: string;
   id: string;
   name: string;
   scope: MemeScope;
@@ -130,7 +142,10 @@ export interface MemeAsset {
   protected: boolean;
 }
 
+export interface MemePackPreset { id: string; name: string; version: string; ref: string; count: number }
+
 export interface MemeLibrarySnapshot {
+  packs?: MemePackPreset[];
   policy: MemeLibraryPolicy;
   tags: MemeTag[];
   assets: MemeAsset[];
@@ -232,6 +247,7 @@ export interface ModelHealthHistoryEntry extends ModelHealthStatus {
 }
 
 export interface OverviewData {
+  personaName?: string;
   groups: GroupConfig[];
   groupId?: string;
   stats: {
@@ -427,6 +443,7 @@ export interface SkillDefinition {
 }
 
 export type AdminTaskType =
+  | "meme-pack-import"
   | "memory-dedup"
   | "model-check"
   | "bulk-review"

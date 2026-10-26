@@ -31,6 +31,7 @@ const releasePaths = [
   "package.json",
   "assets/blacklisted-at-meme.jpg",
   "assets/huixian-profile.json",
+  "assets/meme-pack-index.json",
   "assets/private-enterprises-2026-audit.json",
   "assets/private-enterprises-2026-headquarters-evidence.json",
   "assets/private-enterprises-2026-headquarters-review.md",

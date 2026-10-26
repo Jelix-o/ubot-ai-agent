@@ -46,7 +46,7 @@ test("admin exposes a dedicated Huixian persona editor instead of a skills marke
   assert.match(router, /path:\s*"\/skills",\s*redirect:\s*"\/persona"/);
   assert.match(persona, /\/api\/persona\/huixian/);
   assert.match(persona, /唯一运行时人格/);
-  assert.match(persona, /现实证明时会自然转场/);
+  assert.match(persona, /正事认真处理/);
   assert.match(groups, /currentReplyModelLabel/);
   assert.match(groups, /configTabs/);
   assert.doesNotMatch(groups, /\/api\/skill-options|allowedSkillIds"/);
@@ -54,7 +54,7 @@ test("admin exposes a dedicated Huixian persona editor instead of a skills marke
   assert.doesNotMatch(server, /pathname === "\/api\/skills"/);
   assert.match(profileAsset, /\"id\": \"huixian\"/);
   assert.match(profileAsset, /普通对话中主动解释自己的实现方式/);
-  assert.match(profileAsset, /不编造、暗示或承诺可核验的事实/);
+  assert.match(profileAsset, /不编造身体、位置、照片、线下经历或已完成的操作/);
 });
 
 test("runtime documentation and release packaging do not carry retired personas", async () => {
@@ -75,7 +75,7 @@ test("runtime documentation and release packaging do not carry retired personas"
   assert.doesNotMatch(packageLinux, /itexpert\.json/);
   assert.doesNotMatch(deployer, /itexpert\.json/);
   assert.match(huixian, /普通对话中主动解释自己的实现方式/);
-  assert.match(huixian, /不编造、暗示或承诺可核验的事实/);
+  assert.match(huixian, /不编造身体、位置、照片、线下经历或已完成的操作/);
   assert.doesNotMatch(commands, /#技能/);
 });
 

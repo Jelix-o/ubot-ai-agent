@@ -1,3 +1,5 @@
+import { MemeLibraryService } from "./services/meme-library-service.js";
+import { GroupInteractionService, type GroupPokeEvent } from "./services/group-interaction-service.js";
 import { loadConfig } from "./config.js";
 import { parseForwardNodes, sendForwardOrFallback } from "./forward-message.js";
 import { readFile, rm } from "node:fs/promises";
@@ -76,7 +78,8 @@ export async function deliverOutboxRow(
   sentAtMs?: number,
   onAckFailure?: (error: unknown) => void,
   generatedImageRoot?: string,
-): Promise<string> {
+  memeLibrary?: Pick<MemeLibraryService, "loadImageFile" | "getAsset">,
+): Promise<string | undefined> {
   // Old workers or manual recovery can leave malformed private reply metadata
   // in a contextual outbox row. Stop it before any QQ send and leave a
   // terminal record for inspection instead of retrying the same leak.
@@ -87,7 +90,18 @@ export async function deliverOutboxRow(
   let receipt: MessageReceipt | void;
   let deliveredForward = false;
   let generatedImagePath: string | undefined;
-  if (row.kind === "record" || row.kind === "airecord") {
+  if (row.kind === "poke") {
+    if (!transport.sendGroupPoke || Date.now() - row.created_at > 60_000 || !/^\d+$/.test(row.text)) throw new Error("poke_expired_or_unsupported");
+    await transport.sendGroupPoke(row.group_id, row.text);
+    sharedDb.markOutboxSent(row.id);
+    return undefined;
+  }
+  if (row.kind === "meme_image") {
+    const asset = await memeLibrary?.getAsset(row.text);
+    const image = asset?.enabled ? await memeLibrary?.loadImageFile(row.text) : undefined;
+    if (!image) throw new Error("meme_asset_unavailable");
+    receipt = await transport.sendGroupImage(row.group_id, image);
+  } else if (row.kind === "record" || row.kind === "airecord") {
     throw new Error("Retired voice outbox kind cannot be delivered.");
   } else if (row.kind === "forward") {
     const delivery = await sendForwardOrFallback(
@@ -177,7 +191,7 @@ export function markOutboxDeliveryFailed(
   const retiredVoice = row.kind === "record" || row.kind === "airecord";
   const retryable = !(error instanceof ConversationOutboxEnvelopeError) &&
     !retiredVoice &&
-    (!["generated_image", "forward"].includes(row.kind) || error instanceof NapCatActionNotSentError);
+    (!["generated_image", "forward", "poke", "meme_image"].includes(row.kind) || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }
@@ -197,6 +211,8 @@ export class IngressApp {
   private readonly emitterTimer: NodeJS.Timeout;
   private readonly maintenanceTimer: NodeJS.Timeout;
   private readonly messageRecalls: MessageRecallService;
+  private readonly memeLibrary: MemeLibraryService;
+  private readonly interactions: GroupInteractionService;
   private readonly v3State: ReturnType<typeof resolveV3RuntimeState>;
   private emitterInFlight?: Promise<void>;
   private stopPromise?: Promise<void>;
@@ -211,6 +227,8 @@ export class IngressApp {
       ? resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey)
       : undefined;
     this.v3State?.retireRoastModeForExistingGroupsOnce();
+    this.memeLibrary = new MemeLibraryService(options.dataDir, this.v3State);
+    this.interactions = new GroupInteractionService(this.sharedDb, options.botQq);
     this.metrics = new Metrics(this.options.metricsDir, {
       processName: "ingress",
       flushIntervalMs: 30_000,
@@ -236,6 +254,10 @@ export class IngressApp {
     if (typeof runtime.on === "function") {
       runtime.on("groupMessage", (event) => {
         void this.handleGroupMessage(event as NapcatGroupMessageEvent);
+      });
+      runtime.on("groupPoke", (payload) => {
+        const event = payload as GroupPokeEvent;
+        this.interactions.queuePoke(event, this.v3State?.getGroup(String(event.group_id)));
       });
       runtime.on("groupRecall", (payload) => {
         this.handleRecall(payload);
@@ -508,8 +530,15 @@ export class IngressApp {
   private async runEmitter(): Promise<void> {
     // 原子领取：每行先标记 sending，杜绝同一 outbox 双投递（计划 §6 红线）。
     const rows = this.sharedDb.claimOutbox(EMITTER_BATCH_SIZE);
-    for (const row of rows) {
+    const byGroup = new Map<string, OutboxRow[]>();
+    for (const row of rows) byGroup.set(row.group_id, [...(byGroup.get(row.group_id) ?? []), row]);
+    await Promise.all([...byGroup.values()].map(async groupRows => {
+    for (const row of groupRows) {
       try {
+        if (row.kind === "poke") {
+          const group = this.v3State?.getGroup(row.group_id);
+          if (!group?.pokeReplyEnabled || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(row.text)) throw new Error("poke_policy_disabled");
+        }
         // The acknowledgement transaction marks the outbox row sent, stores
         // the real QQ id, and binds that id to the causal branch.
         const platformMessageId = await deliverOutboxRow(
@@ -519,6 +548,7 @@ export class IngressApp {
           undefined,
           () => this.metrics.inc("outbox_ack_backfill_failed"),
           path.join(this.options.dataDir, "generated-images"),
+          this.memeLibrary,
         );
         this.metrics.inc("outbox_sent");
         logInfo("Outbox message sent.", {
@@ -547,6 +577,7 @@ export class IngressApp {
         });
       }
     }
+    }));
   }
 
   private maintain(): void {
@@ -556,6 +587,7 @@ export class IngressApp {
       this.metrics.inc("outbox_stalled_delivery_quarantined", stalledOutbox);
       logWarn("Quarantined delivery-ambiguous outbox rows after a stalled send.", { stalledOutbox });
     }
+    this.sharedDb.db.prepare("DELETE FROM poke_events WHERE created_at < ?").run(now - RETRACTED_TTL_MS);
     this.sharedDb.pruneRetracted(now - RETRACTED_TTL_MS);
     this.sharedDb.pruneBotMessages(now - BOT_MESSAGE_TTL_MS);
   }

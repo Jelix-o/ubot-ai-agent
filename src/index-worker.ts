@@ -1,3 +1,4 @@
+import { GroupInteractionService } from "./services/group-interaction-service.js";
 import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
 import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
@@ -921,6 +922,7 @@ async function buildBotApp(
     imagePreviewArchiveService,
     new QqAvatarReferenceService(),
     new ImageRequestRepository(sharedDb),
+    new GroupInteractionService(sharedDb, config.botQq),
   );
   return { botApp, groupConfigService };
 }

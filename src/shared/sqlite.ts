@@ -51,6 +51,8 @@ export interface InflightRow {
 }
 
 export interface OutboxRow {
+  batch_id?: string | null;
+  delay_before_ms?: number;
   id: number;
   group_id: string;
   reply_to: string | null;
@@ -1244,6 +1246,18 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "stage-image-previews-until-outbox-link",
     apply: addImagePreviewPublicationState,
   },
+  {
+    version: 27,
+    name: "add-group-interactions-and-reply-timing",
+    apply: db => {
+      const columns = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+      if (!columns.some(column => column.name === "batch_id")) db.exec("ALTER TABLE outbox ADD COLUMN batch_id TEXT");
+      if (!columns.some(column => column.name === "delay_before_ms")) db.exec("ALTER TABLE outbox ADD COLUMN delay_before_ms INTEGER NOT NULL DEFAULT 0");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_outbox_batch ON outbox(batch_id,id)");
+      db.exec("CREATE TABLE IF NOT EXISTS interaction_cooldowns(key TEXT PRIMARY KEY,last_at INTEGER NOT NULL)");
+      db.exec("CREATE TABLE IF NOT EXISTS poke_events(event_key TEXT PRIMARY KEY,created_at INTEGER NOT NULL)");
+    },
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
@@ -1891,6 +1905,7 @@ export class SharedDb {
     forwardPayloadJson?: string,
     autoRecall?: OutboxAutoRecallPolicy,
     imagePreviewId?: string,
+    timing?: { batchId: string; delayBeforeMs: number },
   ): number {
     if (imagePreviewId && (kind !== "generated_image" || !this.db.prepare(
       "SELECT id FROM image_previews WHERE id = ? AND group_id = ? AND status = 'available' AND publication_state = 'published' AND expires_at > ?",
@@ -1902,8 +1917,8 @@ export class SharedDb {
         `INSERT INTO outbox
            (group_id, reply_to, kind, text, status, topic_id, branch_id,
             source_turn_id, turn_id, created_at, forward_payload_json,
-            auto_recall_after_ms, auto_recall_deadline_ms, image_preview_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            auto_recall_after_ms, auto_recall_deadline_ms, image_preview_id, batch_id, delay_before_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         groupId,
@@ -1920,6 +1935,8 @@ export class SharedDb {
         recallPolicy?.afterMs ?? null,
         recallPolicy?.deadlineMs ?? null,
         imagePreviewId ?? null,
+        timing?.batchId ?? null,
+        Math.max(0, Math.min(3500, timing?.delayBeforeMs ?? 0)),
       );
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${id}`, id);
@@ -2031,15 +2048,22 @@ export class SharedDb {
    */
   claimOutbox(limit: number, nowMs = Date.now()): OutboxRow[] {
     this.recoverStaleSendingOutbox(nowMs);
+    this.cancelBlockedBatches(nowMs);
     return this.withImmediateTransaction(() => {
       const candidates = this.db
         .prepare(
-          `SELECT id FROM outbox
-             WHERE status = 'pending'
-                OR (status = 'failed' AND retry_after IS NOT NULL AND retry_after <= ?)
-             ORDER BY id ASC LIMIT ?`,
+          `SELECT o.id FROM outbox o
+             WHERE (o.status = 'pending' OR (o.status = 'failed' AND o.retry_after IS NOT NULL AND o.retry_after <= ?))
+               AND NOT EXISTS (SELECT 1 FROM outbox busy WHERE busy.group_id=o.group_id AND busy.status='sending')
+               AND (o.batch_id IS NULL OR (
+                 NOT EXISTS (SELECT 1 FROM outbox earlier WHERE earlier.group_id=o.group_id AND earlier.batch_id IS NOT NULL AND earlier.id<o.id
+                   AND (earlier.status IN ('preparing','pending','sending') OR (earlier.status='failed' AND earlier.retry_after IS NOT NULL)))
+                 AND NOT EXISTS (SELECT 1 FROM outbox previous WHERE previous.batch_id=o.batch_id AND previous.id<o.id AND previous.status<>'sent')
+                 AND COALESCE((SELECT previous.sent_at FROM outbox previous WHERE previous.batch_id=o.batch_id AND previous.id<o.id ORDER BY previous.id DESC LIMIT 1), 0) + o.delay_before_ms <= ?
+               ))
+             ORDER BY o.id ASC LIMIT ?`,
         )
-        .all(nowMs, limit) as Array<{ id: number }>;
+        .all(nowMs, nowMs, limit) as Array<{ id: number }>;
       if (candidates.length === 0) {
         return [];
       }
@@ -2253,6 +2277,12 @@ export class SharedDb {
       );
     const attached = this.db.prepare("SELECT * FROM outbox WHERE id = ?").get(row.id) as unknown as OutboxRow;
     this.syncOutboxConversationContext(attached, attached.sent_at ?? Date.now());
+  }
+
+  private cancelBlockedBatches(now = Date.now()): void {
+    this.db.prepare(`UPDATE outbox SET status='failed', retry_after=NULL, updated_at=?
+      WHERE batch_id IS NOT NULL AND status IN ('pending','preparing') AND EXISTS
+      (SELECT 1 FROM outbox prior WHERE prior.batch_id=outbox.batch_id AND prior.id<outbox.id AND prior.status='failed' AND prior.retry_after IS NULL)`).run(now);
   }
 
   markOutboxFailed(id: number, retryAfterMs: number | null = 2_000): void {
@@ -2662,7 +2692,7 @@ export class SharedDb {
     ).run(now, now, ...(outboxId === undefined ? [] : [outboxId]));
   }
 
-  private withImmediateTransaction<T>(callback: () => T): T {
+  withImmediateTransaction<T>(callback: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = callback();

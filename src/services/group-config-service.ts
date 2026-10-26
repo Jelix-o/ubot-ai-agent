@@ -50,6 +50,12 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "onlineLookupEnabled"
   | "visionEnabled"
   | "ambientGroupContextEnabled"
+  | "ambientReplyEnabled"
+  | "ambientReplyCooldownSeconds"
+  | "pokeReplyEnabled"
+  | "pokeReplyProbabilityPercent"
+  | "pokeReplyUserCooldownSeconds"
+  | "pokeReplyGroupCooldownSeconds"
   | "htmlPreviewEnabled"
   | "naturalImageRequestsEnabled"
 >>;
@@ -632,6 +638,12 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     // administrator explicitly opts the group out.
     visionEnabled: group.visionEnabled !== false,
     ambientGroupContextEnabled: group.ambientGroupContextEnabled !== false,
+    ambientReplyEnabled: group.ambientReplyEnabled === true,
+    ambientReplyCooldownSeconds: boundedInteractionNumber(group.ambientReplyCooldownSeconds, 600, 600, 86400),
+    pokeReplyEnabled: group.pokeReplyEnabled === true,
+    pokeReplyProbabilityPercent: boundedInteractionNumber(group.pokeReplyProbabilityPercent, 25, 0, 100),
+    pokeReplyUserCooldownSeconds: boundedInteractionNumber(group.pokeReplyUserCooldownSeconds, 60, 10, 86400),
+    pokeReplyGroupCooldownSeconds: boundedInteractionNumber(group.pokeReplyGroupCooldownSeconds, 30, 10, 86400),
     // Generated pages are a normal member-facing capability. Existing groups
     // upgrade enabled unless an administrator explicitly turns it off.
     htmlPreviewEnabled: group.htmlPreviewEnabled !== false,
@@ -742,6 +754,19 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   }
   if ("visionEnabled" in input) {
     next.visionEnabled = normalizeBoolean(input.visionEnabled, "invalid_group_config");
+  }
+  for (const key of ["ambientReplyEnabled", "pokeReplyEnabled"] as const) {
+    if (key in input) next[key] = normalizeBoolean(input[key], "invalid_group_config");
+  }
+  for (const [key, min, max] of [
+    ["ambientReplyCooldownSeconds", 600, 86400], ["pokeReplyProbabilityPercent", 0, 100],
+    ["pokeReplyUserCooldownSeconds", 10, 86400], ["pokeReplyGroupCooldownSeconds", 10, 86400],
+  ] as const) {
+    if (key in input) {
+      const value = input[key];
+      if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) throw new GroupConfigValidationError("invalid_group_config");
+      next[key] = value;
+    }
   }
   if ("ambientGroupContextEnabled" in input) {
     next.ambientGroupContextEnabled = normalizeBoolean(input.ambientGroupContextEnabled, "invalid_group_config");
@@ -1017,4 +1042,8 @@ function normalizeDailyReportTime(value: string | undefined): string {
 function normalizeHolidayCountdownTime(value: string | undefined): string {
   const normalized = value?.trim() ?? "09:00";
   return /^([01]?\d|2[0-3]):([0-5]\d)$/.test(normalized) ? normalized : "09:00";
+}
+
+function boundedInteractionNumber(value: unknown, fallback: number, min: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : fallback;
 }

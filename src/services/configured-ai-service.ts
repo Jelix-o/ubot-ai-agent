@@ -1,9 +1,8 @@
 import { withModelOperation } from "./model-telemetry.js";
 import { ReplyModelRouter } from "./reply-model-router.js";
-import type { GroupBotConfig } from "../types.js";
 import { logWarn } from "../logger.js";
 import type { SystemModelConfig, SystemModelPurpose } from "../types.js";
-import type { AiService } from "./ai-service.js";
+import type { AiService, ReplyDesireContext } from "./ai-service.js";
 import { AiService as OpenAiService } from "./ai-service.js";
 import { resolveProviderCapabilities } from "./ai-provider.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
@@ -112,18 +111,18 @@ export class ConfiguredAiService implements RuntimeAiService {
     bufferedMessages: Parameters<AiService["evaluateReplyDesire"]>[2],
     signal?: AbortSignal,
     throwOnFailure = false,
-    group?: Pick<GroupBotConfig, "groupId" | "replyModelMode" | "replyModelSource">,
+    group?: ReplyDesireContext,
   ): ReturnType<AiService["evaluateReplyDesire"]> {
     if (this.purpose === "reply" && !this.selectedModelId) {
       try {
         this.auxiliaryRouter ??= new ReplyModelRouter(this.systemSettingsStore, this.capabilityPolicy,
           model => this.factory(model, this.capabilityPolicy?.getProviderCapabilityOverrides(normalizeProtocol(model.apiProtocol))));
-        const session = await this.auxiliaryRouter.begin(group ?? { groupId: "", replyModelSource: "global" }, "auxiliary", { signal });
-        return (await session.run((service, attemptSignal) => service.evaluateReplyDesire(skill, history, bufferedMessages, attemptSignal, true))).value;
+        const session = await this.auxiliaryRouter.begin({ ...group, groupId: group?.groupId ?? "" }, "auxiliary", { signal });
+        return (await session.run((service, attemptSignal) => service.evaluateReplyDesire(skill, history, bufferedMessages, attemptSignal, true, group))).value;
       } catch (error) { if (throwOnFailure) throw error; return "SKIP"; }
     }
     const service = await this.resolveService();
-    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal, throwOnFailure), this.modelIds.get(service));
+    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal, throwOnFailure, group), this.modelIds.get(service));
   }
 
   async evaluateControlledMention(

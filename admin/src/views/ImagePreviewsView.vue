@@ -289,7 +289,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
       <div v-if="loading" class="empty">正在读取生图预览...</div>
       <div v-else-if="!previews.length" class="empty-state">
         <div class="empty-visual">IMG</div>
-        <div><h3>暂无生图预览</h3><p>群成员让会仙生成图片后，成功留存的图片会显示在这里。</p></div>
+        <div><h3>暂无生图预览</h3><p>群成员让机器人生成图片后，成功留存的图片会显示在这里。</p></div>
       </div>
       <div v-else class="preview-table">
         <div class="preview-table-head">

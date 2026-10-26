@@ -11,7 +11,7 @@ import { HUIXIAN_CONVERSATION_REVISION } from "./persona/huixian-conversation-po
 
 const TEST_STATE_KEY = "0".repeat(64);
 
-test("V3 cutover excludes daily-report raw messages older than seven days", (t) => {
+test("V3 cutover excludes expired raw messages and preserves later persona edits on repeat upgrade", async (t) => {
   const appRoot = mkdtempSync(path.join(os.tmpdir(), "ubot-v3-cutover-"));
   const dataDir = path.join(appRoot, "data");
   const now = Date.now();
@@ -208,9 +208,21 @@ test("V3 cutover excludes daily-report raw messages older than seven days", (t) 
     assert.deepEqual({ ...retiredOutbox }, { status: "sent", topic_id: null, branch_id: null });
     const repository = new V3StateRepository(migrated, { stateEncryptionKey: TEST_STATE_KEY });
     assert.equal(repository.getGroup("10001")?.visionEnabled, true);
+    const profile = await repository.getHuixianProfile();
+    assert.equal(profile?.name, "大肥鱼");
+    await repository.saveHuixianProfile({ ...profile!, name: "管理员后续调整" }, "admin:test");
   } finally {
     migrated.close();
   }
+  const repeated = JSON.parse(execFileSync(process.execPath, [
+    path.resolve("scripts", "migrate-v3-state.mjs"), "--app-root", appRoot, "--execute", "--allow-existing-cutover",
+  ], { encoding: "utf8", env: { ...process.env, UBOT_STATE_ENCRYPTION_KEY: TEST_STATE_KEY } })) as { huixianProfileRevision: { applied: boolean } };
+  assert.equal(repeated.huixianProfileRevision.applied, false);
+  const afterRepeat = new SharedDb(dbPath);
+  try {
+    const repository = new V3StateRepository(afterRepeat, { stateEncryptionKey: TEST_STATE_KEY });
+    assert.equal((await repository.getHuixianProfile())?.name, "管理员后续调整");
+  } finally { afterRepeat.close(); }
 });
 
 test("V3 cutover removes untracked rollback files when a legacy source cannot be parsed", (t) => {
@@ -327,7 +339,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
   assert.equal(report.cutover, "already-complete");
   assert.equal(report.legacyJson, "not-read");
   assert.ok(report.migrationVersions.includes(9));
-  assert.deepEqual(report.huixianProfileRevision, { applied: true, revision: "immersive-natural-v3.0.3" });
+  assert.deepEqual(report.huixianProfileRevision, { applied: true, revision: "dafeiyu-v1" });
   assert.deepEqual(report.groupVisionEnabled, { applied: true, groupsUpdated: 1 });
   assert.deepEqual(report.imageGenerationCapability, { changed: true });
   assert.deepEqual(report.btSearchCapability, { changed: true });
@@ -340,7 +352,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
   try {
     const repository = new V3StateRepository(migrated, { stateEncryptionKey: TEST_STATE_KEY });
     const profile = await repository.getHuixianProfile();
-    assert.equal(profile?.name, "会仙");
+    assert.equal(profile?.name, "大肥鱼");
     assert.match(profile?.systemPrompt ?? "", /普通对话中主动解释自己的实现方式/);
     const revision = migrated.db.prepare(
       "SELECT changed_by FROM v3_character_profile_revisions ORDER BY id DESC LIMIT 1",
@@ -372,7 +384,7 @@ test("existing V3 cutover upgrades SQLite without reading legacy JSON and applie
     btSearchCapability: { changed: boolean };
     knowledgePacks: { enabledGroups: number; created: number };
   };
-  assert.deepEqual(repeated.huixianProfileRevision, { applied: false, revision: "immersive-natural-v3.0.3" });
+  assert.deepEqual(repeated.huixianProfileRevision, { applied: false, revision: "dafeiyu-v1" });
   assert.deepEqual(repeated.groupVisionEnabled, { applied: false, groupsUpdated: 0 });
   assert.deepEqual(repeated.imageGenerationCapability, { changed: false });
   assert.deepEqual(repeated.btSearchCapability, { changed: false });

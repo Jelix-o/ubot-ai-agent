@@ -1340,7 +1340,7 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     policy: { enabled: boolean; probabilityPercent: number; cooldownSeconds: number };
     assets: Array<{ id: string; scope: string; protected: boolean }>;
   };
-  assert.deepEqual(initial.policy, { enabled: true, probabilityPercent: 30, cooldownSeconds: 600 });
+  assert.deepEqual(initial.policy, { enabled: true, probabilityPercent: 35, cooldownSeconds: 60, selectionMode: "model_tag", activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"] });
   const seed = initial.assets.find((asset) => asset.scope === "blacklisted_at");
   assert.ok(seed);
   assert.equal(seed.protected, true);
@@ -1463,7 +1463,7 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     {
       method: "POST",
       headers: { Cookie: superAdmin.cookie, "X-CSRF-Token": superAdmin.csrf, "Content-Type": "image/png" },
-      body: Buffer.alloc(5 * 1024 * 1024 + 1),
+      body: Buffer.alloc(10 * 1024 * 1024 + 1),
     },
   );
   assert.equal(tooLargeUpload.status, 413);
@@ -1501,6 +1501,49 @@ test("meme library APIs restrict reads and previews to super admins, require rec
   assert.equal(restoredPolicy.status, 200);
 
   assert.equal((await request(baseUrl, "/api/meme-library", { headers: sessionHeaders })).status, 200);
+});
+
+test("preset meme imports expose failed files, prevent overlapping jobs and support retry", async (t) => {
+  const { baseUrl, memeLibraryService, tasks, operations } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  memeLibraryService.importPack = async (packId, progress) => {
+    const attempt = ++calls;
+    await progress?.(35, "已处理 55/157");
+    if (attempt === 1) await pending;
+    return { packId, imported: attempt === 1 ? 156 : 1, skipped: attempt === 1 ? 0 : 156,
+      failed: attempt === 1 ? [{ path: "memes/work/retry.gif", error: "download_http_503" }] : [] };
+  };
+  const start = (packId = "blue-fat-fish-meme-pack") => request(baseUrl, "/api/meme-library/packs/import", {
+    method: "POST", headers, body: JSON.stringify({ packId }),
+  });
+  assert.equal((await start("unknown-pack")).status, 400);
+  const started = await start();
+  assert.equal(started.status, 202);
+  const { taskId } = await started.json() as { taskId: string };
+  try { assert.equal((await start()).status, 409); } finally { release(); }
+  const waitFor = async (id: string, expected: string) => {
+    for (let index = 0; index < 100; index++) {
+      const task = await tasks.get(id);
+      if (task?.status === expected) return task;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.fail("import task did not finish");
+  };
+  const failed = await waitFor(taskId, "failed");
+  assert.deepEqual((failed.result as { failed: unknown[] }).failed, [{ path: "memes/work/retry.gif", error: "download_http_503" }]);
+  const taskResponse = await request(baseUrl, `/api/tasks/${taskId}`, { headers: { Cookie: auth.cookie } });
+  assert.equal((await taskResponse.json() as { status: string }).status, "failed");
+  const retried = await start();
+  assert.equal(retried.status, 202);
+  const retryId = (await retried.json() as { taskId: string }).taskId;
+  const completed = await waitFor(retryId, "succeeded");
+  assert.equal((completed.result as { skipped: number }).skipped, 156);
+  assert.equal(calls, 2);
+  assert.ok((await operations.list({ groupId: "system" })).some(entry => entry.action === "meme_pack_import" && entry.detail?.includes("0bbf1c")));
 });
 
 test("group administrators cannot list or delete HTML previews outside their grants", async (t) => {

@@ -656,6 +656,9 @@ export class V3StateRepository {
         return { applied: false, revision: previousRevision, previousRevision };
       }
 
+      const previous = this.sharedDb.db.prepare("SELECT profile_json FROM v3_character_profiles WHERE id = 'huixian' AND active = 1").get() as { profile_json: string } | undefined;
+      if (previous) this.saveDocument("character-profile-backup", "before-" + revision, { profile: JSON.parse(previous.profile_json), previousRevision, changedBy, savedAt: now }, now);
+      this.saveDocument("admin-operation", "persona-migration:" + revision, { timestamp: new Date(now).toISOString(), groupId: "system", operatorUserId: changedBy, action: "persona_migrate", target: revision, detail: "Previous profile saved before-" + revision }, now);
       this.writeHuixianProfile(profile, changedBy, now);
       this.setMeta(HUIXIAN_RELEASE_PROFILE_REVISION_META_KEY, revision, now);
       return { applied: true, revision, ...(previousRevision ? { previousRevision } : {}) };

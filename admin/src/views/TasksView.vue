@@ -127,6 +127,7 @@ function statusLabel(status: AdminTaskStatus): string {
 
 function typeLabel(type: AdminTaskType): string {
   return ({
+    "meme-pack-import": "表情包导入",
     "memory-dedup": "记忆去重",
     "model-check": "模型检测",
     "bulk-review": "批量审核",
@@ -298,6 +299,7 @@ watch(() => [pagination.page, pagination.pageSize], () => {
         <label>任务类型
           <select v-model="filters.type" class="select" @change="applyFilters">
             <option value="">全部类型</option>
+            <option value="meme-pack-import">表情包导入</option>
             <option value="memory-dedup">记忆去重</option>
             <option value="model-check">模型检测</option>
             <option value="bulk-review">批量审核</option>

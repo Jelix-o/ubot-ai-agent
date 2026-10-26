@@ -1,3 +1,4 @@
+import { PRESET_MEME_PACKS, type MemePackImportResult } from "./services/meme-pack-import-service.js";
 import { isCommandPermission, minimumCommandPermission, permissionAtLeast } from "./services/command-permissions.js";
 import { AdminBulkService, BulkError, revision, type BulkPayload, type BulkTarget } from "./services/admin-bulk-service.js";
 import { ModelTelemetryStore, type AnalyticsFilter } from "./services/model-telemetry.js";
@@ -252,6 +253,8 @@ interface ImagePreviewAdminService {
 type MemeScope = "normal_chat" | "blacklisted_at";
 
 interface MemeLibraryPolicy {
+  selectionMode?: "keyword" | "model_tag";
+  activePackIds?: string[];
   enabled: boolean;
   probabilityPercent: number;
   cooldownSeconds: number;
@@ -286,6 +289,7 @@ interface MemeLibraryAsset {
  * V3-backed library service has been wired in.
  */
 interface MemeLibraryAdminService {
+  importPack?(packId: string, progress: (percent: number, detail: string) => Promise<unknown>): Promise<MemePackImportResult>;
   isAvailable(): boolean;
   getPolicy(): Promise<MemeLibraryPolicy>;
   updatePolicy(patch: Partial<MemeLibraryPolicy>): Promise<MemeLibraryPolicy>;
@@ -315,7 +319,7 @@ class MemberDirectoryUnavailableError extends Error {
 
 const ADMIN_EVIDENCE_SUMMARY_LIMIT = 2400;
 const ADMIN_GZIP_MIN_BYTES = 1024;
-const MAX_MEME_ASSET_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_MEME_ASSET_UPLOAD_BYTES = 10 * 1024 * 1024;
 const ADMIN_STATIC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "admin");
 const ADMIN_STATIC_INDEX = path.join(ADMIN_STATIC_DIR, "index.html");
 const ADMIN_HTML_CACHE_CONTROL = "private, no-store";
@@ -711,6 +715,7 @@ export class AdminHttpServer {
       this.sendJson(res, {
         groups,
         groupId,
+        personaName: (await this.options.characterProfileService?.getHuixianProfile())?.name,
         stats: {
           groupCount: groups.length,
           memoryCount: visibleMemoryCount,
@@ -1186,7 +1191,7 @@ export class AdminHttpServer {
           if (!source) throw new BulkError("source_not_found", 404);
           const fields = normalizeIds(body.fields);
           if (fields.includes("replyModelMode") && !fields.includes("replyModelSource")) fields.push("replyModelSource");
-          const copyFields = ["enabled", "botMuted", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
+          const copyFields = ["ambientReplyEnabled", "ambientReplyCooldownSeconds", "pokeReplyEnabled", "pokeReplyProbabilityPercent", "pokeReplyUserCooldownSeconds", "pokeReplyGroupCooldownSeconds", "enabled", "botMuted", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "opsAlertsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"];
           if (!fields.length || fields.some(f => !copyFields.includes(f))) throw new BulkError("invalid_copy_fields");
           patch = Object.fromEntries(fields.map(f => [f, (source as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined));
           if (!Object.keys(patch ?? {}).length) throw new BulkError("empty_copy_fields");
@@ -1469,6 +1474,23 @@ export class AdminHttpServer {
     if (method !== "GET" && !this.requireRecentSuperAdminReauth(session, res)) return;
 
     try {
+      if (pathname === "/api/meme-library/packs/import") {
+        if (method !== "POST") { this.sendJson(res, { error: "method_not_allowed" }, 405); return; }
+        if (!service.importPack || !this.options.adminTaskStore) { this.sendJson(res, { error: "meme_library_unavailable" }, 503); return; }
+        const body = await readJsonBody(req);
+        const pack = PRESET_MEME_PACKS.find(pack => pack.id === body.packId);
+        if (!pack) { this.sendJson(res, { error: "meme_pack_unknown" }, 400); return; }
+        const tasks = await this.options.adminTaskStore.listPage({ type: "meme-pack-import", page: 1, pageSize: 100 });
+        if (tasks.tasks.some(task => task.status === "queued" || task.status === "running")) { this.sendJson(res, { error: "meme_pack_import_busy" }, 409); return; }
+        const task = await this.options.adminTaskStore.start({ type: "meme-pack-import", title: "导入" + pack.name, operatorUserId: session.userId ?? session.username, detail: pack.id }, async (task, progress) => {
+          const result = await service.importPack!(pack.id, progress);
+          if (result.failed.length) await this.options.adminTaskStore!.update(task.id, { status: "failed", progress: 100, result, error: "部分素材导入失败，可重试", finishedAt: new Date().toISOString() });
+          return result;
+        });
+        await this.recordOperation({ session, groupId: "system", action: "meme_pack_import", target: pack.id, detail: "version=" + pack.version + "; ref=" + pack.ref });
+        this.sendJson(res, { task, taskId: task.id }, 202);
+        return;
+      }
       if (pathname === "/api/meme-library") {
         if (method !== "GET") {
           this.sendJson(res, { error: "method_not_allowed" }, 405);
@@ -1479,7 +1501,7 @@ export class AdminHttpServer {
           service.listTags(),
           service.listAssets(),
         ]);
-        this.sendJson(res, { policy, tags, assets });
+        this.sendJson(res, { policy, tags, assets, packs: PRESET_MEME_PACKS });
         return;
       }
 
@@ -3839,6 +3861,14 @@ function normalizeMemeEnabledQuery(value: string | null): boolean | undefined {
 
 function normalizeMemePolicyPatch(body: Record<string, unknown>): Partial<MemeLibraryPolicy> {
   const patch: Partial<MemeLibraryPolicy> = {};
+  if (body.selectionMode !== undefined) {
+    if (body.selectionMode !== "keyword" && body.selectionMode !== "model_tag") throw new AdminRequestBodyError("meme_policy_invalid", 400);
+    patch.selectionMode = body.selectionMode;
+  }
+  if (body.activePackIds !== undefined) {
+    if (!Array.isArray(body.activePackIds) || body.activePackIds.some(id => !["local", ...PRESET_MEME_PACKS.map(pack => pack.id)].includes(id))) throw new AdminRequestBodyError("meme_policy_invalid", 400);
+    patch.activePackIds = [...new Set(body.activePackIds as string[])];
+  }
   if (body.enabled !== undefined) {
     if (typeof body.enabled !== "boolean") throw new AdminRequestBodyError("meme_policy_invalid", 400);
     patch.enabled = body.enabled;
@@ -4009,7 +4039,7 @@ function normalizeReminderWeekdays(value: unknown): number[] {
 }
 
 function normalizeTaskType(value: string | undefined): AdminTaskType | undefined {
-  return value === "memory-dedup" || value === "model-check" || value === "bulk-review" || value === "bulk-operation"
+  return value === "memory-dedup" || value === "model-check" || value === "bulk-review" || value === "bulk-operation" || value === "meme-pack-import"
     ? value
     : undefined;
 }
@@ -4242,6 +4272,12 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "triggerKeywords",
     "onlineLookupEnabled",
     "visionEnabled",
+    "ambientReplyEnabled",
+    "ambientReplyCooldownSeconds",
+    "pokeReplyEnabled",
+    "pokeReplyProbabilityPercent",
+    "pokeReplyUserCooldownSeconds",
+    "pokeReplyGroupCooldownSeconds",
     "ambientGroupContextEnabled",
     "htmlPreviewEnabled",
     "naturalImageRequestsEnabled",

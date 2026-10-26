@@ -13,7 +13,7 @@ const form = reactive<SkillDefinition>(blankPersona());
 function blankPersona(): SkillDefinition {
   return {
     id: "huixian",
-    name: "会仙",
+    name: "大肥鱼",
     systemPrompt: "",
     styleRules: [],
     knowledge: [],
@@ -79,7 +79,7 @@ async function save(): Promise<void> {
       }),
     });
     Object.assign(form, clonePersona(persona));
-    app.showToast("会仙人格已保存，新的对话会自动使用最新版本");
+    app.showToast(form.name + "人格已保存，新的对话会自动使用最新版本");
   } catch (error) {
     app.showToast((error as Error).message, "error");
   } finally {
@@ -110,8 +110,8 @@ onMounted(() => void load());
       <div class="persona-mark">会</div>
       <div>
         <p class="eyebrow">唯一运行时人格</p>
-        <h2>会仙人格</h2>
-        <p>会仙以自然、成熟、有分寸的聊天方式参与群聊。日常不主动谈身份标签；涉及现实证明时会自然转场，不编造可核验事实。</p>
+        <h2>{{ form.name }}人格</h2>
+        <p>嘴馋、爱摸鱼、傲娇心软的蓝色小鲸鱼。群聊轻松接梗，正事认真处理，平等对待群友。</p>
       </div>
       <span class="tag">huixian</span>
     </div>
@@ -121,7 +121,7 @@ onMounted(() => void load());
         <div class="section-head">
           <div>
             <h2>身份与边界</h2>
-            <p>这里是会仙稳定人格的唯一来源。不要把真实个人资料、群聊原文、密码或第三方隐私写入人格设定。</p>
+            <p>这里是当前角色稳定人格的唯一来源。不要把真实个人资料、群聊原文、密码或第三方隐私写入人格设定。</p>
           </div>
         </div>
         <div class="form-grid">
@@ -139,7 +139,7 @@ onMounted(() => void load());
         <div class="section-head">
           <div>
             <h2>回复节奏</h2>
-            <p>会仙可以轻松、俏皮或认真，但不以幼态、羞辱、操控或虚假承诺制造亲密感。</p>
+            <p>当前角色可以轻松、俏皮或认真，但不以幼态、羞辱、操控或虚假承诺制造亲密感。</p>
           </div>
         </div>
         <div class="form-grid">
@@ -158,20 +158,20 @@ onMounted(() => void load());
         <div class="section-head">
           <div>
             <h2>示例对话 <span class="tag">{{ exampleCount }}</span></h2>
-            <p>用少量典型场景校准会仙的语气。建议包含群聊圆场、现实证明类话题的自然转场和专业帮助，而不是大量固定口头禅。</p>
+            <p>用少量典型场景校准当前角色的语气。建议包含群聊圆场、现实证明类话题的自然转场和专业帮助，而不是大量固定口头禅。</p>
           </div>
           <button class="ghost-btn" type="button" @click="addExample">新增示例</button>
         </div>
         <div v-if="!exampleCount" class="empty">暂无示例对话。</div>
         <article v-for="(exchange, index) in form.exampleExchanges" :key="index" class="example-row">
           <label>用户<textarea v-model="exchange.user" class="textarea compact" /></label>
-          <label>会仙<textarea v-model="exchange.assistant" class="textarea compact" /></label>
+          <label>{{ form.name }}<textarea v-model="exchange.assistant" class="textarea compact" /></label>
           <button class="ghost-btn danger" type="button" @click="removeExample(index)">删除</button>
         </article>
       </section>
 
       <div class="save-bar">
-        <button class="btn" type="submit" :disabled="saving || loading"><AppIcon name="check" />{{ saving ? "保存中..." : "保存会仙人格" }}</button>
+        <button class="btn" type="submit" :disabled="saving || loading"><AppIcon name="check" />{{ saving ? "保存中..." : "保存人格" }}</button>
         <button class="ghost-btn" type="button" :disabled="saving || loading" @click="reset">重新读取</button>
       </div>
     </form>

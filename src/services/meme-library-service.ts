@@ -14,7 +14,7 @@ export const MEME_LIBRARY_ASSET_DOCUMENT_TYPE = "meme-library-assets";
 export const MEME_LIBRARY_ASSET_DOCUMENT_KEY = "default";
 export const MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE = "meme-library-cooldown";
 export const MEME_LIBRARY_BLACKLISTED_SELECTION_DOCUMENT_TYPE = "meme-library-blacklisted-selection";
-export const MEME_LIBRARY_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MEME_LIBRARY_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const BLACKLISTED_AT_MEME_SEED_ID = "blacklisted-at-meme-seed";
 
 export type MemeScope = "normal_chat" | "blacklisted_at";
@@ -23,6 +23,8 @@ export interface MemeLibraryPolicy {
   enabled: boolean;
   probabilityPercent: number;
   cooldownSeconds: number;
+  selectionMode?: "keyword" | "model_tag";
+  activePackIds?: string[];
 }
 
 export interface MemeTag {
@@ -46,6 +48,10 @@ export interface MemeAsset {
   createdAt: string;
   updatedAt: string;
   protected: boolean;
+  packId?: string;
+  sourcePath?: string;
+  sourceRef?: string;
+  sourceLicense?: string;
 }
 
 export type MemeImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
@@ -54,6 +60,7 @@ export interface MemeImageSelection {
   asset: MemeAsset;
   /** OneBot 11 `image.file` payload (`base64://...`). */
   imageFile: string;
+  assetId?: string;
 }
 
 export interface MemeLibraryUploadInput {
@@ -62,6 +69,10 @@ export interface MemeLibraryUploadInput {
   tags?: string[];
   data: Buffer;
   enabled?: boolean;
+  packId?: string;
+  sourcePath?: string;
+  sourceRef?: string;
+  sourceLicense?: string;
 }
 
 export interface MemeLibraryAssetPatch {
@@ -135,8 +146,10 @@ export interface MemeNormalChatImageClaim {
 
 export const DEFAULT_MEME_LIBRARY_POLICY: MemeLibraryPolicy = Object.freeze({
   enabled: true,
-  probabilityPercent: 30,
-  cooldownSeconds: 600,
+  probabilityPercent: 35,
+  cooldownSeconds: 60,
+  selectionMode: "model_tag",
+  activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"],
 });
 
 const DEFAULT_LIBRARY_DOCUMENT: MemeLibraryDocument = { policy: DEFAULT_MEME_LIBRARY_POLICY };
@@ -172,6 +185,16 @@ export class MemeLibraryValidationError extends Error {
  * V3, callers receive empty reads/selections and can keep their primary flow.
  */
 export class MemeLibraryService {
+  private importRunning = false;
+  async importPack(packId: string, progress: (percent: number, detail: string) => Promise<unknown>) {
+    if (this.importRunning) throw new Error("meme_pack_import_busy");
+    this.importRunning = true;
+    try {
+      const { importMemePack } = await import("./meme-pack-import-service.js");
+      return await importMemePack(this, packId, progress);
+    } finally { this.importRunning = false; }
+  }
+
   private readonly seedAssetPath: string;
   private readonly now: () => number;
   private readonly random: () => number;
@@ -217,6 +240,20 @@ export class MemeLibraryService {
       protected: true,
     };
 
+    // Apply the user-requested defaults once; later administrator edits win.
+    repository.runAtomically(() => {
+      const migration = repository.getDocument<{ applied?: boolean }>("meme-library-upgrade", "dafeiyu-v1", {});
+      if (!migration.applied) {
+        const previous = this.readLibraryDocument(repository).policy;
+        repository.saveDocument("meme-library-policy-backup", "before-dafeiyu-v1", previous);
+        repository.saveDocument(MEME_LIBRARY_DOCUMENT_TYPE, MEME_LIBRARY_DOCUMENT_KEY, { policy: {
+          ...previous, probabilityPercent: 35, cooldownSeconds: 60, selectionMode: "model_tag",
+          activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"],
+        } });
+        repository.saveDocument("admin-operation", "migration:dafeiyu-meme-v1", { timestamp: toIso(now), groupId: "system", operatorUserId: "migration", action: "meme_policy_migrate", target: "dafeiyu-v1", detail: "Previous policy saved before-dafeiyu-v1" });
+        repository.saveDocument("meme-library-upgrade", "dafeiyu-v1", { applied: true, changedBy: "migration:dafeiyu-v1", appliedAt: now });
+      }
+    });
     await this.writeAssetFile(seed, seedData);
     repository.runAtomically(() => {
       const tags = this.readTagDocument(repository);
@@ -420,8 +457,13 @@ export class MemeLibraryService {
       createdAt: toIso(now),
       updatedAt: toIso(now),
       protected: false,
+      packId: input.packId ?? "local",
+      sourcePath: input.sourcePath,
+      sourceRef: input.sourceRef,
+      sourceLicense: input.sourceLicense,
     };
     await this.writeAssetFile(asset, input.data);
+    let saved = asset;
     try {
       // Tags and assets live in separate documents. Keep their validation and
       // write in one immediate transaction so an admin-side tag deletion
@@ -434,7 +476,17 @@ export class MemeLibraryService {
           DEFAULT_ASSET_DOCUMENT,
           (current) => {
             const document = normalizeAssetDocument(current);
-            document.assets.push(asset);
+            // Recheck after the asynchronous file write: simultaneous uploads
+            // of one image must merge tags rather than create duplicate rows.
+            const duplicate = document.assets.find(candidate => candidate.scope === scope
+              && (candidate.packId ?? "local") === asset.packId && candidate.sha256 === asset.sha256);
+            if (duplicate) {
+              if (!duplicate.protected) {
+                duplicate.tags = [...new Set([...duplicate.tags, ...tags])];
+                duplicate.updatedAt = toIso(now);
+              }
+              saved = duplicate;
+            } else document.assets.push(asset);
             return document;
           },
           now,
@@ -444,7 +496,11 @@ export class MemeLibraryService {
       await rm(this.assetPath(asset), { force: true }).catch(() => undefined);
       throw error;
     }
-    return cloneAsset(asset);
+    if (saved.id !== asset.id) {
+      await this.writeAssetFile(saved, input.data);
+      await rm(this.assetPath(asset), { force: true }).catch(() => undefined);
+    }
+    return cloneAsset(saved);
   }
 
   async updateAsset(id: string, patch: MemeLibraryAssetPatch, guard?: MutationGuard): Promise<MemeAsset | undefined> {
@@ -542,84 +598,59 @@ export class MemeLibraryService {
    * claims the normal-chat cooldown in one V3 transaction. The source text is
    * deliberately never retained or returned from this method.
    */
+  async getReplyTags(): Promise<MemeTag[]> {
+    const policy = await this.getPolicy();
+    if (!policy.enabled || policy.selectionMode !== "model_tag") return [];
+    const assets = (await this.listAssets("normal_chat")).filter(asset => asset.enabled && this.isPackActive(asset, policy));
+    const ids = new Set(assets.flatMap(asset => asset.tags));
+    return (await this.listTags()).filter(tag => ids.has(tag.id)).slice(0, 40);
+  }
+
+  private isPackActive(asset: MemeAsset, policy: MemeLibraryPolicy): boolean {
+    return !policy.activePackIds || policy.activePackIds.includes(asset.packId ?? "local");
+  }
+
   async claimNormalChatImage(args: {
-    groupId: string;
-    userText: string;
-    now?: number;
+    groupId: string; userText: string; tagId?: string; now?: number;
   }): Promise<MemeNormalChatImageClaim> {
     const repository = this.repository();
     const groupId = normalizeGroupId(args.groupId);
-    const userText = normalizeMemeMatchText(args.userText);
     const now = normalizeNow(args.now ?? this.now());
-    if (!repository || !groupId || !userText) {
-      return { reason: "no_match", matchedTagIds: [] };
-    }
-
-    const initialTags = this.readTagDocument(repository).tags;
-    const initialAssets = this.readAssetDocument(repository).assets;
-    const initialTagIds = matchingNormalChatTagIds(initialTags, initialAssets, userText);
-    if (initialTagIds.length === 0) {
-      return { reason: "no_match", matchedTagIds: [] };
-    }
-    const loadedCandidates = await this.loadCandidates(initialAssets
-      .filter((asset) => matchesNormalChatTags(asset, initialTagIds)));
-    if (loadedCandidates.length === 0) {
-      return { reason: "asset_unavailable", matchedTagIds: initialTagIds };
-    }
-
-    let result: MemeNormalChatImageClaim = {
-      reason: "asset_unavailable",
-      matchedTagIds: initialTagIds,
-    };
-    repository.updateDocument<MemeCooldownDocument>(
-      MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE,
-      groupId,
-      DEFAULT_COOLDOWN_DOCUMENT,
-      (current) => {
+    if (!repository || !groupId) return { reason: "no_match", matchedTagIds: [] };
+    // All decisions, including cooldown claims, are made from current metadata.
+    // Only the chosen file is loaded, rather than every multi-megabyte candidate.
+    let previousCooldown: MemeCooldownDocument | undefined;
+    let result: MemeNormalChatImageClaim = { reason: "no_match", matchedTagIds: [] };
+    repository.updateDocument<MemeCooldownDocument>(MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE, groupId,
+      DEFAULT_COOLDOWN_DOCUMENT, current => {
         const cooldown = normalizeCooldownDocument(current);
-        const library = this.readLibraryDocument(repository);
-        if (!library.policy.enabled || library.policy.probabilityPercent <= 0) {
-          result = { reason: "policy_disabled", matchedTagIds: initialTagIds };
-          return cooldown;
-        }
-        if (isCooldownActive(cooldown, library.policy.cooldownSeconds, now)) {
-          result = { reason: "cooldown", matchedTagIds: initialTagIds };
-          return cooldown;
-        }
-
-        const currentTags = this.readTagDocument(repository).tags;
-        const currentAssets = this.readAssetDocument(repository).assets;
-        const matchedTagIds = matchingNormalChatTagIds(currentTags, currentAssets, userText);
-        if (matchedTagIds.length === 0) {
-          result = { reason: "no_match", matchedTagIds: [] };
-          return cooldown;
-        }
-        if (randomPercent(this.random) >= library.policy.probabilityPercent) {
-          result = { reason: "probability_miss", matchedTagIds };
-          return cooldown;
-        }
-
-        const viable = loadedCandidates.flatMap((candidate) => {
-          const currentAsset = currentAssets.find((asset) => (
-            asset.id === candidate.asset.id
-            && asset.scope === "normal_chat"
-            && asset.enabled
-            && asset.sha256 === candidate.asset.sha256
-            && matchesNormalChatTags(asset, matchedTagIds)
-          ));
-          return currentAsset ? [{ asset: currentAsset, imageFile: candidate.imageFile }] : [];
-        });
-        const chosen = pickNonRepeating(viable, cooldown.lastAssetId, this.random);
-        if (!chosen) {
-          result = { reason: "asset_unavailable", matchedTagIds };
-          return cooldown;
-        }
-        const selection = { asset: cloneAsset(chosen.asset), imageFile: chosen.imageFile };
-        result = { reason: "sent_candidate", matchedTagIds, selection };
+        previousCooldown = cooldown;
+        const policy = this.readLibraryDocument(repository).policy;
+        const assets = this.readAssetDocument(repository).assets.filter(asset => this.isPackActive(asset, policy));
+        const tags = this.readTagDocument(repository).tags;
+        const tagIds = policy.selectionMode === "model_tag"
+          ? tags.filter(tag => tag.id === args.tagId).map(tag => tag.id)
+          : matchingNormalChatTagIds(tags, assets, normalizeMemeMatchText(args.userText));
+        if (!policy.enabled || policy.probabilityPercent <= 0) { result = { reason: "policy_disabled", matchedTagIds: tagIds }; return cooldown; }
+        if (isCooldownActive(cooldown, policy.cooldownSeconds, now)) { result = { reason: "cooldown", matchedTagIds: tagIds }; return cooldown; }
+        if (!tagIds.length) return cooldown;
+        if (randomPercent(this.random) >= policy.probabilityPercent) { result = { reason: "probability_miss", matchedTagIds: tagIds }; return cooldown; }
+        const candidates = assets.filter(asset => matchesNormalChatTags(asset, tagIds)).map(asset => ({ asset }));
+        const chosen = pickNonRepeating(candidates, cooldown.lastAssetId, this.random);
+        if (!chosen) { result = { reason: "asset_unavailable", matchedTagIds: tagIds }; return cooldown; }
+        result = { reason: "sent_candidate", matchedTagIds: tagIds,
+          selection: { asset: cloneAsset(chosen.asset), assetId: chosen.asset.id, imageFile: "" } };
         return { lastSentAt: now, lastAssetId: chosen.asset.id };
-      },
-      now,
-    );
+      }, now);
+    if (result.selection) {
+      const imageFile = await this.loadImageFile(result.selection.asset.id).catch(() => undefined);
+      if (!imageFile) {
+        const claimedId = result.selection.asset.id;
+        repository.updateDocument<MemeCooldownDocument>(MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE, groupId, DEFAULT_COOLDOWN_DOCUMENT, current => current.lastSentAt === now && current.lastAssetId === claimedId ? previousCooldown ?? DEFAULT_COOLDOWN_DOCUMENT : current);
+        return { reason: "asset_unavailable", matchedTagIds: result.matchedTagIds };
+      }
+      result.selection.imageFile = imageFile;
+    }
     return result;
   }
 
@@ -779,10 +810,14 @@ function normalizePolicy(value: unknown): MemeLibraryPolicy {
     enabled: candidate?.enabled !== false,
     probabilityPercent: boundedNumber(candidate?.probabilityPercent, DEFAULT_MEME_LIBRARY_POLICY.probabilityPercent, 0, 100),
     cooldownSeconds: boundedInteger(candidate?.cooldownSeconds, DEFAULT_MEME_LIBRARY_POLICY.cooldownSeconds, 0, 86_400),
+    selectionMode: candidate?.selectionMode === "model_tag" ? "model_tag" : "keyword",
+    ...(Array.isArray(candidate?.activePackIds) ? { activePackIds: candidate.activePackIds.filter((id): id is string => typeof id === "string" && /^[a-z0-9-]{1,80}$/.test(id)) } : {}),
   };
 }
 
 function validatePolicyPatch(patch: Partial<MemeLibraryPolicy>): void {
+  if (patch.selectionMode !== undefined && !["keyword", "model_tag"].includes(patch.selectionMode)) throw new MemeLibraryValidationError("meme_policy_invalid");
+  if (patch.activePackIds !== undefined && (!Array.isArray(patch.activePackIds) || patch.activePackIds.length > 20 || patch.activePackIds.some(id => typeof id !== "string" || !/^[a-z0-9-]{1,80}$/.test(id)))) throw new MemeLibraryValidationError("meme_policy_invalid");
   if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") {
     throw new MemeLibraryValidationError("meme_policy_invalid");
   }
@@ -866,6 +901,10 @@ function normalizeAsset(value: unknown): MemeAsset | undefined {
     createdAt: normalizeTimestamp(candidate.createdAt, now),
     updatedAt: normalizeTimestamp(candidate.updatedAt, now),
     protected: candidate.protected === true,
+    packId: normalizeOptionalText(candidate.packId, 80) || "local",
+    sourcePath: normalizeOptionalText(candidate.sourcePath, 500) || undefined,
+    sourceRef: normalizeOptionalText(candidate.sourceRef, 80) || undefined,
+    sourceLicense: normalizeOptionalText(candidate.sourceLicense, 500) || undefined,
   };
 }
 
@@ -1148,7 +1187,7 @@ function toIso(value: number): string {
 }
 
 function clonePolicy(policy: MemeLibraryPolicy): MemeLibraryPolicy {
-  return { ...policy };
+  return { ...policy, ...(policy.activePackIds ? { activePackIds: [...policy.activePackIds] } : {}) };
 }
 
 function cloneTag(tag: MemeTag): MemeTag {
