@@ -410,6 +410,13 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await assertNoHorizontalOverflow(desktop, "desktop settings");
     await desktop.screenshot({ path: path.join(screenshotDir, "settings-desktop.png"), fullPage: true });
 
+    await desktop.goto(`${baseUrl}/settings?tab=models&purpose=image_intent`, { waitUntil: "networkidle" });
+    await desktop.getByText("启用图片意图判断", { exact: true }).waitFor();
+    await desktop.getByRole("button", { name: "检测原生工具调用", exact: true }).waitFor();
+    await assertNoHorizontalOverflow(desktop, "desktop image intent settings");
+    await desktop.screenshot({ path: path.join(screenshotDir, "image-intent-settings-desktop.png"), fullPage: true });
+    await desktop.goto(`${baseUrl}/settings?tab=models`, { waitUntil: "networkidle" });
+
     const sibling = await desktopContext.newPage();
     await sibling.goto(`${baseUrl}/settings?tab=models`, { waitUntil: "networkidle" });
     const before = await desktop.evaluate(async () => (await fetch("/api/session")).json());

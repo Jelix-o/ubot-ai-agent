@@ -947,7 +947,7 @@ test("classifyImageIntent makes one forced non-streaming action-only tool call",
   const messages = request.messages as Array<{ role: string; content: string }>;
   assert.equal(messages.length, 2);
   assert.match(messages[0]?.content ?? "", /普通聊天/);
-  assert.match(messages[0]?.content ?? "", /没有有效请求内容/);
+  assert.match(messages[0]?.content ?? "", /普通对话不得选 clarification/);
   assert.match(messages[0]?.content ?? "", /将我头像美化一下/);
   assert.match(messages[1]?.content ?? "", /\[MENTION_1\]/);
   assert.doesNotMatch(messages[1]?.content ?? "", /40001|https?:\/\//);
