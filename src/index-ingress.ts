@@ -12,7 +12,7 @@ import {
 } from "./napcat-reverse-server.js";
 import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
-import { hasConversationReplyEnvelopeMarker } from "./services/conversation-state.js";
+import { hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
 import { Metrics } from "./shared/metrics.js";
 import { IngressReadApi } from "./ingress-read-api.js";
 import { MessageRecallService } from "./message-recall-service.js";
@@ -83,7 +83,7 @@ export async function deliverOutboxRow(
   // Old workers or manual recovery can leave malformed private reply metadata
   // in a contextual outbox row. Stop it before any QQ send and leave a
   // terminal record for inspection instead of retrying the same leak.
-  if (isMalformedConversationOutboxRow(row)) {
+  if (isMalformedConversationOutboxRow(row, sharedDb)) {
     sharedDb.markOutboxFailed(row.id, null);
     throw new ConversationOutboxEnvelopeError();
   }
@@ -171,14 +171,16 @@ export class ConversationOutboxEnvelopeError extends Error {
   }
 }
 
-function isMalformedConversationOutboxRow(row: OutboxRow): boolean {
+function isMalformedConversationOutboxRow(row: OutboxRow, sharedDb: SharedDb): boolean {
   const contextual = Boolean(
     row.topic_id ||
     row.branch_id ||
     row.source_turn_id !== null ||
     row.turn_id !== null,
   );
-  return row.kind === "text" && contextual && hasConversationReplyEnvelopeMarker(row.text);
+  const input = contextual && row.source_turn_id !== null
+    ? sharedDb.db.prepare("SELECT content FROM conversation_turns WHERE id = ? AND role = 'user'").get(row.source_turn_id) as { content: string } | undefined : undefined;
+  return row.kind === "text" && contextual && hasUnsafeReplyArtifacts(row.text, input?.content);
 }
 
 export type OutboxFailureDisposition = "retryable" | "terminal";

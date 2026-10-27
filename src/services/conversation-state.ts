@@ -1,4 +1,5 @@
 import type { AmbientGroupContextMessage } from "../types.js";
+import { cleanReplyArtifacts, cleanReplyMessageParts, containsPrivateReplyMetadata, requestsStructuredReply, type ReplyArtifactOptions } from "./reply-artifacts.js";
 
 export type ConversationIntent = "chat" | "opinion" | "explain" | "confirm" | "challenge" | "image" | "lookup" | "task";
 
@@ -105,10 +106,21 @@ export class ConversationReplyEnvelopeError extends Error {
 // These fields are private conversation-state protocol, never user-visible
 // reply text. Keep the detection shared with the final outbox guard so a
 // provider adapter cannot leak a partial envelope through a different path.
-const CONVERSATION_REPLY_ENVELOPE_MARKER = /"(?:stateUpdate|review|knownFacts|coveredPoints|questions|conclusion|mediaObservations|repeatsAnswered|reasksKnown|unsupportedReversal)"\s*:/u;
+export function hasConversationReplyEnvelopeMarker(text: string, userInput?: string): boolean {
+  return containsPrivateReplyMetadata(text, userInput);
+}
 
-export function hasConversationReplyEnvelopeMarker(text: string): boolean {
-  return CONVERSATION_REPLY_ENVELOPE_MARKER.test(text);
+export function cleanConversationReplyText(text: string, options: ReplyArtifactOptions = {}): string {
+  const cleaned = cleanReplyArtifacts(text, options);
+  if (cleaned.ambiguous || containsPrivateReplyMetadata(cleaned.text, options.userInput)) throw new ConversationReplyEnvelopeError();
+  return cleaned.text;
+}
+
+/** Also covers compatibility adapters and deterministic multi-message results. */
+export function cleanConversationReply<T extends { text: string; messages?: string[] }>(reply: T, options: ReplyArtifactOptions = {}): T {
+  const parts = reply.messages?.length ? cleanReplyMessageParts(reply.messages, options) : undefined;
+  if (parts?.ambiguous || parts?.messages.some(text => containsPrivateReplyMetadata(text, options.userInput))) throw new ConversationReplyEnvelopeError();
+  return { ...reply, text: parts ? parts.messages.join("\n") : cleanConversationReplyText(reply.text, options), ...(parts ? { messages: parts.messages } : {}) };
 }
 
 export interface ConversationTopicCandidate {
@@ -196,33 +208,36 @@ export function selectConversationEvidence(messages: AmbientGroupContextMessage[
   }).reverse().slice(-60);
 }
 
-export function parseConversationReply(text: string): {
+export function parseConversationReply(text: string, options: ReplyArtifactOptions = {}): {
   text: string; update?: unknown; check?: ConversationReplyCheck;
 } {
-  const json = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const cleaned = cleanReplyArtifacts(text, { ...options, allowEnvelope: true });
+  if (cleaned.ambiguous) throw new ConversationReplyEnvelopeError();
+  const json = cleaned.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let raw: any;
   try { raw = JSON.parse(json); }
   catch {
+    if (requestsStructuredReply(options.userInput) && /^```[\s\S]*```$/u.test(cleaned.text.trim())) return { text: cleaned.text };
     // A common model failure starts with a normal-looking answer and then
     // appends private envelope fields. It is still a malformed private
     // envelope, not safe natural text.
     if (
       /^\{\s*"text"\s*:/u.test(json) ||
-      hasConversationReplyEnvelopeMarker(json)
+      hasConversationReplyEnvelopeMarker(json, options.userInput)
     ) {
       throw new ConversationReplyEnvelopeError();
     }
-    return { text };
+    return { text: cleanConversationReplyText(cleaned.text, options) };
   }
   if (!raw || typeof raw.text !== "string" || !raw.text.trim()) {
-    if (raw && typeof raw === "object" && ("text" in raw || hasConversationReplyEnvelopeMarker(json))) {
+    if (!requestsStructuredReply(options.userInput) && raw && typeof raw === "object" && ("text" in raw || hasConversationReplyEnvelopeMarker(json))) {
       throw new ConversationReplyEnvelopeError();
     }
-    return { text };
+    return { text: cleanConversationReplyText(cleaned.text, options) };
   }
   const review = raw.review;
   return {
-    text: raw.text.trim(), update: raw.stateUpdate,
+    text: cleanConversationReplyText(raw.text.trim(), options), update: raw.stateUpdate,
     ...(review && typeof review === "object" ? { check: {
       repeatsAnswered: review.repeatsAnswered === true,
       reasksKnown: review.reasksKnown === true,

@@ -183,14 +183,30 @@ try {
   });
   await server.start();
   const raw = server.server;
-  const address = raw.address();
+  let address = raw.address();
   if (!address || typeof address === "string") throw new Error("Admin smoke server did not bind a TCP port.");
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  let baseUrl = `http://127.0.0.1:${address.port}`;
   // Match browser Origin checks to the ephemeral listener, including its port.
   server.options.publicBaseUrl = baseUrl;
 
   if (runBrowserSmoke) {
-    await verifyBrowserExperience(baseUrl, visualArtifactDir);
+    for (let attempt = 0; ; attempt++) {
+      try { await verifyBrowserExperience(baseUrl, visualArtifactDir); break; }
+      catch (error) {
+        // Some hosts allocate browser-restricted ports for listen(0). Rebind
+        // only for this transport error; assertion failures must still fail.
+        if (attempt >= 2 || !String(error).includes("net::ERR_UNSAFE_PORT")) throw error;
+        await new Promise((resolve, reject) => raw.close(error => error ? reject(error) : resolve()));
+        await new Promise((resolve, reject) => {
+          raw.once("error", reject);
+          raw.listen(0, "127.0.0.1", () => { raw.off("error", reject); resolve(); });
+        });
+        address = raw.address();
+        if (!address || typeof address === "string") throw new Error("Admin smoke rebind failed.");
+        baseUrl = `http://127.0.0.1:${address.port}`;
+        server.options.publicBaseUrl = baseUrl;
+      }
+    }
   }
 
   const login = await postJson(baseUrl, "/api/auth/password", {

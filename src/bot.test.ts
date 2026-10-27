@@ -3626,6 +3626,17 @@ test("terminal knowledge answers stay free of entertainment memes", async () => 
   assert.equal(transport.images.length, 0);
 });
 
+test("compatibility multi-bubble replies drop a protocol-only last bubble and still send one meme", async () => {
+  const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://happy" });
+  const aiService = new FakeAiService(async () => ({ text: "ignored draft", messages: ["第一句", "第二句", '{"text":...} [[meme:happy]]'], model: "test", skillId: "assistant" }));
+  const { app, transport } = createApp({ aiService, memeLibraryService });
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "今天吃啥" } }]));
+  assert.deepEqual(transport.sent.map(item => item.text), ["第一句", "第二句"]);
+  assert.deepEqual(transport.outbound.map(item => item.kind), ["text", "text", "image"]);
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(memeLibraryService.claimCalls[0]?.tagId, "happy");
+});
+
 test("model category controls are stripped from QQ text and passed only to meme selection", async () => {
   const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://happy" });
   const aiService = new FakeAiService(async () => ({ text: "开饭咯 [[meme:happy]]", model: "test", skillId: "assistant" }));

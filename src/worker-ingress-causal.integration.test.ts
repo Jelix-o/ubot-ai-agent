@@ -1725,12 +1725,12 @@ test("replay: a length-truncated model envelope never becomes an outbox answer o
   assert.equal(f.db.db.prepare("SELECT count(*) AS n FROM conversation_state_updates").get()?.n, 0);
 });
 
-test("replay: captured reply text with a split state suffix gets one controlled format repair before delivery", async t => {
+test("replay: an ambiguous split state suffix gets one controlled format repair before delivery", async t => {
   const f = conversationReplay(t);
   f.ai.replies.push(
     { text: [
       "按这个简化算法，大概是四千多。",
-      '这两个条件会明显影响结果{"stateUpdate":{"coveredPoints":["养老金估算"],"questions":[{"key":"pension","userId":"20001","text":"缴费基数和退休年龄","status":"answered"}]},"review":{"repeatsAnswered":false,"reasksKnown":false,"unsupportedReversal":false}}',
+      '这两个条件会明显影响结果{"stateUpdate":{"coveredPoints":["养老金估算"],"questions":[{"key":"pension","userId":"20001","text":"缴费基数和退休年龄","status":"answered"}]},"review":{"repeatsAnswered":false,"reasksKnown":false,"unsupportedReversal":false},"draft":"ambiguous"}',
     ].join("\n\n") },
     { text: "这句重新整理过了。" },
   );
@@ -1766,6 +1766,34 @@ test("replay: final outbox boundary rejects a state suffix before any split mess
   );
 
   assert.equal(f.db.db.prepare("SELECT count(*) AS n FROM outbox").get()?.n, 0);
+});
+
+test("replay: cleaned prose alone reaches outbox and assistant history without a retry", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push({ text: '第一句。第二句 {"oops":""}' });
+  await f.ask("今天心情怎么样");
+  const sent = f.db.db.prepare("SELECT text FROM outbox ORDER BY id").all() as Array<{ text: string }>;
+  const turns = f.db.db.prepare("SELECT content FROM conversation_turns WHERE role = 'assistant'").all() as Array<{ content: string }>;
+  assert.equal(f.ai.calls.length, 1);
+  assert.ok(sent.length > 0);
+  assert.match(sent.map(row => row.text).join(""), /第一句.*第二句/);
+  assert.doesNotMatch(JSON.stringify([sent, turns]), /oops|\\"text\\":/);
+});
+
+test("replay: old assistant tails are cleaned on read while stored and user originals survive", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push({ text: "先看看条件" });
+  await f.ask("一起聊午饭吧");
+  f.ack();
+  const turn = f.db.db.prepare("SELECT id FROM conversation_turns WHERE role = 'assistant'").get() as { id: number };
+  f.db.db.prepare("UPDATE conversation_turns SET content = ? WHERE id = ?").run('先看看条件 {"oops":""}', turn.id);
+  // Delivered outbox text is authoritative for causal history.
+  f.db.db.prepare("UPDATE outbox SET text = ? WHERE turn_id = ?").run('先看看条件 {"oops":""}', turn.id);
+  f.ai.replies.push({ text: "就照这个聊" });
+  await f.ask("继续这个话题", USER_ID, { replyToMessageId: "receipt-1" });
+  assert.match(JSON.stringify(f.ai.calls.at(-1)?.history), /先看看条件/);
+  assert.doesNotMatch(JSON.stringify(f.ai.calls.at(-1)?.history), /oops/);
+  assert.match(String(f.db.db.prepare("SELECT content FROM conversation_turns WHERE id = ?").get(turn.id)?.content), /oops/);
 });
 
 test("replay: game conditions survive a fishing detour and the same speaker can return to an older topic", async t => {

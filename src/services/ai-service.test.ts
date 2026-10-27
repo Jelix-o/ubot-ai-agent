@@ -230,6 +230,38 @@ test("meme metadata is extracted from the validated conversation text while stat
   }
 });
 
+test("recognized reply tails are cleaned on streaming and ordinary completions without another request", async () => {
+  const plan = new ReplyPolicyService().plan({ resolution: resolveContextByRules({ userId: "a", text: "一起摸鱼", hasImages: false, messages: [], candidates: [] }), state: emptyConversationState(), userId: "a" });
+  for (const streaming of [true, false]) for (const structured of [true, false]) {
+    let calls = 0;
+    const service = new AiService("https://invalid.example", "test", "test", {
+      async create() {
+        calls++;
+        const body = '第一句。\n第二句 {"oops":""} [[meme:work]]';
+        const text = structured ? JSON.stringify({ text: body, stateUpdate: { coveredPoints: ["one"] } }) + ' {"text":...}' : body;
+        return streaming ? (async function* () { yield { choices: [{ delta: { content: text }, finish_reason: "stop" }] }; })() : { choices: [{ message: { content: text }, finish_reason: "stop" }] };
+      },
+    } as never, { providerCapabilities: { streaming } });
+    const reply = await service.generateReply({ skill, history: [], userInput: "一起摸鱼", ...(structured ? { identityContext: { groupId: "g", currentUserId: "a", replyPlan: plan } } : {}) });
+    assert.equal(reply.text, "第一句。\n第二句");
+    assert.equal(reply.memeTagId, "work");
+    assert.equal(calls, 1);
+  }
+});
+
+test("ambiguous tails reuse a single format repair and never return the rejected draft", async () => {
+  for (const repaired of [true, false]) {
+    let calls = 0;
+    const service = new AiService("https://invalid.example", "test", "test", {
+      async create() { const text = calls++ === 0 || !repaired ? '正文 {"unknown":1}' : "修复后的正文"; return { choices: [{ message: { content: text }, finish_reason: "stop" }] }; },
+    } as never, { providerCapabilities: { streaming: false } });
+    const result = service.generateReply({ skill, history: [], userInput: "你怎么看" });
+    if (repaired) assert.equal((await result).text, "修复后的正文");
+    else await assert.rejects(result, ConversationReplyEnvelopeError);
+    assert.equal(calls, 2);
+  }
+});
+
 test("malformed structured metadata is retried once and never returned as natural reply text", async () => {
   const plan = new ReplyPolicyService().plan({
     resolution: resolveContextByRules({ userId: "a", text: "你怎么看", hasImages: false, messages: [], candidates: [] }),

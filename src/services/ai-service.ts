@@ -1,4 +1,5 @@
 import { parseMemeReply } from "./meme-reply-protocol.js";
+import { cleanReplyHistory } from "./reply-artifacts.js";
 import { normalizeImageIntentRouting } from "./image-intent-settings.js";
 import type { ImageIntentRoutingSettings } from "../types.js";
 import { instrumentCompletions, withModelOperation } from "./model-telemetry.js";
@@ -8,7 +9,7 @@ import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upst
 
 import { compilePersonaPolicy } from "../persona/persona-policy.js";
 import { normalizeReplyMaxTokens } from "../shared/reply-token-budget.js";
-import { ConversationReplyEnvelopeError, parseConversationReply } from "./conversation-state.js";
+import { ConversationReplyEnvelopeError, cleanConversationReply, parseConversationReply } from "./conversation-state.js";
 import { buildSubjectLabel } from "./member-profile-service.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_CAPABILITIES,
@@ -545,37 +546,37 @@ export class AiService {
         "Review the reply against the delivered conversation state before returning. Fix repetition, unnecessary explanations, repeated questions and unsupported reversals. Do not output internal reasoning.",
       ].join("\n") : undefined,
     ].filter((item): item is string => Boolean(item)).join("\n\n") || undefined;
-    const messages = buildChatMessages(skill, history, userInput, images, identityContext, replyScenarioInstruction);
+    const messages = buildChatMessages(skill, cleanReplyHistory(history), userInput, images, identityContext, replyScenarioInstruction);
     const promptChars = countPromptChars(messages);
 
     let reply = await this.createReply(messages, skill.temperature, signal, toolRuntime);
     let conversational: ReturnType<typeof parseConversationReply> | { text: string };
-    if (identityContext?.replyPlan && !reply.messages?.length) {
-      try {
-        conversational = parseConversationReply(reply.text);
-      } catch (error) {
-        if (!(error instanceof ConversationReplyEnvelopeError)) throw error;
+    const validateDraft = () => {
+      if (identityContext?.replyPlan && !reply.messages?.length) return parseConversationReply(reply.text, { userInput });
+      reply = cleanConversationReply(reply, { userInput });
+      return { text: reply.text };
+    };
+    try {
+      conversational = validateDraft();
+    } catch (error) {
+      if (!(error instanceof ConversationReplyEnvelopeError)) throw error;
 
-        // Regenerate once without exposing the malformed draft. If this still
-        // fails, the typed error reaches the reply router, which may select a
-        // configured backup model; otherwise the bot's failure path responds.
-        reply = await this.createReply(
-          [...messages, {
-            role: "system",
-            content: [
-              "FORMAT RETRY: Regenerate your reply from the supplied conversation.",
-              "Return exactly one complete JSON object matching the requested reply schema.",
-              "Do not add prose, markdown fences, or any characters before or after that object.",
-            ].join("\n"),
-          }],
-          skill.temperature,
-          signal,
-          toolRuntime,
-        );
-        conversational = !reply.messages?.length ? parseConversationReply(reply.text) : { text: reply.text };
-      }
-    } else {
-      conversational = { text: reply.text };
+      // Reuse one format repair; a second invalid draft reaches backup routing.
+      reply = await this.createReply(
+        [...messages, {
+          role: "system",
+          content: [
+            "FORMAT RETRY: Regenerate your reply from the supplied conversation.",
+            identityContext?.replyPlan
+              ? "Return exactly one complete JSON object matching the requested reply schema. Do not add characters before or after that object."
+              : "Return only the user-facing answer. Do not append internal objects, metadata or placeholders.",
+          ].join("\n"),
+        }],
+        skill.temperature,
+        signal,
+        toolRuntime,
+      );
+      conversational = validateDraft();
     }
 
     return {

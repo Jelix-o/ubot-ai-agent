@@ -6,6 +6,7 @@ import path from "node:path";
 import { logError, logInfo, logWarn } from "./logger.js";
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
 import { Metrics } from "./shared/metrics.js";
+import { observeReplyArtifacts } from "./services/reply-artifacts.js";
 import { ConsumerRunner } from "./shared/consumer-runner.js";
 import { WorkerTransport } from "./worker-transport.js";
 import { IngressReadApiClient } from "./ingress-read-api.js";
@@ -115,6 +116,7 @@ class ImageIntentRouteLeaseLostError extends Error {
 export class WorkerApp {
   private readonly sharedDb: SharedDb;
   private readonly metrics: Metrics;
+  private readonly stopArtifactObservation: () => void;
   private readonly inflight: InflightManager;
   private readonly semaphore = new LlmSemaphore(8, 2_000);
   private readonly contextRepository: ConversationContextRepository;
@@ -145,6 +147,7 @@ export class WorkerApp {
       processName: "worker",
       flushIntervalMs: 30_000,
     });
+    this.stopArtifactObservation = observeReplyArtifacts(metric => this.metrics.inc(metric));
     this.inflight = new InflightManager(this.sharedDb);
     this.contextRepository = new ConversationContextRepository(this.sharedDb);
     this.contextRouter = new ConversationContextRouter(this.contextRepository);
@@ -1051,6 +1054,7 @@ export class WorkerApp {
     try {
       await this.runner.stop();
     } finally {
+      this.stopArtifactObservation();
       this.metrics.stop();
     }
   }

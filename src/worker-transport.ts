@@ -3,7 +3,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { logInfo } from "./logger.js";
 import { BT_FORWARD_FALLBACK_TEXT, serializeForwardNodes, type ForwardMessageNode } from "./forward-message.js";
-import { ConversationReplyEnvelopeError, hasConversationReplyEnvelopeMarker } from "./services/conversation-state.js";
+import { ConversationReplyEnvelopeError } from "./services/conversation-state.js";
+import { hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
 import type { SharedDb } from "./shared/sqlite.js";
 import type { OutboxContext } from "./shared/sqlite.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
@@ -82,7 +83,8 @@ export class WorkerTransport implements MessageTransport {
     const route = this.routeStorage.getStore() ?? this.conversationRoute;
     // A routed text send is a user-facing conversation reply. Do not persist
     // private reply-envelope fields even when a caller bypasses BotApplication.
-    if (route && hasConversationReplyEnvelopeMarker(text)) {
+    const input = route ? this.db.db.prepare("SELECT text FROM messages WHERE id = ?").get(route.sourceRowId) as { text: string } | undefined : undefined;
+    if (route && hasUnsafeReplyArtifacts(text, input?.text)) {
       throw new ConversationReplyEnvelopeError();
     }
     const id = this.db.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext(), undefined, undefined, undefined, this.batchStorage.getStore());
@@ -91,6 +93,9 @@ export class WorkerTransport implements MessageTransport {
   }
 
   async sendGroupMessageBatch(groupId: string, texts: string[]): Promise<MessageReceipt[]> {
+    const route = this.routeStorage.getStore() ?? this.conversationRoute;
+    const input = route ? this.db.db.prepare("SELECT text FROM messages WHERE id = ?").get(route.sourceRowId) as { text: string } | undefined : undefined;
+    if (route && hasUnsafeReplyArtifacts(texts.join("\n"), input?.text)) throw new ConversationReplyEnvelopeError();
     const batchId = randomUUID();
     const receipts: MessageReceipt[] = [];
     for (const [index, text] of texts.entries()) {

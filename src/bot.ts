@@ -1,5 +1,6 @@
 import { GroupInteractionService, isInteractionQuietHour } from "./services/group-interaction-service.js";
 import { parseMemeReply, memeReplyInstruction, allowsEntertainmentMeme } from "./services/meme-reply-protocol.js";
+import { cleanReplyHistory, hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
 import type { MemeTag, MemeLibraryUploadInput } from "./services/meme-library-service.js";
 import { ReplyModelRouter, effectiveReplyModelId } from "./services/reply-model-router.js";
 import { permissionAtLeast } from "./services/command-permissions.js";
@@ -38,6 +39,7 @@ import {
 } from "./services/context-resolver.js";
 import {
   ConversationReplyEnvelopeError,
+  cleanConversationReply,
   emptyConversationState,
   hasConversationReplyEnvelopeMarker,
   selectConversationEvidence,
@@ -3864,6 +3866,7 @@ export class BotApplication {
           const content = orchestration.deliveredText(turn.id, turn.content, turn.deliveryId);
           return content ? [{ ...turn, content }] : [];
         });
+        causalHistory = cleanReplyHistory(causalHistory);
       } catch (error) {
         logWarn("Conversation history read failed closed; using current message only.", {
           topicId: conversationRoute.topicId,
@@ -4458,7 +4461,7 @@ export class BotApplication {
         reply.text,
         ...(terminalMessages ?? []),
         replyText,
-      ].join(""))) {
+      ].join(""), normalizedUserInput)) {
         throw new ConversationReplyEnvelopeError();
       }
       const controlledMentionIdentities = selectManualIdentitiesForUserIds(
@@ -4497,7 +4500,7 @@ export class BotApplication {
       if (outgoingMessages.length === 0) {
         throw new Error("Formatted AI reply was empty.");
       }
-      if (hasConversationReplyEnvelopeMarker(outgoingMessages.join(""))) {
+      if (hasConversationReplyEnvelopeMarker(outgoingMessages.join(""), normalizedUserInput)) {
         throw new ConversationReplyEnvelopeError();
       }
 
@@ -4511,6 +4514,7 @@ export class BotApplication {
         outgoingMessages,
         outgoingMentionUserIds,
         conversationRoute,
+        normalizedUserInput,
       );
       if (signal?.aborted || (conversationRoute && orchestration && !orchestration.isTaskCurrent(conversationRoute.sourceRowId))) return;
       const stateSources = orchestration?.sourceMap(causalHistory, ambientGroupContext, messageContext.sourceMessageId ?? "", userId);
@@ -4762,15 +4766,15 @@ export class BotApplication {
     signal?: AbortSignal,
   ): Promise<AiReply> {
     const reply = await service.generateReply({ ...args, signal });
-    if (!hasPrivateReplyEnvelopeMarker(reply)) return reply;
+    try { return cleanConversationReply(reply, { userInput: args.userInput }); }
+    catch (error) { if (!(error instanceof ConversationReplyEnvelopeError)) throw error; }
 
     const repaired = await service.generateReply({
       ...args,
       signal,
       scenarioInstruction: buildReplyEnvelopeRecoveryInstruction(args.scenarioInstruction),
     });
-    if (hasPrivateReplyEnvelopeMarker(repaired)) throw new ConversationReplyEnvelopeError();
-    return repaired;
+    return cleanConversationReply(repaired, { userInput: args.userInput });
   }
 
   private async getReplyRouter(): Promise<ReplyModelRouter | undefined> {
@@ -5556,12 +5560,13 @@ export class BotApplication {
     messages: string[],
     mentionUserIds: string[] = [],
     conversationRoute?: ConversationRoute,
+    userInput?: string,
   ): Promise<MessageReceipt[]> {
     // This is the last boundary before individual messages become outbox rows.
     // Check the complete batch before sending the first item so a malformed
     // reply cannot deliver its natural-text prefix and leak state metadata in
     // a later split message.
-    if (hasConversationReplyEnvelopeMarker(messages.join(""))) {
+    if (hasUnsafeReplyArtifacts(messages.join("\n"), userInput)) {
       throw new ConversationReplyEnvelopeError();
     }
     if (conversationRoute && this.conversationContextRepository?.orchestration &&
@@ -7106,11 +7111,6 @@ function isReferenceDependentShortReaction(userInput: string): boolean {
 
 function replyContextCacheKey(groupId: string, messageId: string): string {
   return `${groupId}\u0000${messageId}`;
-}
-
-/** A reply envelope is private metadata even when an adapter bypasses AiService. */
-function hasPrivateReplyEnvelopeMarker(reply: Pick<AiReply, "text" | "messages">): boolean {
-  return hasConversationReplyEnvelopeMarker([reply.text, ...(reply.messages ?? [])].join("\n"));
 }
 
 function buildReplyEnvelopeRecoveryInstruction(original?: string): string {

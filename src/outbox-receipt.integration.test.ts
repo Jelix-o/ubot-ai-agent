@@ -315,6 +315,34 @@ test("ingress terminalizes a legacy malformed contextual outbox row before QQ de
   assert.equal(db.claimOutbox(1, Date.now() + 60_000).length, 0);
 });
 
+test("contextual batches block a placeholder tail before queuing their first bubble", async t => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  const route = createRoute(new ConversationContextRepository(db), 1, "group-context", "source-context");
+  const transport = new WorkerTransport(db);
+  await assert.rejects(transport.runWithConversationContext(route, () => transport.sendGroupMessageBatch("group-context", ["正文", '{"oops":""}'])), ConversationReplyEnvelopeError);
+  assert.equal(db.db.prepare("SELECT count(*) AS n FROM outbox").get()?.n, 0);
+});
+
+test("requested JSON survives both worker and ingress guards using the original source", async t => {
+  const { dbPath, dir } = tempDbPath();
+  const db = new SharedDb(dbPath);
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  const input = "输出 JSON 示例";
+  const sourceRowId = db.insertMessage({ groupId: "group-json", userId: "20001", selfId: "12345", msgId: "source-json", msgTime: Date.now(), createdAt: Date.now(), text: input, imagesJson: "[]", hasAtBot: true, isBotMsg: false });
+  const repository = new ConversationContextRepository(db);
+  const route = repository.saveMessageRoute({ sourceRowId, groupId: "group-json", userId: "20001", sourceMessageId: "source-json", routeReason: "new-topic", content: input, createdAt: Date.now() });
+  const transport = new WorkerTransport(db);
+  const text = '{"oops":"","review":{}}';
+  const receipt = await transport.runWithConversationContext(route, () => transport.sendGroupMessage("group-json", text));
+  repository.appendAssistantTurn({ topicId: route.topicId, branchId: route.branchId, parentTurnId: route.turnId, content: text, createdAt: Date.now(), deliveryIds: [receipt!.deliveryId!] });
+  const row = db.claimOutbox(1)[0]!;
+  const qq = new ReceiptTransport(() => "qq-json");
+  await deliverOutboxRow(db, qq, row);
+  assert.equal(qq.deliveries[0]?.text, text);
+});
+
 test("WorkerTransport queues image outbox rows and ingress delivers them as images", async (t) => {
   const { dbPath, dir } = tempDbPath();
   const workerDb = new SharedDb(dbPath);
