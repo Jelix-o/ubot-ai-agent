@@ -491,7 +491,7 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await saveGroup();
 
     await desktop.goto(`${baseUrl}/memes`, { waitUntil: "networkidle" });
-    if (await desktop.getByLabel("选图方式").inputValue() !== "model_tag" || await desktop.getByRole("spinbutton", { name: "发送概率" }).inputValue() !== "35") throw new Error("Meme defaults are incorrect.");
+    if (await desktop.getByLabel("选图方式").inputValue() !== "model_tag" || await desktop.getByRole("spinbutton", { name: "发送概率" }).inputValue() !== "60") throw new Error("Meme defaults are incorrect.");
     await desktop.getByText(/单张最大 10 MiB/).waitFor();
     await desktop.getByRole("spinbutton", { name: "发送概率" }).fill("41");
     const savedPolicy = desktop.waitForResponse(response => response.url().endsWith("/api/meme-library/policy") && response.request().method() === "PUT" && response.ok());

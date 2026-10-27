@@ -1379,7 +1379,7 @@ test("meme library APIs restrict reads and previews to super admins, require rec
     policy: { enabled: boolean; probabilityPercent: number; cooldownSeconds: number };
     assets: Array<{ id: string; scope: string; protected: boolean }>;
   };
-  assert.deepEqual(initial.policy, { enabled: true, probabilityPercent: 35, cooldownSeconds: 60, selectionMode: "model_tag", activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"] });
+  assert.deepEqual(initial.policy, { enabled: true, probabilityPercent: 60, cooldownSeconds: 30, selectionMode: "model_tag", activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"] });
   const seed = initial.assets.find((asset) => asset.scope === "blacklisted_at");
   assert.ok(seed);
   assert.equal(seed.protected, true);
