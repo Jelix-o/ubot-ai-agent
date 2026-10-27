@@ -33,6 +33,7 @@ const modelHealthById = shallowRef<Record<string, ModelHealthStatus>>({});
 const modelRowKeys = new WeakMap<SystemModelConfig, string>();
 let modelRowKeySeed = 0;
 const settings = reactive<SystemSettings>({
+  imageIntentRouting: { enabled: true, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 },
   replyRouting: { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45000, chatTotalTimeoutMs: 120000, htmlAttemptTimeoutMs: 600000, htmlTotalTimeoutMs: 1200000 },
   onlineLookupEnabled: false,
   tokenCostControl: {
@@ -47,7 +48,7 @@ const settings = reactive<SystemSettings>({
   commands: [],
   updatedAt: "",
 });
-const editableFields = ["onlineLookupEnabled", "tokenCostControl", "defaultTriggerKeywords", "models", "selectedModelIds", "replyRouting"] as const;
+const editableFields = ["onlineLookupEnabled", "tokenCostControl", "defaultTriggerKeywords", "models", "selectedModelIds", "replyRouting", "imageIntentRouting"] as const;
 function settingValues(): Record<string, unknown> { return Object.fromEntries(editableFields.map((key) => [key, settings[key]])); }
 const dirty = computed(() => Boolean(revision.value) && JSON.stringify(settingValues()) !== JSON.stringify(originalSettings.value));
 useUnsavedChanges(dirty);
@@ -66,7 +67,7 @@ function rememberSettings(next: SystemSettings & { revision: string }): void {
 const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; detail: string }> = [
   { value: "reply", label: "对话回复", detail: "普通群聊回复、实时对话和群内 #模型 切换列表" },
   { value: "image", label: "图片生成", detail: "#画图 使用；主模型失败时按列表顺序切换备用" },
-  { value: "image_intent", label: "图片意图判断", detail: "仅判断真实 @会仙 或回复会仙已确认投递图片的请求应走对话、生图、改图还是头像改图；只选择动作，必须支持原生工具调用" },
+  { value: "image_intent", label: "图片意图判断", detail: "仅判断真实 @机器人 或回复其已投递图片的请求；只选择动作，必须支持原生工具调用" },
   { value: "summary", label: "总结", detail: "已有总结模型配置" },
   { value: "knowledge", label: "知识", detail: "已有知识模型配置" },
   { value: "custom", label: "自定义", detail: "已有自定义模型配置" },
@@ -456,7 +457,21 @@ function setToolCalling(event: Event): void {
 }
 
 function isUsableImageIntentModel(model?: SystemModelConfig): boolean {
-  return Boolean(model?.purpose === "image_intent" && model.enabled && (model.hasApiKey || model.apiKey?.trim()) && model.capabilities?.toolCalling === true);
+  return Boolean(model && ["image_intent", "reply"].includes(model.purpose) && model.apiProtocol !== "anthropic" && model.enabled && (model.hasApiKey || model.apiKey?.trim()) && model.capabilities?.toolCalling === true);
+}
+
+const intentRouting = computed(() => settings.imageIntentRouting!);
+const intentModels = computed(() => settings.models.filter(model => ["reply", "image_intent"].includes(model.purpose)));
+const intentProbeResult = shallowRef("");
+const intentProbing = shallowRef(false);
+async function testImageIntent(): Promise<void> {
+  if (dirty.value) { app.showToast("请先保存配置，再检测。", "error"); return; }
+  intentProbing.value = true;
+  try {
+    const result = await api<{ ok: boolean; detail: string; latencyMs: number }>("/api/system-settings/image-intent/test", { method: "POST" });
+    intentProbeResult.value = `${result.ok ? '通过' : '失败'} · ${result.latencyMs}ms · ${result.detail}`;
+  } catch { intentProbeResult.value = "检测失败，请检查模型配置。"; }
+  finally { intentProbing.value = false; }
 }
 
 function canSelectAsDefault(model: SystemModelConfig): boolean {
@@ -529,6 +544,18 @@ onMounted(() => {
         </div>
         <div class="routing-preview" aria-live="polite"><span class="routing-preview-label">统一默认调用顺序</span><ol v-if="replyRoutePreview.length"><li v-for="id in replyRoutePreview" :key="id"><code>{{ id }}</code></li></ol><span v-else>暂无可用模型</span><small>{{ routing.fallbackEnabled ? '已去重；实际调用还会按能力与策略筛选。' : '自动降级已关闭，仅尝试主模型。' }}</small></div>
       </section>
+      <section v-if="activePurpose === 'image_intent'" class="reply-routing-panel">
+        <div class="section-intro"><h2>图片意图判断</h2><p>复用现有模型连接和密钥，独立于对话降级链。具体生图问法先确认，直接请求直接执行。</p></div>
+        <label class="policy-toggle"><span>启用图片意图判断</span><input v-model="intentRouting.enabled" type="checkbox" /></label>
+        <div class="routing-grid">
+          <label class="routing-field">判断模型<select v-model="settings.selectedModelIds.image_intent" class="select"><option value="">未配置</option><option v-for="model in intentModels" :key="model.id" :value="model.id" :disabled="!isUsableImageIntentModel(model)">{{ model.name }} · {{ model.id }}{{ isUsableImageIntentModel(model) ? '' : '（需启用、密钥和工具调用）' }}</option></select></label>
+          <label class="routing-field">请求模式<select v-model="intentRouting.requestProfile" class="select"><option value="deepseek">DeepSeek（关闭思考）</option><option value="openai">OpenAI 兼容</option></select></label>
+          <label class="routing-field">超时（毫秒）<input v-model.number="intentRouting.timeoutMs" class="input" type="number" min="1000" max="30000" /></label>
+          <label class="routing-field">输出上限（token）<input v-model.number="intentRouting.maxCompletionTokens" class="input" type="number" min="64" max="512" /></label>
+        </div>
+        <button class="ghost-btn" type="button" :disabled="intentProbing || !settings.selectedModelIds.image_intent" @click="testImageIntent">{{ intentProbing ? '检测中…' : '检测原生工具调用' }}</button>
+        <p v-if="intentProbeResult" role="status">{{ intentProbeResult }}</p>
+      </section>
       <div class="model-connections-heading"><div class="section-intro"><h2>模型连接</h2><p>维护连接、密钥与启用状态。</p></div><button class="btn" type="button" @click="addModel">＋ 新增模型</button></div>
       <div class="model-toolbar"><span class="routing-note">{{ activePurposeMeta.label }} · {{ activePurposeModels.length }} 个模型</span><div class="model-filters"><form @submit.prevent="setModelQuery"><input v-model="modelQuery" class="input" aria-label="搜索模型" placeholder="搜索名称、标识或模型名…" @change="setModelQuery" /></form><select v-model="modelStatus" class="select" aria-label="模型启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select><button class="ghost-btn" type="button" :disabled="testingAllModels" @click="testAllModels">{{ testingAllModels ? '检测中…' : '检测全部' }}</button></div></div>
       <div v-if="!filteredModels.length" class="empty compact">{{ activePurposeModels.length ? '没有匹配的模型。' : '此用途暂无模型，新增配置后保存即可使用。' }}</div>
@@ -548,7 +575,7 @@ onMounted(() => {
         <section v-if="editingModel.purpose === 'image'" class="model-edit-section"><h3>图片编辑</h3>
           <label v-if="editingModel.purpose === 'image'" class="policy-toggle"><span><strong>支持图片编辑</strong><small>确认上游支持图生图后开启，用于附图生图和 #改图。</small></span><input type="checkbox" :checked="editingModel.capabilities?.imageEditing === true" @change="setImageEditing" /></label>
         </section>
-        <section v-if="editingModel.purpose === 'image_intent'" class="model-edit-section"><h3>原生工具调用</h3>
+        <section v-if="['image_intent', 'reply'].includes(editingModel.purpose) && editingModel.apiProtocol !== 'anthropic'" class="model-edit-section"><h3>原生工具调用</h3>
           <label class="policy-toggle"><span><strong>支持原生工具调用</strong><small>只有已确认支持 OpenAI 兼容 function/tool calling 的模型才能判断自然语言图片请求；它只选择动作，不下载图片或执行图片请求。</small></span><input type="checkbox" :checked="editingModel.capabilities?.toolCalling === true" @change="setToolCalling" /></label>
         </section>
         <section v-if="editingModel.purpose === 'reply'" class="model-edit-section" aria-labelledby="model-parameters-title"><h3 id="model-parameters-title">调用参数</h3>

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { logInfo } from "./logger.js";
@@ -33,6 +34,7 @@ import type {
  */
 export class WorkerTransport implements MessageTransport {
   private readonly routeStorage = new AsyncLocalStorage<ConversationRoute>();
+  private readonly batchStorage = new AsyncLocalStorage<{ batchId: string; delayBeforeMs: number }>();
   private conversationRoute?: ConversationRoute;
 
   constructor(
@@ -83,8 +85,30 @@ export class WorkerTransport implements MessageTransport {
     if (route && hasConversationReplyEnvelopeMarker(text)) {
       throw new ConversationReplyEnvelopeError();
     }
-    const id = this.db.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext());
+    const id = this.db.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext(), undefined, undefined, undefined, this.batchStorage.getStore());
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
+    return { deliveryId: `outbox:${id}` };
+  }
+
+  async sendGroupMessageBatch(groupId: string, texts: string[]): Promise<MessageReceipt[]> {
+    const batchId = randomUUID();
+    const receipts: MessageReceipt[] = [];
+    for (const [index, text] of texts.entries()) {
+      const receipt = await this.batchStorage.run(
+        { batchId, delayBeforeMs: index === 0 ? 0 : 1500 + Math.floor(Math.random() * 2001) },
+        () => this.sendGroupMessage(groupId, text),
+      );
+      if (!receipt) continue;
+      receipts.push(receipt);
+    }
+    return receipts;
+  }
+
+  async sendMemeGroupImage(groupId: string, assetId: string, afterDeliveryId?: string): Promise<MessageReceipt> {
+    const previous = afterDeliveryId ? this.db.db.prepare("SELECT batch_id FROM outbox WHERE delivery_id=? AND group_id=?")
+      .get(afterDeliveryId, groupId) as { batch_id: string | null } | undefined : undefined;
+    const id = this.db.enqueueOutbox(groupId, null, assetId, "meme_image", undefined, undefined, undefined, undefined,
+      previous?.batch_id ? { batchId: previous.batch_id, delayBeforeMs: 0 } : undefined);
     return { deliveryId: `outbox:${id}` };
   }
 

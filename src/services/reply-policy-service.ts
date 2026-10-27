@@ -86,13 +86,16 @@ export class ReplyPolicyService {
   }
 
   replyFormatBudget(
-    skill: Pick<SkillDefinition, "id">,
+    skill: Pick<SkillDefinition, "id"> & Partial<Pick<SkillDefinition, "name">>,
     userInput: string,
     plan: ReplyPlan,
   ): ReplyFormatBudget | undefined {
     if (skill.id !== "huixian") return undefined;
     if (EXPLICIT_SHORT_REQUEST.test(userInput.replace(/\s+/gu, " ").trim())) {
       return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
+    }
+    if (skill.name === "大肥鱼" && plan.detailLevel === "direct") {
+      return { maxChars: 100, maxTotalChars: 240, maxMessages: 3, preferredMaxMessages: 3 };
     }
     return budgetForDetailLevel(plan.detailLevel);
   }
@@ -175,6 +178,7 @@ function formatInstruction(plan: ReplyPlan, options: ReplyPolicyFormatOptions): 
     case "detailed":
       return `用户明确要求详细内容或当前任务本身需要展开：围绕本轮问题完整回答，但仍先给结论；最多 ${options.formatBudget.maxMessages} 条、${options.formatBudget.maxTotalChars} 个可见字符内，不塞无关背景。`;
     default:
+      if (options.formatBudget.maxMessages > 1) return `日常群聊通常 1–3 个短气泡，每句以 10–30 字为目标，自然表达；总计 ${options.formatBudget.maxTotalChars} 个可见字符内。避免为字数机械截断，正事先讲清楚，不重复已答内容。`;
       return `默认短答：先给结论或接梗，通常 1 到 3 句、${options.formatBudget.maxTotalChars} 个可见字符内、只发一条；最多保留一条会改变答案的必要前提或风险。不要写推导、分项、总结式重述或无关追问。`;
   }
 }

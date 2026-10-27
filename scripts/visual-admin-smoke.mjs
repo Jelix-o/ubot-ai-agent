@@ -16,6 +16,8 @@ import { MemeLibraryService } from "../dist/services/meme-library-service.js";
 import { ImagePreviewArchiveService } from "../dist/services/image-preview-archive-service.js";
 import { loadPrivateEnterpriseRanking } from "../dist/services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "../dist/services/system-settings-store.js";
+import { ScheduledReminderStore } from "../dist/services/scheduled-reminder-store.js";
+import { ScheduledReminderService } from "../dist/services/scheduled-reminder-service.js";
 import { V3StateRepository } from "../dist/services/v3-state-repository.js";
 
 const TEST_STATE_KEY = "0".repeat(64);
@@ -102,6 +104,22 @@ try {
   const characterProfileService = new CharacterProfileService(v3State);
   const memeLibraryService = new MemeLibraryService(path.join(root, "data"), v3State);
   await memeLibraryService.initialize();
+  if (runBrowserSmoke) {
+    const tag = await memeLibraryService.createTag({ name: "work", description: "工作与摸鱼", keywords: ["work"] });
+    await memeLibraryService.uploadAsset({
+      name: "预置素材来源验收", scope: "normal_chat", tags: [tag.id], data: IMAGE_PREVIEW_SMOKE_PNG,
+      packId: "blue-fat-fish-meme-pack", sourceRef: "0bbf1c546135ad55e6049241922a90fcb5332777",
+      sourcePath: "memes/work/smoke.png", sourceLicense: "fixture-only",
+    });
+    let attempts = 0;
+    // Exercise the real task API and UI without downloading remote packs.
+    memeLibraryService.importPack = async (packId, progress) => {
+      attempts++;
+      await progress(50, "素材导入浏览器验收");
+      return { packId, imported: 0, skipped: attempts > 1 ? 1 : 0,
+        failed: attempts === 1 ? [{ path: "memes/work/smoke.png", error: "fixture_download_failed" }] : [] };
+    };
+  }
   const imagePreviewStagedRoot = path.join(root, "data", "generated-images");
   const imagePreviewService = new ImagePreviewArchiveService({
     sharedDb,
@@ -156,6 +174,7 @@ try {
     characterProfileService,
     systemSettingsStore: settingsStore,
     adminTaskStore: taskStore,
+    scheduledReminderService: new ScheduledReminderService(new ScheduledReminderStore(path.join(root, "retired-reminders.json"), v3State), {}),
     imagePreviewService,
     memeLibraryService,
     adminOperationLogService: operations,
@@ -301,7 +320,7 @@ try {
 
   const updatePersona = await requestJson(baseUrl, "/api/persona/huixian", "PUT", {
     ...persona,
-    name: "会仙",
+    name: persona.name,
   }, { Cookie: cookie, "X-CSRF-Token": csrf });
   if (!updatePersona.response.ok) throw new Error(`Persona update failed: ${updatePersona.response.status} ${JSON.stringify(updatePersona.data)}`);
 
@@ -441,6 +460,53 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     if (prompt !== "后台视觉冒烟使用的私有生图提示词") throw new Error("Image preview detail did not render the retained prompt safely.");
     await desktop.screenshot({ path: path.join(screenshotDir, "image-preview-dialog-desktop.png"), fullPage: true });
     await imageDialog.getByRole("button", { name: "关闭详情" }).click();
+
+    await desktop.goto(`${baseUrl}/groups?tab=capabilities`, { waitUntil: "networkidle" });
+    const ambient = desktop.getByRole("checkbox", { name: /^读空气/ });
+    const poke = desktop.getByRole("checkbox", { name: /^回戳/ });
+    if (await ambient.isChecked() || await poke.isChecked()) throw new Error("Group interactions must default off.");
+    await ambient.check();
+    await poke.check();
+    await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).fill("900");
+    await desktop.getByRole("spinbutton", { name: "回戳概率（%）" }).fill("40");
+    const saveGroup = async () => {
+      const saved = desktop.waitForResponse(response => response.url().includes(`/api/groups/${GROUP_ID}/config`) && response.request().method() === "PATCH" && response.ok());
+      await desktop.getByRole("button", { name: "保存配置", exact: true }).first().click();
+      await saved;
+    };
+    await saveGroup();
+    await desktop.reload({ waitUntil: "networkidle" });
+    if (!await ambient.isChecked() || !await poke.isChecked() || await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).inputValue() !== "900") throw new Error("Interaction controls did not persist.");
+    await assertNoHorizontalOverflow(desktop, "desktop group interactions");
+    await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-desktop.png"), fullPage: true });
+    await ambient.uncheck();
+    await poke.uncheck();
+    await saveGroup();
+
+    await desktop.goto(`${baseUrl}/memes`, { waitUntil: "networkidle" });
+    if (await desktop.getByLabel("选图方式").inputValue() !== "model_tag" || await desktop.getByRole("spinbutton", { name: "发送概率" }).inputValue() !== "35") throw new Error("Meme defaults are incorrect.");
+    await desktop.getByText(/单张最大 10 MiB/).waitFor();
+    await desktop.getByRole("spinbutton", { name: "发送概率" }).fill("41");
+    const savedPolicy = desktop.waitForResponse(response => response.url().endsWith("/api/meme-library/policy") && response.request().method() === "PUT" && response.ok());
+    await desktop.getByRole("button", { name: "保存策略", exact: true }).click();
+    await savedPolicy;
+    await desktop.reload({ waitUntil: "networkidle" });
+    if (await desktop.getByRole("spinbutton", { name: "发送概率" }).inputValue() !== "41") throw new Error("Meme policy did not persist.");
+    await desktop.locator(".asset-card").filter({ hasText: "预置素材来源验收" }).click();
+    await desktop.locator(".asset-editor").getByText("0bbf1c546135ad55e6049241922a90fcb5332777", { exact: true }).waitFor();
+    await desktop.locator(".asset-editor").getByText("fixture-only", { exact: true }).waitFor();
+    await desktop.getByRole("button", { name: "导入 / 重试", exact: true }).first().click();
+    await desktop.getByText("失败文件 1 个", { exact: true }).waitFor();
+    await desktop.getByText("失败文件 1 个", { exact: true }).click();
+    await desktop.getByText("memes/work/smoke.png：fixture_download_failed", { exact: true }).waitFor();
+    await desktop.getByRole("button", { name: "导入 / 重试", exact: true }).first().click();
+    await desktop.waitForFunction(() => !document.querySelector(".preset-packs details") && document.querySelector(".preset-packs progress")?.value === 100);
+    await assertNoHorizontalOverflow(desktop, "desktop meme library");
+    await desktop.screenshot({ path: path.join(screenshotDir, "memes-desktop.png"), fullPage: true });
+    await desktop.setViewportSize({ width: 390, height: 844 });
+    await desktop.waitForFunction(() => document.querySelector("aside.sidebar")?.getBoundingClientRect().right <= 0);
+    await assertNoHorizontalOverflow(desktop, "mobile meme library");
+    await desktop.screenshot({ path: path.join(screenshotDir, "memes-mobile.png"), fullPage: true });
 
     await desktop.setViewportSize({ width: 390, height: 844 });
     await desktop.goto(`${baseUrl}/`, { waitUntil: "networkidle" });

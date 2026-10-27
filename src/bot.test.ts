@@ -39,6 +39,8 @@ import { BtSearchError, type BtSearchRuntime } from "./services/bt-search-servic
 import { BT_FORWARD_FALLBACK_TEXT, type ForwardMessageNode } from "./forward-message.js";
 import { BT_ADULT_CONTENT_WARNING } from "./services/bt-search-renderer.js";
 import { NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
+import type { MemeTag, MemeLibraryUploadInput } from "./services/meme-library-service.js";
+import { GroupInteractionService } from "./services/group-interaction-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -628,8 +630,13 @@ class FakeAiService {
 }
 
 class FakeMemeLibraryService implements MemeLibraryRuntimeService {
+  readonly collected: MemeLibraryUploadInput[] = [];
+  readonly tags: MemeTag[] = [{ id: "happy-tag", name: "happy", description: "开心", keywords: ["开心"], createdAt: "2026-01-01", updatedAt: "2026-01-01" }];
+  async listTags(): Promise<MemeTag[]> { return this.tags; }
+  async getReplyTags(): Promise<MemeTag[]> { return this.tags; }
+  async uploadAsset(input: MemeLibraryUploadInput) { this.collected.push(input); return {}; }
   blacklistedSelections: Array<{ groupId?: string }> = [];
-  claimCalls: Array<{ groupId: string; userText: string; now?: number }> = [];
+  claimCalls: Array<{ groupId: string; userText: string; tagId?: string; now?: number }> = [];
   onClaim?: () => void;
 
   constructor(
@@ -650,6 +657,7 @@ class FakeMemeLibraryService implements MemeLibraryRuntimeService {
   async claimNormalChatImage(input: {
     groupId: string;
     userText: string;
+    tagId?: string;
     now?: number;
   }): ReturnType<MemeLibraryRuntimeService["claimNormalChatImage"]> {
     this.claimCalls.push({ ...input });
@@ -918,6 +926,18 @@ class FakeRealtimeLookupService {
   }
 }
 
+test("a superseded conversation cannot enqueue a batch of bubbles", async () => {
+  let batches = 0;
+  const app = Object.create(BotApplication.prototype) as BotApplication;
+  Object.assign(app, {
+    transport: { async sendGroupMessageBatch() { batches++; return []; } },
+    conversationContextRepository: { orchestration: { isTaskCurrent: () => false } },
+  });
+  const send = Reflect.get(app, "sendTextMessages") as (groupId: string, texts: string[], mentions: string[], route: ConversationRoute) => Promise<unknown>;
+  await assert.rejects(() => send.call(app, "100", ["旧回复首句", "旧回复尾句"], [], { sourceRowId: 1 } as ConversationRoute), /conversation_task_superseded/);
+  assert.equal(batches, 0);
+});
+
 function cloneGroup(group: GroupBotConfig): GroupBotConfig {
   return {
     ...group,
@@ -1098,6 +1118,7 @@ function createApp(options?: {
     } | undefined;
   };
   memeLibraryService?: FakeMemeLibraryService;
+  groupInteractionService?: GroupInteractionService;
   imageGenerationService?: ImageGenerationRuntime;
   privateEnterpriseRanking?: PrivateEnterpriseRanking;
   knowledgeSourceBindingStore?: KnowledgeSourceBindingStore;
@@ -1217,6 +1238,7 @@ function createApp(options?: {
     options?.imagePreviewArchiveService,
     options?.avatarReferenceResolver,
     options?.imageRequestRepository,
+    options?.groupInteractionService,
   );
 
   return {
@@ -3579,6 +3601,157 @@ test("normal text replies append a locally matched meme after the text without a
   assert.deepEqual(memeLibraryService.claimCalls, [{ groupId: "67890", userText: "今天终于发布了" }]);
 });
 
+test("model category controls are stripped from QQ text and passed only to meme selection", async () => {
+  const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://happy" });
+  const aiService = new FakeAiService(async () => ({ text: "开饭咯 [[meme:happy]]", model: "test", skillId: "assistant" }));
+  const { app, transport } = createApp({ aiService, memeLibraryService });
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "今天吃啥" } }]));
+  assert.equal(transport.sent[0]?.text, "开饭咯");
+  assert.equal(memeLibraryService.claimCalls[0]?.tagId, "happy");
+  assert.equal(transport.images.length, 1);
+  assert.ok(aiService.calls[0]?.scenarioInstruction?.includes("\"category\":\"happy\""));
+  assert.equal(aiService.calls[0]?.scenarioInstruction?.includes("happy-tag"), false);
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "帮我排查生产故障" } }], 20001, 67890, 2));
+  assert.equal(transport.images.length, 1, "serious help must not attach entertainment memes even if the model selects one");
+});
+
+async function automaticCompatibilityFixture(t: test.TestContext, ai = new FakeAiService(async () => ({ text: "接住这个话题", model: "test", skillId: "assistant" }))) {
+  const base = Date.parse("2026-10-26T04:00:00Z");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "automatic-coexist-"));
+  const db = new SharedDb(path.join(dir, "state.db"));
+  t.after(async () => { db.close(); await rm(dir, { recursive: true, force: true }); });
+  const interactions = new GroupInteractionService(db, "12345");
+  const runtime = await withMockedNow(base, async () => createApp({ aiService: ai, groupInteractionService: interactions }));
+  const group = runtime.groupConfigService.groups[0]!;
+  Object.assign(group, { participationMode: "selected_members", liveChatUserIds: ["20001"], liveChatDelaySeconds: 30, ambientReplyEnabled: true });
+  let evaluations = 0;
+  (ai as FakeAiService & { evaluateReplyDesire(): Promise<"REPLY" | "SKIP"> }).evaluateReplyDesire = async () => { evaluations++; return "REPLY"; };
+  const add = (id: number, userId: number, time: number) => withMockedNow(time, async () => {
+    db.insertMessage({ groupId: group.groupId, userId: String(userId), selfId: "12345", msgId: String(id), msgTime: time, text: "午饭有什么推荐 " + id, imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: time });
+    await runtime.app.handleGroupMessage(createEvent("午饭有什么推荐 " + id, userId, 67890, id));
+  });
+  const tick = (kind: "live" | "ambient" | "both") => {
+    const app = runtime.app as unknown as { runLiveChatTick(): Promise<void>; runAmbientChatTick(): Promise<void>; maintenanceScheduler: { runDueJobs(now?: number): Promise<void> } };
+    return kind === "live" ? app.runLiveChatTick() : kind === "ambient" ? app.runAmbientChatTick() : app.maintenanceScheduler.runDueJobs(Date.now());
+  };
+  return { base, db, runtime, group, interactions, add, tick, evaluations: () => evaluations };
+}
+
+test("selected-member chat wins over read-air at the same deadline and retains its thirty-second interval", async t => {
+  const f = await automaticCompatibilityFixture(t);
+  await f.add(1, 20001, f.base + 10_000);
+  await f.add(2, 20002, f.base + 11_000);
+  await f.add(3, 20003, f.base + 12_000);
+  await withMockedNow(f.base + 29_999, () => f.tick("ambient"));
+  assert.equal(f.runtime.transport.sent.length, 0, "pending selected-member messages reserve priority even before their deadline");
+  await withMockedNow(f.base + 30_000, () => f.tick("both"));
+  assert.equal(f.runtime.transport.sent.length, 1);
+  assert.equal(f.evaluations(), 0);
+  assert.equal(f.interactions.isSourceHandled("67890", "1"), true);
+  await f.add(4, 20001, f.base + 40_000);
+  await withMockedNow(f.base + 60_000, () => f.tick("both"));
+  assert.equal(f.runtime.transport.sent.length, 2, "ambient's sixty-second restriction must not delay the old thirty-second mode");
+  assert.equal(f.runtime.aiService.calls[1]?.userInput, "午饭有什么推荐 4");
+  const restarted = new GroupInteractionService(f.db, "12345");
+  assert.equal(restarted.claimAutomaticReply(f.group, false, f.base + 600_000, ["4"]), false);
+});
+
+test("a direct mention supersedes a selected-member reply still being generated", async t => {
+  const started = deferred();
+  const response = deferred<AiReply>();
+  let calls = 0;
+  const ai = new FakeAiService(async () => {
+    if (++calls === 1) { started.resolve(); return response.promise; }
+    return { text: "先回答你的问题", model: "test", skillId: "assistant" };
+  });
+  const f = await automaticCompatibilityFixture(t, ai);
+  await f.add(1, 20001, f.base + 10_000);
+  await withMockedNow(f.base + 30_000, async () => {
+    const background = f.tick("live");
+    await started.promise;
+    await f.runtime.app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "有个问题" } }], 20002, 67890, 99));
+    response.resolve({ text: "这条旧回复应该取消", model: "test", skillId: "assistant" });
+    await background;
+  });
+  assert.deepEqual(f.runtime.transport.sent.map(message => message.text), ["先回答你的问题"]);
+});
+
+test("read-air serves untracked members while an in-flight selected reply respects a late group disable", async t => {
+  const f = await automaticCompatibilityFixture(t);
+  await f.add(1, 20002, f.base + 61_000);
+  await f.add(2, 20003, f.base + 62_000);
+  await f.add(3, 20002, f.base + 63_000);
+  await withMockedNow(f.base + 64_000, () => f.tick("both"));
+  assert.equal(f.evaluations(), 1);
+  assert.equal(f.runtime.transport.sent.length, 1);
+  await withMockedNow(f.base + 95_000, async () => {
+    await f.runtime.app.handleGroupMessage(createEvent("接着聊", 20001, 67890, 4));
+    f.runtime.aiService.generateReply = async () => { f.group.enabled = false; return { text: "不可发送", model: "test", skillId: "assistant" }; };
+    await f.tick("live");
+  });
+  assert.equal(f.runtime.transport.sent.length, 1);
+});
+
+test("read-air generates only on REPLY, stays silent on late disable and never writes ordinary chat as memory", async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "ambient-bot-"));
+  const db = new SharedDb(path.join(dir, "state.db"));
+  t.after(async () => { db.close(); await rm(dir, { recursive: true, force: true }); });
+  let decision: "REPLY" | "SKIP" = "SKIP", evaluations = 0;
+  const aiService = new FakeAiService(async () => ({ text: "我也饿了，先看看午饭吃啥。", model: "test", skillId: "assistant" }));
+  const evaluator = aiService as FakeAiService & { evaluateReplyDesire(): Promise<"REPLY" | "SKIP"> };
+  evaluator.evaluateReplyDesire = async (...args: unknown[]) => { assert.equal((args[5] as { mode: string })?.mode, "ambient"); evaluations++; return decision; };
+  const runtime = createApp({ aiService: evaluator, groupInteractionService: new GroupInteractionService(db, "12345") });
+  const group = runtime.groupConfigService.groups[0]!;
+  group.ambientReplyEnabled = true;
+  const tick = () => (runtime.app as unknown as { runAmbientChatTick(): Promise<void> }).runAmbientChatTick();
+  const addTopic = (time: number, start: number) => {
+    for (let i = 0; i < 3; i++) db.insertMessage({ groupId: "67890", userId: i % 2 ? "20002" : "20001", selfId: "12345", msgId: String(start + i), msgTime: time - 1000 + i, text: "午饭吃什么 " + i, imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: time - 1000 + i });
+  };
+  let time = Date.parse("2026-10-26T04:00:00Z");
+  addTopic(time, 1);
+  await withMockedNow(time, tick);
+  assert.equal(evaluations, 1);
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(runtime.transport.sent.length, 0);
+  decision = "REPLY";
+  time += 60_000; addTopic(time, 4);
+  await withMockedNow(time, tick);
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(runtime.transport.sent.length, 1);
+  assert.deepEqual(runtime.conversationStore.turnsByKey, {});
+  time += 60_000; addTopic(time, 7);
+  await withMockedNow(time, tick);
+  assert.equal(aiService.calls.length, 1, "ten-minute group cooldown must suppress repeated interjections");
+  time += 600_000; addTopic(time, 10);
+  evaluator.evaluateReplyDesire = async () => { group.ambientReplyEnabled = false; return "REPLY"; };
+  await withMockedNow(time, tick);
+  assert.equal(runtime.transport.sent.length, 1);
+});
+
+test("meme collection trusts actual super-admin authorization and supports same-message, quoted and timed images", async () => {
+  const memeLibraryService = new FakeMemeLibraryService();
+  const { app, transport, groupConfigService, aiService } = createApp({ memeLibraryService });
+  const image = { type: "image", data: { file: "a.gif", url: "data:image/gif;base64,R0lGODlh" } } as MessageSegment;
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#表情 收藏 happy" } }, image]));
+  assert.equal(memeLibraryService.collected.length, 0);
+  assert.match(transport.sent.at(-1)?.text ?? "", /超级管理员/);
+  groupConfigService.superAdminUserIds = ["20001"];
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#表情 收藏 happy" } }, image], 20001, 67890, 2));
+  assert.equal(memeLibraryService.collected.length, 1);
+  assert.equal(memeLibraryService.collected[0]?.packId, "local");
+  transport.messagesById["ref"] = { messageId: "ref", text: "", images: [{ file: "b.gif", url: "data:image/gif;base64,R0lGODlh" }] };
+  await app.handleGroupMessage(createEvent([{ type: "reply", data: { id: "ref" } }, { type: "text", data: { text: "#表情 收藏 happy" } }], 20001, 67890, 3));
+  assert.equal(memeLibraryService.collected.length, 2);
+  await app.handleGroupMessage(createEvent("#表情 收藏 happy", 20001, 67890, 4));
+  await app.handleGroupMessage(createEvent([image], 20001, 67890, 5));
+  assert.equal(memeLibraryService.collected.length, 3);
+  const started = Date.now();
+  await withMockedNow(started, async () => app.handleGroupMessage(createEvent("#表情 收藏 happy", 20001, 67890, 6)));
+  await withMockedNow(started + 30_001, async () => app.handleGroupMessage(createEvent([image], 20001, 67890, 7)));
+  assert.equal(memeLibraryService.collected.length, 3);
+  assert.equal(aiService.calls.length, 0);
+});
+
 test("image-bearing conversations never append a normal chat meme", async () => {
   const memeLibraryService = new FakeMemeLibraryService({
     claimedImageFile: "base64://must-not-send",
@@ -5779,7 +5952,7 @@ test("skill command explains that only Huixian is enabled", async () => {
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#技能 列表" } }]));
 
-  assert.match(transport.sent[0]?.text ?? "", /会仙人格/);
+  assert.match(transport.sent[0]?.text ?? "", /assistant人格/);
   assert.match(transport.sent[0]?.text ?? "", /切换已关闭/);
 });
 
@@ -6534,7 +6707,7 @@ test("super admin sees the same fixed Huixian persona boundary", async () => {
   );
 
   assert.equal(groupConfigService.groups[0]?.currentSkillId, "assistant");
-  assert.match(transport.sent[0]?.text ?? "", /会仙人格/);
+  assert.match(transport.sent[0]?.text ?? "", /assistant人格/);
 });
 
 test("retired voice and sing commands no longer invoke TTS", async () => {

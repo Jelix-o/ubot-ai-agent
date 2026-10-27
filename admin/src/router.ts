@@ -34,7 +34,7 @@ export const routes = [
   { path: "/html-previews", name: "html-previews", component: AppHtmlPreviewsView, meta: { title: "网页预览", subtitle: "管理群内生成的静态网页预览链接和留存时间" } },
   { path: "/image-previews", name: "image-previews", component: AppImagePreviewsView, meta: { title: "生图预览", subtitle: "管理群内生成图片的私有留存和提示词" } },
   { path: "/memes", name: "memes", component: AppMemeLibraryView, meta: { title: "表情包库", subtitle: "查看随机图片回复、场景标签和黑名单 @ 专用素材", superOnly: true } },
-  { path: "/persona", name: "persona", component: AppPersonaView, meta: { title: "会仙人格", subtitle: "维护会仙的身份、表达边界和回复节奏", superOnly: true } },
+  { path: "/persona", name: "persona", component: AppPersonaView, meta: { title: "机器人格", subtitle: "维护当前角色的身份、表达边界和回复节奏", superOnly: true } },
   // Keep old bookmarks working without exposing this compatibility alias as a page.
   { path: "/skills", redirect: "/persona", meta: { navigation: false } },
   { path: "/commands", name: "commands", component: AppCommandsView, meta: { title: "指令管理", subtitle: "查看系统指令名称、别名、权限和帮助文案" } },

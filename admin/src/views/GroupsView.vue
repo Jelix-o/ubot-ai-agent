@@ -58,7 +58,7 @@ const blacklistedUserIds = computed<string[]>({
     form.blacklistedUserIds = userIds;
   },
 });
-const editableFields = ["enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+const editableFields = ["ambientReplyEnabled", "ambientReplyCooldownSeconds", "pokeReplyEnabled", "pokeReplyProbabilityPercent", "pokeReplyUserCooldownSeconds", "pokeReplyGroupCooldownSeconds", "enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
 function configValues(): Record<string, unknown> {
   return Object.fromEntries(editableFields.filter(key => app.role === "super_admin" || !["replyModelMode", "replyModelSource"].includes(key)).map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
 }
@@ -67,11 +67,13 @@ const reminderBaseline = shallowRef(JSON.stringify(reminderForm));
 const reminderDirty = computed(() => JSON.stringify(reminderForm) !== reminderBaseline.value);
 useUnsavedChanges(computed(() => dirty.value || reminderDirty.value));
 const capabilities = [
+  { key: "ambientReplyEnabled", label: "读空气", detail: "只接新出现的话题；每 30 秒检查，至少三条消息、两位成员。默认关闭。" },
+  { key: "pokeReplyEnabled", label: "回戳", detail: "收到群内戳一戳时概率戳回。默认关闭。" },
   { key: "onlineLookupEnabled", label: "自动查询实时资料", detail: "回答需要最新资料的问题时查询网络。" },
   { key: "visionEnabled", label: "图片理解", detail: "理解群聊中提供的图片。" },
   { key: "ambientGroupContextEnabled", label: "短时群聊语境", detail: "使用近期群聊上下文组织回复。" },
   { key: "htmlPreviewEnabled", label: "静态网页预览", detail: "允许生成并分享网页预览。" },
-  { key: "naturalImageRequestsEnabled", label: "自然语言生图与改图", detail: "仅真实 @会仙 或回复会仙已确认投递的生成图片时，允许由图片意图判断模型处理自然语言请求。" },
+  { key: "naturalImageRequestsEnabled", label: "自然语言生图与改图", detail: "仅真实 @机器人 或回复机器人已确认投递的生成图片时，允许由图片意图判断模型处理自然语言请求。" },
   { key: "opsAlertsEnabled", label: "运维告警", detail: "向当前群发送运行告警。" },
 ] as const;
 
@@ -115,6 +117,8 @@ function defaultGroupConfig(): GroupConfig {
     holidayCountdownDateRule: "all",
     holidayCountdownWeekdays: [],
     botMuted: false,
+    ambientReplyEnabled: false, ambientReplyCooldownSeconds: 600,
+    pokeReplyEnabled: false, pokeReplyProbabilityPercent: 25, pokeReplyUserCooldownSeconds: 60, pokeReplyGroupCooldownSeconds: 30,
     scheduledRemindersEnabled: false,
     blacklistedUserIds: [],
     opsAlertsEnabled: false,
@@ -488,6 +492,13 @@ watch(() => app.groupId, () => {
         </template>
         <section v-else-if="activeTab === 'capabilities'" class="panel group-config-card">
           <div class="section-intro"><h2>能力开关</h2><p>为当前群选择需要的能力，保存后生效。</p></div>
+          <div class="form-grid">
+            <label>主动插话冷却（秒）<input v-model.number="form.ambientReplyCooldownSeconds" class="input" type="number" min="600" max="86400" :disabled="readonly || !form.ambientReplyEnabled" /></label>
+            <label>回戳概率（%）<input v-model.number="form.pokeReplyProbabilityPercent" class="input" type="number" min="0" max="100" :disabled="readonly || !form.pokeReplyEnabled" /></label>
+            <label>同成员回戳冷却（秒）<input v-model.number="form.pokeReplyUserCooldownSeconds" class="input" type="number" min="10" max="86400" :disabled="readonly || !form.pokeReplyEnabled" /></label>
+            <label>同群回戳冷却（秒）<input v-model.number="form.pokeReplyGroupCooldownSeconds" class="input" type="number" min="10" max="86400" :disabled="readonly || !form.pokeReplyEnabled" /></label>
+          </div>
+          <p class="muted">读空气免打扰：北京时间 01:00–07:00；机器人发言后 60 秒内不插话，每分钟最多判断一次。静音与停用会同时暂停读空气和回戳。</p>
           <div class="capability-list">
             <label v-for="capability in capabilities" :key="capability.key" class="switch-line"><span><strong>{{ capability.label }}</strong><small>{{ capability.detail }}</small></span><input v-model="form[capability.key]" :disabled="readonly" type="checkbox" /></label>
           </div>

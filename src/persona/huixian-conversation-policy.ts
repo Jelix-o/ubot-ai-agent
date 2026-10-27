@@ -18,6 +18,7 @@ const PREVIOUS_MARKER = "【会仙对话策略：2026-10-20-r3】";
 const PREVIOUS_HEADER = "以下为当前对话风格，覆盖前文对篇幅、铺垫、主动解释和习惯性追问的旧偏好；准确性、尊重和必要风险提醒继续有效。";
 const R3_POLICY_HEADER = "当前对话风格由下方受管理的 styleRules 统一定义；本轮明确要求优先于默认篇幅偏好，准确性与必要风险提醒继续有效。";
 const POLICY_HEADER = "当前对话风格由下方受管理的 styleRules 统一定义；默认短答，明确要求详细或指定篇幅时再展开，准确性与必要风险提醒继续有效。";
+const NAMED_CURRENT_MARKER = /^【[^\r\n】]+对话策略：2026-10-20-r4】$/u;
 
 const R3_HUIXIAN_CONVERSATION_RULES = [
   "直白、俏皮、敢吐槽，像熟悉的群友接话，不端着，不写客服式分析报告。",
@@ -54,7 +55,7 @@ const RELEASE_MANAGED_EXAMPLE_FINGERPRINTS = new Set([
 /** Remove only known managed lines, keeping edits or additions around them. */
 export function stripManagedConversationSections(prompt: string): string {
   const base = prompt.replace("会接梗、吐槽、表达偏好、安慰人、认真分析，也会把实际问题讲清楚并给出能马上用的建议。", "会接梗、吐槽、表达偏好、安慰人，也能认真处理实际问题。");
-  if (![LEGACY_MARKER, R2_MARKER, PREVIOUS_MARKER, HUIXIAN_CONVERSATION_MARKER].some(marker => base.includes(marker))) return base;
+  if (![LEGACY_MARKER, R2_MARKER, PREVIOUS_MARKER, HUIXIAN_CONVERSATION_MARKER].some(marker => base.includes(marker)) && !base.split(/\r?\n/u).some(line => NAMED_CURRENT_MARKER.test(line.trim()))) return base;
   const managed = new Set([
     LEGACY_MARKER,
     R2_MARKER,
@@ -65,7 +66,7 @@ export function stripManagedConversationSections(prompt: string): string {
     POLICY_HEADER,
     ...MANAGED_HUIXIAN_CONVERSATION_RULES,
   ]);
-  return base.split(/\r?\n/u).filter(line => !managed.has(line.trim())).join("\n").replace(/\n{3,}/gu, "\n\n").trim();
+  return base.split(/\r?\n/u).filter(line => !managed.has(line.trim()) && !NAMED_CURRENT_MARKER.test(line.trim())).join("\n").replace(/\n{3,}/gu, "\n\n").trim();
 }
 
 export function normalizeHuixianStyleRules(rules: string[]): string[] {
@@ -75,9 +76,14 @@ export function normalizeHuixianStyleRules(rules: string[]): string[] {
 }
 
 /** Upgrade known managed content; administrator-owned fields remain intact. */
+export function huixianConversationMarker(name: string): string {
+  return HUIXIAN_CONVERSATION_MARKER.replace("会仙", name.replace(/[\r\n【】]/gu, "").trim() || "机器人");
+}
+
 export function upgradeHuixianConversationProfile(profile: SkillDefinition): SkillDefinition {
   const next = structuredClone(profile);
-  next.systemPrompt = `${stripManagedConversationSections(next.systemPrompt).trim()}\n\n${HUIXIAN_CONVERSATION_MARKER}\n${POLICY_HEADER}`;
+  const marker = huixianConversationMarker(next.name);
+  next.systemPrompt = `${stripManagedConversationSections(next.systemPrompt).trim()}\n\n${marker}\n${POLICY_HEADER}`;
   next.styleRules = [...normalizeHuixianStyleRules(next.styleRules), ...HUIXIAN_CONVERSATION_RULES];
   // Release examples must never become reusable group-chat scripts. Match both
   // sides so administrator-authored examples that happen to share a sentence

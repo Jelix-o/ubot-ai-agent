@@ -12,6 +12,8 @@ import {
   type ImageIntentRouterInput,
 } from "./services/image-intent-router-plugin.js";
 import { openSharedDb } from "./shared/sqlite.js";
+import { parseNaturalImageRequestForIntent } from "./services/natural-image-request.js";
+import { parseGroupMessage } from "./utils/message-parser.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 
 const BOT_QQ = "12345";
@@ -553,6 +555,56 @@ test("Worker sends router clarification outside the member image queue and witho
     "SELECT COUNT(*) AS count FROM image_requests WHERE source_message_id = ?",
   ).get("8501") as { count: number };
   assert.equal(imageRequestCount.count, 0);
+});
+
+test("polite generation waits for same-member confirmation across restart without reclassification", async t => {
+  const fixture = createFixture("image-confirmation-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const bot = createChatBot({ handled });
+  bot.getNaturalImageRequestForIntent = async (event, facts, action) => parseNaturalImageRequestForIntent({
+    message: parseGroupMessage(event.message, BOT_QQ), ...facts,
+    hasTrustedReply: facts.hasTrustedReply === true, replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
+  }, action);
+  let calls = 0;
+  const router: ImageIntentRouter = { async isConfigured() { return true; }, async classify() {
+    calls++; return { action: "generate", modelId: "ds", model: "small" };
+  } };
+  let worker = fixture.createWorker(bot, router);
+  fixture.setWorker(worker);
+  const text = "你能生成一张蓝色鲸鱼图片吗";
+  fixture.insert({ msgId: "question", text, canonicalSegmentsJson: botMentionSegments(text) });
+  worker.start();
+  await waitFor(() => handled.length === 1);
+  assert.deepEqual(handled[0]?.options?.naturalImageRequest, { kind: "clarification", reason: "generation_confirmation" });
+  assert.equal(handled[0]?.options?.imageRequestSourceRowId, undefined);
+  await worker.stop();
+  const confirmationRow = fixture.insert({ msgId: "confirm", text: "确认生成", canonicalSegmentsJson: botMentionSegments("确认生成") });
+  worker = fixture.createWorker(bot, router);
+  fixture.setWorker(worker);
+  worker.start();
+  await waitFor(() => handled.length === 2);
+  assert.equal(calls, 1);
+  assert.deepEqual(handled[1]?.options?.naturalImageRequest, { kind: "generate", prompt: text, requiresConfirmation: false });
+  assert.equal(handled[1]?.options?.imageRequestSourceRowId, confirmationRow);
+  fixture.insert({ msgId: "confirm-again", text: "确认生成", canonicalSegmentsJson: botMentionSegments("确认生成") });
+  await waitFor(() => handled.length === 3);
+  assert.deepEqual(handled[2]?.options?.naturalImageRequest, { kind: "clarification", reason: "confirmation_expired" });
+  assert.equal(calls, 1);
+});
+
+test("image permission preflight prevents classifier and legacy rule fallback", async t => {
+  const fixture = createFixture("intent-denied-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const bot = createChatBot({ handled, onLegacyNatural() { assert.fail("legacy parser"); } });
+  bot.canRouteNaturalImageRequest = async () => false;
+  const worker = fixture.createWorker(bot, { async isConfigured() { assert.fail("configuration check"); }, async classify() { assert.fail("classifier"); } });
+  fixture.setWorker(worker);
+  fixture.insert({ msgId: "denied", text: "生成一张山景", canonicalSegmentsJson: botMentionSegments("生成一张山景") });
+  worker.start();
+  await waitFor(() => Number(fixture.db.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get(fixture.consumerKey)?.watermark_id) > 0);
+  assert.equal(fixture.db.db.prepare("SELECT count(*) AS count FROM image_intent_routes").get()?.count, 0);
 });
 
 function createFixture(prefix: string): {

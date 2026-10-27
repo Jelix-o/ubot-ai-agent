@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { ReplyPolicyService } from "./reply-policy-service.js";
+import { resolveContextByRules } from "./context-resolver.js";
 import { emptyConversationState, type ContextResolution } from "./conversation-state.js";
 import { buildSystemPrompt } from "./ai-service.js";
 import { HUIXIAN_CONVERSATION_RULES, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
@@ -83,6 +84,18 @@ test("review preserves brief confirmations, catches repeats and targeted faults,
     assert.equal(service.review({ text: "工具结果", messages: ["核验结果"], replyCheck }, plan, []), undefined);
   }
   assert.doesNotMatch(service.rewriteInstruction(undefined, "重复提问", prior), /undefined/);
+});
+
+test("dafeiyu uses short casual bubbles and retains the current detailed-answer budget", () => {
+  const service = new ReplyPolicyService();
+  const makePlan = (text: string) => service.plan({ resolution: resolveContextByRules({ userId: "a", text, hasImages: false, messages: [], candidates: [] }), state: emptyConversationState(), userId: "a", userInput: text });
+  const profile = { id: "huixian", name: "大肥鱼" };
+  const direct = makePlan("一起摸鱼吗");
+  const budget = service.replyFormatBudget(profile, "一起摸鱼吗", direct)!;
+  assert.equal(budget.maxMessages, 3);
+  assert.match(service.instruction(direct, emptyConversationState(), { formatBudget: budget }), /10–30 字/);
+  const task = makePlan("详细设计发送队列的状态流转和失败处理");
+  assert.deepEqual(service.replyFormatBudget(profile, task.resolvedInput, task), service.replyFormatBudget({ id: "huixian" }, task.resolvedInput, task));
 });
 
 test("effective persona compiles each managed rule once while preserving custom instructions and explicit long-form requirements", async () => {

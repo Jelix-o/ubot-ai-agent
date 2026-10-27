@@ -78,8 +78,8 @@ useRefreshEvents({ refresh: onRefresh, groupChanged: onRefresh });
       <section class="panel overview-list-panel persona-summary">
         <div class="section-head">
           <div>
-            <h2>会仙人格</h2>
-            <p>当前群统一使用会仙人格。</p>
+            <h2>{{ data?.personaName || "当前角色" }}人格</h2>
+            <p>当前群使用 {{ data?.personaName || "已配置的" }}人格。</p>
           </div>
           <RouterLink v-if="app.role === 'super_admin'" class="ghost-btn" to="/persona">编辑人格</RouterLink>
         </div>

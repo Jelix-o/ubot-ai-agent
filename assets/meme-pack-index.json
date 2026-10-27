@@ -1,0 +1,1829 @@
+{
+  "packs": [
+    {
+      "id": "blue-fat-fish-meme-pack",
+      "ref": "0bbf1c546135ad55e6049241922a90fcb5332777",
+      "manifest": {
+        "schema_version": 1,
+        "id": "blue-fat-fish-meme-pack",
+        "name": "蓝色大肥鱼表情包",
+        "version": "1.0.0",
+        "description": "收录 157 个蓝色大肥鱼动态表情，按 15 个聊天语义类别整理，适合日常回复、情绪表达与互动。",
+        "author": "Meme Manager 适配与维护：anka-afk；原素材作者待补充",
+        "homepage": "https://github.com/anka-afk/blue-fat-fish-meme-pack",
+        "license": "原素材许可未指定；版权归各权利人，详见 LICENSE",
+        "source": {
+          "type": "github",
+          "repo": "anka-afk/blue-fat-fish-meme-pack",
+          "ref": "v1.0.0",
+          "subpath": "."
+        },
+        "tags": [
+          "official",
+          "blue-fat-fish",
+          "animated",
+          "gif",
+          "meme-pack"
+        ],
+        "icon": "previews/cover.jpg",
+        "previews": [
+          "previews/cover.jpg",
+          "previews/overview_1.jpg",
+          "previews/overview_2.jpg",
+          "previews/overview_3.jpg",
+          "previews/overview_4.jpg"
+        ],
+        "compat": {
+          "min_plugin_version": "4.0.0"
+        },
+        "categories": {
+          "happy": {
+            "description": "用于开心、庆祝、满分评价、期待好消息或眼睛发亮的积极回应。"
+          },
+          "angry": {
+            "description": "用于生气、责备或拖鞋、撬棍、枪等夸张玩笑式威胁；不用于真实暴力威胁。"
+          },
+          "sad": {
+            "description": "用于哭泣、委屈、受挫、坐牢、被击中或夸张地表示自己倒下了。"
+          },
+          "confused": {
+            "description": "用于发呆、问号、认真思考、头晕或不知道如何接话。"
+          },
+          "surprised": {
+            "description": "用于惊吓、害怕、紧张、冒汗、发现虫子或突然发生意外。"
+          },
+          "shy": {
+            "description": "用于害羞、脸红、不好意思或眨眼卖萌的回应。"
+          },
+          "sleep": {
+            "description": "用于困倦、睡觉、准备休息、工作时小睡或吹风放松。"
+          },
+          "affection": {
+            "description": "用于爱心、送礼、摸头、安慰、亲吻、表达喜欢或亲近互动。"
+          },
+          "food": {
+            "description": "用于准备开饭、吃零食、喝饮料、馋嘴、蛋糕或拿食物围观聊天。"
+          },
+          "money": {
+            "description": "用于刷卡、付款、撒钱、红包、要米、收硬币或金钱相关玩笑。"
+          },
+          "greeting": {
+            "description": "用于到达、冒泡、打招呼、扩音器喊话、指向某处或发出通知。"
+          },
+          "work": {
+            "description": "用于工作、打字、记录、电脑故障、疲倦加班、恼怒或带薪摸鱼。"
+          },
+          "entertainment": {
+            "description": "用于唱歌、吉他、舞蹈、游戏、拍摄、应援、节庆、驾驶或魔法玩梗。"
+          },
+          "teasing": {
+            "description": "用于小丑、自嘲、装酷、反转、恶作剧、嫌弃或火场中假装一切都好的反讽。"
+          },
+          "reply": {
+            "description": "用于说话、否定、差评、按按钮、摇头或要求静音等直接对话回应。"
+          }
+        }
+      },
+      "files": [
+        {
+          "path": "memes/affection/0106_爱心 1.gif",
+          "sha": "ccb2bd4b3f131d7d6698f3017fc2842b18e2096e",
+          "size": 4611894
+        },
+        {
+          "path": "memes/affection/0107_爱心 2.gif",
+          "sha": "58d7e5be4d4934b592e5f8b97d47694afd3e66f7",
+          "size": 4494238
+        },
+        {
+          "path": "memes/affection/0108_爱心 3.gif",
+          "sha": "179ff59f424f6e56d4e8ef80d56b018a909aa811",
+          "size": 4300444
+        },
+        {
+          "path": "memes/affection/0109_玫瑰.gif",
+          "sha": "1bbd9d58de0a09ab2d5ed4b4becc0e8e06c7ae72",
+          "size": 2984028
+        },
+        {
+          "path": "memes/affection/0113_画板.gif",
+          "sha": "3f7c0a416637764ccc6c5a8de31643859d8ee74b",
+          "size": 1699240
+        },
+        {
+          "path": "memes/affection/0119_礼物 1.gif",
+          "sha": "924e1c24d7a8a3b62df6fd513eb6f5a8bca12675",
+          "size": 4146880
+        },
+        {
+          "path": "memes/affection/0120_礼物 2.gif",
+          "sha": "3a5c98dd6bfc0ea292376c800d7bb37e0439ad5e",
+          "size": 2814866
+        },
+        {
+          "path": "memes/affection/0128_自我安慰.gif",
+          "sha": "359d8e72de77df7b2651fb7b62df8a9259549c43",
+          "size": 4395136
+        },
+        {
+          "path": "memes/affection/0129_舔舔.gif",
+          "sha": "4b92745873cf74f19d7efc4fef999e493b1becca",
+          "size": 1838890
+        },
+        {
+          "path": "memes/affection/0135_被击中(爱心).gif",
+          "sha": "50adc7ab4933db4e63635734e8bbbcc4bd8c68fd",
+          "size": 2030465
+        },
+        {
+          "path": "memes/affection/0147_通知_提示 爱心_喜欢.gif",
+          "sha": "649518f78d0317f729b166e9bbd4c17167861865",
+          "size": 3780794
+        },
+        {
+          "path": "memes/angry/0017_刀 1.gif",
+          "sha": "fddf92aa006770f0cbe7a6fc3a2002a1278446e2",
+          "size": 2862080
+        },
+        {
+          "path": "memes/angry/0018_刀 2.gif",
+          "sha": "0b54eee4ef3154432adb776f4556340e0abe0910",
+          "size": 4445931
+        },
+        {
+          "path": "memes/angry/0078_抓拍(手机).gif",
+          "sha": "1841e4998d621216f13b7edb77536e4aa026c8ad",
+          "size": 3848826
+        },
+        {
+          "path": "memes/angry/0082_拖鞋 1.gif",
+          "sha": "554334e5ac0b3af08a3974632f4e9139e07055b3",
+          "size": 953754
+        },
+        {
+          "path": "memes/angry/0083_拖鞋 2.gif",
+          "sha": "c150d6f5d9e0eebd43868fb36e87d1cd236f1b4e",
+          "size": 6340292
+        },
+        {
+          "path": "memes/angry/0095_敲头.gif",
+          "sha": "4440dd776ece72101a83cc36eca14151deb6203a",
+          "size": 1269332
+        },
+        {
+          "path": "memes/angry/0098_枪.gif",
+          "sha": "94b827b34fffd9c8420a637afba479a38ac092a8",
+          "size": 1438202
+        },
+        {
+          "path": "memes/angry/0104_烧 1.gif",
+          "sha": "1481ec3bc689410ef74d7e4eb1c6eebf83f8bfcc",
+          "size": 3904527
+        },
+        {
+          "path": "memes/angry/0105_烧 2.gif",
+          "sha": "188adf4dcb3cd32208ad9f42eb2dceb1d9b59731",
+          "size": 3803951
+        },
+        {
+          "path": "memes/angry/0110_生气.gif",
+          "sha": "ba6b64378582843f6c16394162623275495fe342",
+          "size": 5319636
+        },
+        {
+          "path": "memes/confused/0009_主意.gif",
+          "sha": "e150fbb2d6784c4b79eb5d6358c6b7f9d89be0b0",
+          "size": 3056933
+        },
+        {
+          "path": "memes/confused/0031_呆 1.gif",
+          "sha": "03cce72cf492f052c3f870bf3e67dd247d0592ee",
+          "size": 2076757
+        },
+        {
+          "path": "memes/confused/0032_呆 2.gif",
+          "sha": "93290d2af701182d0c68e04a65f442c032198794",
+          "size": 3281982
+        },
+        {
+          "path": "memes/confused/0033_呆 3.gif",
+          "sha": "28956e755e12659f7aa7bfa96a01d94055b46372",
+          "size": 4188059
+        },
+        {
+          "path": "memes/confused/0049_头晕.gif",
+          "sha": "a8f98dda596d9b89dd2038fa9d1a0371d2b90331",
+          "size": 3046362
+        },
+        {
+          "path": "memes/confused/0067_思考(自信地).gif",
+          "sha": "06bb3c327368bd127ff045835c4f4695bd992794",
+          "size": 2299499
+        },
+        {
+          "path": "memes/confused/0068_思考(认真地).gif",
+          "sha": "7fc57c8aba090d0e0615b5698e24c91a5e6d57dc",
+          "size": 2485732
+        },
+        {
+          "path": "memes/confused/0099_正在思考.gif",
+          "sha": "f028a518496dea238df4865a8953462cf38ffa89",
+          "size": 2339204
+        },
+        {
+          "path": "memes/confused/0151_问号.gif",
+          "sha": "90ceaead5550e14c5fc02636c9d433221eb0ed34",
+          "size": 2910428
+        },
+        {
+          "path": "memes/entertainment/0013_六七(呆).gif",
+          "sha": "87f36040f93d54d2ab324afb1b87043bc49ccf79",
+          "size": 1402119
+        },
+        {
+          "path": "memes/entertainment/0014_六七.gif",
+          "sha": "75f02a950ed18ef55afb997e59b26f5445e56047",
+          "size": 1438076
+        },
+        {
+          "path": "memes/entertainment/0030_吉他.gif",
+          "sha": "e5001a26fda7c16b6e1f7eb91316f1bab7f31194",
+          "size": 2959590
+        },
+        {
+          "path": "memes/entertainment/0040_唱歌.gif",
+          "sha": "0faab94b488496d6041e1d15b920e051a9872baf",
+          "size": 2639894
+        },
+        {
+          "path": "memes/entertainment/0048_复活节.gif",
+          "sha": "ac79171d9b43c82f9c663871b7ca9499949b369a",
+          "size": 3156657
+        },
+        {
+          "path": "memes/entertainment/0050_奶酪糊脸.gif",
+          "sha": "fa481f01f025e17fa8673e04cccc6f3f0ed0f52d",
+          "size": 3178888
+        },
+        {
+          "path": "memes/entertainment/0053_害羞 1.gif",
+          "sha": "547f883e93c8565b086b77f2007a3adbf2b30ddb",
+          "size": 2037978
+        },
+        {
+          "path": "memes/entertainment/0080_折扇.gif",
+          "sha": "671979869251b1ec80ea7502cf5fc1919720d576",
+          "size": 2827047
+        },
+        {
+          "path": "memes/entertainment/0081_拍蝇.gif",
+          "sha": "676e3d1644acd5dc2ee8d79aa74d3d2d514b6a9f",
+          "size": 1383443
+        },
+        {
+          "path": "memes/entertainment/0088_摇头.gif",
+          "sha": "991594514250fd4074330d6a9e84465e6ca2a86a",
+          "size": 1441030
+        },
+        {
+          "path": "memes/entertainment/0130_舞蹈(散味).gif",
+          "sha": "8a5977517fd723402db37106059ca2965f330e43",
+          "size": 3032934
+        },
+        {
+          "path": "memes/entertainment/0131_荧光棒 2.gif",
+          "sha": "be6f3364b785bcedbc844131bde6b36091c3e1bd",
+          "size": 2404336
+        },
+        {
+          "path": "memes/entertainment/0141_跳舞(Caramelldansen).gif",
+          "sha": "97bdc8ac07bb139712be73ec1d05c979d1b3d89a",
+          "size": 3158593
+        },
+        {
+          "path": "memes/entertainment/0142_跳舞(Helltaker).gif",
+          "sha": "df37325ae75cedc0d4bccad3162f41583b2a10db",
+          "size": 2257083
+        },
+        {
+          "path": "memes/entertainment/0143_跳舞(低皮质醇).gif",
+          "sha": "ac630b48b240720be8df57915995d9133e76902a",
+          "size": 2812989
+        },
+        {
+          "path": "memes/entertainment/0156_驾驶.gif",
+          "sha": "97c155dfff817f0e7aa7f602ee627fc889b51fc8",
+          "size": 1146908
+        },
+        {
+          "path": "memes/entertainment/0157_魔法.gif",
+          "sha": "828d26dab03e6b5bcec690676ad90a27d23f409f",
+          "size": 1456822
+        },
+        {
+          "path": "memes/food/0019_到达(拿勺子).gif",
+          "sha": "0e74ec92a4eeb96e0631de77b46ca80e3d1c7876",
+          "size": 4307481
+        },
+        {
+          "path": "memes/food/0020_到达(拿筷子).gif",
+          "sha": "bea90b6d3dd740410febf32e97c23724181555bf",
+          "size": 4323625
+        },
+        {
+          "path": "memes/food/0027_吃(爆米花).gif",
+          "sha": "80ec223c76e2f057f914b0d5aa4f3506f551d918",
+          "size": 3283768
+        },
+        {
+          "path": "memes/food/0028_吃(甜甜圈).gif",
+          "sha": "4a648e2a273e92c4f0340e8bb218257439654084",
+          "size": 8426128
+        },
+        {
+          "path": "memes/food/0029_吃(西瓜).gif",
+          "sha": "0a662a7c01b679673b7f63453d9e30b380c0d558",
+          "size": 862797
+        },
+        {
+          "path": "memes/food/0041_喝(饮料杯).gif",
+          "sha": "aa061a7069fb240c769484b368d26d9c72cc7c38",
+          "size": 1588838
+        },
+        {
+          "path": "memes/food/0063_干杯.gif",
+          "sha": "93e08e74f3384305b876bae3263aa4ffb25df2d3",
+          "size": 3099447
+        },
+        {
+          "path": "memes/food/0087_摇可乐.gif",
+          "sha": "18bf1cca63eabbea4ba48920ec40ebb3b8802f99",
+          "size": 563566
+        },
+        {
+          "path": "memes/food/0132_蛋糕.gif",
+          "sha": "f15c07c17b00fff4b5e5fb582b16cff74aed2969",
+          "size": 4279685
+        },
+        {
+          "path": "memes/food/0154_馋(刀叉).gif",
+          "sha": "33b290159fdc4d5582d2daf6b3ee905706dde85e",
+          "size": 1629431
+        },
+        {
+          "path": "memes/food/0155_馋(筷子).gif",
+          "sha": "86c968e18351bf8ff74f5f294c9c198496dd8a24",
+          "size": 1588949
+        },
+        {
+          "path": "memes/greeting/0004_Raid 1.gif",
+          "sha": "c8ad72189a4ccd36fcb3f5a2cfcf2a02fad7be66",
+          "size": 2663690
+        },
+        {
+          "path": "memes/greeting/0005_Raid 2.gif",
+          "sha": "7945379d09471184f2d2867049aa82d2b3a57b26",
+          "size": 3888591
+        },
+        {
+          "path": "memes/greeting/0015_冒泡 1.gif",
+          "sha": "26d7769a55cd690c40565cc3ca943e4c62629fe1",
+          "size": 2197549
+        },
+        {
+          "path": "memes/greeting/0016_冒泡 2.gif",
+          "sha": "6b76bbacee4d09da1cac3208b8e99477be512033",
+          "size": 4717086
+        },
+        {
+          "path": "memes/greeting/0021_到达.gif",
+          "sha": "1a9ed7186da13c36ee1ea4068f47de0b74da6ea8",
+          "size": 4319581
+        },
+        {
+          "path": "memes/greeting/0074_打招呼 1.gif",
+          "sha": "98cd96a2ceb0524b8944c87daf6be263b984f991",
+          "size": 4957093
+        },
+        {
+          "path": "memes/greeting/0076_打游戏.gif",
+          "sha": "2793f7c3fc2b6c7c7a8877d6a58e3e64b822e9d6",
+          "size": 1703829
+        },
+        {
+          "path": "memes/greeting/0077_扩音器.gif",
+          "sha": "6b64052b0c9b31a451f06529d9151dbd3237c21e",
+          "size": 1258457
+        },
+        {
+          "path": "memes/greeting/0085_指.gif",
+          "sha": "85aa8ae9b876f5e643b103556eb5e2e459d2cd12",
+          "size": 1854664
+        },
+        {
+          "path": "memes/greeting/0089_摇铃.gif",
+          "sha": "a7fdab14dfa160d85b34a5f83a495e7bcc819dba",
+          "size": 1241203
+        },
+        {
+          "path": "memes/greeting/0140_跳舞 1.gif",
+          "sha": "cfddd8f5931f1ebe00c4d40e6a5030787799d878",
+          "size": 4687243
+        },
+        {
+          "path": "memes/greeting/0149_通知_自定义.gif",
+          "sha": "bd43999c536e61f50b89872649d27bfea608cb28",
+          "size": 3768039
+        },
+        {
+          "path": "memes/happy/0064_庆祝.gif",
+          "sha": "22228a65a10530bbbc08a24d83bccf4cf87a3c38",
+          "size": 3397806
+        },
+        {
+          "path": "memes/happy/0066_得分(10分).gif",
+          "sha": "e621d35306506bf72ea302e7aed31a0a384be8a8",
+          "size": 4316410
+        },
+        {
+          "path": "memes/happy/0075_打招呼 2.gif",
+          "sha": "dd4046b11f2b571f67cd0fc001f6cde0ed6be490",
+          "size": 4199401
+        },
+        {
+          "path": "memes/happy/0096_期待 1.gif",
+          "sha": "52c9530b104a9d6595435ba0809e85d977936c85",
+          "size": 5785185
+        },
+        {
+          "path": "memes/happy/0102_点头.gif",
+          "sha": "c12d2f6115562bda9a19795037cc8bd257b25b80",
+          "size": 1736032
+        },
+        {
+          "path": "memes/happy/0103_点赞.gif",
+          "sha": "974b7b367482a7636b97f0e573f455c20a1fb0e1",
+          "size": 2444371
+        },
+        {
+          "path": "memes/happy/0121_笑(指).gif",
+          "sha": "3384acf15b7d23df34199b0076f2a9777c54c0ee",
+          "size": 2133091
+        },
+        {
+          "path": "memes/happy/0122_笑.gif",
+          "sha": "028f39267b0b5dd75e2c4ee1123f2f676ceac393",
+          "size": 2255541
+        },
+        {
+          "path": "memes/happy/0145_通知_提示 星星_收藏.gif",
+          "sha": "9c12c52f3eacb126e5a2ee7788ecb76e3a787230",
+          "size": 3783683
+        },
+        {
+          "path": "memes/happy/0146_通知_提示 点赞.gif",
+          "sha": "b6261988d4f028896e9eea3e3edca10a79aa7620",
+          "size": 3894356
+        },
+        {
+          "path": "memes/money/0022_刷卡.gif",
+          "sha": "85104413036b00837de32cc87d634ff45752f3ef",
+          "size": 2544774
+        },
+        {
+          "path": "memes/money/0084_拿走我的钱.gif",
+          "sha": "98e08ebd903f57c0afc4d13cf75657b4933c712a",
+          "size": 2620720
+        },
+        {
+          "path": "memes/money/0125_红包 1.gif",
+          "sha": "fb75781f84dea3dcf93f44c2dcd072cec3064b5a",
+          "size": 2114985
+        },
+        {
+          "path": "memes/money/0126_红包 2.gif",
+          "sha": "d581a6ba6d07628ffc02090645f68164550def23",
+          "size": 3838533
+        },
+        {
+          "path": "memes/money/0137_要米.gif",
+          "sha": "0ae728d45afd3328f1cd8aec1b24ac84ed7ae8bb",
+          "size": 3634135
+        },
+        {
+          "path": "memes/money/0148_通知_提示 硬币.gif",
+          "sha": "83ae85fb8996f826fb8ddbfd907a3eae84315725",
+          "size": 3856805
+        },
+        {
+          "path": "memes/money/0150_钱.gif",
+          "sha": "a438026f359915b0480eaeb5807ae3cf1ac58d39",
+          "size": 2126560
+        },
+        {
+          "path": "memes/reply/0002_Popcat 帧.gif",
+          "sha": "501ba9e3c45119efe0eaeef6fa630d1b6eec460f",
+          "size": 817002
+        },
+        {
+          "path": "memes/reply/0003_Popcat 平滑.gif",
+          "sha": "bf1e003493654fa26d990a5e12ddc9042f4a4cef",
+          "size": 831032
+        },
+        {
+          "path": "memes/reply/0023_加油.gif",
+          "sha": "787ecb91a3cfcead6b8de8c4b9c57aea88d52aad",
+          "size": 2300954
+        },
+        {
+          "path": "memes/reply/0091_摸头.gif",
+          "sha": "95a7957649e4516b5fd7977e08c1e29f8d6283a8",
+          "size": 1535872
+        },
+        {
+          "path": "memes/reply/0127_胶带.gif",
+          "sha": "63e0ba52ad353dd3ebe21f013bd14ea3aa258109",
+          "size": 3237971
+        },
+        {
+          "path": "memes/reply/0144_通知_提示 Bits.gif",
+          "sha": "e531059d868240be1c5f2e084d137e8a51072327",
+          "size": 3734783
+        },
+        {
+          "path": "memes/reply/0152_静音 1.gif",
+          "sha": "1c56f486d4bda3cea97dd3f68215f80d22c9e5d7",
+          "size": 2351079
+        },
+        {
+          "path": "memes/reply/0153_静音 2.gif",
+          "sha": "a7943fa65b603b2eb06a1442e599a8da47c5bfdd",
+          "size": 3723130
+        },
+        {
+          "path": "memes/sad/0037_哭 1.gif",
+          "sha": "95bd67503de9701af5bddef62270be0cb21a5fad",
+          "size": 4925874
+        },
+        {
+          "path": "memes/sad/0038_哭 2.gif",
+          "sha": "edd1a63f3be8c1d696621560070ff888639947d7",
+          "size": 4522967
+        },
+        {
+          "path": "memes/sad/0039_哭 3.gif",
+          "sha": "a90e20964ee4c9de2c10ecafe5722168e5a09e50",
+          "size": 1149938
+        },
+        {
+          "path": "memes/sad/0043_坐牢 1.gif",
+          "sha": "2bed2a16289313a7c413c2ade0e3e618b3d228f5",
+          "size": 2962819
+        },
+        {
+          "path": "memes/sad/0044_坐牢 2.gif",
+          "sha": "1fda20189661efce040322aefb7bd83fe2b428a8",
+          "size": 410278
+        },
+        {
+          "path": "memes/sad/0100_死亡.gif",
+          "sha": "6f2f0c28331cbb34ed84cfe3f7e62801e73030cc",
+          "size": 3202131
+        },
+        {
+          "path": "memes/sad/0133_被击中(Bits).gif",
+          "sha": "d81decaa6886f49e26c93e9ffc625a60fee8317a",
+          "size": 2017580
+        },
+        {
+          "path": "memes/sad/0134_被击中(拖鞋).gif",
+          "sha": "db9dce8c9d55acb323ab9202457aac209687cf90",
+          "size": 2059819
+        },
+        {
+          "path": "memes/sad/0136_被击中(硬币).gif",
+          "sha": "ce9d6e37fbafd50ff4788b65827a9ccd52342417",
+          "size": 2049611
+        },
+        {
+          "path": "memes/shy/0054_害羞 2.gif",
+          "sha": "680195ad8753140af1bac5fcf3c8149dcf9523bc",
+          "size": 2127027
+        },
+        {
+          "path": "memes/shy/0069_情书.gif",
+          "sha": "6eeec5d7ae2cc43f5e07f05dc81a61880060a1e0",
+          "size": 2613966
+        },
+        {
+          "path": "memes/shy/0114_眨眼.gif",
+          "sha": "6589e63385f5f83f371ff3923f482476e4a1f58c",
+          "size": 3615637
+        },
+        {
+          "path": "memes/sleep/0057_工作(小睡).gif",
+          "sha": "f9a0e967c9008b52a55e2ff093536e29d356eab9",
+          "size": 4024878
+        },
+        {
+          "path": "memes/sleep/0060_工作(疲倦).gif",
+          "sha": "c8a8eed5434f2a3e19e83363dcde557a02b4ed22",
+          "size": 4107850
+        },
+        {
+          "path": "memes/sleep/0111_电风扇 1.gif",
+          "sha": "3819b2dc85dcd232a7376d3b109705da9dfa94db",
+          "size": 2456639
+        },
+        {
+          "path": "memes/sleep/0112_电风扇 2.gif",
+          "sha": "b1734b2051587dae5bc48c71244e3626cc65d539",
+          "size": 2451720
+        },
+        {
+          "path": "memes/sleep/0115_睡觉 (UU).gif",
+          "sha": "286ea271c45f7631d7421fb3b019f27dc213a27f",
+          "size": 6559229
+        },
+        {
+          "path": "memes/sleep/0116_睡觉(准备阶段1).gif",
+          "sha": "4b54c89ae29d41c26bf2b8c7780bcac1e5573434",
+          "size": 4520752
+        },
+        {
+          "path": "memes/sleep/0117_睡觉(准备阶段2).gif",
+          "sha": "f6bb695c548438c81c8ec3d5c9cdfd774ae23db7",
+          "size": 4604935
+        },
+        {
+          "path": "memes/sleep/0118_睡觉(普通).gif",
+          "sha": "3b5180054c51f20476868380eed3d3a3547c09fa",
+          "size": 6604137
+        },
+        {
+          "path": "memes/surprised/0001_Bug.gif",
+          "sha": "f46789955daccac7c4cf1b72e471245ec16f9b3e",
+          "size": 8851998
+        },
+        {
+          "path": "memes/surprised/0026_叹号.gif",
+          "sha": "a4d458f4ca208a624509762adf9d9097134e84fc",
+          "size": 2799772
+        },
+        {
+          "path": "memes/surprised/0051_害怕 1.gif",
+          "sha": "47c09bd59eb1eb48a789c3a5a481e12538e6a666",
+          "size": 476928
+        },
+        {
+          "path": "memes/surprised/0052_害怕 2.gif",
+          "sha": "d8baa40726292073b4e6f6a18253dd784dbe17d7",
+          "size": 470806
+        },
+        {
+          "path": "memes/surprised/0070_惊吓.gif",
+          "sha": "e4e57fd6145d7d5c32a9fc58bb5dfa88d4bc0ff6",
+          "size": 2792786
+        },
+        {
+          "path": "memes/surprised/0101_汗.gif",
+          "sha": "ef7193ef0f92221186b2aa28be1307874f5564cf",
+          "size": 3314953
+        },
+        {
+          "path": "memes/surprised/0123_紧张 1.gif",
+          "sha": "eedb857cb100dda4d4796aee3004783b33786201",
+          "size": 2530351
+        },
+        {
+          "path": "memes/surprised/0124_紧张 2.gif",
+          "sha": "69b69935200a338e442f195c85e6d8b81a72d7d6",
+          "size": 2549988
+        },
+        {
+          "path": "memes/teasing/0006_一切都好 1.gif",
+          "sha": "1dfad893d6317527bf66445e4ba6c407003f37d9",
+          "size": 4193712
+        },
+        {
+          "path": "memes/teasing/0007_一切都好 2.gif",
+          "sha": "a9f923081a450c38d08867a9726cb6a881114274",
+          "size": 4105348
+        },
+        {
+          "path": "memes/teasing/0008_一切都好 3.gif",
+          "sha": "cdf924242ef74c02e4b56ceeee0b112a7a7401dc",
+          "size": 4124219
+        },
+        {
+          "path": "memes/teasing/0011_催眠.gif",
+          "sha": "86745b12b54cd339f417bbf9d76a08e4793c5531",
+          "size": 4760036
+        },
+        {
+          "path": "memes/teasing/0012_像素墨镜反光.gif",
+          "sha": "c299ec9f3b4fd5475726e95fba3b4c5b683be8ae",
+          "size": 3819682
+        },
+        {
+          "path": "memes/teasing/0024_反向点赞.gif",
+          "sha": "572e297d3e5105ccf58847cb8195a43e9fdfb595",
+          "size": 2422561
+        },
+        {
+          "path": "memes/teasing/0025_反转.gif",
+          "sha": "1c92fc303ce12fa40fa8e60f6a50bd4e3b89e3d3",
+          "size": 3055973
+        },
+        {
+          "path": "memes/teasing/0034_呆(贴纸) 1.gif",
+          "sha": "fcbe7e73c7d14b7571800fd7ead20c54cd3b41aa",
+          "size": 2134568
+        },
+        {
+          "path": "memes/teasing/0035_呆(贴纸) 2.gif",
+          "sha": "a41103ff6a0ea0fb0ac0fca4e97a14b06f556312",
+          "size": 3338855
+        },
+        {
+          "path": "memes/teasing/0036_呆(贴纸) 3.gif",
+          "sha": "b4d2174ccbd2f81aecb8d6306b187612d0271f6a",
+          "size": 4386973
+        },
+        {
+          "path": "memes/teasing/0045_垃圾桶.gif",
+          "sha": "e375764256dbe3b45536626339d8f4a938221940",
+          "size": 404049
+        },
+        {
+          "path": "memes/teasing/0046_墨镜反光.gif",
+          "sha": "e84a84965faabdd3c9aef539d1631969b1c43b34",
+          "size": 3847124
+        },
+        {
+          "path": "memes/teasing/0047_墨镜循环.gif",
+          "sha": "77416f29bc2fac93c0f7cc7e7bcbdf90e4038451",
+          "size": 3134263
+        },
+        {
+          "path": "memes/teasing/0055_小丑 1.gif",
+          "sha": "d47853836c5ef4424080923a3b631adb92b293a9",
+          "size": 4526014
+        },
+        {
+          "path": "memes/teasing/0056_小丑 2.gif",
+          "sha": "dedbd07b8a8387060cd441a8ba236d334950116f",
+          "size": 3943026
+        },
+        {
+          "path": "memes/teasing/0065_得分(0分).gif",
+          "sha": "f98a3aba306c246d0bf11b612c19449d4f1b03e1",
+          "size": 4310886
+        },
+        {
+          "path": "memes/teasing/0079_抓拍(摄像机).gif",
+          "sha": "cb3ef7740b3bd5285affd81fc9635ef3e15ad3ed",
+          "size": 3784817
+        },
+        {
+          "path": "memes/teasing/0086_按钮.gif",
+          "sha": "3966f7343631292cbff8a9e947b68b18d1ab25c3",
+          "size": 854626
+        },
+        {
+          "path": "memes/teasing/0090_摘掉墨镜.gif",
+          "sha": "ae9685bdc0ec947172e413db882337e38476d38d",
+          "size": 4455448
+        },
+        {
+          "path": "memes/teasing/0092_撬棍 1.gif",
+          "sha": "61451ebf2c2300d4a7ab6bb3d1420dacca8e5eea",
+          "size": 4054186
+        },
+        {
+          "path": "memes/teasing/0093_撬棍 2.gif",
+          "sha": "4ce2516379c6df69e8b5e96d4e1f76614c793f6f",
+          "size": 3436287
+        },
+        {
+          "path": "memes/teasing/0094_撬棍 3.gif",
+          "sha": "579e748a6032ca434c8b31632372a45fb6222d5a",
+          "size": 3824815
+        },
+        {
+          "path": "memes/teasing/0097_期待 2.gif",
+          "sha": "32eaa7c38226cd6723d2fde09aa7b7c647f2ad44",
+          "size": 2984239
+        },
+        {
+          "path": "memes/work/0010_停止工作.gif",
+          "sha": "fb16ff926bba19049de11b79dbfd4a2ceebfec6a",
+          "size": 4328917
+        },
+        {
+          "path": "memes/work/0042_喷剂.gif",
+          "sha": "3f57c664fa7dfc1149ee158cf2dacb459241500f",
+          "size": 3294279
+        },
+        {
+          "path": "memes/work/0058_工作(普通).gif",
+          "sha": "8ce1cb6d4f7d45ae5b3fee5f61322a0a73c3ad28",
+          "size": 1312427
+        },
+        {
+          "path": "memes/work/0059_工作(生气).gif",
+          "sha": "b79bb4cdf1626a32c7890f34c1fdc2d5a8290c3f",
+          "size": 4165170
+        },
+        {
+          "path": "memes/work/0061_带薪拉屎(困难模式).gif",
+          "sha": "386b05ed8329c1a6ce506cb53a656817d0377793",
+          "size": 4478659
+        },
+        {
+          "path": "memes/work/0062_带薪拉屎(简单模式).gif",
+          "sha": "da3ecdd8ea1665cab25bec9d0b5ae1d419602253",
+          "size": 2787911
+        },
+        {
+          "path": "memes/work/0071_打字(恼怒).gif",
+          "sha": "f11ae0bef3e2be8066112de8cacded44c2be7b38",
+          "size": 697319
+        },
+        {
+          "path": "memes/work/0072_打字(普通).gif",
+          "sha": "ee6b7a5690c2719ca96f24b4896cec45c813488c",
+          "size": 2076038
+        },
+        {
+          "path": "memes/work/0073_打字(生气).gif",
+          "sha": "4b1e360703055470310086399f67a5b43d1013c4",
+          "size": 677617
+        },
+        {
+          "path": "memes/work/0138_记录 1.gif",
+          "sha": "bad0968f812b15db859113f9b22fd119640bd9f6",
+          "size": 5770973
+        },
+        {
+          "path": "memes/work/0139_记录 2.gif",
+          "sha": "4bba85b62dbf00c738b4464b773c9d4d38913d9c",
+          "size": 2402265
+        }
+      ]
+    },
+    {
+      "id": "deepseek-fanart-meme-pack",
+      "ref": "86841e222b1c26a3d4d307e7224963e8a271f9e9",
+      "manifest": {
+        "schema_version": 1,
+        "id": "deepseek-fanart-meme-pack",
+        "name": "DeepSeek 二创表情包",
+        "version": "1.0.0",
+        "description": "收录 174 张 DeepSeek 二创图片，包含插画、聊天梗图、拟人角色和少量动画，按 13 个聊天语义类别整理。",
+        "author": "Meme Manager 适配与维护：anka-afk；原素材作者待补充",
+        "homepage": "https://github.com/anka-afk/deepseek-fanart-meme-pack",
+        "license": "原素材许可未指定；版权归各权利人，详见 LICENSE",
+        "source": {
+          "type": "github",
+          "repo": "anka-afk/deepseek-fanart-meme-pack",
+          "ref": "v1.0.0",
+          "subpath": "."
+        },
+        "tags": [
+          "official",
+          "deepseek",
+          "fanart",
+          "anime",
+          "mixed-style",
+          "meme-pack"
+        ],
+        "icon": "previews/cover.jpg",
+        "previews": [
+          "previews/cover.jpg",
+          "previews/overview_1.jpg",
+          "previews/overview_2.jpg",
+          "previews/overview_3.jpg",
+          "previews/overview_4.jpg",
+          "previews/overview_5.jpg"
+        ],
+        "compat": {
+          "min_plugin_version": "4.0.0"
+        },
+        "categories": {
+          "sleep": {
+            "description": "用于睡觉、休息、犯困、结束工作、躺平或表示暂时离线。"
+          },
+          "money": {
+            "description": "用于 token、算力、打折、收费、预算或其他资源消耗话题。"
+          },
+          "food": {
+            "description": "用于吃饭、喝汤、投喂、购物、馋嘴、做饭或拿食物开玩笑。"
+          },
+          "affection": {
+            "description": "用于表达喜欢、贴贴、感谢、爱心互动或友好亲近。"
+          },
+          "angry": {
+            "description": "用于生气、抗议、拒绝、催促、责备或夸张式威胁；避免用于真实冲突。"
+          },
+          "sad": {
+            "description": "用于哭泣、委屈、受挫、疲惫、没钱、被打击或自嘲性低落。"
+          },
+          "confused": {
+            "description": "用于疑问、没听懂、反问、选择困难、知识截止时间或模型识别困惑。"
+          },
+          "happy": {
+            "description": "用于开心、胜利、鼓掌、夸赞、上线、打招呼或积极回应。"
+          },
+          "work": {
+            "description": "用于训练、推理、加班、写代码、测试、记录、客服、工作区和任务处理。"
+          },
+          "greeting": {
+            "description": "用于自我介绍、宣布到达、身份说明、向用户回应或展示 DeepSeek 形象。"
+          },
+          "tech": {
+            "description": "用于模型、开源、版本更新、蒸馏、服务器、部署、API 和技术讨论。"
+          },
+          "portrait": {
+            "description": "用于角色立绘、服装展示、动态实拍或作为非文字化形象回应。"
+          },
+          "teasing": {
+            "description": "用于玩梗、整活、调侃竞争模型或轻松吐槽；不用于恶意攻击。"
+          }
+        }
+      },
+      "files": [
+        {
+          "path": "memes/affection/0003_sticker_bf_004.webp",
+          "sha": "597605403811618b03b71f86c38520313e8944fc",
+          "size": 52106
+        },
+        {
+          "path": "memes/affection/0016_sticker_bf_021.png",
+          "sha": "61292e19c8c060309c00a3af3a4be8650c66bfea",
+          "size": 2535551
+        },
+        {
+          "path": "memes/affection/0090_sticker_bf_129.webp",
+          "sha": "276bc4043d194ea69835265db0310e37e7bcfb81",
+          "size": 71974
+        },
+        {
+          "path": "memes/affection/0097_sticker_bf_141.webp",
+          "sha": "ceb55c322b3ec1d90c30af62af9552c2e03efa86",
+          "size": 40078
+        },
+        {
+          "path": "memes/affection/0102_sticker_bf_147.png",
+          "sha": "b8696e6b00c62d5e2b40d075b82af819565961fa",
+          "size": 1629301
+        },
+        {
+          "path": "memes/affection/0127_sticker_bf_184.png",
+          "sha": "40c50dd55ebd1686bf55fd7db97bd7a3fd9236ab",
+          "size": 669619
+        },
+        {
+          "path": "memes/affection/0144_sticker_bf_203.jpg",
+          "sha": "c349544317b283e5ceb157d5b9a7f539535c212f",
+          "size": 319582
+        },
+        {
+          "path": "memes/angry/0004_sticker_bf_006.webp",
+          "sha": "98aee427c2e4eb5f827540873a8953a0682ff893",
+          "size": 64808
+        },
+        {
+          "path": "memes/angry/0007_sticker_bf_009.png",
+          "sha": "8511df31a3e0f6bc553ae7cb6b53dcd3a232441e",
+          "size": 722601
+        },
+        {
+          "path": "memes/angry/0035_sticker_bf_049.jpg",
+          "sha": "927d8cf1f974a34d4ee6894d08a865f8b102b4c7",
+          "size": 210841
+        },
+        {
+          "path": "memes/angry/0042_sticker_bf_063.jpg",
+          "sha": "76462d57d38eacea32501a902bf0a96331736365",
+          "size": 148666
+        },
+        {
+          "path": "memes/angry/0051_sticker_bf_075.png",
+          "sha": "3fbf44c212f040216fc1c42fb1330c678c32752f",
+          "size": 1750290
+        },
+        {
+          "path": "memes/angry/0053_sticker_bf_078.png",
+          "sha": "f33e0071111d2dd03338db177705dd50556cac45",
+          "size": 2115707
+        },
+        {
+          "path": "memes/angry/0063_sticker_bf_091.jpg",
+          "sha": "5024520130e06e85fe7cf6afcb78444260818a4f",
+          "size": 203903
+        },
+        {
+          "path": "memes/angry/0066_sticker_bf_096.webp",
+          "sha": "ca850342d27c2ff498700b396ae8f2a1f979fb99",
+          "size": 52502
+        },
+        {
+          "path": "memes/angry/0076_sticker_bf_109.png",
+          "sha": "28228c60f871a0e5314bb0792005b931a2faf967",
+          "size": 845610
+        },
+        {
+          "path": "memes/angry/0094_sticker_bf_133.png",
+          "sha": "48de17e001576c9c34b8c07bd2fdcf6258427558",
+          "size": 2483881
+        },
+        {
+          "path": "memes/angry/0105_sticker_bf_151.png",
+          "sha": "d2bf3df54997b8a1ce9c6b544e9cc92b59130cb0",
+          "size": 348422
+        },
+        {
+          "path": "memes/angry/0106_sticker_bf_152.jpg",
+          "sha": "f6b28014f7c1d228638ca2043dae7433dc9e7f69",
+          "size": 167316
+        },
+        {
+          "path": "memes/angry/0116_sticker_bf_166.png",
+          "sha": "05f5e6e893529e180d78323a5ecc9eea642b28f5",
+          "size": 1471273
+        },
+        {
+          "path": "memes/angry/0129_sticker_bf_186.jpg",
+          "sha": "d20e3369327809d9e5f068fe1fb19eb04e58402f",
+          "size": 217091
+        },
+        {
+          "path": "memes/angry/0130_sticker_bf_187.webp",
+          "sha": "a0401c0f60d0b0d368f263f5a1e9db8595832062",
+          "size": 61040
+        },
+        {
+          "path": "memes/angry/0133_sticker_bf_190.png",
+          "sha": "a5ba9087113beceadb081621885fd033ba060602",
+          "size": 1844980
+        },
+        {
+          "path": "memes/angry/0139_sticker_bf_196.png",
+          "sha": "8443d7fa919b01767b8041aff33f41d6b535c497",
+          "size": 1853535
+        },
+        {
+          "path": "memes/confused/0002_sticker_bf_002.png",
+          "sha": "e2baca80daab3d0bd35a4858a255f62732ae6a6d",
+          "size": 593716
+        },
+        {
+          "path": "memes/confused/0005_sticker_bf_007.png",
+          "sha": "4cef4913f29142d36fe2d59d93c5f2fd8493ed56",
+          "size": 591746
+        },
+        {
+          "path": "memes/confused/0022_sticker_bf_029.webp",
+          "sha": "36d6667a034275d486ecea42c0b97615a92546b8",
+          "size": 48298
+        },
+        {
+          "path": "memes/confused/0033_sticker_bf_047.png",
+          "sha": "7f1acda985e489d86e7ad4892a0e0615bbb9e302",
+          "size": 1191542
+        },
+        {
+          "path": "memes/confused/0036_sticker_bf_050.webp",
+          "sha": "0af26676fae6323a4c6ce2614d474f1cbaeb8205",
+          "size": 62186
+        },
+        {
+          "path": "memes/confused/0039_sticker_bf_059.png",
+          "sha": "27bec67b732937b7118a02711fd9ed8c74f7451c",
+          "size": 1578715
+        },
+        {
+          "path": "memes/confused/0059_sticker_bf_085.png",
+          "sha": "e48f16244e7572ea222507d0ae2fbb1a0bda93d8",
+          "size": 2291278
+        },
+        {
+          "path": "memes/confused/0064_sticker_bf_092.png",
+          "sha": "38458fe9931c3e21b2d0000cffa77930dbcffc51",
+          "size": 896584
+        },
+        {
+          "path": "memes/confused/0070_sticker_bf_100.webp",
+          "sha": "18182c10be88f10eab627e8fc563018e6a8032ab",
+          "size": 42688
+        },
+        {
+          "path": "memes/confused/0071_sticker_bf_101.png",
+          "sha": "a67cf7ac4aa8835413281ba5ac5f50af1df175a1",
+          "size": 438520
+        },
+        {
+          "path": "memes/confused/0072_sticker_bf_102.png",
+          "sha": "6ddb162b16bb6f704956427f2a70ca2d605a7a49",
+          "size": 388180
+        },
+        {
+          "path": "memes/confused/0086_sticker_bf_125.png",
+          "sha": "ed4864886d2f3fdf3c4d97f7622b5be1e941e4ee",
+          "size": 1328727
+        },
+        {
+          "path": "memes/confused/0088_sticker_bf_127.jpg",
+          "sha": "30538b5197f683f335014e1c949d046fe960a223",
+          "size": 149184
+        },
+        {
+          "path": "memes/confused/0091_sticker_bf_130.webp",
+          "sha": "4106cb1745621425e87224a0641c6224db576f42",
+          "size": 53622
+        },
+        {
+          "path": "memes/confused/0114_sticker_bf_162.webp",
+          "sha": "841a9668999b50dae39eb31a029a5d3fb99b64a7",
+          "size": 65268
+        },
+        {
+          "path": "memes/confused/0115_sticker_bf_164.webp",
+          "sha": "70eebfd0a2d92f97b9c9add8542a060bbf07ed34",
+          "size": 70468
+        },
+        {
+          "path": "memes/confused/0117_sticker_bf_169.png",
+          "sha": "4179703b5886bc4aeed1f5aea61f923701e2e265",
+          "size": 407746
+        },
+        {
+          "path": "memes/confused/0122_sticker_bf_175.jpg",
+          "sha": "bd011a6b2952a14beb4c36ac552e1df24a756969",
+          "size": 179285
+        },
+        {
+          "path": "memes/confused/0123_sticker_bf_176.png",
+          "sha": "52de71a273b32862c93b227496de927c78de3e26",
+          "size": 492935
+        },
+        {
+          "path": "memes/confused/0126_sticker_bf_181.jpg",
+          "sha": "da4a021cd629e8f1fb7146407b9d0208b345b0f2",
+          "size": 701103
+        },
+        {
+          "path": "memes/confused/0132_sticker_bf_189.webp",
+          "sha": "176cfe304bcac47e2cae179154c1c953d686a0f2",
+          "size": 51690
+        },
+        {
+          "path": "memes/confused/0134_sticker_bf_191.jpg",
+          "sha": "ab4ecbca735a0cd6f447d3b6392f9dfb160164f7",
+          "size": 191936
+        },
+        {
+          "path": "memes/confused/0140_sticker_bf_197.png",
+          "sha": "45afb325a35450a8b1a020423936d34b07dd2695",
+          "size": 800563
+        },
+        {
+          "path": "memes/confused/0142_sticker_bf_200.png",
+          "sha": "76dbfe90296445fdf0ec87b85fb570f336d9190d",
+          "size": 1001618
+        },
+        {
+          "path": "memes/food/0012_sticker_bf_016.webp",
+          "sha": "ca7900a6986f5402a50c15a21f2a79a842b375de",
+          "size": 61162
+        },
+        {
+          "path": "memes/food/0017_sticker_bf_022.png",
+          "sha": "265807131e0b09a8999b3c7772797a3d96d4de86",
+          "size": 1008539
+        },
+        {
+          "path": "memes/food/0025_sticker_bf_034.webp",
+          "sha": "6f5d11934024b2a2f694fe773a8efb94f7d273a7",
+          "size": 45058
+        },
+        {
+          "path": "memes/food/0031_sticker_bf_043.webp",
+          "sha": "3dc6cbc9297fa9051cf1e8f650668cfd1be01131",
+          "size": 48916
+        },
+        {
+          "path": "memes/food/0037_sticker_bf_054.png",
+          "sha": "86c80f13a7ba3d9fe4f067883164e167fd8eaf94",
+          "size": 774546
+        },
+        {
+          "path": "memes/food/0041_sticker_bf_061.webp",
+          "sha": "203f819d07eb8ced81b3c198c01ac56ebd9cce25",
+          "size": 38894
+        },
+        {
+          "path": "memes/food/0046_sticker_bf_068.webp",
+          "sha": "494ab2ea76da3de1dbe0f2a3cae8f8ab44864411",
+          "size": 48322
+        },
+        {
+          "path": "memes/food/0049_sticker_bf_072.webp",
+          "sha": "e7b53f82b762a7b22393fbb7aa602fb9a45923ed",
+          "size": 39182
+        },
+        {
+          "path": "memes/food/0060_sticker_bf_087.webp",
+          "sha": "9644bef0fb47b1e480adfdd37feab3357ea0ab68",
+          "size": 45706
+        },
+        {
+          "path": "memes/food/0087_sticker_bf_126.webp",
+          "sha": "3d313438998e98461f00772566bbba8d6f3ae296",
+          "size": 73990
+        },
+        {
+          "path": "memes/food/0103_sticker_bf_148.png",
+          "sha": "dd9201b47a2e986c75a12b2cd33615dd78daf6d0",
+          "size": 2345092
+        },
+        {
+          "path": "memes/food/0110_sticker_bf_157.webp",
+          "sha": "33addc61bee1bf145fe12d67ab6941794ac45d6f",
+          "size": 50936
+        },
+        {
+          "path": "memes/food/0124_sticker_bf_178.jpg",
+          "sha": "90644bcd6840872c919bf372e6856c408c9c2ed0",
+          "size": 244267
+        },
+        {
+          "path": "memes/food/0167_sticker_issue_10_001.png",
+          "sha": "91b28ce32819c95a12bec77799b60bddddcb157c",
+          "size": 1841158
+        },
+        {
+          "path": "memes/food/0173_sticker_issue_20_001.gif",
+          "sha": "813e732d4325467cd0bd415feb9603e0bd2be4c8",
+          "size": 2629345
+        },
+        {
+          "path": "memes/greeting/0006_sticker_bf_008.png",
+          "sha": "e161cd63f68cdb89f765a231f7098c8810382ee5",
+          "size": 1157323
+        },
+        {
+          "path": "memes/greeting/0020_sticker_bf_027.jpg",
+          "sha": "3179d91d95b5892ccdc5366e87a802d4f7ec94e4",
+          "size": 175039
+        },
+        {
+          "path": "memes/greeting/0034_sticker_bf_048.webp",
+          "sha": "2c9b996ba5dfa24bce0618bbf945c35ad3aaf302",
+          "size": 57790
+        },
+        {
+          "path": "memes/greeting/0045_sticker_bf_066.png",
+          "sha": "107d47aed982a0b7bde9cc2b128656c9ca221399",
+          "size": 1812155
+        },
+        {
+          "path": "memes/greeting/0056_sticker_bf_082.webp",
+          "sha": "9c1a9950f5d409f47956c4341cc6bd2013e26fc4",
+          "size": 49570
+        },
+        {
+          "path": "memes/greeting/0077_sticker_bf_110.webp",
+          "sha": "d215b940a59c0720ef445266d6a1b02e6a599dc2",
+          "size": 38618
+        },
+        {
+          "path": "memes/greeting/0084_sticker_bf_123.png",
+          "sha": "a47d351229c9b41723b522465fdb7ebe0f85ff46",
+          "size": 580929
+        },
+        {
+          "path": "memes/greeting/0085_sticker_bf_124.png",
+          "sha": "7074c9d97c5a6683713a888b0edd70e0b447951c",
+          "size": 3612122
+        },
+        {
+          "path": "memes/greeting/0146_sticker_bf_205.jpg",
+          "sha": "580cbe158abfb92c25c7566982dcfaaae7ab1cf0",
+          "size": 235058
+        },
+        {
+          "path": "memes/greeting/0148_sticker_issue_02_001.jpg",
+          "sha": "92e17c5d4a0ff3565ab450ff897dd0a052dfc12c",
+          "size": 92096
+        },
+        {
+          "path": "memes/happy/0008_sticker_bf_010.webp",
+          "sha": "6b9cf30a8ffb7705641fee0e30d9ecf929d05541",
+          "size": 76270
+        },
+        {
+          "path": "memes/happy/0018_sticker_bf_024.webp",
+          "sha": "5269043e68f2cc1593033734dd23a44590ac64b1",
+          "size": 53132
+        },
+        {
+          "path": "memes/happy/0019_sticker_bf_025.png",
+          "sha": "aeb2463053f88cc32f16e9f80edcc0348417f286",
+          "size": 957223
+        },
+        {
+          "path": "memes/happy/0024_sticker_bf_032.jpg",
+          "sha": "b4774fbeadc90921609cdb87ce0af160fa064d71",
+          "size": 186211
+        },
+        {
+          "path": "memes/happy/0032_sticker_bf_046.webp",
+          "sha": "959d72b033fb0f46800d2b337f2064be9ffefcb4",
+          "size": 49148
+        },
+        {
+          "path": "memes/happy/0048_sticker_bf_070.png",
+          "sha": "28603f0ff2a8d731890fc973604aebfb82924c0b",
+          "size": 1043780
+        },
+        {
+          "path": "memes/happy/0069_sticker_bf_099.png",
+          "sha": "45a3bb2c3a85232d1dd0b149005222736a3a9009",
+          "size": 916657
+        },
+        {
+          "path": "memes/happy/0074_sticker_bf_105.webp",
+          "sha": "f3f05e720302e7d3b0d2ee86b0dd5a8baabcc6c9",
+          "size": 73822
+        },
+        {
+          "path": "memes/happy/0075_sticker_bf_107.jpg",
+          "sha": "efcce24cbd562f4321104562f75f78f1f8173416",
+          "size": 153848
+        },
+        {
+          "path": "memes/happy/0081_sticker_bf_120.png",
+          "sha": "00e5989d6a330a1504e96f53d15caec8d97e0cb8",
+          "size": 1889936
+        },
+        {
+          "path": "memes/happy/0083_sticker_bf_122.webp",
+          "sha": "0d170cd2e340f1cf4442fcbcbe371d5badc36b05",
+          "size": 42776
+        },
+        {
+          "path": "memes/happy/0098_sticker_bf_142.png",
+          "sha": "f895ccc85a633c25a96de28cf9e82369d5e5c11c",
+          "size": 591088
+        },
+        {
+          "path": "memes/happy/0099_sticker_bf_143.webp",
+          "sha": "9f693ec297967f0eaed46fae3f9dbb5f28a71f9d",
+          "size": 55808
+        },
+        {
+          "path": "memes/happy/0100_sticker_bf_144.png",
+          "sha": "cf30fc117706279d42da7b30a8527c2b1bbdf2d2",
+          "size": 412206
+        },
+        {
+          "path": "memes/happy/0108_sticker_bf_154.png",
+          "sha": "8e69892cd5915bb472a6e8b21a5d38fa9155d6e0",
+          "size": 658675
+        },
+        {
+          "path": "memes/happy/0109_sticker_bf_156.png",
+          "sha": "78c83e5d44bc8f4adecb1586ff03ca6731a471d3",
+          "size": 1116614
+        },
+        {
+          "path": "memes/happy/0125_sticker_bf_180.png",
+          "sha": "06455b6ae95d7d40f0c8bb6b48e16c6a7c95a421",
+          "size": 567367
+        },
+        {
+          "path": "memes/happy/0137_sticker_bf_194.png",
+          "sha": "9cf9fe61caf822ce1f152b13219cd3fec349f927",
+          "size": 691495
+        },
+        {
+          "path": "memes/happy/0149_sticker_issue_03_001.jpg",
+          "sha": "a21b07ee005cbfcf089f0fddfc1dcc2a890e2c9d",
+          "size": 1826669
+        },
+        {
+          "path": "memes/happy/0165_sticker_issue_07_013.png",
+          "sha": "d2d5f0e96b7421e604ee3dbef9b3ecffb1a61641",
+          "size": 1888293
+        },
+        {
+          "path": "memes/money/0043_sticker_bf_064.png",
+          "sha": "7e335f6f47fe5b19571a8274d43233f58db52e96",
+          "size": 2299378
+        },
+        {
+          "path": "memes/money/0082_sticker_bf_121.png",
+          "sha": "32178ef38dee31b7930fa3160e8f3404123586fa",
+          "size": 841990
+        },
+        {
+          "path": "memes/money/0093_sticker_bf_132.webp",
+          "sha": "32f7766407234e5a4b67d77eae6cb08c4fcac463",
+          "size": 80232
+        },
+        {
+          "path": "memes/money/0169_sticker_issue_12_001.png",
+          "sha": "8932af30fb48f39be5e1352ce45697947c1ba7df",
+          "size": 1764131
+        },
+        {
+          "path": "memes/portrait/0058_sticker_bf_084.png",
+          "sha": "edd6aa6d235b33af3121385c4f3f9477436dabf8",
+          "size": 586313
+        },
+        {
+          "path": "memes/portrait/0150_sticker_issue_04_001.gif",
+          "sha": "766c4e0df23b1547b07ee729313d8b8e094cf5de",
+          "size": 2237897
+        },
+        {
+          "path": "memes/portrait/0151_sticker_issue_05_001.gif",
+          "sha": "0097607d344ba74be28b719c6825b31d22b0086a",
+          "size": 999201
+        },
+        {
+          "path": "memes/portrait/0152_sticker_issue_06_001.gif",
+          "sha": "38e1f24bb9686adc5f724388bb116ea6a0ebd65f",
+          "size": 1494173
+        },
+        {
+          "path": "memes/portrait/0153_sticker_issue_07_001.png",
+          "sha": "987515b7d823f0bd152ab98a610ec0088b11ea86",
+          "size": 2227768
+        },
+        {
+          "path": "memes/portrait/0154_sticker_issue_07_002.png",
+          "sha": "9f149b3f9ae3618ac87b99418f725113a2006ab6",
+          "size": 1275062
+        },
+        {
+          "path": "memes/portrait/0155_sticker_issue_07_003.png",
+          "sha": "2be25327d465ab8e0d1be87286c1e6769b74ceff",
+          "size": 1573887
+        },
+        {
+          "path": "memes/portrait/0156_sticker_issue_07_004.png",
+          "sha": "6d2acb621af2dcff8f958e11b70f53dc36b3a22d",
+          "size": 1453462
+        },
+        {
+          "path": "memes/portrait/0157_sticker_issue_07_005.png",
+          "sha": "db150778a98c679b7d553a2027339515bd5ba901",
+          "size": 1955687
+        },
+        {
+          "path": "memes/portrait/0158_sticker_issue_07_006.png",
+          "sha": "5cfe4c31a1e84b6b9bcdc666dab5382483b93c7d",
+          "size": 2208871
+        },
+        {
+          "path": "memes/portrait/0159_sticker_issue_07_007.png",
+          "sha": "91b4bf84536acb4c4c54b702b483ffd622e2d42a",
+          "size": 2105968
+        },
+        {
+          "path": "memes/sad/0011_sticker_bf_015.png",
+          "sha": "7dc4b8a2c6ce96cdae6a7caafb39f646ec81f25b",
+          "size": 492914
+        },
+        {
+          "path": "memes/sad/0013_sticker_bf_017.png",
+          "sha": "fe345a119ad1bf3ad24501bdd077903c1d76d6c7",
+          "size": 1127166
+        },
+        {
+          "path": "memes/sad/0015_sticker_bf_019.jpg",
+          "sha": "dbbec2510f4d1de59815da93634e3c12064ab1ce",
+          "size": 168750
+        },
+        {
+          "path": "memes/sad/0023_sticker_bf_031.jpg",
+          "sha": "ddc6d2ab174eb7c01a555aa473a96305fa2eb8ae",
+          "size": 121102
+        },
+        {
+          "path": "memes/sad/0026_sticker_bf_035.jpg",
+          "sha": "8467ff733c496af8e00789b8b12d9c562ea70a9b",
+          "size": 116205
+        },
+        {
+          "path": "memes/sad/0038_sticker_bf_058.webp",
+          "sha": "ad35348d79bed55b206cb5ab69fccac4061aa81f",
+          "size": 65522
+        },
+        {
+          "path": "memes/sad/0050_sticker_bf_073.png",
+          "sha": "e581bd2816120aca13e2bca8507ad179539681db",
+          "size": 408681
+        },
+        {
+          "path": "memes/sad/0052_sticker_bf_077.png",
+          "sha": "dffc77c5053c6387c9ee4932119b0682b1fdbb8e",
+          "size": 571395
+        },
+        {
+          "path": "memes/sad/0061_sticker_bf_089.jpg",
+          "sha": "af05275df3f39da89c981cc598766c5370aede7f",
+          "size": 230099
+        },
+        {
+          "path": "memes/sad/0062_sticker_bf_090.png",
+          "sha": "98a4b5decd45b9094c670c3c57103367994de2a9",
+          "size": 590508
+        },
+        {
+          "path": "memes/sad/0065_sticker_bf_093.jpg",
+          "sha": "43c44c29a6ffb66a2fbb55dea06fe0ce4c71f9d0",
+          "size": 29001
+        },
+        {
+          "path": "memes/sad/0089_sticker_bf_128.png",
+          "sha": "bf515737155b1f6295dfc21a14406bd0348bac59",
+          "size": 4409578
+        },
+        {
+          "path": "memes/sad/0095_sticker_bf_134.png",
+          "sha": "630f8578415aede6be71db2510d93f0163ea470e",
+          "size": 677638
+        },
+        {
+          "path": "memes/sad/0101_sticker_bf_145.jpg",
+          "sha": "9f2b7494a6d211445277097c81cc10c65550b24f",
+          "size": 155253
+        },
+        {
+          "path": "memes/sad/0113_sticker_bf_161.png",
+          "sha": "0303ee52096db8ac2e8316f45eb2271c1ad46bc9",
+          "size": 926357
+        },
+        {
+          "path": "memes/sad/0119_sticker_bf_171.png",
+          "sha": "a1551fa2231ff719d0928a1d23f242ee332d1ffe",
+          "size": 2526274
+        },
+        {
+          "path": "memes/sad/0121_sticker_bf_174.png",
+          "sha": "a2484510ea23b4a7222c53bd8eaae745038be5ec",
+          "size": 691603
+        },
+        {
+          "path": "memes/sad/0128_sticker_bf_185.webp",
+          "sha": "c4cf5668e95b540fb5d4b898b575a7140a3e7721",
+          "size": 27186
+        },
+        {
+          "path": "memes/sad/0135_sticker_bf_192.webp",
+          "sha": "87bac81eda39765e471c569299293e914977c648",
+          "size": 52618
+        },
+        {
+          "path": "memes/sad/0138_sticker_bf_195.png",
+          "sha": "8344736b7e3927f2ee4d613270fe6574a4066d10",
+          "size": 418143
+        },
+        {
+          "path": "memes/sad/0143_sticker_bf_201.png",
+          "sha": "a96446f2a6501151b40cfe4439cce6fc14f6f2d6",
+          "size": 963617
+        },
+        {
+          "path": "memes/sad/0145_sticker_bf_204.png",
+          "sha": "3f5007d9411277e4c92323dd25a16dfde43ebbe1",
+          "size": 1203957
+        },
+        {
+          "path": "memes/sad/0172_sticker_issue_15_001.png",
+          "sha": "3903c6120bb2f6049c0072f35a892b60df98c515",
+          "size": 691254
+        },
+        {
+          "path": "memes/sleep/0014_sticker_bf_018.webp",
+          "sha": "aee949a475b419b0794f92f69b08e385516bec90",
+          "size": 42478
+        },
+        {
+          "path": "memes/sleep/0030_sticker_bf_042.webp",
+          "sha": "bc112a6e06b13781afb544bf6c655fe9e454367a",
+          "size": 39724
+        },
+        {
+          "path": "memes/sleep/0073_sticker_bf_103.png",
+          "sha": "463f6079298ca8ab8b3b22c4ba0996a8cbf06c79",
+          "size": 2214925
+        },
+        {
+          "path": "memes/sleep/0111_sticker_bf_158.png",
+          "sha": "6adcb9184a3f9e08b99168dbc308573aa9a9d00d",
+          "size": 422220
+        },
+        {
+          "path": "memes/sleep/0136_sticker_bf_193.png",
+          "sha": "31fe8d0aa72be00596d37edc696d249bc87f607e",
+          "size": 683001
+        },
+        {
+          "path": "memes/sleep/0161_sticker_issue_07_009.png",
+          "sha": "c9d3766840dab09c222b7dbbd099465d132fa1ca",
+          "size": 2234751
+        },
+        {
+          "path": "memes/sleep/0163_sticker_issue_07_011.png",
+          "sha": "ab65cd7c787d9ac2412557447915e74021b0a806",
+          "size": 1999232
+        },
+        {
+          "path": "memes/sleep/0174_sticker_issue_21_001.jpg",
+          "sha": "51d59a420613918e50b9f62b9b2915f4d10fea85",
+          "size": 85526
+        },
+        {
+          "path": "memes/teasing/0009_sticker_bf_011.png",
+          "sha": "e8a6dd79acef1d21198b2a4de7005ff521e92f3c",
+          "size": 606688
+        },
+        {
+          "path": "memes/teasing/0047_sticker_bf_069.webp",
+          "sha": "e9ca19000d0a05c26af9c904c8223fdc011e19a8",
+          "size": 67658
+        },
+        {
+          "path": "memes/teasing/0107_sticker_bf_153.webp",
+          "sha": "fff80f1e584b6d4a7c805e77f9ce3faed012f86b",
+          "size": 57122
+        },
+        {
+          "path": "memes/teasing/0168_sticker_issue_11_001.png",
+          "sha": "89bbb352a62eb559db24faea73f25ad3bb25dd32",
+          "size": 764436
+        },
+        {
+          "path": "memes/tech/0021_sticker_bf_028.png",
+          "sha": "55bea260aa940bb28e3c9e7e13f595bd21ddbba0",
+          "size": 449687
+        },
+        {
+          "path": "memes/tech/0027_sticker_bf_036.webp",
+          "sha": "5d55c0234d423e4af998979c718df609d2ff2b49",
+          "size": 55480
+        },
+        {
+          "path": "memes/tech/0028_sticker_bf_037.png",
+          "sha": "40d4446fa763762c072adaf143845a737ed9d3fb",
+          "size": 1014702
+        },
+        {
+          "path": "memes/tech/0040_sticker_bf_060.png",
+          "sha": "1014a47af876148aab5f871030fc382583d2f9ae",
+          "size": 498972
+        },
+        {
+          "path": "memes/tech/0055_sticker_bf_081.png",
+          "sha": "f4e1c66a897215de7e99e377ccd84e43349dcce5",
+          "size": 255375
+        },
+        {
+          "path": "memes/tech/0067_sticker_bf_097.jpg",
+          "sha": "ed2d3aa94909ec7197617eab4eeae32c76941675",
+          "size": 345115
+        },
+        {
+          "path": "memes/tech/0079_sticker_bf_112.webp",
+          "sha": "272115ecbe260b7c1f837636e25f8f68dde09098",
+          "size": 97824
+        },
+        {
+          "path": "memes/tech/0092_sticker_bf_131.png",
+          "sha": "63dc85d423254696e39b721f2812887fdac3f630",
+          "size": 1914051
+        },
+        {
+          "path": "memes/tech/0104_sticker_bf_149.png",
+          "sha": "b5af4423f45ada807d5142ef671f884d4a3cef85",
+          "size": 712662
+        },
+        {
+          "path": "memes/tech/0118_sticker_bf_170.png",
+          "sha": "7a498262634017893dedeb53bf673d377d22a1c5",
+          "size": 220179
+        },
+        {
+          "path": "memes/tech/0120_sticker_bf_173.webp",
+          "sha": "b5e38f086ae2ce89a1c3b0a805695cf28dbe1c24",
+          "size": 70076
+        },
+        {
+          "path": "memes/tech/0141_sticker_bf_198.png",
+          "sha": "02e24567a50d7af08a30825a3cc31aeef68e60d1",
+          "size": 936070
+        },
+        {
+          "path": "memes/tech/0162_sticker_issue_07_010.png",
+          "sha": "5aab557d79456b64c4645a12b61260f22a2e7561",
+          "size": 2149070
+        },
+        {
+          "path": "memes/work/0001_sticker_bf_001.png",
+          "sha": "4a056498b50f78588a4da7c189929edcb2f883a2",
+          "size": 1964737
+        },
+        {
+          "path": "memes/work/0010_sticker_bf_012.png",
+          "sha": "efaaaa2d4f3ca9c0acdde00b52f8fde1c70845bb",
+          "size": 753736
+        },
+        {
+          "path": "memes/work/0029_sticker_bf_040.png",
+          "sha": "7a589d6f73109defd3ed8e3a40fadcfd292a620b",
+          "size": 2702783
+        },
+        {
+          "path": "memes/work/0044_sticker_bf_065.png",
+          "sha": "44182ce39782f66571971584020dbf26ab1b2bda",
+          "size": 520814
+        },
+        {
+          "path": "memes/work/0054_sticker_bf_079.webp",
+          "sha": "0671a4d29c276b3326e7d0038300dc10cc6503d3",
+          "size": 59230
+        },
+        {
+          "path": "memes/work/0057_sticker_bf_083.png",
+          "sha": "de8c8bc5384f5b6929179ea4eda4e91204398f9f",
+          "size": 1209717
+        },
+        {
+          "path": "memes/work/0068_sticker_bf_098.webp",
+          "sha": "2ab3b1925157d11855efa67a604093a3bba01e79",
+          "size": 49950
+        },
+        {
+          "path": "memes/work/0078_sticker_bf_111.webp",
+          "sha": "576dd3d4ee35eae93831049a8a5f36e337c1ca93",
+          "size": 62926
+        },
+        {
+          "path": "memes/work/0080_sticker_bf_117.png",
+          "sha": "ef3b2be87b776210f06bec0eea9b8bd25c5a2cac",
+          "size": 355237
+        },
+        {
+          "path": "memes/work/0096_sticker_bf_137.png",
+          "sha": "60def9d5cd806b3b6337fbfc2663e051c62b8e78",
+          "size": 482388
+        },
+        {
+          "path": "memes/work/0112_sticker_bf_160.jpg",
+          "sha": "bc3fa24f94eb99f1550af00a1bec94b643aabcc5",
+          "size": 245896
+        },
+        {
+          "path": "memes/work/0131_sticker_bf_188.jpg",
+          "sha": "c769dcd1c0fae8b19afa00b25586f6f271dfd4b4",
+          "size": 338111
+        },
+        {
+          "path": "memes/work/0147_sticker_issue_01_001.png",
+          "sha": "9239da100e9d383aede2d020eb759878c184fe10",
+          "size": 912820
+        },
+        {
+          "path": "memes/work/0160_sticker_issue_07_008.png",
+          "sha": "19867258823c4462c44c5ac152b89b84f93286fd",
+          "size": 1935485
+        },
+        {
+          "path": "memes/work/0164_sticker_issue_07_012.png",
+          "sha": "2eaa45b4d16cfa65a324f793fb0e065d3e92a476",
+          "size": 2225346
+        },
+        {
+          "path": "memes/work/0166_sticker_issue_09_001.png",
+          "sha": "83664455006863adf062e635de19c869842b1235",
+          "size": 1603693
+        },
+        {
+          "path": "memes/work/0170_sticker_issue_13_001.png",
+          "sha": "b35a5ebf0e87e90a4b6aeb6f047c76cfc40504b5",
+          "size": 2291861
+        },
+        {
+          "path": "memes/work/0171_sticker_issue_14_001.png",
+          "sha": "28c46b8cd494fc17e8b034c88fe958960ac1b63b",
+          "size": 1956474
+        }
+      ]
+    }
+  ]
+}

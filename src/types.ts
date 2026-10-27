@@ -59,7 +59,8 @@ export type AdminTaskType =
   | "memory-dedup"
   | "model-check"
   | "bulk-review"
-  | "bulk-operation";
+  | "bulk-operation"
+  | "meme-pack-import";
 export type AdminTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface AdminTaskRecord {
@@ -350,6 +351,12 @@ export interface GroupBotConfig {
   onlineLookupEnabled?: boolean;
   visionEnabled?: boolean;
   ambientGroupContextEnabled?: boolean;
+  ambientReplyEnabled?: boolean;
+  ambientReplyCooldownSeconds?: number;
+  pokeReplyEnabled?: boolean;
+  pokeReplyProbabilityPercent?: number;
+  pokeReplyUserCooldownSeconds?: number;
+  pokeReplyGroupCooldownSeconds?: number;
   /** Static HTML preview publishing is enabled for configured groups by default. */
   htmlPreviewEnabled?: boolean;
   /** Natural-language image requests are enabled for configured groups by default. */
@@ -395,6 +402,7 @@ export interface ConversationsFile {
 }
 
 export interface AiReply {
+  memeTagId?: string;
   text: string;
   model: string;
   skillId: string;
@@ -524,7 +532,15 @@ export interface ReplyRoutingSettings {
   htmlTotalTimeoutMs: number;
 }
 
+export interface ImageIntentRoutingSettings {
+  enabled: boolean;
+  requestProfile: "openai" | "deepseek";
+  timeoutMs: number;
+  maxCompletionTokens: number;
+}
+
 export interface SystemSettings {
+  imageIntentRouting?: ImageIntentRoutingSettings;
   replyRouting?: ReplyRoutingSettings;
   onlineLookupEnabled: boolean;
   tokenCostControl: TokenCostControlSettings;

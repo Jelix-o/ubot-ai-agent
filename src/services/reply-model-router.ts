@@ -16,15 +16,16 @@ type Gate = <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 export function retryableModelFailure(error: unknown): boolean {
   if (error instanceof CircuitOpenError || error instanceof StaticHtmlOutputTruncatedError || error instanceof ReplyOutputTruncatedError) return true;
   if (error instanceof LlmSemaphoreTimeoutError) return false;
-  const { kind, statusCode } = getAiProviderFailureDetails(error);
-  if (statusCode !== undefined && statusCode < 500 && ![408, 409, 429].includes(statusCode)) return false;
+  const { kind, statusCode, retryableModelNotFound } = getAiProviderFailureDetails(error);
+  const retryableClientStatus = [408, 409, 429].includes(statusCode ?? 0) || retryableModelNotFound === true;
+  if (statusCode !== undefined && statusCode < 500 && !retryableClientStatus) return false;
   if (error instanceof Error && /refusal|content.?filter|safety|v3_provider|knowledge_tool|llm_semaphore/i.test(error.message)) return false;
   return ["network", "timeout", "rate_limit", "unavailable", "format_error"].includes(kind) ||
     (error instanceof Error && /response.*empty|empty.*response|invalid.*json|html_preview_(?:invalid|output|empty)/i.test(error.message));
 }
 
 export function effectiveReplyModelId(group: Pick<GroupBotConfig, "replyModelSource" | "replyModelMode">, defaultId?: string): string {
-  return group.replyModelSource === "global" ? defaultId ?? "gpt" : group.replyModelMode ?? "gpt";
+  return group.replyModelSource === "override" ? group.replyModelMode ?? "gpt" : defaultId ?? "gpt";
 }
 
 export class ReplyModelRouter {

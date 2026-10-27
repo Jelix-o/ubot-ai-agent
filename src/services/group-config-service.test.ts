@@ -21,9 +21,9 @@ test("manual names replace primary and aliases without resurrecting old names af
   });
 });
 
-test("old groups keep their model, new groups follow global, and overrides can resume following", async () => {
+test("old and new groups default to global while explicit super-admin overrides can resume following", async () => {
   await withService({ groups: [{ groupId: "67890", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [], replyModelMode: "ds" }] }, async service => {
-    assert.equal((await service.getGroup("67890"))?.replyModelSource, "override");
+    assert.equal((await service.getGroup("67890"))?.replyModelSource, "global");
     await service.upsertGroupsFromNapcat([{ groupId: "100200" }]);
     assert.equal((await service.getGroup("100200"))?.replyModelSource, "global");
     assert.equal((await service.updateReplyModelMode("100200", "gpt")).replyModelSource, "override");

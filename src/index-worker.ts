@@ -1,3 +1,4 @@
+import { GroupInteractionService } from "./services/group-interaction-service.js";
 import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
 import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
@@ -62,6 +63,8 @@ import {
   type ImageIntentRouter,
 } from "./services/image-intent-router-plugin.js";
 import type { NaturalImageRequest } from "./services/natural-image-request.js";
+import { ImageGenerationConfirmationRepository } from "./services/image-generation-confirmation-repository.js";
+import { parseGroupMessage } from "./utils/message-parser.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import {
   rebuildLegacyGroupMessageSegments,
@@ -630,6 +633,24 @@ export class WorkerApp {
       replyIsGeneratedImage,
     };
 
+    if (this.options.botApp.canRouteNaturalImageRequest && !await this.options.botApp.canRouteNaturalImageRequest(event)) {
+      return { ...base, kind: "chat" };
+    }
+    if (hasTrustedBotMention && /^确认生成[。！!]?$/u.test(parseGroupMessage(event.message, this.options.botApp.getBotQq()).text.trim())) {
+      if (this.options.imageIntentRouter && !await this.options.imageIntentRouter.isConfigured()) return { ...base, kind: "chat" };
+      const originalId = new ImageGenerationConfirmationRepository(this.sharedDb).confirm(message.id);
+      const original = originalId === undefined ? undefined : this.sharedDb.db.prepare("SELECT * FROM messages WHERE id = ?")
+        .get(originalId) as typeof message | undefined;
+      if (original && !this.sharedDb.isRetracted(original.group_id, original.msg_id)) {
+        const request = await this.options.botApp.getNaturalImageRequestForIntent(this.buildEvent(original),
+          { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false }, "generate");
+        if (request?.kind === "generate") {
+          return { ...base, kind: "image", request: { ...request, requiresConfirmation: false } };
+        }
+      }
+      return { ...base, kind: "clarification", request: { kind: "clarification", reason: "confirmation_expired" } };
+    }
+
     const router = this.options.imageIntentRouter;
     if (!router) {
       // Compatibility for focused tests and older embedders that do not wire
@@ -795,6 +816,10 @@ export class WorkerApp {
     }
     if (request.kind === "clarification") {
       return { ...base, kind: "clarification", request };
+    }
+    if (request.kind === "generate" && request.requiresConfirmation) {
+      new ImageGenerationConfirmationRepository(this.sharedDb).request(record.sourceRowId);
+      return { ...base, kind: "clarification", request: { kind: "clarification", reason: "generation_confirmation" } };
     }
     return { ...base, kind: "image", request };
   }
@@ -1205,6 +1230,7 @@ async function buildBotApp(
     imagePreviewArchiveService,
     new QqAvatarReferenceService(),
     new ImageRequestRepository(sharedDb),
+    new GroupInteractionService(sharedDb, config.botQq),
   );
   return { botApp, groupConfigService, imageIntentRouter };
 }

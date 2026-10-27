@@ -67,6 +67,7 @@ const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
 export class NapCatClient extends EventEmitter<{
   groupMessage: [NapcatGroupMessageEvent];
   groupRecall: [unknown];
+  groupPoke: [unknown];
 }> {
   private socket?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
@@ -216,6 +217,10 @@ export class NapCatClient extends EventEmitter<{
     return resolved.filter((image): image is MessageImageInput => Boolean(image?.url));
   }
 
+  async sendGroupPoke(groupId: string, userId: string): Promise<void> {
+    await this.callHttpAction("group_poke", { group_id: Number(groupId), user_id: Number(userId) });
+  }
+
   async getHealthStatus(): Promise<TransportHealthStatus> {
     return {
       ok: this.isSocketOpen(),
@@ -238,6 +243,10 @@ export class NapCatClient extends EventEmitter<{
         } else {
           pending.resolve(parsed.data);
         }
+        return;
+      }
+      if (parsed.post_type === "notice" && parsed.notice_type === "notify" && parsed.sub_type === "poke" && parsed.group_id) {
+        this.emit("groupPoke", parsed);
         return;
       }
       if (parsed.post_type === "notice" && parsed.notice_type === "group_recall") {
@@ -393,7 +402,7 @@ export class NapCatClient extends EventEmitter<{
   }
 
   private async callHttpAction<TData>(action: string, payload: Record<string, unknown>): Promise<TData> {
-    const deliveryAction = action === "send_group_forward_msg" || action === "delete_msg";
+    const deliveryAction = action === "send_group_forward_msg" || action === "delete_msg" || action === "group_poke";
     let response: Response;
     try { response = await fetch(`${this.httpBaseUrl}/${action}`, {
       method: "POST",

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizeImageIntentRouting, validateImageIntentRouting } from "./image-intent-settings.js";
 import { DEFAULT_REPLY_MAX_TOKENS, MIN_REPLY_MAX_TOKENS, MAX_REPLY_MAX_TOKENS } from "../shared/reply-token-budget.js";
 import { readFile, stat } from "node:fs/promises";
 
@@ -73,6 +74,7 @@ export class SystemSettingsStore {
   }
 
   private buildUpdate(current: SystemSettings, input: SystemSettingsUpdateInput): SystemSettings {
+    if (input.imageIntentRouting !== undefined) validateImageIntentRouting(input.imageIntentRouting);
     if ((Array.isArray(input.models) && input.models.some(isRetiredModel)) ||
         Object.values(input.selectedModelIds ?? {}).some(isRetiredModelId) ||
         (Array.isArray(input.replyRouting?.fallbackModelIds) && input.replyRouting.fallbackModelIds.some(isRetiredModelId))) {
@@ -260,6 +262,7 @@ function defaultSettings(defaultModels: Array<Partial<SystemModelConfig> & { api
     defaultTriggerKeywords: [{ keyword: "乘风", enabled: true }],
     models: normalizeModels(defaultModels, []),
     replyRouting: defaultReplyRouting(),
+    imageIntentRouting: normalizeImageIntentRouting(),
     removedDefaultModelIds: [],
     selectedModelIds: normalizeSelectedModelIds({}, normalizeModels(defaultModels, [])),
     commands: defaultCommands(now),
@@ -281,6 +284,7 @@ function normalizeSettings(
     defaultTriggerKeywords: normalizeTriggerKeywords(value.defaultTriggerKeywords),
     models,
     replyRouting: normalizeReplyRouting(value.replyRouting),
+    imageIntentRouting: normalizeImageIntentRouting(value.imageIntentRouting),
     removedDefaultModelIds,
     selectedModelIds: normalizeSelectedModelIds(value.selectedModelIds, models),
     commands: normalizeCommands(value.commands, typeof value.updatedAt === "string" ? value.updatedAt : "1970-01-01T00:00:00.000Z"),
@@ -568,8 +572,10 @@ function normalizeSelectedModelIds(value: unknown, models: SystemModelConfig[]):
       if (modelIdValue === "") { selected[purpose] = ""; continue; }
       const modelId = typeof modelIdValue === "string" ? normalizeModelId(modelIdValue.trim()) : "";
       const model = modelId ? modelById.get(modelId) : undefined;
-      if (model && model.purpose === purpose && canSelectModelForPurpose(model)) {
+      if (model && (purpose === "image_intent" ? isApprovedImageIntentModel(model) : model.purpose === purpose && canSelectModelForPurpose(model))) {
         selected[purpose] = model.id;
+      } else if (purpose === "image_intent") {
+        selected[purpose] = "";
       }
     }
   }
@@ -590,7 +596,8 @@ function canSelectModelForPurpose(model: SystemModelConfig): boolean {
 function isApprovedImageIntentModel(model: SystemModelConfig | undefined): boolean {
   return Boolean(
     model &&
-    model.purpose === "image_intent" &&
+    (model.purpose === "image_intent" || model.purpose === "reply") &&
+    model.apiProtocol !== "anthropic" &&
     model.enabled &&
     Boolean(model.apiKey?.trim()) &&
     model.capabilities?.toolCalling === true,

@@ -9,7 +9,7 @@ import { SharedDb } from "../shared/sqlite.js";
 import { GroupMemoryStore } from "./group-memory-store.js";
 import { KnowledgeBaseStore } from "./knowledge-base-store.js";
 import { StateCipher, V3StateRepository } from "./v3-state-repository.js";
-import { HUIXIAN_CONVERSATION_MARKER, HUIXIAN_CONVERSATION_REVISION, HUIXIAN_CONVERSATION_RULES, PREVIOUS_HUIXIAN_CONVERSATION_REVISION, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
+import { huixianConversationMarker, HUIXIAN_CONVERSATION_REVISION, HUIXIAN_CONVERSATION_RULES, PREVIOUS_HUIXIAN_CONVERSATION_REVISION, upgradeHuixianConversationProfile } from "../persona/huixian-conversation-policy.js";
 
 const TEST_STATE_KEY = "0".repeat(64);
 
@@ -90,7 +90,7 @@ test("conversation persona migration snapshots the active profile, preserves cus
     assert.ok(after?.styleRules.includes(custom.styleRules[0]));
     assert.ok(after?.exampleExchanges?.some(item => item.assistant === "管理员自己的回答"));
     assert.match(after!.systemPrompt, /管理员自定义/);
-    assert.ok(after!.systemPrompt.includes(HUIXIAN_CONVERSATION_MARKER));
+    assert.ok(after!.systemPrompt.includes(huixianConversationMarker(custom.name)));
     const snapshot = db.db.prepare("SELECT profile_json FROM v3_character_profile_revisions WHERE changed_by = ?").get(`snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`) as { profile_json: string };
     assert.deepEqual(JSON.parse(snapshot.profile_json), before);
     assert.deepEqual(upgradeHuixianConversationProfile(after!), after);
@@ -103,7 +103,7 @@ test("conversation persona migration snapshots the active profile, preserves cus
 test("packaged Huixian baseline contains the same managed conversation policy as the SQLite migration", async () => {
   const profile = JSON.parse(await readFile(path.resolve("assets/huixian-profile.json"), "utf8")) as SkillDefinition;
   assert.deepEqual(upgradeHuixianConversationProfile(profile), profile);
-  assert.ok(profile.systemPrompt.includes(HUIXIAN_CONVERSATION_MARKER));
+  assert.ok(profile.systemPrompt.includes(huixianConversationMarker(profile.name)));
   assert.ok(profile.styleRules.some(rule => rule.includes("180 个可见字符内")));
   assert.equal(profile.exampleExchanges?.some(example => example.user === "玩了十几年还是紧张"), false);
   assert.equal(profile.exampleExchanges?.some(example => example.user === "我把把 carry"), false);
@@ -167,7 +167,7 @@ test("the r4 migration replaces deployed r3 brevity rules without overwriting ad
     assert.match(next.systemPrompt, /管理员自定义开头/);
     assert.match(next.systemPrompt, /管理员追加：别太正经/);
     assert.equal(next.systemPrompt.includes("【会仙对话策略：2026-10-20-r3】"), false);
-    assert.ok(next.systemPrompt.includes(HUIXIAN_CONVERSATION_MARKER));
+    assert.ok(next.systemPrompt.includes(huixianConversationMarker(old.name)));
     assert.ok(next.styleRules.includes("管理员自己的规则"));
     assert.equal(next.styleRules.includes(r3DefaultRule), false);
     assert.ok(next.styleRules.some(rule => rule.includes("180 个可见字符内")));

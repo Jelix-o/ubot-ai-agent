@@ -264,7 +264,7 @@ test("MemeLibraryService persists uploaded metadata and bytes across a full SQLi
     const reopenedService = new MemeLibraryService(dataDir, reopenedRepository, { seedAssetPath: seedPath });
     await reopenedService.initialize();
 
-    assert.deepEqual(await reopenedService.getPolicy(), { enabled: true, probabilityPercent: 100, cooldownSeconds: 42 });
+    assert.deepEqual(await reopenedService.getPolicy(), { ...DEFAULT_MEME_LIBRARY_POLICY, enabled: true, probabilityPercent: 100, cooldownSeconds: 42 });
     assert.deepEqual(await reopenedService.getAsset(asset.id), asset);
     const reopenedSeed = await reopenedService.getAsset(BLACKLISTED_AT_MEME_SEED_ID);
     assert.equal(reopenedSeed?.protected, true);
@@ -346,7 +346,7 @@ test("normal meme local keyword matching claims cooldown atomically across conte
     assert.ok(tag);
     const asset = await service.uploadAsset({ name: "配图", scope: "normal_chat", tags: [tag.id], data: PNG });
     assert.ok(asset);
-    await service.updatePolicy({ probabilityPercent: 100, cooldownSeconds: 600 });
+    await service.updatePolicy({ selectionMode: "keyword", probabilityPercent: 100, cooldownSeconds: 600 });
 
     const noMatch = await service.claimNormalChatImage({ groupId: "10001", userText: "今天下雨", now });
     assert.deepEqual(noMatch, { reason: "no_match", matchedTagIds: [] });
@@ -386,7 +386,7 @@ test("selection avoids an immediate repeat where multiple normal or blacklisted 
     const secondNormal = await service.uploadAsset({ name: "普通二", scope: "normal_chat", tags: [tag.id], data: JPEG });
     const secondBlacklist = await service.uploadAsset({ name: "黑名单二", scope: "blacklisted_at", data: GIF });
     assert.ok(firstNormal && secondNormal && secondBlacklist);
-    await service.updatePolicy({ probabilityPercent: 100, cooldownSeconds: 0 });
+    await service.updatePolicy({ selectionMode: "keyword", probabilityPercent: 100, cooldownSeconds: 0 });
 
     const normalOne = await service.claimNormalChatImage({ groupId: "10001", userText: "贴切", now: 1000 });
     const normalTwo = await service.claimNormalChatImage({ groupId: "10001", userText: "贴切", now: 1001 });
@@ -419,6 +419,7 @@ test("missing V3 state is a safe no-op and never creates a persistent library", 
 
 test("stored bytes are integrity checked before an image file is returned", async () => {
   await withLibrary(async ({ dataDir, service }) => {
+    await service.updatePolicy({ selectionMode: "keyword" });
     const tag = await service.createTag({ name: "校验", keywords: ["校验"] });
     assert.ok(tag);
     const asset = await service.uploadAsset({ name: "需要校验", scope: "normal_chat", tags: [tag.id], data: PNG });
@@ -432,4 +433,80 @@ test("stored bytes are integrity checked before an image file is returned", asyn
     );
     assert.deepEqual(await readFile(imagePath), Buffer.from("not an image"));
   }, { random: () => 0 });
+});
+
+test("model tags require an enabled pack and a valid choice, enforce probability and preserve large GIF bytes", async () => {
+  let random = 0;
+  await withLibrary(async ({ service, dataDir }) => {
+    const tag = (await service.createTag({ name: "food", keywords: ["food"] }))!;
+    const gif = Buffer.concat([GIF, Buffer.alloc(6 * 1024 * 1024)]);
+    const asset = (await service.uploadAsset({ name: "大动图", scope: "normal_chat", tags: [tag.id], data: gif, packId: "blue-fat-fish-meme-pack", sourceRef: "fixed-ref" }))!;
+    assert.equal(asset.mimeType, "image/gif");
+    assert.deepEqual((await service.readAssetBytes(asset.id))?.data, gif);
+    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food" })).reason, "no_match");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10001", userText: "food", tagId: "invalid" })).reason, "no_match");
+    const namedSelection = await service.claimNormalChatImage({ groupId: "10001", userText: "anything", tagId: " FOOD ", now: 99_000 });
+    assert.equal(namedSelection.reason, "sent_candidate", "model-facing category names resolve to the persisted UUID tag");
+    assert.deepEqual(namedSelection.matchedTagIds, [tag.id]);
+    random = 0.35;
+    assert.equal((await service.claimNormalChatImage({ groupId: "10002", userText: "anything", tagId: tag.id })).reason, "probability_miss");
+    random = 0;
+    await service.updatePolicy({ activePackIds: ["local"] });
+    assert.equal((await service.getReplyTags()).length, 0);
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id })).reason, "asset_unavailable");
+    await service.updatePolicy({ activePackIds: ["blue-fat-fish-meme-pack"] });
+    await rm(path.join(dataDir, "meme-library", `${asset.id}.gif`));
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 100_000 })).reason, "asset_unavailable");
+    await service.uploadAsset({ name: "恢复", scope: "normal_chat", tags: [tag.id], data: gif, packId: "blue-fat-fish-meme-pack" });
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 100_001 })).reason, "sent_candidate", "missing files must not consume the cooldown");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 160_000 })).reason, "cooldown");
+    const legacyIdSelection = await service.claimNormalChatImage({ groupId: "10002", userText: "food", tagId: tag.id, now: 100_001 });
+    assert.equal(legacyIdSelection.reason, "sent_candidate", "existing UUID model selectors remain supported");
+    assert.deepEqual(legacyIdSelection.matchedTagIds, [tag.id]);
+  }, { random: () => random });
+});
+
+test("model tags resolve readable Chinese category names while stored asset references remain opaque", async () => {
+  await withLibrary(async ({ service }) => {
+    const tag = (await service.createTag({ name: "摸鱼", keywords: ["摸鱼"] }))!;
+    const asset = await service.uploadAsset({ name: "漂着", scope: "normal_chat", tags: [tag.id], data: GIF });
+    assert.ok(asset);
+    const selection = await service.claimNormalChatImage({ groupId: "10001", userText: "anything", tagId: " 摸鱼 ", now: 1_000 });
+    assert.equal(selection.reason, "sent_candidate");
+    assert.deepEqual(selection.matchedTagIds, [tag.id]);
+    assert.equal(selection.selection?.assetId, asset.id);
+  }, { random: () => 0 });
+});
+
+test("collection deduplicates by content, merges categories and the policy migration saves an audited backup once", async () => {
+  await withLibrary(async ({ service, repository }) => {
+    const a = (await service.createTag({ name: "a", keywords: ["a"] }))!;
+    const b = (await service.createTag({ name: "b", keywords: ["b"] }))!;
+    const first = (await service.uploadAsset({ name: "第一次", scope: "normal_chat", tags: [a.id], data: GIF }))!;
+    const again = (await service.uploadAsset({ name: "第二次", scope: "normal_chat", tags: [b.id], data: GIF }))!;
+    assert.equal(first.id, again.id);
+    assert.deepEqual(new Set(again.tags), new Set([a.id, b.id]));
+    assert.equal((await service.listAssets("normal_chat")).length, 1);
+    await service.updatePolicy({ probabilityPercent: 12, cooldownSeconds: 321 });
+    repository.deleteDocument("meme-library-upgrade", "dafeiyu-v1");
+    await service.initialize();
+    assert.equal((await service.getPolicy()).probabilityPercent, 35);
+    assert.equal(repository.getDocument<{ probabilityPercent: number }>("meme-library-policy-backup", "before-dafeiyu-v1", { probabilityPercent: 0 }).probabilityPercent, 12);
+    assert.ok(repository.listDocuments("admin-operation").some(item => item.key === "migration:dafeiyu-meme-v1"));
+    await service.updatePolicy({ probabilityPercent: 18 });
+    await service.initialize();
+    assert.equal((await service.getPolicy()).probabilityPercent, 18);
+  });
+});
+
+test("simultaneous collection uploads merge one hash and retain every category", async () => {
+  await withLibrary(async ({ service }) => {
+    const tags = await Promise.all(["first", "second", "third"].map(name => service.createTag({ name, keywords: [name] })));
+    const results = await Promise.all(tags.map(tag => service.uploadAsset({ name: "并发收藏", scope: "normal_chat", tags: [tag!.id], data: GIF })));
+    assert.equal(new Set(results.map(asset => asset!.id)).size, 1);
+    const assets = await service.listAssets("normal_chat");
+    assert.equal(assets.length, 1);
+    assert.deepEqual(new Set(assets[0]!.tags), new Set(tags.map(tag => tag!.id)));
+    assert.deepEqual((await service.readAssetBytes(assets[0]!.id))?.data, GIF);
+  });
 });

@@ -344,6 +344,27 @@ test("strict selected model binding never falls back to another reply model", as
   assert.equal(fallback.staticHtmlCalls, 0);
 });
 
+test("image intent may bind an existing reply model with independent request settings and no fallback", async t => {
+  const store = await createSettingsStore(t);
+  await store.update({
+    models: [{ ...model({ id: "ds", model: "deepseek-flash" }), capabilities: { toolCalling: true }, maxCompletionTokens: 8192 }],
+    selectedModelIds: { reply: "ds", image_intent: "ds" },
+    imageIntentRouting: { enabled: true, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 },
+  });
+  const fake = new FakeRuntimeAiService(makeHealth("deepseek-flash", "https://configured.example/v1"));
+  let received: unknown;
+  const service = new ConfiguredAiService(fake, store, "image_intent", (config, _policy, routing) => {
+    assert.equal(config.maxCompletionTokens, 8192);
+    received = routing;
+    return fake;
+  });
+  assert.equal(await service.isImageIntentConfigured(), true);
+  assert.deepEqual(received, { enabled: true, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 });
+  assert.equal((await store.get()).selectedModelIds.image_intent, "ds");
+  await store.update({ imageIntentRouting: { enabled: false, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 } });
+  assert.equal(await service.isImageIntentConfigured(), false);
+});
+
 async function createSettingsStore(t: test.TestContext): Promise<SystemSettingsStore> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "configured-ai-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

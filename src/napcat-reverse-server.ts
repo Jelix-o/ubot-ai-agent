@@ -81,6 +81,7 @@ const GROUP_MEMBER_CACHE_TTL_MS = 10 * 60 * 1000;
 export class NapCatReverseServer extends EventEmitter<{
   groupMessage: [NapcatGroupMessageEvent];
   groupRecall: [unknown];
+  groupPoke: [unknown];
 }> {
   private readonly httpServer = createServer((_req, res) => {
     res.statusCode = 200;
@@ -279,6 +280,10 @@ export class NapCatReverseServer extends EventEmitter<{
     return resolved.filter((image): image is MessageImageInput => Boolean(image?.url));
   }
 
+  async sendGroupPoke(groupId: string, userId: string): Promise<void> {
+    await this.callAction("group_poke", { group_id: Number(groupId), user_id: Number(userId) });
+  }
+
   async getHealthStatus(): Promise<TransportHealthStatus> {
     const connected = this.activeSocket?.readyState === WebSocket.OPEN;
     return {
@@ -310,6 +315,10 @@ export class NapCatReverseServer extends EventEmitter<{
         return;
       }
 
+      if (parsed.post_type === "notice" && parsed.notice_type === "notify" && parsed.sub_type === "poke" && parsed.group_id) {
+        this.emit("groupPoke", parsed);
+        return;
+      }
       if (parsed.post_type === "notice" && parsed.notice_type === "group_recall") {
         this.emit("groupRecall", parsed);
         return;

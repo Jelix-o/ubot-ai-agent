@@ -161,7 +161,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
       <div class="section-head">
         <div>
           <h2>网页预览 <span class="tag">{{ pagination.total }}</span></h2>
-          <p>查看和删除由会仙在当前群生成的静态网页。页面内容不会在后台加载或展示。</p>
+          <p>查看和删除由机器人在当前群生成的静态网页。页面内容不会在后台加载或展示。</p>
         </div>
         <button class="btn" type="button" :disabled="loading" @click="load">
           {{ loading ? "刷新中..." : "刷新" }}
@@ -213,7 +213,7 @@ useRefreshEvents({ refresh: () => void load().catch((error) => app.showToast((er
         <div class="empty-visual">HTML</div>
         <div>
           <h3>暂无网页预览</h3>
-          <p>群成员通过 #网页 或让会仙生成静态 HTML 页面后，链接会显示在这里。</p>
+          <p>群成员通过 #网页 或让机器人生成静态 HTML 页面后，链接会显示在这里。</p>
         </div>
       </div>
       <div v-else class="preview-table">

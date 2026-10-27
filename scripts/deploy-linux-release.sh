@@ -1204,7 +1204,7 @@ prepare_release_bundle_preflight() {
   tar --extract --gzip --file="$BUNDLE" --directory="$STAGING_DIR" \
     --no-same-owner --no-same-permissions --delay-directory-restore
   for required in \
-    package.json package-lock.json dist/index.js assets/huixian-profile.json assets/private-enterprises-2026.json \
+    package.json package-lock.json dist/index.js assets/huixian-profile.json assets/meme-pack-index.json assets/private-enterprises-2026.json \
     assets/private-enterprises-2026-audit.json assets/private-enterprises-2026-review.md \
     assets/private-enterprises-2026-headquarters.json assets/private-enterprises-2026-headquarters-evidence.json \
     assets/private-enterprises-2026-headquarters-review.md \

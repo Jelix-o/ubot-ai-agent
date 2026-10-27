@@ -101,8 +101,9 @@ async function probeImageModel(
  * honors forced function calls. Exercise the exact bounded tool-call boundary
  * used by the natural image router without sending user content.
  */
-async function probeImageIntentModel(
+export async function probeImageIntentModel(
   model: Pick<SystemModelConfig, "baseUrl" | "model" | "apiKey" | "apiProtocol">,
+  imageIntentRouting?: import("../types.js").ImageIntentRoutingSettings,
 ): Promise<ModelProbeStatus> {
   const startedAt = Date.now();
   try {
@@ -110,6 +111,7 @@ async function probeImageIntentModel(
       throw new ImageIntentClassificationError("unavailable");
     }
     const service = new AiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
+      imageIntentRouting,
       providerCapabilities: { toolCalling: true },
     });
     const result = await service.classifyImageIntent({

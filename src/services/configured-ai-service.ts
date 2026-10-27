@@ -1,12 +1,13 @@
 import { withModelOperation } from "./model-telemetry.js";
 import { ReplyModelRouter } from "./reply-model-router.js";
-import type { GroupBotConfig } from "../types.js";
 import { logWarn } from "../logger.js";
-import type { SystemModelConfig, SystemModelPurpose } from "../types.js";
+import type { ImageIntentRoutingSettings, SystemModelConfig, SystemModelPurpose } from "../types.js";
+import { normalizeImageIntentRouting } from "./image-intent-settings.js";
 import {
   AiService as OpenAiService,
   ImageIntentClassificationError,
   type AiService,
+  type ReplyDesireContext,
 } from "./ai-service.js";
 import { resolveProviderCapabilities } from "./ai-provider.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
@@ -35,7 +36,7 @@ export type RuntimeAiService = Pick<
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
   "id" | "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "capabilities" | "supportsVision" | "reasoningEffort" | "maxCompletionTokens" | "requestTimeoutMs"
->, policyCapabilities?: Parameters<typeof resolveProviderCapabilities>[1]) => RuntimeAiService;
+>, policyCapabilities?: Parameters<typeof resolveProviderCapabilities>[1], imageIntentRouting?: ImageIntentRoutingSettings) => RuntimeAiService;
 
 /** Raised instead of silently falling back when the persistent policy denies provider chat. */
 export class ProviderCapabilityDisabledError extends Error {
@@ -66,7 +67,7 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
     private readonly fallback: RuntimeAiService,
     private readonly systemSettingsStore: SystemSettingsStore,
     private readonly purpose: SystemModelPurpose,
-    private readonly factory: RuntimeAiFactory = (model, policyCapabilities) => {
+    private readonly factory: RuntimeAiFactory = (model, policyCapabilities, imageIntentRouting) => {
       const providerCapabilities = resolveProviderCapabilities(model, policyCapabilities);
       if (model.apiProtocol === "anthropic") {
         const client = new AnthropicChatCompletions(model.baseUrl, model.apiKey ?? "", {
@@ -83,6 +84,7 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
         });
       }
       return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
+        imageIntentRouting,
         reasoningEffort: model.reasoningEffort,
         maxCompletionTokens: model.maxCompletionTokens,
         timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
@@ -174,18 +176,18 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
     bufferedMessages: Parameters<AiService["evaluateReplyDesire"]>[2],
     signal?: AbortSignal,
     throwOnFailure = false,
-    group?: Pick<GroupBotConfig, "groupId" | "replyModelMode" | "replyModelSource">,
+    group?: ReplyDesireContext,
   ): ReturnType<AiService["evaluateReplyDesire"]> {
     if (this.purpose === "reply" && !this.selectedModelId) {
       try {
         this.auxiliaryRouter ??= new ReplyModelRouter(this.systemSettingsStore, this.capabilityPolicy,
           model => this.factory(model, this.capabilityPolicy?.getProviderCapabilityOverrides(normalizeProtocol(model.apiProtocol))));
-        const session = await this.auxiliaryRouter.begin(group ?? { groupId: "", replyModelSource: "global" }, "auxiliary", { signal });
-        return (await session.run((service, attemptSignal) => service.evaluateReplyDesire(skill, history, bufferedMessages, attemptSignal, true))).value;
+        const session = await this.auxiliaryRouter.begin({ ...group, groupId: group?.groupId ?? "" }, "auxiliary", { signal });
+        return (await session.run((service, attemptSignal) => service.evaluateReplyDesire(skill, history, bufferedMessages, attemptSignal, true, group))).value;
       } catch (error) { if (throwOnFailure) throw error; return "SKIP"; }
     }
     const service = await this.resolveService();
-    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal, throwOnFailure), this.modelIds.get(service));
+    return withModelOperation("background", undefined, () => service.evaluateReplyDesire(skill, history, bufferedMessages, signal, throwOnFailure, group), this.modelIds.get(service));
   }
 
   async evaluateControlledMention(
@@ -278,6 +280,8 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
   }> {
     const settings = await this.systemSettingsStore.getInternal();
     const selectedModelId = settings.selectedModelIds.image_intent;
+    const routing = normalizeImageIntentRouting(settings.imageIntentRouting);
+    if (!routing.enabled) throw new ConfiguredModelUnavailableError("image_intent_disabled");
     const model = selectedModelId
       ? settings.models.find((item) => item.id === selectedModelId && isUsableImageIntentModel(item))
       : undefined;
@@ -300,6 +304,7 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
       model.maxCompletionTokens,
       model.requestTimeoutMs,
       JSON.stringify(policyCapabilities ?? {}),
+      JSON.stringify(routing),
     ].join("|");
     if (this.cachedService?.key === key) {
       if (!this.cachedService.service.classifyImageIntent) {
@@ -310,7 +315,7 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
 
     // Unlike ordinary reply composition, the classifier has no fallback
     // model. A malformed or unavailable configured router is a closed gate.
-    const service = this.factory(model, policyCapabilities);
+    const service = this.factory(model, policyCapabilities, routing);
     if (!service.classifyImageIntent) {
       throw new ConfiguredModelUnavailableError(model.id);
     }
@@ -382,7 +387,7 @@ function isUsableModel(model: SystemModelConfig): boolean {
 }
 
 function isUsableImageIntentModel(model: SystemModelConfig): boolean {
-  return model.purpose === "image_intent" &&
+  return (model.purpose === "image_intent" || model.purpose === "reply") &&
     model.apiProtocol !== "anthropic" &&
     model.capabilities?.toolCalling === true &&
     isUsableModel(model);

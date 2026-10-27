@@ -32,8 +32,8 @@ const DEFAULT_V3_PROVIDER_CAPABILITIES = {
   // request features to it.
   anthropic: ["chat", "vision", "requestTimeout"],
 };
-const HUIXIAN_RELEASE_PROFILE_REVISION = "immersive-natural-v3.0.3";
-const HUIXIAN_RELEASE_PROFILE_CHANGED_BY = "release:3.0.3:huixian-immersive";
+const HUIXIAN_RELEASE_PROFILE_REVISION = "dafeiyu-v1";
+const HUIXIAN_RELEASE_PROFILE_CHANGED_BY = "migration:dafeiyu-v1";
 const { isRetiredModel, removeRetiredGroupModel } = await import(new URL("../dist/services/retired-models.js", import.meta.url));
 
 const args = parseArgs(process.argv.slice(2));
@@ -178,6 +178,7 @@ async function runExistingCutoverUpgrade() {
       groupVisionEnabled: repository.enableVisionForExistingGroupsOnce(now),
       huixianProfileRevision: repository.applyHuixianReleaseProfile({
         revision: HUIXIAN_RELEASE_PROFILE_REVISION,
+        replaceRevision: "immersive-natural-v3.0.3",
         profile: huixianProfile,
         changedBy: HUIXIAN_RELEASE_PROFILE_CHANGED_BY,
       }),
@@ -644,7 +645,12 @@ function importAllState({ repository, sharedDb, parsed, sources, huixianProfile,
     result.documents += 1;
   }
 
-  repository.saveHuixianProfile(huixianProfile, "v3-migration");
+  repository.applyHuixianReleaseProfile({
+    revision: HUIXIAN_RELEASE_PROFILE_REVISION,
+    profile: huixianProfile,
+    changedBy: HUIXIAN_RELEASE_PROFILE_CHANGED_BY,
+    now,
+  });
   repository.saveCapabilityPolicy(defaultV3CapabilityPolicy(now), now);
 
   for (const source of sources) {

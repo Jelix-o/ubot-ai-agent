@@ -235,36 +235,38 @@ test("model-selected actions are materialized locally without exposing prompt or
   });
 });
 
-test("model-selected actions retain local question, negative, tutorial, and page safety guards", () => {
+test("model-selected polite generation asks confirmation and question punctuation does not veto edits", () => {
   const direct = {
     message: parsed("能帮我生成一张海边灯塔吗？"),
     hasTrustedBotMention: true,
     hasTrustedReply: false,
     replyIsGeneratedImage: false,
   } satisfies NaturalImageRequestInput;
-  assert.equal(parseNaturalImageRequestForIntent(direct, "generate"), undefined);
+  assert.deepEqual(parseNaturalImageRequestForIntent(direct, "generate"), {
+    kind: "generate", prompt: "能帮我生成一张海边灯塔吗？", requiresConfirmation: true,
+  });
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("这张能不能改成晚霞？", { images: [IMAGE], replyMessageId: "generated-1" }),
     hasTrustedReply: true,
     replyIsGeneratedImage: true,
-  }, "edit"), undefined);
+  }, "edit")?.kind, "edit");
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("将我头像美化一下吗？"),
-  }, "avatar_edit"), undefined);
+  }, "avatar_edit")?.kind, "avatar_edit");
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("不要生成一张灯塔"),
-  }, "generate"), undefined);
+  }, "chat"), undefined);
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("画一张图的教程"),
-  }, "clarification"), undefined);
+  }, "chat"), undefined);
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("做一个网页"),
-  }, "generate"), undefined);
+  }, "chat"), undefined);
 
   assert.deepEqual(parseNaturalImageRequestForIntent({
     ...direct,

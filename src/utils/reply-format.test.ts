@@ -20,6 +20,19 @@ const skill: SkillDefinition = {
   stripTerminalPunctuation: true,
 };
 
+test("detailed replies retain every paragraph and code line within the long-answer budget", () => {
+  const paragraphs = Array.from({ length: 18 }, (_, index) => `步骤 ${index + 1}：先校验状态，再保存真实回执，失败时检查能否重试。`);
+  paragraphs.push("```ts\nconst sent = true;\nif (sent) {\n  stopRetry();\n}\n```", "最后一步：确认所有消息都已送达。");
+  const text = paragraphs.join("\n\n");
+  const messages = formatReplyMessages({ ...skill, stripAsterisks: false, stripTerminalPunctuation: false }, text,
+    { maxChars: 500, maxTotalChars: 3000, maxMessages: 8, preferredMaxMessages: 6 });
+  assert.ok(messages.length <= 8);
+  assert.ok(messages.every(message => message.length <= 500));
+  assert.equal(messages.join("").replace(/\s/g, ""), text.replace(/\s/g, ""));
+  assert.ok(messages.join("\n").includes("const sent = true;\nif (sent)"));
+  assert.ok(messages.at(-1)?.endsWith("确认所有消息都已送达。"));
+});
+
 test("formatReplyMessages strips asterisks and trailing punctuation", () => {
   const messages = formatReplyMessages(skill, "*你好*\n*这事我觉得可以。*");
 

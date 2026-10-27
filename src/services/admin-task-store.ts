@@ -28,6 +28,7 @@ export type AdminTaskProgressUpdater = (progress: number, detail?: string) => Pr
 const MAX_TASKS = 200;
 const DEFAULT_STALE_TASK_MS = 30 * 60 * 1000;
 const STALE_TASK_MS_BY_TYPE: Partial<Record<AdminTaskType, number>> = {
+  "meme-pack-import": 90 * 60 * 1000,
   "memory-dedup": 12 * 60 * 1000,
   "model-check": 10 * 60 * 1000,
 };
@@ -402,7 +403,7 @@ function normalizeStatus(value: unknown): AdminTaskStatus {
 }
 
 function isAdminTaskType(value: unknown): value is AdminTaskType {
-  return value === "memory-dedup" || value === "model-check" || value === "bulk-review" || value === "bulk-operation";
+  return value === "memory-dedup" || value === "model-check" || value === "bulk-review" || value === "bulk-operation" || value === "meme-pack-import";
 }
 
 function isAdminTaskStatus(value: unknown): value is AdminTaskStatus {

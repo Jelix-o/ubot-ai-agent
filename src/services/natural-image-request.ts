@@ -20,6 +20,8 @@ export type NaturalImageIntentAction =
   | "clarification";
 
 export type NaturalImageClarificationReason =
+  | "generation_confirmation"
+  | "confirmation_expired"
   | "avatar_syntax"
   | "invalid_ratio"
   | "missing_prompt"
@@ -32,6 +34,7 @@ export type NaturalImageRequest =
       kind: "generate";
       prompt: string;
       size?: string;
+      requiresConfirmation?: boolean;
     }
   | {
       kind: "edit";
@@ -84,7 +87,6 @@ export function parseNaturalImageRequestForIntent(
 ): NaturalImageRequest | undefined {
   const text = input.message.text.trim();
   if (input.isExplicitCommand || text.startsWith("#")) return undefined;
-  if (text && (isQuestionOrNegative(text) || PAGE_WORDING.test(text))) return undefined;
   const promptText = (input.promptText ?? text).trim();
 
   const hasAttachment = input.message.images.length > 0;
@@ -135,6 +137,7 @@ export function parseNaturalImageRequestForIntent(
     return {
       kind: "generate",
       prompt: parsed.prompt,
+      ...(isPoliteGenerationQuestion(text) ? { requiresConfirmation: true } : {}),
       ...(parsed.size ? { size: parsed.size } : {}),
     };
   }
@@ -243,6 +246,11 @@ export function parseNaturalImageRequest(
 
 function findGenerationRequest(text: string): RegExpExecArray | undefined {
   return DRAW_GENERATION_REQUEST.exec(text) ?? EXPLICIT_IMAGE_GENERATION_REQUEST.exec(text) ?? undefined;
+}
+
+export function isPoliteGenerationQuestion(text: string): boolean {
+  return /[?？]\s*$/u.test(text) || /(?:吗|么|好不好|行不行|可不可以|可以不可以|能不能|会不会|是否)\s*[。！!]?$/u.test(text) ||
+    /(?:能不能|可不可以|能否|是否可以|你能|可以帮|能帮)/u.test(text);
 }
 
 function parsePrompt(raw: string): { prompt: string; size?: string } | undefined {

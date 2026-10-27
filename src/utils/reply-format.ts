@@ -34,6 +34,16 @@ export function formatReplyMessages(
     : behavior.preferredMaxMessages;
   const stripTerminalPunctuation = behavior.stripTerminalPunctuation;
 
+  // Detailed answers often contain many paragraphs or code lines. Pack those
+  // lines into the existing long-answer budget instead of spending one bubble
+  // per line and silently dropping the rest of an otherwise in-budget answer.
+  if (budget && budget.maxTotalChars >= 1_200) {
+    return fitMessagesWithinBudget(
+      packDetailedReply(sanitized, behavior.maxChars, behavior.maxMessages),
+      behavior.maxTotalChars, behavior.maxChars, stripTerminalPunctuation,
+    );
+  }
+
   const rawMessages = behavior.singleSentencePerMessage
     ? formatSingleSentenceMessages(
         sanitized,
@@ -56,6 +66,21 @@ export function formatReplyMessages(
     maxChars,
     stripTerminalPunctuation,
   );
+}
+
+function packDetailedReply(text: string, maxChars: number, maxMessages: number): string[] {
+  const messages: string[] = [];
+  let rest = text.trim();
+  while (rest && messages.length < maxMessages) {
+    if (rest.length <= maxChars) { messages.push(rest); break; }
+    const slice = rest.slice(0, maxChars);
+    const preferred = findSplitIndex(slice);
+    const required = rest.length - (maxMessages - messages.length - 1) * maxChars;
+    const splitAt = preferred >= required ? preferred : maxChars;
+    messages.push(rest.slice(0, splitAt).trim());
+    rest = rest.slice(splitAt).trim();
+  }
+  return messages;
 }
 
 function applyReplyFormatBudget(

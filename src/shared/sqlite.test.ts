@@ -263,8 +263,10 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 24, name: "persist-canonical-message-segments" },
       { version: 25, name: "add-durable-image-request-ledger" },
       { version: 26, name: "stage-image-previews-until-outbox-link" },
-      { version: 27, name: "add-image-intent-route-ledger" },
-      { version: 28, name: "add-message-execution-leases" },
+      { version: 27, name: "add-group-interactions-and-reply-timing" },
+      { version: 28, name: "add-image-intent-route-ledger" },
+      { version: 29, name: "add-message-execution-leases" },
+      { version: 30, name: "add-image-generation-confirmations" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -289,7 +291,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
+    Array.from({ length: 30 }, (_, i) => i + 1),
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -1110,6 +1112,20 @@ test("bot messages recorded and pruned", (t) => {
 });
 
 
+test("production migration 27 stays unchanged when image intent and confirmation tables upgrade", t => {
+  const dbPath = tempDb(t);
+  const original = new SharedDb(dbPath);
+  original.db.exec("INSERT INTO interaction_cooldowns VALUES ('existing', 42)");
+  original.db.exec("DROP TABLE image_generation_confirmations; DROP TABLE message_execution_leases; DROP TABLE image_intent_routes; DELETE FROM schema_migrations WHERE version > 27");
+  original.close();
+  const upgraded = new SharedDb(dbPath);
+  assert.equal(upgraded.listSchemaMigrations().find(m => m.version === 27)?.name, "add-group-interactions-and-reply-timing");
+  assert.equal(upgraded.db.prepare("SELECT last_at FROM interaction_cooldowns WHERE key = 'existing'").get()?.last_at, 42);
+  assert.equal(upgraded.db.prepare("SELECT count(*) AS n FROM image_intent_routes").get()?.n, 0);
+  assert.equal(upgraded.db.prepare("SELECT count(*) AS n FROM image_generation_confirmations").get()?.n, 0);
+  upgraded.close();
+});
+
 test("image editing and image-request migrations upgrade v4.1.12 archives", t => {
   const dbPath = tempDb(t);
   const old = new SharedDb(dbPath);
@@ -1123,7 +1139,7 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   old.close();
   const upgraded = new SharedDb(dbPath);
   assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
-  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 28);
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 30);
   const columns = upgraded.db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string; dflt_value: string | null }>;
   assert.equal(columns.find(column => column.name === "publication_state")?.dflt_value, "'published'");
   const now = Date.now();
@@ -1142,20 +1158,20 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   upgraded.close();
   const reapplied = new SharedDb(dbPath);
   assert.equal(reapplied.listSchemaMigrations().filter(m => m.version === 26).length, 1);
-  reapplied.db.exec("DELETE FROM schema_migrations WHERE version = 27");
+  reapplied.db.exec("DELETE FROM schema_migrations WHERE version = 28");
   reapplied.db.exec("DROP TABLE image_intent_routes");
   reapplied.close();
   const routeLedgerReapplied = new SharedDb(dbPath);
-  assert.equal(routeLedgerReapplied.listSchemaMigrations().filter(m => m.version === 27).length, 1);
+  assert.equal(routeLedgerReapplied.listSchemaMigrations().filter(m => m.version === 28).length, 1);
   assert.equal(
     routeLedgerReapplied.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_intent_routes'").get()?.name,
     "image_intent_routes",
   );
-  routeLedgerReapplied.db.exec("DELETE FROM schema_migrations WHERE version = 28");
+  routeLedgerReapplied.db.exec("DELETE FROM schema_migrations WHERE version = 29");
   routeLedgerReapplied.db.exec("DROP TABLE message_execution_leases");
   routeLedgerReapplied.close();
   const executionLeasesReapplied = new SharedDb(dbPath);
-  assert.equal(executionLeasesReapplied.listSchemaMigrations().filter(m => m.version === 28).length, 1);
+  assert.equal(executionLeasesReapplied.listSchemaMigrations().filter(m => m.version === 29).length, 1);
   assert.equal(
     executionLeasesReapplied.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_execution_leases'").get()?.name,
     "message_execution_leases",
