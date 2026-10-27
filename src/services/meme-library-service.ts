@@ -147,8 +147,8 @@ export interface MemeNormalChatImageClaim {
 
 export const DEFAULT_MEME_LIBRARY_POLICY: MemeLibraryPolicy = Object.freeze({
   enabled: true,
-  probabilityPercent: 35,
-  cooldownSeconds: 60,
+  probabilityPercent: 60,
+  cooldownSeconds: 30,
   selectionMode: "model_tag",
   activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"],
 });
@@ -253,6 +253,20 @@ export class MemeLibraryService {
         } });
         repository.saveDocument("admin-operation", "migration:dafeiyu-meme-v1", { timestamp: toIso(now), groupId: "system", operatorUserId: "migration", action: "meme_policy_migrate", target: "dafeiyu-v1", detail: "Previous policy saved before-dafeiyu-v1" });
         repository.saveDocument("meme-library-upgrade", "dafeiyu-v1", { applied: true, changedBy: "migration:dafeiyu-v1", appliedAt: now });
+      }
+      const responsive = repository.getDocument<{ applied?: boolean }>("meme-library-upgrade", "responsive-v2", {});
+      if (!responsive.applied) {
+        const previous = this.readLibraryDocument(repository).policy;
+        // Upgrade the former baseline once. Explicit administrator tuning wins.
+        const changed = previous.probabilityPercent === 35 && previous.cooldownSeconds === 60;
+        if (changed) {
+          repository.saveDocument("meme-library-policy-backup", "before-responsive-v2", previous);
+          repository.saveDocument(MEME_LIBRARY_DOCUMENT_TYPE, MEME_LIBRARY_DOCUMENT_KEY, { policy: {
+            ...previous, probabilityPercent: 60, cooldownSeconds: 30,
+          } });
+          repository.saveDocument("admin-operation", "migration:meme-responsive-v2", { timestamp: toIso(now), groupId: "system", operatorUserId: "migration", action: "meme_policy_migrate", target: "responsive-v2", detail: "Previous policy saved before-responsive-v2" });
+        }
+        repository.saveDocument("meme-library-upgrade", "responsive-v2", { applied: true, changed, appliedAt: now });
       }
     });
     await this.writeAssetFile(seed, seedData);

@@ -27,8 +27,8 @@ const MAX_TAG_KEYWORD_LENGTH = 64;
 
 const policy = reactive<MemeLibraryPolicy>({
   enabled: true,
-  probabilityPercent: 35,
-  cooldownSeconds: 60,
+  probabilityPercent: 60,
+  cooldownSeconds: 30,
   selectionMode: "model_tag",
   activePackIds: ["blue-fat-fish-meme-pack", "deepseek-fanart-meme-pack", "local"],
 });

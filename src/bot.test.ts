@@ -3601,6 +3601,31 @@ test("normal text replies append a locally matched meme after the text without a
   assert.deepEqual(memeLibraryService.claimCalls, [{ groupId: "67890", userText: "今天终于发布了" }]);
 });
 
+test("multi-bubble ordinary replies select one meme after the last bubble and strip its category", async () => {
+  const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://happy" });
+  const aiService = new FakeAiService(async () => ({
+    text: "开饭咯\n今天吃火锅", messages: ["开饭咯", "今天吃火锅 [[meme:happy]]"], model: "test", skillId: "assistant",
+  }));
+  const { app, transport } = createApp({ aiService, memeLibraryService });
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "今天吃啥" } }]));
+  assert.deepEqual(transport.sent.map(item => item.text), ["开饭咯", "今天吃火锅"]);
+  assert.deepEqual(transport.outbound.map(item => item.kind), ["text", "text", "image"]);
+  assert.equal(memeLibraryService.claimCalls.length, 1);
+  assert.equal(memeLibraryService.claimCalls[0]?.tagId, "happy");
+});
+
+test("terminal knowledge answers stay free of entertainment memes", async () => {
+  const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://must-not-send" });
+  const aiService = new FakeAiService(async () => ({
+    text: "知识查询结果", messages: ["知识查询结果 [[meme:happy]]"], knowledgeToolCalls: ["search_group_faq"], model: "test", skillId: "assistant",
+  }));
+  const { app, transport } = createApp({ aiService, memeLibraryService });
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "午饭可以吃什么" } }]));
+  assert.deepEqual(transport.sent.map(item => item.text), ["知识查询结果"]);
+  assert.equal(memeLibraryService.claimCalls.length, 0);
+  assert.equal(transport.images.length, 0);
+});
+
 test("model category controls are stripped from QQ text and passed only to meme selection", async () => {
   const memeLibraryService = new FakeMemeLibraryService({ claimedImageFile: "base64://happy" });
   const aiService = new FakeAiService(async () => ({ text: "开饭咯 [[meme:happy]]", model: "test", skillId: "assistant" }));

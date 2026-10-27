@@ -4213,7 +4213,8 @@ export class BotApplication {
     const replyLengthInstruction = explicitReplyLengthPlan
       ? buildExplicitReplyLengthInstruction(explicitReplyLengthPlan)
       : undefined;
-    const memeTags = options.allowNormalChatMeme && allowsEntertainmentMeme(normalizedUserInput) && replyMode === "text" && !targetedMemberProfileRequested && !images.length
+    const allowMemeForReply = options.allowNormalChatMeme === true && allowsEntertainmentMeme(normalizedUserInput) && replyMode === "text" && !targetedMemberProfileRequested && !images.length;
+    const memeTags = allowMemeForReply
       ? await this.memeLibraryService?.getReplyTags?.() ?? [] : [];
     const scenarioInstruction = [options.scenarioInstruction, replyLengthInstruction, visualIdentityInstruction,
       !targetedMemberProfileRequested ? replyPolicy.instruction(replyPlan, conversationState, {
@@ -4430,7 +4431,7 @@ export class BotApplication {
         groupConfig.groupId,
         prefixMentionUserIds,
       );
-      const parsedMeme = parseMemeReply(reply.text);
+      const parsedMeme = parseMemeReply(reply.messages?.length ? reply.messages.join("\n") : reply.text);
       const terminalMessages = reply.messages?.map((message) => parseMemeReply(message).text.trim()).filter(Boolean);
       const keepTerminalMessages = Boolean(
         terminalMessages?.length && (
@@ -4525,7 +4526,7 @@ export class BotApplication {
       await this.persistAssistantContext(conversationRoute, deliveredReplyText, receipts,
         stateSources && conversationRoute ? { value: compactReply(outgoingMessages.join("")) === compactReply(replyText) ? reply.conversationUpdate : undefined,
           route: conversationRoute, sources: stateSources, expectedRevision: conversationState.revision } : undefined);
-      if (options.allowNormalChatMeme === true && !terminalMessages?.length && normalizedUserInput.trim()) {
+      if (allowMemeForReply && !reply.knowledgeToolCalls?.length && normalizedUserInput.trim()) {
         await this.maybeSendNormalChatMeme({
           groupConfig,
           userInput: normalizedUserInput,

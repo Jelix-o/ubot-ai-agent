@@ -448,7 +448,7 @@ test("model tags require an enabled pack and a valid choice, enforce probability
     const namedSelection = await service.claimNormalChatImage({ groupId: "10001", userText: "anything", tagId: " FOOD ", now: 99_000 });
     assert.equal(namedSelection.reason, "sent_candidate", "model-facing category names resolve to the persisted UUID tag");
     assert.deepEqual(namedSelection.matchedTagIds, [tag.id]);
-    random = 0.35;
+    random = 0.60;
     assert.equal((await service.claimNormalChatImage({ groupId: "10002", userText: "anything", tagId: tag.id })).reason, "probability_miss");
     random = 0;
     await service.updatePolicy({ activePackIds: ["local"] });
@@ -459,7 +459,7 @@ test("model tags require an enabled pack and a valid choice, enforce probability
     assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 100_000 })).reason, "asset_unavailable");
     await service.uploadAsset({ name: "恢复", scope: "normal_chat", tags: [tag.id], data: gif, packId: "blue-fat-fish-meme-pack" });
     assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 100_001 })).reason, "sent_candidate", "missing files must not consume the cooldown");
-    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 160_000 })).reason, "cooldown");
+    assert.equal((await service.claimNormalChatImage({ groupId: "10003", userText: "food", tagId: tag.id, now: 130_000 })).reason, "cooldown");
     const legacyIdSelection = await service.claimNormalChatImage({ groupId: "10002", userText: "food", tagId: tag.id, now: 100_001 });
     assert.equal(legacyIdSelection.reason, "sent_candidate", "existing UUID model selectors remain supported");
     assert.deepEqual(legacyIdSelection.matchedTagIds, [tag.id]);
@@ -478,6 +478,25 @@ test("model tags resolve readable Chinese category names while stored asset refe
   }, { random: () => 0 });
 });
 
+test("responsive defaults upgrade the previous baseline once and preserve administrator tuning", async () => {
+  await withLibrary(async ({ service, repository }) => {
+    assert.equal((await service.getPolicy()).probabilityPercent, 60);
+    assert.equal((await service.getPolicy()).cooldownSeconds, 30);
+    await service.updatePolicy({ probabilityPercent: 35, cooldownSeconds: 60, activePackIds: ["local"], enabled: false });
+    repository.deleteDocument("meme-library-upgrade", "responsive-v2");
+    await service.initialize();
+    assert.deepEqual(await service.getPolicy(), { ...DEFAULT_MEME_LIBRARY_POLICY, activePackIds: ["local"], enabled: false });
+    assert.equal(repository.getDocument<{ probabilityPercent: number }>("meme-library-policy-backup", "before-responsive-v2", { probabilityPercent: 0 }).probabilityPercent, 35);
+    await service.updatePolicy({ probabilityPercent: 18, cooldownSeconds: 90 });
+    await service.initialize();
+    assert.equal((await service.getPolicy()).probabilityPercent, 18);
+    repository.deleteDocument("meme-library-upgrade", "responsive-v2");
+    await service.initialize();
+    assert.equal((await service.getPolicy()).probabilityPercent, 18, "custom policy is not mistaken for the old baseline");
+    assert.equal((await service.getPolicy()).cooldownSeconds, 90);
+  });
+});
+
 test("collection deduplicates by content, merges categories and the policy migration saves an audited backup once", async () => {
   await withLibrary(async ({ service, repository }) => {
     const a = (await service.createTag({ name: "a", keywords: ["a"] }))!;
@@ -490,7 +509,7 @@ test("collection deduplicates by content, merges categories and the policy migra
     await service.updatePolicy({ probabilityPercent: 12, cooldownSeconds: 321 });
     repository.deleteDocument("meme-library-upgrade", "dafeiyu-v1");
     await service.initialize();
-    assert.equal((await service.getPolicy()).probabilityPercent, 35);
+    assert.equal((await service.getPolicy()).probabilityPercent, 35, "an already completed responsive upgrade is not repeated");
     assert.equal(repository.getDocument<{ probabilityPercent: number }>("meme-library-policy-backup", "before-dafeiyu-v1", { probabilityPercent: 0 }).probabilityPercent, 12);
     assert.ok(repository.listDocuments("admin-operation").some(item => item.key === "migration:dafeiyu-meme-v1"));
     await service.updatePolicy({ probabilityPercent: 18 });
