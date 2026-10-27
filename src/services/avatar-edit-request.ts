@@ -61,11 +61,8 @@ export interface ResolveAvatarEditTargetInput {
  */
 export function parseAvatarEditRequest(input: string): AvatarEditRequestParseResult {
   const text = stripLeadingEditCommand(normalizeWhitespace(input));
-  if (!text.startsWith("让")) {
-    return { kind: "not_avatar_edit" };
-  }
-
-  const body = text.slice("让".length).trim();
+  const prefix = /^(让|将|把)\s*/u.exec(text)?.[1];
+  const body = prefix ? text.slice(prefix.length).trim() : text;
   const explicitAvatar = /^([\s\S]*?)(?:\s*的)?\s*头像\s*(?:去\s*)?([\s\S]*)$/u.exec(body);
   if (explicitAvatar) {
     const targetText = explicitAvatar[1]!.replace(/的\s*$/u, "").trim();
@@ -76,10 +73,29 @@ export function parseAvatarEditRequest(input: string): AvatarEditRequestParseRes
     if (!action) {
       return { kind: "invalid_avatar_edit", code: "action_missing" };
     }
+    // `把这张图片改成我的头像风格` is an ordinary image edit, not a
+    // member-avatar request. Keep the target parser narrow enough that this
+    // familiar wording falls through to #改图's normal reference path.
+    if (prefix && looksLikeImageEditSubject(targetText)) {
+      return { kind: "not_avatar_edit" };
+    }
+    // The no-prefix shorthand is deliberately self-only.  A bare
+    // "成员甲头像…" in ordinary chat must not acquire another member as an
+    // avatar-edit target; other targets require 让 / 将 / 把.
+    if (!prefix && targetText !== "我") {
+      return { kind: "not_avatar_edit" };
+    }
     return {
       kind: "avatar_edit",
       request: { targetText, action, hasExplicitAvatarWord: true },
     };
+  }
+
+  // Without an explicit "头像", preserve the deliberately narrow legacy
+  // form: only "让<目标>去<动作>" can be an avatar edit. This keeps prose
+  // such as "把图片改成..." outside the avatar target parser.
+  if (prefix !== "让") {
+    return { kind: "not_avatar_edit" };
   }
 
   const actionIndex = body.indexOf("去");
@@ -221,7 +237,7 @@ export function avatarEditTargetErrorMessage(code: AvatarEditTargetErrorCode): s
 export function avatarEditRequestParseErrorMessage(
   _code: Extract<AvatarEditRequestParseResult, { kind: "invalid_avatar_edit" }> ["code"],
 ): string {
-  return "头像改图格式：#改图 让<目标>（的）头像（去）<动作>";
+  return "头像改图格式：#改图 （让 / 将 / 把）<目标>（的）头像（去）<动作>，或 #改图 我头像<动作>";
 }
 
 function resolveDirectoryTarget(
@@ -237,6 +253,13 @@ function resolveDirectoryTarget(
     return { ok: false, code: "unknown_target" };
   }
   return resolveDirectTarget(userId, source, input, botUserId);
+}
+
+function looksLikeImageEditSubject(value: string): boolean {
+  // A bare "图" is a plausible member nickname (for example, "图图").
+  // Treat it as an image subject only when paired with a demonstrative; the
+  // longer image nouns are unambiguous on their own.
+  return /(?:这[张幅]?|当前|原|参考)\s*(?:图片|图像|图|照片|插画|海报|壁纸)|(?:图片|图像|照片|插画|海报|壁纸)|(?:改成|修改|变成|换成|替换|编辑|修图|加上|添加|去掉|删除|移除|抹掉)/u.test(value);
 }
 
 function resolveDirectTarget(

@@ -52,6 +52,16 @@ import { ConfiguredImageGenerationService } from "./services/image-generation-se
 import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
 import { ImageRequestRepository, type ImageRequestStatus } from "./services/image-request-repository.js";
 import { QqAvatarReferenceService } from "./services/qq-avatar-reference-service.js";
+import {
+  ImageIntentRouteRepository,
+  type ImageIntentRouteRecord,
+} from "./services/image-intent-route-repository.js";
+import {
+  ImageIntentRouterError,
+  ImageIntentRouterPlugin,
+  type ImageIntentRouter,
+} from "./services/image-intent-router-plugin.js";
+import type { NaturalImageRequest } from "./services/natural-image-request.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import {
   rebuildLegacyGroupMessageSegments,
@@ -59,11 +69,37 @@ import {
 } from "./utils/persisted-message-segments.js";
 import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
 
-interface NaturalImageRoute {
+interface NaturalImageRouteBase {
   event: NapcatGroupMessageEvent;
   hasTrustedBotMention: boolean;
   hasTrustedReply: boolean;
   replyIsGeneratedImage: boolean;
+}
+
+type NaturalImageRoute = NaturalImageRouteBase & (
+  | { kind: "image"; request: Exclude<NaturalImageRequest, { kind: "clarification" }> }
+  | { kind: "clarification"; request: Extract<NaturalImageRequest, { kind: "clarification" }> }
+  | { kind: "chat" }
+  | { kind: "pending" }
+);
+
+class ImageIntentRoutePendingError extends Error {
+  constructor() {
+    super("image_intent_route_pending");
+    this.name = "ImageIntentRoutePendingError";
+  }
+}
+
+/**
+ * A classifier lease can expire while the background LLM semaphore is busy.
+ * It is crucial that an expired owner never dispatches a late tool call: a
+ * replay may already have terminalized the route as result_unknown.
+ */
+class ImageIntentRouteLeaseLostError extends Error {
+  constructor() {
+    super("image_intent_route_lease_lost");
+    this.name = "ImageIntentRouteLeaseLostError";
+  }
 }
 
 /**
@@ -82,6 +118,7 @@ export class WorkerApp {
   private readonly contextRouter: ConversationContextRouter;
   private readonly atmosphere: AtmosphereSummarizer;
   private readonly imageRequests: ImageRequestRepository;
+  private readonly imageIntentRoutes: ImageIntentRouteRepository;
   private readonly runner: ConsumerRunner;
   private maxQueueDepthSeen = 0;
   readonly llmGate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>;
@@ -95,6 +132,9 @@ export class WorkerApp {
       consumerKey: string;
       isBlacklistedUser: (groupId: string, userId: string) => Promise<boolean>;
       stateEncryptionKey?: string;
+      imageIntentRouter?: ImageIntentRouter;
+      /** Internal test/operations override; production uses the repository default. */
+      imageIntentRouteLeaseMs?: number;
     },
   ) {
     this.sharedDb = this.options.sharedDb;
@@ -106,6 +146,7 @@ export class WorkerApp {
     this.contextRepository = new ConversationContextRepository(this.sharedDb);
     this.contextRouter = new ConversationContextRouter(this.contextRepository);
     this.imageRequests = new ImageRequestRepository(this.sharedDb);
+    this.imageIntentRoutes = new ImageIntentRouteRepository(this.sharedDb);
     const v3State = resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey);
     v3State?.retireRoastModeForExistingGroupsOnce();
     this.atmosphere = new AtmosphereSummarizer(
@@ -149,6 +190,13 @@ export class WorkerApp {
         if (message.processable === 0) {
           return `${message.group_id}:passive`;
         }
+        // A recall can arrive after ingress persisted the message but before
+        // queue selection. Do not send recalled content to the intent model
+        // (or any other routing decision) just because the handler's later
+        // terminal check has not run yet.
+        if (this.sharedDb.isRetracted(message.group_id, message.msg_id)) {
+          return `${message.group_id}:retracted`;
+        }
         // Blacklisted messages must not create a participation audit or a
         // conversation route. BotApplication still owns command precedence,
         // daily-report recording, and the fixed image response.
@@ -168,12 +216,21 @@ export class WorkerApp {
         if (previewRequest) {
           return `${message.group_id}:html-preview`;
         }
-        const naturalImageRoute = await this.getNaturalImageRoute(message);
-        if (naturalImageRoute) {
+        // Queue selection must stay local and bounded. A candidate gets an
+        // intent lane first; its remote classifier call happens only once the
+        // lane is dispatched, then handoffs to the final execution key.
+        const naturalImageRoute = await this.getNaturalImageRoute(message, { classify: false });
+        if (naturalImageRoute?.kind === "image") {
           // Natural image requests use a separate group/member queue. This
           // preserves a member's one-at-a-time image work without holding up
           // unrelated group conversation or another member's request.
           return `${message.group_id}:image:${message.user_id}`;
+        }
+        if (naturalImageRoute?.kind === "pending") {
+          return `${message.group_id}:image-intent:${message.user_id}`;
+        }
+        if (naturalImageRoute?.kind === "clarification") {
+          return `${message.group_id}:image-intent-clarification:${message.id}`;
         }
         // A bare real @bot is retained by ingress only so an enabled natural
         // image entry point can provide a usage hint.  With no matching
@@ -213,8 +270,8 @@ export class WorkerApp {
         const route = await this.resolveRoute(message);
         return `${message.group_id}:${route.branchId}`;
       },
-      handler: async (message, done) => {
-        await this.handleMessage(message, done);
+      handler: async (message, done, handoff, currentKey) => {
+        await this.handleMessage(message, done, handoff, currentKey);
       },
       pollIntervalMs: 300,
       batchSize: 50,
@@ -240,6 +297,8 @@ export class WorkerApp {
       drop_reason?: string | null;
     },
     done: () => Promise<void>,
+    handoff: (targetKey: string) => Promise<void>,
+    currentKey: string,
   ): Promise<void> {
     if (message.processable === 0) {
       this.metrics.inc("dropped_message_skipped");
@@ -284,17 +343,23 @@ export class WorkerApp {
       return;
     }
 
-    // keyOf already persisted this route. Reading by source row makes retries
-    // and duplicate delivery reuse the exact same result without rerouting.
+    // Preflight only chooses a bounded staging lane. This handler claims the
+    // route once; later attempts read the durable source-row result instead of
+    // rerouting or submitting a second classifier call.
     const previewRequest = await this.options.botApp.getHtmlPreviewRequest(
       message.text,
       Boolean(message.has_at_bot),
     );
     const isPreview = Boolean(previewRequest);
     const naturalImageRoute = await this.getNaturalImageRoute(message);
-    const isNaturalImage = Boolean(naturalImageRoute);
-    if (isNaturalImage) this.metrics.inc("natural_image_request_matched");
-    if (!isNaturalImage && !message.text.trim() && parseImages(message.images_json).length === 0) {
+    if (naturalImageRoute?.kind === "pending") {
+      this.metrics.inc("image_intent_router_pending");
+      throw new ImageIntentRoutePendingError();
+    }
+    const isNaturalImage = naturalImageRoute?.kind === "image";
+    const isNaturalClarification = naturalImageRoute?.kind === "clarification";
+    const isNaturalRequest = isNaturalImage || isNaturalClarification;
+    if (!isNaturalRequest && !message.text.trim() && parseImages(message.images_json).length === 0) {
       await done();
       return;
     }
@@ -308,10 +373,39 @@ export class WorkerApp {
     );
     const isBt = Boolean(await this.options.botApp.getBtCommand(message.text));
     const isCommand = await this.options.botApp.isSystemCommand(message.text);
-    const participation = isCommand || isPreview || isNaturalImage || isImageCommand
+    const participation = isCommand || isPreview || isNaturalRequest || isImageCommand
       ? undefined
       : await this.getOrRecordParticipationDecision(message);
     const isRoutedConversation = participation?.action === "reply";
+    // Commands deliberately have no conversation route.
+    const route = !isRoutedConversation
+      ? undefined
+      : this.contextRepository.getRouteBySourceRowId(message.id) ?? await this.resolveRoute(message);
+    const key = isBt
+      ? `${message.group_id}:bt-search:${message.id}`
+      : isPreview
+      ? `${message.group_id}:html-preview`
+      : isNaturalImage
+        ? `${message.group_id}:image:${message.user_id}`
+      : isNaturalClarification
+        ? `${message.group_id}:image-intent-clarification:${message.id}`
+      : isImageCommand
+        ? `${message.group_id}:image:${message.user_id}`
+      : isCommand
+        ? `${message.group_id}:command`
+      : route
+        ? `${message.group_id}:${route.branchId}`
+        : `${message.group_id}:passive`;
+
+    // A natural candidate began in the dedicated intent lane so key selection
+    // never waits for the routing model. Once its durable action is known,
+    // move the same uncompleted source row to the real execution lane.
+    if (currentKey !== key) {
+      await handoff(key);
+      return;
+    }
+
+    if (isNaturalRequest) this.metrics.inc("natural_image_request_matched");
     if (participation) {
       this.metrics.inc(`participation_handled_${participation.action}`);
       logInfo("Handled group participation decision.", {
@@ -323,23 +417,6 @@ export class WorkerApp {
         policyVersion: participation.policyVersion,
       });
     }
-    // Commands deliberately have no conversation route.
-    const route = !isRoutedConversation
-      ? undefined
-      : this.contextRepository.getRouteBySourceRowId(message.id) ?? await this.resolveRoute(message);
-    const key = isBt
-      ? `${message.group_id}:bt-search:${message.id}`
-      : isPreview
-      ? `${message.group_id}:html-preview`
-      : isNaturalImage
-        ? `${message.group_id}:image:${message.user_id}`
-      : isImageCommand
-        ? `${message.group_id}:image:${message.user_id}`
-      : isCommand
-        ? `${message.group_id}:command`
-      : route
-        ? `${message.group_id}:${route.branchId}`
-        : `${message.group_id}:passive`;
 
     if (route) {
       const discardedDrafts = this.sharedDb.discardPreparingOutboxForSource(
@@ -367,34 +444,38 @@ export class WorkerApp {
       return;
     }
 
-    if (isPreview || isImageRequest) {
+    if (isPreview || isImageRequest || isNaturalClarification) {
       // ConsumerRunner owns strict serial execution for this key. Do not put
       // image or preview work in InflightManager: its conversation-oriented
       // cancel and merge rules would violate image publication semantics.
       const taskStartedAt = Date.now();
       try {
         await this.options.botApp.handleGroupMessage(
-          naturalImageRoute?.event ?? this.buildEvent(message),
+          naturalImageRoute?.kind === "image" || naturalImageRoute?.kind === "clarification"
+            ? naturalImageRoute.event
+            : this.buildEvent(message),
           undefined,
           undefined,
-          naturalImageRoute
+          naturalImageRoute?.kind === "image" || naturalImageRoute?.kind === "clarification"
             ? {
-                imageRequestSourceRowId: message.id,
+                ...(naturalImageRoute.kind === "image" ? { imageRequestSourceRowId: message.id } : {}),
                 hasTrustedBotMention: naturalImageRoute.hasTrustedBotMention,
                 hasTrustedReply: naturalImageRoute.hasTrustedReply,
                 replyIsGeneratedImage: naturalImageRoute.replyIsGeneratedImage,
+                naturalImageRequest: naturalImageRoute.request,
+                naturalImageRoutingDecided: true,
               }
             : isImageCommand
               ? { imageRequestSourceRowId: message.id }
             : undefined,
         );
-        if (isNaturalImage) this.metrics.inc("natural_image_request_handled");
+        if (isNaturalRequest) this.metrics.inc("natural_image_request_handled");
         this.metrics.inc("tasks_completed");
         this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
         await done();
       } catch (error) {
         logError(
-          isNaturalImage
+          isNaturalRequest
             ? "Worker natural image handling failed."
             : isImageCommand
               ? "Worker image command handling failed."
@@ -451,6 +532,10 @@ export class WorkerApp {
           // this was a same-group reply to an acknowledged bot message.
           allowReplyWithoutMention: participation?.reason === "explicit_reply" ||
             participation?.reason === "explicit_memory_request" || participation?.reason === "directed_follow_up",
+          // A configured intent router has already chosen ordinary chat for
+          // this message. Do not let BotApplication's legacy regex parser
+          // reinterpret it as an image request on the way to the chat path.
+          ...(naturalImageRoute?.kind === "chat" ? { naturalImageRoutingDecided: true } : {}),
         });
         this.metrics.inc("tasks_completed");
         completed = true;
@@ -488,6 +573,7 @@ export class WorkerApp {
    * generated-image receipt in the same group.
    */
   private async getNaturalImageRoute(message: {
+    id: number;
     group_id: string;
     user_id: string;
     msg_id: string;
@@ -501,7 +587,14 @@ export class WorkerApp {
     verified_mention_user_ids_json?: string;
     canonical_segments_json?: string | null;
     has_at_bot?: number;
-  }): Promise<NaturalImageRoute | undefined> {
+  }, options: { classify?: boolean } = {}): Promise<NaturalImageRoute | undefined> {
+    // Explicit #生图 / #改图 retain their established command path. They
+    // must never spend an intent-classification request or inherit a model
+    // choice from this optional natural-language plugin.
+    if (await this.isImageGenerationCommand(message.text) || await this.options.botApp.isSystemCommand(message.text)) {
+      return undefined;
+    }
+
     const event = this.buildEvent(message);
     const canonicalSegments = restoreCanonicalMessageSegments(message.canonical_segments_json);
     const hasTrustedBotMention = Boolean(canonicalSegments?.some((segment) =>
@@ -523,13 +616,187 @@ export class WorkerApp {
       message.group_id,
       message.reply_to,
     );
-    const request = await this.options.botApp.getNaturalImageRequest(event, {
+    if (!hasTrustedBotMention && !replyIsGeneratedImage) return undefined;
+
+    const routingEnabled = this.options.botApp.isNaturalImageRoutingEnabled
+      ? await this.options.botApp.isNaturalImageRoutingEnabled(message.group_id)
+      : true;
+    if (!routingEnabled) return undefined;
+
+    const base: NaturalImageRouteBase = {
+      event,
       hasTrustedBotMention,
       hasTrustedReply,
       replyIsGeneratedImage,
+    };
+
+    const router = this.options.imageIntentRouter;
+    if (!router) {
+      // Compatibility for focused tests and older embedders that do not wire
+      // the plugin. Production always provides the dedicated router.
+      const request = await this.options.botApp.getNaturalImageRequest(event, {
+        hasTrustedBotMention,
+        hasTrustedReply,
+        replyIsGeneratedImage,
+      });
+      if (!request) return undefined;
+      return request.kind === "clarification"
+        ? { ...base, kind: "clarification", request }
+        : { ...base, kind: "image", request };
+    }
+
+    const persisted = this.imageIntentRoutes.getBySourceRow(message.id);
+    if (persisted && persisted.status !== "classifying") {
+      this.metrics.inc("image_intent_router_duplicate_reused");
+      return this.routeFromPersistedImageIntent(persisted, base);
+    }
+
+    // A missing or disabled router is a terminal, per-message ordinary-chat
+    // decision. Persisting it stops key selection and retries from repeatedly
+    // probing settings or falling back to the legacy keyword parser.
+    if (!persisted && !await router.isConfigured()) {
+      const unavailable = this.imageIntentRoutes.recordUnavailable({
+        sourceRowId: message.id,
+        errorCode: "model_not_configured",
+      });
+      if (unavailable.created) this.metrics.inc("image_intent_router_unavailable");
+      return this.routeFromPersistedImageIntent(unavailable.route, base);
+    }
+
+    // `keyOf` calls this preflight mode. It establishes only that the inbound
+    // event is eligible for the plugin; starting a lease or awaiting a remote
+    // tool call here would serially stall the entire ConsumerRunner poll batch.
+    if (options.classify === false) {
+      return { ...base, kind: "pending" };
+    }
+
+    const claim = this.imageIntentRoutes.claim({
+      sourceRowId: message.id,
+      ...(this.options.imageIntentRouteLeaseMs === undefined
+        ? {}
+        : { leaseMs: this.options.imageIntentRouteLeaseMs }),
     });
-    if (!request) return undefined;
-    return { event, hasTrustedBotMention, hasTrustedReply, replyIsGeneratedImage };
+    if (claim.state === "resolved") {
+      if (claim.route.errorCode === "result_unknown") {
+        this.metrics.inc("image_intent_router_result_unknown");
+      }
+      this.metrics.inc("image_intent_router_duplicate_reused");
+      return this.routeFromPersistedImageIntent(claim.route, base);
+    }
+    if (claim.state === "busy") {
+      return { ...base, kind: "pending" };
+    }
+
+    try {
+      const classified = await this.backgroundLlmGate(async () => {
+        // Claim ownership once more after the semaphore wait.  This closes the
+        // crash/replay window where another worker can terminalize an expired
+        // route before this worker actually reaches the upstream model.
+        const ownsLease = this.imageIntentRoutes.renewLease({
+          sourceRowId: message.id,
+          leaseToken: claim.leaseToken,
+          ...(this.options.imageIntentRouteLeaseMs === undefined
+            ? {}
+            : { leaseMs: this.options.imageIntentRouteLeaseMs }),
+        });
+        if (!ownsLease) throw new ImageIntentRouteLeaseLostError();
+        return router.classify({
+          sanitizedText: sanitizeImageIntentText(canonicalSegments, this.options.botApp.getBotQq()),
+          facts: {
+            hasTrustedBotMention,
+            hasTrustedReply,
+            replyIsGeneratedImage,
+            attachmentCount: parseImages(message.images_json).length,
+          },
+        });
+      });
+      const saved = this.imageIntentRoutes.complete({
+        sourceRowId: message.id,
+        leaseToken: claim.leaseToken,
+        action: classified.action,
+        modelId: classified.modelId,
+        model: classified.model,
+      });
+      if (!saved) {
+        // A reclaimed lease completed first. Its durable answer, if any, is
+        // the only result allowed to guide this inbound message.
+        return this.routeFromPersistedImageIntent(
+          this.imageIntentRoutes.getBySourceRow(message.id) ?? claim.route,
+          base,
+        );
+      }
+      this.metrics.inc(`image_intent_router_classified_${classified.action}`);
+      return this.routeFromPersistedImageIntent(saved, base);
+    } catch (error) {
+      if (error instanceof ImageIntentRouteLeaseLostError) {
+        // Claim performs the expiry transition atomically.  It cannot issue a
+        // new router call, so a delayed owner remains fail-closed to chat.
+        const recovered = this.imageIntentRoutes.claim({
+          sourceRowId: message.id,
+          ...(this.options.imageIntentRouteLeaseMs === undefined
+            ? {}
+            : { leaseMs: this.options.imageIntentRouteLeaseMs }),
+        });
+        if (recovered.state === "resolved") {
+          if (recovered.route.errorCode === "result_unknown") {
+            this.metrics.inc("image_intent_router_result_unknown");
+          }
+          return this.routeFromPersistedImageIntent(recovered.route, base);
+        }
+        return { ...base, kind: "pending" };
+      }
+      const routerError = error instanceof ImageIntentRouterError ? error : undefined;
+      const errorCode = routerError?.code ?? "unavailable";
+      const saved = this.imageIntentRoutes.markUnavailable({
+        sourceRowId: message.id,
+        leaseToken: claim.leaseToken,
+        errorCode,
+        ...(routerError?.modelId && routerError.model
+          ? { modelId: routerError.modelId, model: routerError.model }
+          : {}),
+      });
+      if (!saved) {
+        return this.routeFromPersistedImageIntent(
+          this.imageIntentRoutes.getBySourceRow(message.id) ?? claim.route,
+          base,
+        );
+      }
+      this.metrics.inc("image_intent_router_unavailable");
+      logWarn("Image intent router failed closed to ordinary conversation.", {
+        sourceRowId: message.id,
+        errorCode,
+      });
+      return this.routeFromPersistedImageIntent(saved, base);
+    }
+  }
+
+  private async routeFromPersistedImageIntent(
+    record: ImageIntentRouteRecord,
+    base: NaturalImageRouteBase,
+  ): Promise<NaturalImageRoute> {
+    if (record.status === "classifying") return { ...base, kind: "pending" };
+    if (record.status !== "classified" || !record.action) return { ...base, kind: "chat" };
+
+    if (record.action === "chat") return { ...base, kind: "chat" };
+    const request = await this.options.botApp.getNaturalImageRequestForIntent(
+      base.event,
+      {
+        hasTrustedBotMention: base.hasTrustedBotMention,
+        hasTrustedReply: base.hasTrustedReply,
+        replyIsGeneratedImage: base.replyIsGeneratedImage,
+      },
+      record.action,
+    );
+    if (!request) {
+      // The model has no authority to override local trust, group settings, or
+      // syntax validation. Treat an unmaterializable action as normal chat.
+      this.metrics.inc("image_intent_router_host_rejected");
+      return { ...base, kind: "chat" };
+    }
+    if (request.kind === "clarification") {
+      return { ...base, kind: "clarification", request };
+    }
+    return { ...base, kind: "image", request };
   }
 
   /**
@@ -769,7 +1036,11 @@ async function buildBotApp(
   sharedDb: SharedDb,
   transport: MessageTransport,
   imagePipeline?: ImagePipeline,
-): Promise<{ botApp: BotApplication; groupConfigService: GroupConfigService }> {
+): Promise<{
+  botApp: BotApplication;
+  groupConfigService: GroupConfigService;
+  imageIntentRouter: ImageIntentRouter;
+}> {
   const dataDir = config.dataDir;
   setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
   const v3State = resolveV3RuntimeState(sharedDb, config.stateEncryptionKey);
@@ -799,6 +1070,19 @@ async function buildBotApp(
     undefined,
     capabilityPolicy,
   );
+  // The image router is deliberately a separate, selected-only runtime. It
+  // cannot borrow the ordinary reply model when no low-cost tool-capable
+  // classifier is configured.
+  const imageIntentAiService = new ConfiguredAiService(
+    replyAiService,
+    systemSettingsStore,
+    "image_intent",
+    undefined,
+    undefined,
+    capabilityPolicy,
+    true,
+  );
+  const imageIntentRouter = new ImageIntentRouterPlugin(imageIntentAiService);
   const htmlPreviewFallbackAiService = new ConfiguredAiService(
     replyAiService,
     systemSettingsStore,
@@ -922,7 +1206,7 @@ async function buildBotApp(
     new QqAvatarReferenceService(),
     new ImageRequestRepository(sharedDb),
   );
-  return { botApp, groupConfigService };
+  return { botApp, groupConfigService, imageIntentRouter };
 }
 
 function parseVerifiedMentionUserIds(value: string | undefined): string[] {
@@ -986,6 +1270,7 @@ export async function main(): Promise<void> {
           return (group?.blacklistedUserIds ?? []).includes(userId);
         },
         stateEncryptionKey: config.stateEncryptionKey,
+        imageIntentRouter: builtBot.imageIntentRouter,
       },
     );
     // Wire the semaphore+breaker gate into the bot's LLM call path.
@@ -1059,6 +1344,47 @@ function parseImages(imagesJson?: string): Array<{ url?: string; file?: string; 
   } catch {
     return [];
   }
+}
+
+/**
+ * Reduces the platform message to routing text without leaking member IDs,
+ * image locations, reply identifiers, or a real @ target to the classifier.
+ * The position of each real mention remains visible through an opaque marker,
+ * which is enough for the model to distinguish the avatar grammar.
+ */
+function sanitizeImageIntentText(
+  segments: NapcatGroupMessageEvent["message"] | undefined,
+  botQq: string,
+): string {
+  if (!Array.isArray(segments)) return "";
+  let memberMentionIndex = 0;
+  const parts: string[] = [];
+  for (const segment of segments) {
+    if (typeof segment === "string") {
+      parts.push(sanitizeImageIntentTextFragment(segment));
+      continue;
+    }
+    if (segment.type === "text") {
+      parts.push(sanitizeImageIntentTextFragment(String(segment.data?.text ?? "")));
+      continue;
+    }
+    if (segment.type === "at") {
+      const mentionedQq = String(segment.data?.qq ?? "").trim();
+      parts.push(mentionedQq === botQq ? "[BOT_MENTION]" : `[MEMBER_MENTION_${++memberMentionIndex}]`);
+    }
+    // Reply and image segments are represented only by the trusted facts.
+    // Their IDs, URLs, and file names are not useful to action selection.
+  }
+  return parts.join("").replace(/\s+/gu, " ").trim().slice(0, 4_000);
+}
+
+function sanitizeImageIntentTextFragment(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    // URLs can embed QQ or hosted-media identifiers and do not influence
+    // whether the request should be treated as a picture action.
+    .replace(/(?:https?:\/\/|www\.)\S+/giu, "[URL]")
+    .replace(/(?<!\d)\d{5,12}(?!\d)/gu, "[NUMBER]");
 }
 
 function participationDecisionFromRow(row: {

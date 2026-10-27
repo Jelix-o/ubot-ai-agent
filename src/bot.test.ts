@@ -2119,7 +2119,51 @@ test("a Worker-owned exhausted rate limit is recorded as a known failure", async
 
   const request = repository.getSafeBySource("67890", "9202");
   assert.equal(request?.status, "failed");
-  assert.equal(request?.errorCode, "upstream_unavailable");
+  assert.equal(request?.errorCode, "upstream_rate_limit");
+});
+
+test("a Worker-owned confirmed upstream diagnostic records a failed request", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-image-request-confirmed-failure-"));
+  const db = new SharedDb(path.join(root, "shared.db"));
+  t.after(async () => {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const cases = [
+    { messageId: "9203", failureKind: "auth" as const, expectedErrorCode: "upstream_rejected" },
+    { messageId: "9204", failureKind: "content_blocked" as const, expectedErrorCode: "content_blocked" },
+    { messageId: "9205", failureKind: "format_error" as const, expectedErrorCode: "invalid_image_response" },
+  ];
+
+  for (const { messageId, failureKind, expectedErrorCode } of cases) {
+    const sourceRowId = db.insertMessage({
+      groupId: "67890", userId: "20001", selfId: "12345", msgId: messageId, msgTime: Date.now(),
+      text: "#生图 山间湖泊", imagesJson: "[]", hasAtBot: false, isBotMsg: false, createdAt: Date.now(),
+    });
+    const repository = new ImageRequestRepository(db);
+    const imageGenerationService: ImageGenerationRuntime = {
+      async generate(input) {
+        await input.onStarted?.();
+        throw new ImageGenerationError("upstream_unavailable", "confirmed_upstream_failure", undefined, { failureKind });
+      },
+      async discard() {},
+      async cleanup() { return 0; },
+    };
+    const { app } = createApp({ imageGenerationService, imageRequestRepository: repository });
+    t.after(() => app.stop());
+
+    await app.handleGroupMessage(
+      createEvent("#生图 山间湖泊", 20001, 67890, Number(messageId)),
+      undefined,
+      undefined,
+      { imageRequestSourceRowId: sourceRowId },
+    );
+
+    const request = repository.getSafeBySource("67890", messageId);
+    assert.equal(request?.status, "failed", `${failureKind} must not be quarantined as an unknown result`);
+    assert.equal(request?.errorCode, expectedErrorCode);
+  }
 });
 
 test("a Worker-owned image archive is discarded when its generated-image Outbox link fails", async (t) => {
@@ -8249,6 +8293,89 @@ test("image edit requires explicit references and uses quoted pictures before at
   assert.equal(inputs[1]?.referenceImages?.length, 1);
 });
 
+test("router-selected natural generation ignores quoted and attached media", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const { app, transport } = createApp({ imagePipeline: pipeline, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+  transport.messagesById["ordinary-text"] = {
+    messageId: "ordinary-text",
+    groupId: "67890",
+    text: "普通聊天",
+    images: [],
+  };
+
+  await app.handleGroupMessage(
+    createEvent([
+      { type: "reply", data: { id: "ordinary-text" } },
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " 海边灯塔" } },
+      { type: "image", data: { url: editTestPng, summary: "must-ignore" } },
+    ], 20001, 67890, 8610),
+    undefined,
+    undefined,
+    {
+      hasTrustedBotMention: true,
+      naturalImageRoutingDecided: true,
+      naturalImageRequest: { kind: "generate", prompt: "海边灯塔" },
+    },
+  );
+
+  assert.equal(inputs.length, 1);
+  assert.deepEqual(inputs[0]?.referenceImages, []);
+  assert.deepEqual(pipeline.calls, []);
+  assert.equal(transport.generatedImages.length, 1);
+});
+
+test("natural image requests anonymize structured member mentions without rewriting typed text", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const archived: ImagePreviewArchiveInput[] = [];
+  const { app } = createApp({
+    imageGenerationService: imageEditTestRuntime(inputs),
+    imagePreviewArchiveService: {
+      async archive(input) { archived.push(input); return { id: "safe-prompt-preview" } as never; },
+      async cleanup() { return { expired: 0, temp: 0, orphans: 0 }; },
+    },
+  });
+  t.after(() => app.stop());
+
+  const event = createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 画一张图片：" } },
+    { type: "at", data: { qq: "55667788" } },
+    { type: "text", data: { text: " 在海边" } },
+  ], 20001, 67890, 8611);
+  const request = await app.getNaturalImageRequestForIntent(
+    event,
+    { hasTrustedBotMention: true },
+    "generate",
+  );
+
+  assert.deepEqual(request, { kind: "generate", prompt: "一位群成员 在海边" });
+  await app.handleGroupMessage(event, undefined, undefined, {
+    hasTrustedBotMention: true,
+    naturalImageRoutingDecided: true,
+    naturalImageRequest: request,
+  });
+  assert.equal(inputs.length, 1);
+  assert.match(inputs[0]?.prompt ?? "", /一位群成员/);
+  assert.doesNotMatch(inputs[0]?.prompt ?? "", /55667788/);
+  assert.equal(archived.length, 1);
+  assert.match(archived[0]?.prompt ?? "", /一位群成员/);
+  assert.doesNotMatch(archived[0]?.prompt ?? "", /55667788/);
+
+  const typedTextEvent = createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: " 画一张图片：@55667788 在海边" } },
+  ], 20001, 67890, 8612);
+  const typedTextRequest = await app.getNaturalImageRequestForIntent(
+    typedTextEvent,
+    { hasTrustedBotMention: true },
+    "generate",
+  );
+  assert.deepEqual(typedTextRequest, { kind: "generate", prompt: "@55667788 在海边" });
+});
+
 test("image edit rejects too many, unreadable and unverified cross-group references without invoking a model", async t => {
   const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
   const pipeline = new FakeImagePipeline();
@@ -8500,6 +8627,22 @@ test("ordinary image edit keeps its historical text-only command prompt when a m
 
   assert.equal(inputs.length, 1);
   assert.equal(inputs[0]?.prompt, "加上夕阳");
+  assert.equal(inputs[0]?.referenceImages?.length, 1);
+});
+
+test("ordinary #改图 wording about an avatar style does not become avatar mode", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const pipeline = new FakeImagePipeline();
+  const { app } = createApp({ imagePipeline: pipeline, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+
+  await app.handleGroupMessage(createEvent([
+    { type: "text", data: { text: "#改图 把这张图片改成我的头像风格" } },
+    { type: "image", data: { url: editTestPng } },
+  ]));
+
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0]?.prompt, "把这张图片改成我的头像风格");
   assert.equal(inputs[0]?.referenceImages?.length, 1);
 });
 

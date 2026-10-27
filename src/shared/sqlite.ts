@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -172,6 +173,35 @@ export interface SchemaMigrationRow {
   name: string;
   applied_at: number;
 }
+
+/**
+ * All WorkerApp instances share this scope. A consumer key is a progress
+ * cursor, not an execution owner, so it must never partition this lease.
+ */
+export const DEFAULT_MESSAGE_EXECUTION_SCOPE = "worker:message-handler";
+export const MESSAGE_EXECUTION_LEASE_DEFAULT_MS = 120_000;
+
+export interface MessageExecutionLeaseRecord {
+  executionScope: string;
+  sourceRowId: number;
+  status: "running" | "completed";
+  leaseToken?: string;
+  leaseExpiresAt?: number;
+  completedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type MessageExecutionLeaseClaim =
+  | {
+    state: "claimed";
+    lease: MessageExecutionLeaseRecord;
+    leaseToken: string;
+    /** True when an expired owner was replaced after a restart. */
+    reclaimed: boolean;
+  }
+  | { state: "busy"; lease: MessageExecutionLeaseRecord }
+  | { state: "completed"; lease: MessageExecutionLeaseRecord };
 
 /**
  * Non-authoritative copy of the normalized groups.json document.
@@ -908,6 +938,95 @@ function addImagePreviewPublicationState(db: DatabaseSync): void {
   );
 }
 
+/**
+ * The image-intent router is deliberately separate from image_requests. It
+ * records only the classification boundary for one already-persisted inbound
+ * message; prompts, QQ identities, and image references stay in the short
+ * lived message ledger and never enter this table.
+ */
+function addImageIntentRouteLedger(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS image_intent_routes (
+      source_row_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('classifying', 'classified', 'unavailable')),
+      action TEXT CHECK (action IN ('chat', 'generate', 'edit', 'avatar_edit', 'clarification')),
+      model_id TEXT,
+      model TEXT,
+      error_code TEXT,
+      lease_token TEXT,
+      lease_expires_at INTEGER,
+      classified_at INTEGER,
+      unavailable_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      CHECK (
+        (status = 'classifying'
+          AND action IS NULL
+          AND error_code IS NULL
+          AND lease_token IS NOT NULL
+          AND lease_expires_at IS NOT NULL
+          AND classified_at IS NULL
+          AND unavailable_at IS NULL)
+        OR
+        (status = 'classified'
+          AND action IS NOT NULL
+          AND error_code IS NULL
+          AND lease_token IS NULL
+          AND lease_expires_at IS NULL
+          AND classified_at IS NOT NULL
+          AND unavailable_at IS NULL)
+        OR
+        (status = 'unavailable'
+          AND action IS NULL
+          AND error_code IS NOT NULL
+          AND lease_token IS NULL
+          AND lease_expires_at IS NULL
+          AND classified_at IS NULL
+          AND unavailable_at IS NOT NULL)
+      )
+    );
+    CREATE INDEX IF NOT EXISTS idx_image_intent_routes_claim
+      ON image_intent_routes (status, lease_expires_at, source_row_id);
+    CREATE INDEX IF NOT EXISTS idx_image_intent_routes_updated
+      ON image_intent_routes (updated_at DESC, source_row_id DESC);
+  `);
+}
+
+/**
+ * Durable ownership for the whole Worker handler, rather than a single
+ * feature's sub-step. This is deliberately distinct from consumer progress:
+ * concurrent workers may have different cursors but must never invoke a
+ * handler for the same source row at the same time.
+ */
+function addMessageExecutionLeases(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS message_execution_leases (
+      execution_scope TEXT NOT NULL,
+      source_row_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('running', 'completed')),
+      lease_token TEXT,
+      lease_expires_at INTEGER,
+      completed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (execution_scope, source_row_id),
+      CHECK (
+        (status = 'running'
+          AND lease_token IS NOT NULL
+          AND lease_expires_at IS NOT NULL
+          AND completed_at IS NULL)
+        OR
+        (status = 'completed'
+          AND lease_token IS NULL
+          AND lease_expires_at IS NULL
+          AND completed_at IS NOT NULL)
+      )
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_execution_leases_live
+      ON message_execution_leases (execution_scope, status, lease_expires_at, source_row_id);
+  `);
+}
+
 function retireAdminMfa(db: DatabaseSync): void {
   const now = Date.now();
   const sessionColumns = new Set((db.prepare("PRAGMA table_info(admin_sessions)").all() as Array<{ name: string }>).map((row) => row.name));
@@ -1243,6 +1362,16 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     version: 26,
     name: "stage-image-previews-until-outbox-link",
     apply: addImagePreviewPublicationState,
+  },
+  {
+    version: 27,
+    name: "add-image-intent-route-ledger",
+    apply: addImageIntentRouteLedger,
+  },
+  {
+    version: 28,
+    name: "add-message-execution-leases",
+    apply: addMessageExecutionLeases,
   },
 ];
 
@@ -1734,6 +1863,232 @@ export class SharedDb {
     return rows;
   }
 
+  /**
+   * Claims durable, cross-process ownership of one source row immediately
+   * before a ConsumerRunner invokes its handler. A consumer key is excluded
+   * from the key on purpose: separate worker processes can keep independent
+   * watermarks while still sharing exactly one execution owner.
+   *
+   * Expired leases are reclaimed rather than discarded so a process crash
+   * remains recoverable. Downstream side effects keep their existing durable
+   * request/outbox idempotency boundaries.
+   */
+  claimMessageExecutionLease(input: {
+    executionScope?: string;
+    sourceRowId: number;
+    leaseMs?: number;
+    now?: number;
+    /**
+     * A fresh logical consumer may replay a completed row through its durable
+     * feature ledgers. ConsumerRunner uses this only when it never observed a
+     * live owner for the row; waiters acknowledge the completed result.
+     */
+    allowCompletedReplay?: boolean;
+  }): MessageExecutionLeaseClaim {
+    const executionScope = normalizeMessageExecutionScope(input.executionScope);
+    const sourceRowId = requireMessageExecutionSourceRowId(input.sourceRowId);
+    const leaseMs = normalizeMessageExecutionLeaseMs(input.leaseMs);
+    const now = normalizeMessageExecutionTimestamp(input.now ?? Date.now(), "message_execution_lease_claimed_at_invalid");
+
+    return this.withImmediateTransaction(() => {
+      const existing = this.getMessageExecutionLease(executionScope, sourceRowId);
+      if (!existing) {
+        this.assertMessageExecutionSourceRow(sourceRowId);
+        const leaseToken = createMessageExecutionLeaseToken();
+        this.db.prepare(
+          `INSERT INTO message_execution_leases
+             (execution_scope, source_row_id, status, lease_token, lease_expires_at,
+              completed_at, created_at, updated_at)
+           VALUES (?, ?, 'running', ?, ?, NULL, ?, ?)`,
+        ).run(executionScope, sourceRowId, leaseToken, now + leaseMs, now, now);
+        const lease = this.getMessageExecutionLease(executionScope, sourceRowId);
+        if (!lease) throw new Error("message_execution_lease_claim_readback_failed");
+        return { state: "claimed", lease, leaseToken, reclaimed: false };
+      }
+
+      if (existing.status === "completed") {
+        if (!input.allowCompletedReplay) {
+          return { state: "completed", lease: existing };
+        }
+        const leaseToken = createMessageExecutionLeaseToken();
+        const replayed = this.db.prepare(
+          `UPDATE message_execution_leases
+              SET status = 'running', lease_token = ?, lease_expires_at = ?,
+                  completed_at = NULL, updated_at = ?
+            WHERE execution_scope = ?
+              AND source_row_id = ?
+              AND status = 'completed'`,
+        ).run(leaseToken, now + leaseMs, now, executionScope, sourceRowId);
+        const latest = this.getMessageExecutionLease(executionScope, sourceRowId);
+        if (!latest) throw new Error("message_execution_lease_replay_readback_failed");
+        if (Number(replayed.changes) === 1) {
+          return { state: "claimed", lease: latest, leaseToken, reclaimed: false };
+        }
+        return latest.status === "completed"
+          ? { state: "completed", lease: latest }
+          : { state: "busy", lease: latest };
+      }
+      if ((existing.leaseExpiresAt ?? 0) > now) {
+        return { state: "busy", lease: existing };
+      }
+
+      const leaseToken = createMessageExecutionLeaseToken();
+      const reclaimed = this.db.prepare(
+        `UPDATE message_execution_leases
+            SET lease_token = ?, lease_expires_at = ?, updated_at = ?
+          WHERE execution_scope = ?
+            AND source_row_id = ?
+            AND status = 'running'
+            AND lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ?`,
+      ).run(leaseToken, now + leaseMs, now, executionScope, sourceRowId, now);
+      const latest = this.getMessageExecutionLease(executionScope, sourceRowId);
+      if (!latest) throw new Error("message_execution_lease_reclaim_readback_failed");
+      if (Number(reclaimed.changes) === 1) {
+        return { state: "claimed", lease: latest, leaseToken, reclaimed: true };
+      }
+      return latest.status === "completed"
+        ? { state: "completed", lease: latest }
+        : { state: "busy", lease: latest };
+    });
+  }
+
+  getMessageExecutionLease(
+    executionScope: string,
+    sourceRowId: number,
+  ): MessageExecutionLeaseRecord | undefined {
+    const scope = normalizeMessageExecutionScope(executionScope);
+    if (!isMessageExecutionSourceRowId(sourceRowId)) return undefined;
+    const row = this.db.prepare(
+      `SELECT execution_scope, source_row_id, status, lease_token, lease_expires_at,
+              completed_at, created_at, updated_at
+         FROM message_execution_leases
+        WHERE execution_scope = ? AND source_row_id = ?`,
+    ).get(scope, sourceRowId) as {
+      execution_scope: string;
+      source_row_id: number;
+      status: "running" | "completed";
+      lease_token: string | null;
+      lease_expires_at: number | null;
+      completed_at: number | null;
+      created_at: number;
+      updated_at: number;
+    } | undefined;
+    return row ? messageExecutionLeaseFromRow(row) : undefined;
+  }
+
+  /** Extends a current lease; an expired owner can never resurrect itself. */
+  renewMessageExecutionLease(input: {
+    executionScope?: string;
+    sourceRowId: number;
+    leaseToken: string;
+    leaseMs?: number;
+    now?: number;
+  }): boolean {
+    const executionScope = normalizeMessageExecutionScope(input.executionScope);
+    const sourceRowId = requireMessageExecutionSourceRowId(input.sourceRowId);
+    const leaseToken = requireMessageExecutionLeaseToken(input.leaseToken);
+    const leaseMs = normalizeMessageExecutionLeaseMs(input.leaseMs);
+    const now = normalizeMessageExecutionTimestamp(input.now ?? Date.now(), "message_execution_lease_renewed_at_invalid");
+    const result = this.db.prepare(
+      `UPDATE message_execution_leases
+          SET lease_expires_at = ?, updated_at = ?
+        WHERE execution_scope = ?
+          AND source_row_id = ?
+          AND status = 'running'
+          AND lease_token = ?
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at > ?`,
+    ).run(now + leaseMs, now, executionScope, sourceRowId, leaseToken, now);
+    return Number(result.changes) === 1;
+  }
+
+  /** Releases only the current owner after a recoverable handler failure. */
+  releaseMessageExecutionLease(input: {
+    executionScope?: string;
+    sourceRowId: number;
+    leaseToken: string;
+  }): boolean {
+    const executionScope = normalizeMessageExecutionScope(input.executionScope);
+    const sourceRowId = requireMessageExecutionSourceRowId(input.sourceRowId);
+    const leaseToken = requireMessageExecutionLeaseToken(input.leaseToken);
+    const result = this.db.prepare(
+      `DELETE FROM message_execution_leases
+        WHERE execution_scope = ?
+          AND source_row_id = ?
+          AND status = 'running'
+          AND lease_token = ?`,
+    ).run(executionScope, sourceRowId, leaseToken);
+    return Number(result.changes) === 1;
+  }
+
+  /**
+   * Atomically fences the execution owner and advances this consumer's local
+   * checkpoint. A replaced owner cannot acknowledge a row reclaimed by
+   * another worker between external work and `done()`. The current token may
+   * still finish after its nominal deadline if no replacement claimed it,
+   * which avoids turning a temporarily paused process into a duplicate retry.
+   */
+  completeConsumerMessageWithExecutionLease(input: {
+    consumerKey: string;
+    executionScope?: string;
+    sourceRowId: number;
+    leaseToken: string;
+    completedAt?: number;
+  }): boolean {
+    const consumerKey = requireMessageExecutionConsumerKey(input.consumerKey);
+    const executionScope = normalizeMessageExecutionScope(input.executionScope);
+    const sourceRowId = requireMessageExecutionSourceRowId(input.sourceRowId);
+    const leaseToken = requireMessageExecutionLeaseToken(input.leaseToken);
+    const completedAt = normalizeMessageExecutionTimestamp(
+      input.completedAt ?? Date.now(),
+      "message_execution_lease_completed_at_invalid",
+    );
+    return this.withImmediateTransaction(() => {
+      const completed = this.db.prepare(
+        `UPDATE message_execution_leases
+            SET status = 'completed', lease_token = NULL, lease_expires_at = NULL,
+                completed_at = ?, updated_at = ?
+          WHERE execution_scope = ?
+            AND source_row_id = ?
+            AND status = 'running'
+            AND lease_token = ?`,
+      ).run(completedAt, completedAt, executionScope, sourceRowId, leaseToken);
+      if (Number(completed.changes) !== 1) return false;
+      this.completeConsumerMessageInTransaction(consumerKey, sourceRowId, completedAt);
+      return true;
+    });
+  }
+
+  /** Used by archive recovery to avoid deleting a live worker's pending bytes. */
+  hasLiveMessageExecutionLeaseForSource(input: {
+    executionScope?: string;
+    groupId: string;
+    sourceMessageId: string;
+    now?: number;
+  }): boolean {
+    const executionScope = normalizeMessageExecutionScope(input.executionScope);
+    const groupId = requireMessageExecutionIdentifier(input.groupId, "message_execution_lease_group_id_invalid");
+    const sourceMessageId = requireMessageExecutionIdentifier(
+      input.sourceMessageId,
+      "message_execution_lease_source_message_id_invalid",
+    );
+    const now = normalizeMessageExecutionTimestamp(input.now ?? Date.now(), "message_execution_lease_checked_at_invalid");
+    return Boolean(this.db.prepare(
+      `SELECT 1 AS ok
+         FROM messages message
+         JOIN message_execution_leases lease
+           ON lease.source_row_id = message.id
+          AND lease.execution_scope = ?
+        WHERE message.group_id = ?
+          AND message.msg_id = ?
+          AND lease.status = 'running'
+          AND lease.lease_expires_at IS NOT NULL
+          AND lease.lease_expires_at > ?
+        LIMIT 1`,
+    ).get(executionScope, groupId, sourceMessageId, now));
+  }
+
   /** Advances the watermark but never backwards (a retried old message must not re-deliver newer ones). */
   advanceWatermark(key: string, messageId: number): void {
     this.db
@@ -1748,52 +2103,7 @@ export class SharedDb {
    */
   completeConsumerMessage(key: string, messageId: number, completedAt = Date.now()): void {
     this.withImmediateTransaction(() => {
-      this.ensureConsumer(key);
-      this.db
-        .prepare(
-          `INSERT OR IGNORE INTO consumer_completed_messages
-             (consumer_key, message_id, completed_at)
-           VALUES (?, ?, ?)`,
-        )
-        .run(key, messageId, completedAt);
-
-      const consumer = this.db
-        .prepare("SELECT watermark_id FROM consumers WHERE key = ?")
-        .get(key) as { watermark_id: number };
-      const cutover = this.db
-        .prepare(
-          `SELECT CAST(value AS INTEGER) AS cutover_id
-             FROM conversation_context_meta
-            WHERE key = 'cutover_message_id'`,
-        )
-        .get() as { cutover_id: number } | undefined;
-      // Rows at or before the context cutover remain in `messages` for audit,
-      // but they are no longer part of the consumable sequence. Start the
-      // contiguous-completion walk at the same effective boundary as polling.
-      let watermark = Math.max(consumer.watermark_id, cutover?.cutover_id ?? 0);
-      while (true) {
-        const nextMessage = this.db
-          .prepare("SELECT id FROM messages WHERE id > ? ORDER BY id ASC LIMIT 1")
-          .get(watermark) as { id: number } | undefined;
-        if (!nextMessage) {
-          break;
-        }
-        const completed = this.db
-          .prepare(
-            `SELECT 1 AS ok FROM consumer_completed_messages
-              WHERE consumer_key = ? AND message_id = ?`,
-          )
-          .get(key, nextMessage.id) as { ok: number } | undefined;
-        if (!completed) {
-          break;
-        }
-        watermark = nextMessage.id;
-      }
-
-      this.db.prepare("UPDATE consumers SET watermark_id = ? WHERE key = ?").run(watermark, key);
-      this.db
-        .prepare("DELETE FROM consumer_completed_messages WHERE consumer_key = ? AND message_id <= ?")
-        .run(key, watermark);
+      this.completeConsumerMessageInTransaction(key, messageId, completedAt);
     });
   }
 
@@ -1821,6 +2131,60 @@ export class SharedDb {
         maxMessageId: maxId.n,
       });
     }
+  }
+
+  private completeConsumerMessageInTransaction(key: string, messageId: number, completedAt: number): void {
+    this.ensureConsumer(key);
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO consumer_completed_messages
+           (consumer_key, message_id, completed_at)
+         VALUES (?, ?, ?)`,
+      )
+      .run(key, messageId, completedAt);
+
+    const consumer = this.db
+      .prepare("SELECT watermark_id FROM consumers WHERE key = ?")
+      .get(key) as { watermark_id: number };
+    const cutover = this.db
+      .prepare(
+        `SELECT CAST(value AS INTEGER) AS cutover_id
+           FROM conversation_context_meta
+          WHERE key = 'cutover_message_id'`,
+      )
+      .get() as { cutover_id: number } | undefined;
+    // Rows at or before the context cutover remain in `messages` for audit,
+    // but they are no longer part of the consumable sequence. Start the
+    // contiguous-completion walk at the same effective boundary as polling.
+    let watermark = Math.max(consumer.watermark_id, cutover?.cutover_id ?? 0);
+    while (true) {
+      const nextMessage = this.db
+        .prepare("SELECT id FROM messages WHERE id > ? ORDER BY id ASC LIMIT 1")
+        .get(watermark) as { id: number } | undefined;
+      if (!nextMessage) {
+        break;
+      }
+      const completed = this.db
+        .prepare(
+          `SELECT 1 AS ok FROM consumer_completed_messages
+            WHERE consumer_key = ? AND message_id = ?`,
+        )
+        .get(key, nextMessage.id) as { ok: number } | undefined;
+      if (!completed) {
+        break;
+      }
+      watermark = nextMessage.id;
+    }
+
+    this.db.prepare("UPDATE consumers SET watermark_id = ? WHERE key = ?").run(watermark, key);
+    this.db
+      .prepare("DELETE FROM consumer_completed_messages WHERE consumer_key = ? AND message_id <= ?")
+      .run(key, watermark);
+  }
+
+  private assertMessageExecutionSourceRow(sourceRowId: number): void {
+    const row = this.db.prepare("SELECT id FROM messages WHERE id = ?").get(sourceRowId) as { id: number } | undefined;
+    if (!row) throw new Error("message_execution_lease_source_row_not_found");
   }
 
   private ensureConsumer(key: string): void {
@@ -2682,6 +3046,90 @@ function parseOutboxDeliveryId(value: string): number | undefined {
   }
   const id = Number(match[1]);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+function messageExecutionLeaseFromRow(row: {
+  execution_scope: string;
+  source_row_id: number;
+  status: "running" | "completed";
+  lease_token: string | null;
+  lease_expires_at: number | null;
+  completed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}): MessageExecutionLeaseRecord {
+  return {
+    executionScope: row.execution_scope,
+    sourceRowId: row.source_row_id,
+    status: row.status,
+    ...(row.lease_token === null ? {} : { leaseToken: row.lease_token }),
+    ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: row.lease_expires_at }),
+    ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeMessageExecutionScope(value: string | undefined): string {
+  const scope = value === undefined ? DEFAULT_MESSAGE_EXECUTION_SCOPE : value.trim();
+  if (!/^[A-Za-z][A-Za-z0-9:_-]{0,127}$/.test(scope)) {
+    throw new Error("message_execution_lease_scope_invalid");
+  }
+  return scope;
+}
+
+function isMessageExecutionSourceRowId(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function requireMessageExecutionSourceRowId(value: number): number {
+  if (!isMessageExecutionSourceRowId(value)) {
+    throw new Error("message_execution_lease_source_row_id_invalid");
+  }
+  return value;
+}
+
+function normalizeMessageExecutionLeaseMs(value: number | undefined): number {
+  if (value === undefined) return MESSAGE_EXECUTION_LEASE_DEFAULT_MS;
+  if (!Number.isSafeInteger(value) || value < 1_000 || value > 30 * 60_000) {
+    throw new Error("message_execution_lease_duration_invalid");
+  }
+  return value;
+}
+
+function normalizeMessageExecutionTimestamp(value: number, errorCode: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(errorCode);
+  }
+  return value;
+}
+
+function requireMessageExecutionLeaseToken(value: string): string {
+  const token = value.trim();
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) {
+    throw new Error("message_execution_lease_token_invalid");
+  }
+  return token;
+}
+
+function createMessageExecutionLeaseToken(): string {
+  return randomBytes(24).toString("base64url");
+}
+
+function requireMessageExecutionConsumerKey(value: string): string {
+  const key = value.trim();
+  if (!key || key.length > 256) {
+    throw new Error("message_execution_lease_consumer_key_invalid");
+  }
+  return key;
+}
+
+function requireMessageExecutionIdentifier(value: string, errorCode: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 256) {
+    throw new Error(errorCode);
+  }
+  return normalized;
 }
 
 function normalizeOutboxAutoRecallPolicy(

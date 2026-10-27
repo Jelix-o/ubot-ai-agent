@@ -104,28 +104,17 @@ test("ConsumerRunner retries failed messages without blocking other keys", async
   db.close();
 });
 
-test("ConsumerRunner restart recovers a queued message that was never completed", async (t) => {
+test("ConsumerRunner restart recovers an expired source execution lease", async (t) => {
   const dbPath = tempDb(t);
   const firstDb = new SharedDb(dbPath);
-  let releaseFirst!: () => void;
-  const firstBlocked = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
-  let markFirstFinished!: () => void;
-  const firstFinished = new Promise<void>((resolve) => {
-    markFirstFinished = resolve;
-  });
-  const firstRunner = new ConsumerRunner(firstDb, "test-worker", {
-    keyOf: (message) => `${message.group_id}:${message.user_id}`,
-    handler: async () => {
-      await firstBlocked;
-      markFirstFinished();
-    },
-    pollIntervalMs: 20,
-  });
   const rowId = insert(firstDb, "10001", "20001", "recover", 1000);
-  await waitFor(() => firstRunner.queueDepth === 1);
-  const firstStop = firstRunner.stop();
+  const stale = firstDb.claimMessageExecutionLease({
+    sourceRowId: rowId,
+    now: Date.now() - 2_000,
+    leaseMs: 1_000,
+  });
+  assert.equal(stale.state, "claimed");
+  firstDb.close();
 
   const secondDb = new SharedDb(dbPath);
   const recovered: number[] = [];
@@ -138,12 +127,8 @@ test("ConsumerRunner restart recovers a queued message that was never completed"
     pollIntervalMs: 20,
   });
   await waitFor(() => recovered.length === 1);
-  const secondStop = secondRunner.stop();
-  releaseFirst();
-  await firstFinished;
-  await Promise.all([firstStop, secondStop]);
+  await secondRunner.stop();
   assert.deepEqual(recovered, [rowId]);
-  firstDb.close();
   secondDb.close();
 });
 
@@ -273,5 +258,178 @@ test("ConsumerRunner stops intake and drains active work before resolving", asyn
     releaseActive();
     await runner.stop();
     db.close();
+  }
+});
+
+test("ConsumerRunner handoff never inserts ahead of an active destination task", async (t) => {
+  const db = new SharedDb(tempDb(t));
+  let releaseDestination!: () => void;
+  const destinationReleased = new Promise<void>((resolve) => {
+    releaseDestination = resolve;
+  });
+  let markDestinationStarted!: () => void;
+  const destinationStarted = new Promise<void>((resolve) => {
+    markDestinationStarted = resolve;
+  });
+  let markStagedHandoff!: () => void;
+  const stagedHandoff = new Promise<void>((resolve) => {
+    markStagedHandoff = resolve;
+  });
+  const processed: string[] = [];
+  const runner = new ConsumerRunner(db, "test-worker", {
+    keyOf: (message) => message.msg_id === "older-staged" ? "staging" : "destination",
+    handler: async (message, done, handoff, currentKey) => {
+      if (message.msg_id === "older-staged" && currentKey === "staging") {
+        await destinationStarted;
+        await handoff("destination");
+        markStagedHandoff();
+        return;
+      }
+
+      processed.push(message.msg_id);
+      if (message.msg_id === "newer-destination") {
+        markDestinationStarted();
+        await destinationReleased;
+      }
+      await done();
+    },
+    pollIntervalMs: 10,
+  });
+
+  try {
+    insert(db, "10001", "20001", "older-staged", 1000);
+    insert(db, "10001", "20001", "newer-destination", 2000);
+
+    await stagedHandoff;
+    releaseDestination();
+    await waitFor(() => db.pollMessages("test-worker", 100).length === 0);
+
+    assert.deepEqual(
+      processed,
+      ["newer-destination", "older-staged"],
+      "an active destination head must finish before a staged older row can run",
+    );
+  } finally {
+    releaseDestination();
+    await runner.stop();
+    db.close();
+  }
+});
+
+test("ConsumerRunner invokes an image handler only once across two worker connections", async (t) => {
+  const dbPath = tempDb(t);
+  const firstDb = new SharedDb(dbPath);
+  const secondDb = new SharedDb(dbPath);
+  let releaseImage = () => {};
+  const imageGate = new Promise<void>((resolve) => {
+    releaseImage = resolve;
+  });
+  let markImageStarted!: () => void;
+  const imageStarted = new Promise<void>((resolve) => {
+    markImageStarted = resolve;
+  });
+  let imageHandlerCalls = 0;
+  const makeRunner = (db: SharedDb, consumerKey: string) => new ConsumerRunner(db, consumerKey, {
+    keyOf: (message) => `${message.group_id}:image:${message.user_id}`,
+    handler: async (_message, done) => {
+      imageHandlerCalls += 1;
+      if (imageHandlerCalls === 1) {
+        markImageStarted();
+        await imageGate;
+      }
+      await done();
+    },
+    pollIntervalMs: 10,
+    initialKeyBackoffMs: 10,
+    maxKeyBackoffMs: 30,
+    maxConcurrentKeys: 1,
+  });
+  const firstRunner = makeRunner(firstDb, "worker:image-a");
+  const secondRunner = makeRunner(secondDb, "worker:image-b");
+
+  try {
+    insert(firstDb, "10001", "20001", "image-source", 1000);
+    await imageStarted;
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    assert.equal(imageHandlerCalls, 1, "a live source-row lease blocks the second worker before image handling");
+
+    releaseImage();
+    await waitFor(() =>
+      firstDb.pollMessages("worker:image-a", 10).length === 0 &&
+      secondDb.pollMessages("worker:image-b", 10).length === 0,
+    );
+    assert.equal(imageHandlerCalls, 1, "the second worker only acknowledges the globally completed row");
+  } finally {
+    releaseImage();
+    await Promise.all([firstRunner.stop(), secondRunner.stop()]);
+    firstDb.close();
+    secondDb.close();
+  }
+});
+
+test("ConsumerRunner retains source ownership through handoff and drains it during stop", async (t) => {
+  const dbPath = tempDb(t);
+  const firstDb = new SharedDb(dbPath);
+  let releaseStaging = () => {};
+  const stagingGate = new Promise<void>((resolve) => {
+    releaseStaging = resolve;
+  });
+  let markHandoffReady!: () => void;
+  const handoffReady = new Promise<void>((resolve) => {
+    markHandoffReady = resolve;
+  });
+  let destinationCalls = 0;
+  const firstRunner = new ConsumerRunner(firstDb, "worker:handoff-owner", {
+    keyOf: () => "image-intent-staging",
+    handler: async (_message, done, handoff, currentKey) => {
+      if (currentKey === "image-intent-staging") {
+        await handoff("image-final");
+        markHandoffReady();
+        await stagingGate;
+        return;
+      }
+      destinationCalls += 1;
+      await done();
+    },
+    pollIntervalMs: 10,
+    initialKeyBackoffMs: 10,
+    maxKeyBackoffMs: 30,
+    maxConcurrentKeys: 1,
+  });
+
+  let secondCalls = 0;
+  let secondDb: SharedDb | undefined;
+  let secondRunner: ConsumerRunner | undefined;
+  try {
+    insert(firstDb, "10001", "20001", "handoff-source", 1000);
+    await handoffReady;
+
+    secondDb = new SharedDb(dbPath);
+    secondRunner = new ConsumerRunner(secondDb, "worker:handoff-observer", {
+      keyOf: () => "image-intent-staging",
+      handler: async (_message, done) => {
+        secondCalls += 1;
+        await done();
+      },
+      pollIntervalMs: 10,
+      initialKeyBackoffMs: 10,
+      maxKeyBackoffMs: 30,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(secondCalls, 0, "another worker cannot enter while the staged row owns its lease");
+
+    const stopping = firstRunner.stop();
+    releaseStaging();
+    await stopping;
+    assert.equal(destinationCalls, 1, "stop drains the already-owned final handoff lane");
+
+    await waitFor(() => secondDb!.pollMessages("worker:handoff-observer", 10).length === 0);
+    assert.equal(secondCalls, 0, "the observer only acknowledges the completed source row");
+  } finally {
+    releaseStaging();
+    await firstRunner.stop();
+    await secondRunner?.stop();
+    firstDb.close();
+    secondDb?.close();
   }
 });

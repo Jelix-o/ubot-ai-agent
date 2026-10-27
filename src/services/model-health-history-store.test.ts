@@ -45,6 +45,34 @@ test("ModelHealthHistoryStore remaps retired tts purpose to custom for historica
   }
 });
 
+test("ModelHealthHistoryStore retains probe metadata for image intent diagnostics", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "model-health-history-"));
+  try {
+    const store = new ModelHealthHistoryStore(path.join(dir, "model-health.json"));
+    await store.record({
+      ...makeEntry("intent-main", "image_intent"),
+      ok: false,
+      detail: "图片意图判断模型未返回有效的原生工具调用结果。",
+      probeType: "image_intent",
+      upstreamStatusCode: 503,
+      failureKind: "unavailable",
+      skipped: false,
+    });
+
+    assert.deepEqual(await store.get("intent-main"), {
+      ...makeEntry("intent-main", "image_intent"),
+      ok: false,
+      detail: "图片意图判断模型未返回有效的原生工具调用结果。",
+      probeType: "image_intent",
+      upstreamStatusCode: 503,
+      failureKind: "unavailable",
+      skipped: false,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ModelHealthHistoryStore prunes old unselected records", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "model-health-history-"));
   try {

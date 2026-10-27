@@ -25,7 +25,7 @@ const testingAllModels = shallowRef(false);
 const groupQuery = shallowRef("");
 const allGroups = shallowRef<GroupConfig[]>([]);
 const activePurpose = computed<SystemModelPurpose>({
-  get: () => ["reply", "image", "summary", "knowledge", "custom"].includes(String(route.query.purpose)) ? route.query.purpose as SystemModelPurpose : "reply",
+  get: () => ["reply", "image", "image_intent", "summary", "knowledge", "custom"].includes(String(route.query.purpose)) ? route.query.purpose as SystemModelPurpose : "reply",
   set: (purpose) => { void router.replace({ query: { ...route.query, purpose } }); },
 });
 const modelSettingsDirty = shallowRef(false);
@@ -66,11 +66,12 @@ function rememberSettings(next: SystemSettings & { revision: string }): void {
 const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; detail: string }> = [
   { value: "reply", label: "对话回复", detail: "普通群聊回复、实时对话和群内 #模型 切换列表" },
   { value: "image", label: "图片生成", detail: "#画图 使用；主模型失败时按列表顺序切换备用" },
+  { value: "image_intent", label: "图片意图判断", detail: "仅判断真实 @会仙 或回复会仙已确认投递图片的请求应走对话、生图、改图还是头像改图；只选择动作，必须支持原生工具调用" },
   { value: "summary", label: "总结", detail: "已有总结模型配置" },
   { value: "knowledge", label: "知识", detail: "已有知识模型配置" },
   { value: "custom", label: "自定义", detail: "已有自定义模型配置" },
 ];
-const visiblePurposeOptions = computed(() => modelPurposeOptions.filter((item) => item.value === "reply" || item.value === "image" || item.value === activePurpose.value || settings.models.some((model) => model.purpose === item.value)));
+const visiblePurposeOptions = computed(() => modelPurposeOptions.filter((item) => item.value === "reply" || item.value === "image" || item.value === "image_intent" || item.value === activePurpose.value || settings.models.some((model) => model.purpose === item.value)));
 const unconfiguredPurposes = computed(() => modelPurposeOptions.filter(item => settings.selectedModelIds[item.value] === ""));
 
 const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/;
@@ -79,6 +80,7 @@ const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
   summary: "Summary Model",
   knowledge: "Knowledge Model",
   image: "Image Model",
+  image_intent: "Image Intent Router",
   custom: "Custom Model",
 };
 
@@ -325,7 +327,7 @@ async function toggleGroup(group: GroupConfig): Promise<void> {
 function addModel(): void {
   const model = modelTemplate();
   settings.models.push(model);
-  if (model.purpose !== "reply") {
+  if (model.purpose !== "reply" && canSelectAsDefault(model)) {
     settings.selectedModelIds[model.purpose] = model.id;
   }
   markModelsDirty();
@@ -366,7 +368,10 @@ function canMoveImageModel(model: SystemModelConfig, direction: -1 | 1): boolean
 }
 
 function selectModel(model: SystemModelConfig): void {
-
+  if (!canSelectAsDefault(model)) {
+    app.showToast("图片意图判断模型必须启用、配置 API Key，并开启原生工具调用。", "error");
+    return;
+  }
   settings.selectedModelIds[model.purpose] = model.id;
   markModelsDirty();
 }
@@ -442,6 +447,22 @@ function setImageEditing(event: Event): void {
   editingModel.value.capabilities = { ...editingModel.value.capabilities, imageEditing: (event.target as HTMLInputElement).checked };
 }
 
+function setToolCalling(event: Event): void {
+  if (!editingModel.value) return;
+  editingModel.value.capabilities = { ...editingModel.value.capabilities, toolCalling: (event.target as HTMLInputElement).checked };
+  if (!isUsableImageIntentModel(editingModel.value) && settings.selectedModelIds.image_intent === editingModel.value.id) {
+    delete settings.selectedModelIds.image_intent;
+  }
+}
+
+function isUsableImageIntentModel(model?: SystemModelConfig): boolean {
+  return Boolean(model?.purpose === "image_intent" && model.enabled && (model.hasApiKey || model.apiKey?.trim()) && model.capabilities?.toolCalling === true);
+}
+
+function canSelectAsDefault(model: SystemModelConfig): boolean {
+  return model.purpose !== "image_intent" || isUsableImageIntentModel(model);
+}
+
 function modelIndex(model: SystemModelConfig): number {
   return settings.models.findIndex((item) => item === model);
 }
@@ -511,7 +532,7 @@ onMounted(() => {
       <div class="model-connections-heading"><div class="section-intro"><h2>模型连接</h2><p>维护连接、密钥与启用状态。</p></div><button class="btn" type="button" @click="addModel">＋ 新增模型</button></div>
       <div class="model-toolbar"><span class="routing-note">{{ activePurposeMeta.label }} · {{ activePurposeModels.length }} 个模型</span><div class="model-filters"><form @submit.prevent="setModelQuery"><input v-model="modelQuery" class="input" aria-label="搜索模型" placeholder="搜索名称、标识或模型名…" @change="setModelQuery" /></form><select v-model="modelStatus" class="select" aria-label="模型启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select><button class="ghost-btn" type="button" :disabled="testingAllModels" @click="testAllModels">{{ testingAllModels ? '检测中…' : '检测全部' }}</button></div></div>
       <div v-if="!filteredModels.length" class="empty compact">{{ activePurposeModels.length ? '没有匹配的模型。' : '此用途暂无模型，新增配置后保存即可使用。' }}</div>
-      <div v-else class="model-table"><table><thead><tr><th>模型名称 / 标识</th><th>上游模型 / 连接</th><th>协议</th><th>{{ usageColumnLabel() }}</th><th>状态</th><th class="actions-cell">操作</th></tr></thead><tbody><tr v-for="model in filteredModels" :key="modelRowKey(model)" :class="{ disabled: !model.enabled }"><td><strong class="table-model-name">{{ model.name || '未命名模型' }}</strong><small class="muted">{{ model.shortName }} · {{ model.id }}</small></td><td><span>{{ model.model || '尚未设置' }}</span><small class="endpoint" :title="model.baseUrl">{{ model.baseUrl || '尚未设置连接' }}</small></td><td>{{ model.apiProtocol === 'anthropic' ? 'Anthropic' : 'OpenAI' }}</td><td><span v-if="isReplyModel(model)" class="tag" :class="{ danger: !model.enabled || !model.hasApiKey }">{{ model.enabled && model.hasApiKey ? (settings.selectedModelIds.reply === model.id ? '统一默认' : '可选 / 备用') : '不可用' }}</span><label v-else class="default-control"><input type="radio" name="default-model" :checked="settings.selectedModelIds[model.purpose] === model.id" :disabled="!model.enabled" @change="selectModel(model)" /> 默认</label></td><td><span class="status-dot" :class="{ on: model.enabled }">{{ model.enabled ? '已启用' : '已停用' }}</span><small v-if="modelHealthById[model.id]" class="health-text" :class="{ failed: modelHasFailure(model) }" :title="modelHealthLabel(model)">{{ modelHealthLabel(model) }}</small></td><td class="actions-cell"><div class="row-actions"><button class="link-btn" type="button" @click="editingModel = model">编辑</button><button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? '检测中' : '检测' }}</button><template v-if="model.purpose === 'image'"><button class="link-btn sort-button" type="button" :aria-label="'提高 ' + model.name + ' 的备用顺序'" :disabled="!canMoveImageModel(model,-1)" @click="moveImageModel(model,-1)">↑</button><button class="link-btn sort-button" type="button" :aria-label="'降低 ' + model.name + ' 的备用顺序'" :disabled="!canMoveImageModel(model,1)" @click="moveImageModel(model,1)">↓</button></template></div></td></tr></tbody></table></div>
+      <div v-else class="model-table"><table><thead><tr><th>模型名称 / 标识</th><th>上游模型 / 连接</th><th>协议</th><th>{{ usageColumnLabel() }}</th><th>状态</th><th class="actions-cell">操作</th></tr></thead><tbody><tr v-for="model in filteredModels" :key="modelRowKey(model)" :class="{ disabled: !model.enabled }"><td><strong class="table-model-name">{{ model.name || '未命名模型' }}</strong><small class="muted">{{ model.shortName }} · {{ model.id }}</small></td><td><span>{{ model.model || '尚未设置' }}</span><small class="endpoint" :title="model.baseUrl">{{ model.baseUrl || '尚未设置连接' }}</small></td><td>{{ model.apiProtocol === 'anthropic' ? 'Anthropic' : 'OpenAI' }}</td><td><span v-if="isReplyModel(model)" class="tag" :class="{ danger: !model.enabled || !model.hasApiKey }">{{ model.enabled && model.hasApiKey ? (settings.selectedModelIds.reply === model.id ? '统一默认' : '可选 / 备用') : '不可用' }}</span><label v-else class="default-control"><input type="radio" name="default-model" :checked="settings.selectedModelIds[model.purpose] === model.id" :disabled="!model.enabled || !canSelectAsDefault(model)" @change="selectModel(model)" /> 默认 <small v-if="model.purpose === 'image_intent' && !isUsableImageIntentModel(model)">需启用、密钥和工具调用</small></label></td><td><span class="status-dot" :class="{ on: model.enabled }">{{ model.enabled ? '已启用' : '已停用' }}</span><small v-if="modelHealthById[model.id]" class="health-text" :class="{ failed: modelHasFailure(model) }" :title="modelHealthLabel(model)">{{ modelHealthLabel(model) }}</small></td><td class="actions-cell"><div class="row-actions"><button class="link-btn" type="button" @click="editingModel = model">编辑</button><button class="link-btn" type="button" :disabled="testingModelId === model.id" @click="testModel(model)">{{ testingModelId === model.id ? '检测中' : '检测' }}</button><template v-if="model.purpose === 'image'"><button class="link-btn sort-button" type="button" :aria-label="'提高 ' + model.name + ' 的备用顺序'" :disabled="!canMoveImageModel(model,-1)" @click="moveImageModel(model,-1)">↑</button><button class="link-btn sort-button" type="button" :aria-label="'降低 ' + model.name + ' 的备用顺序'" :disabled="!canMoveImageModel(model,1)" @click="moveImageModel(model,1)">↓</button></template></div></td></tr></tbody></table></div>
       <footer class="model-list-footer"><span>共 {{ filteredModels.length }} 个模型</span><span>API Key 使用掩码显示，留空保留已保存的值。</span></footer>
     </section>
     <div v-if="!loading && !loadError" class="save-footer"><span class="muted">{{ dirty ? '更改尚未保存' : '配置已同步' }}</span><button class="btn" type="button" :disabled="saving || !dirty" @click="save">{{ saving ? '保存中…' : '保存配置' }}</button></div>
@@ -522,10 +543,13 @@ onMounted(() => {
           <div class="edit-field-pair"><label>简称<input v-model="editingModel.shortName" class="input" placeholder="简称" /></label><label>模型标识<input :value="editingModel.id" class="input" placeholder="reply-model" @input="updateModelId(editingModel, $event)" /></label></div>
           <label>Base URL<input v-model="editingModel.baseUrl" class="input" placeholder="https://api.example.com/v1" /><small>服务商提供的 API 地址。</small></label>
           <label>上游模型名<input v-model="editingModel.model" class="input" placeholder="model-name" /></label>
-          <label>API 协议<select v-model="editingModel.apiProtocol" class="select" :disabled="editingModel.purpose === 'image'"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+          <label>API 协议<select v-model="editingModel.apiProtocol" class="select" :disabled="editingModel.purpose === 'image' || editingModel.purpose === 'image_intent'"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
         </section>
         <section v-if="editingModel.purpose === 'image'" class="model-edit-section"><h3>图片编辑</h3>
           <label v-if="editingModel.purpose === 'image'" class="policy-toggle"><span><strong>支持图片编辑</strong><small>确认上游支持图生图后开启，用于附图生图和 #改图。</small></span><input type="checkbox" :checked="editingModel.capabilities?.imageEditing === true" @change="setImageEditing" /></label>
+        </section>
+        <section v-if="editingModel.purpose === 'image_intent'" class="model-edit-section"><h3>原生工具调用</h3>
+          <label class="policy-toggle"><span><strong>支持原生工具调用</strong><small>只有已确认支持 OpenAI 兼容 function/tool calling 的模型才能判断自然语言图片请求；它只选择动作，不下载图片或执行图片请求。</small></span><input type="checkbox" :checked="editingModel.capabilities?.toolCalling === true" @change="setToolCalling" /></label>
         </section>
         <section v-if="editingModel.purpose === 'reply'" class="model-edit-section" aria-labelledby="model-parameters-title"><h3 id="model-parameters-title">调用参数</h3>
 

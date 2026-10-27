@@ -12,7 +12,7 @@ import { V3StateRepository } from "./v3-state-repository.js";
 
 const TEST_STATE_KEY = "0".repeat(64);
 
-function model(id: string, purpose: "reply" | "summary" | "knowledge" | "image" | "custom", apiKey = `${id}-key`) {
+function model(id: string, purpose: "reply" | "summary" | "knowledge" | "image" | "image_intent" | "custom", apiKey = `${id}-key`) {
   return {
     id,
     name: `${id} model`,
@@ -368,5 +368,52 @@ test("image editing is opt-in and survives public model configuration round trip
     const saved = await new SystemSettingsStore(file).getInternal();
     assert.equal(saved.models[0]?.capabilities?.imageEditing, true);
     assert.equal(saved.models[0]?.apiKey, "edit-key");
+  });
+});
+
+test("image intent models require an enabled, credentialed native-tool configuration before selection", async () => {
+  await withDir(async dir => {
+    const file = path.join(dir, "settings.json");
+    const store = new SystemSettingsStore(file);
+    const intent = { ...model("intent", "image_intent"), capabilities: { toolCalling: true } };
+
+    const selected = await store.update({
+      models: [intent],
+      selectedModelIds: { image_intent: "intent" },
+    });
+    assert.equal(selected.selectedModelIds.image_intent, "intent");
+    assert.equal((await store.getInternal()).models[0]?.capabilities?.toolCalling, true);
+
+    await assert.rejects(
+      store.update({
+        models: [{ ...intent, capabilities: { toolCalling: false } }],
+        selectedModelIds: { image_intent: "intent" },
+      }),
+      /image_intent_model_not_approved/,
+    );
+    await assert.rejects(
+      store.update({
+        models: [{ ...intent, enabled: false }],
+        selectedModelIds: { image_intent: "intent" },
+      }),
+      /image_intent_model_not_approved/,
+    );
+    await assert.rejects(
+      store.update({
+        models: [{ ...intent, id: "intent-no-key", apiKey: "", hasApiKey: true }],
+        selectedModelIds: { image_intent: "intent-no-key" },
+      }),
+      /image_intent_model_not_approved/,
+    );
+  });
+});
+
+test("image intent models use the OpenAI-compatible protocol", async () => {
+  await withDir(async dir => {
+    const store = new SystemSettingsStore(path.join(dir, "settings.json"));
+    await assert.rejects(
+      store.update({ models: [{ ...model("intent", "image_intent"), apiProtocol: "anthropic" }] }),
+      /invalid_image_intent_model_protocol/,
+    );
   });
 });

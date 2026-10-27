@@ -186,6 +186,59 @@ test("keeps a Worker-owned preview invisible until its outbox link commits and r
   });
 });
 
+test("does not reclaim a pending preview while another Worker owns its ingress source", async (t) => {
+  const fixture = await createFixture(t);
+  const sourceMessageId = "active-preview-owner";
+  const sourceRowId = fixture.db.insertMessage({
+    groupId: "group-1",
+    userId: "member-1",
+    selfId: "bot",
+    msgId: sourceMessageId,
+    msgTime: fixture.now.value,
+    text: "#生图 一座灯塔",
+    imagesJson: "[]",
+    hasAtBot: true,
+    isBotMsg: false,
+    createdAt: fixture.now.value,
+  });
+  assert.ok(sourceRowId > 0);
+  const lease = fixture.db.claimMessageExecutionLease({
+    sourceRowId,
+    now: fixture.now.value,
+    leaseMs: 60_000,
+  });
+  assert.equal(lease.state, "claimed");
+
+  const source = await stage(fixture, "active-preview-owner.png");
+  const preview = await fixture.service.archive({
+    groupId: "group-1",
+    creatorUserId: "member-1",
+    sourceMessageId,
+    prompt: "private pending image",
+    filePath: source,
+    modelId: "primary",
+    model: "image-model",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: PNG.byteLength,
+    publicationState: "pending",
+    now: fixture.now.value + 1,
+  });
+  const privateFile = path.join(fixture.archiveRoot, `${preview.id}.png`);
+
+  assert.equal(await fixture.service.recoverUnpublished(fixture.now.value + 2), 0);
+  assert.deepEqual(await readFile(privateFile), PNG);
+  assert.deepEqual(await readFile(source), PNG);
+  const stored = fixture.db.db.prepare(
+    "SELECT status, publication_state, prompt FROM image_previews WHERE id = ?",
+  ).get(preview.id) as { status: string; publication_state: string; prompt: string | null };
+  assert.deepEqual({ ...stored }, {
+    status: "available",
+    publication_state: "pending",
+    prompt: "private pending image",
+  });
+});
+
 test("never republishes a pending preview from an incomplete legacy Outbox link", async (t) => {
   const fixture = await createFixture(t);
   const source = await stage(fixture, "partial-outbox.png");

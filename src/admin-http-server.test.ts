@@ -910,6 +910,45 @@ test("configuration APIs reject retired Gemini IDs and upstream aliases before s
   assert.equal(after.revision, settings.revision);
 });
 
+test("system settings only select tool-capable image intent models", async (t) => {
+  const { baseUrl } = await startFixture(t);
+  const auth = await login(baseUrl);
+  const headers = { Cookie: auth.cookie, "X-CSRF-Token": auth.csrf, "Content-Type": "application/json" };
+  const before = await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string };
+  const model = {
+    id: "intent-router",
+    name: "Image Intent Router",
+    shortName: "intent",
+    purpose: "image_intent",
+    model: "cheap-router",
+    baseUrl: "https://router.example/v1",
+    apiKey: "test-key",
+    enabled: true,
+    capabilities: { toolCalling: true },
+  };
+  const saved = await request(baseUrl, "/api/system-settings", {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ expectedRevision: before.revision, patch: { models: [model], selectedModelIds: { image_intent: model.id } } }),
+  });
+  assert.equal(saved.status, 200);
+  const configured = await saved.json() as { selectedModelIds: { image_intent?: string }; models: Array<{ purpose: string; capabilities?: { toolCalling?: boolean } }> };
+  assert.equal(configured.selectedModelIds.image_intent, model.id);
+  assert.equal(configured.models[0]?.purpose, "image_intent");
+  assert.equal(configured.models[0]?.capabilities?.toolCalling, true);
+
+  const invalid = await request(baseUrl, "/api/system-settings", {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ expectedRevision: (await (await request(baseUrl, "/api/system-settings", { headers })).json() as { revision: string }).revision, patch: {
+      models: [{ ...model, capabilities: { toolCalling: false } }],
+      selectedModelIds: { image_intent: model.id },
+    } }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json() as { error: string }).error, "image_intent_model_not_approved");
+});
+
 test("model policy requires current revisions even through legacy PUT and supports restoring global inheritance", async (t) => {
   const { baseUrl } = await startFixture(t);
   const auth = await login(baseUrl);

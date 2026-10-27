@@ -5,7 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import type { AiHealthStatus, AiReply, SkillDefinition, SystemModelConfig } from "../types.js";
+import { ImageIntentClassificationError } from "./ai-service.js";
 import { ConfiguredAiService, ConfiguredModelUnavailableError, type RuntimeAiService } from "./configured-ai-service.js";
+import { ImageIntentRouterError, type ImageIntentRouterInput } from "./image-intent-router-plugin.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
 
 class FakeRuntimeAiService implements RuntimeAiService {
@@ -13,6 +15,7 @@ class FakeRuntimeAiService implements RuntimeAiService {
   replyCalls = 0;
   summaryCalls = 0;
   staticHtmlCalls = 0;
+  imageIntentCalls = 0;
 
   constructor(
     private readonly health: AiHealthStatus,
@@ -62,6 +65,11 @@ class FakeRuntimeAiService implements RuntimeAiService {
     this.summaryCalls += 1;
     return "summary";
   }
+
+  async classifyImageIntent(_input: ImageIntentRouterInput) {
+    this.imageIntentCalls += 1;
+    return { action: "chat" as const, model: this.health.model };
+  }
 }
 
 test("ConfiguredAiService uses the selected reply model", async (t) => {
@@ -101,6 +109,86 @@ test("ConfiguredAiService uses the selected reply model", async (t) => {
   assert.equal(reply.model, "reply-b-model");
   assert.deepEqual(created, ["reply-b-model"]);
   assert.equal(fallback.replyCalls, 0);
+});
+
+test("ConfiguredAiService binds image routing to the selected tool-capable image_intent model", async (t) => {
+  const store = await createSettingsStore(t);
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  const created: string[] = [];
+  await store.update({
+    models: [
+      model({ id: "reply", model: "reply-model" }),
+      {
+        ...model({ id: "intent", model: "dafeiyu-small", purpose: "image_intent" }),
+        capabilities: { toolCalling: true },
+      },
+    ],
+    selectedModelIds: { image_intent: "intent" },
+  });
+
+  const service = new ConfiguredAiService(fallback, store, "reply", (configured) => {
+    created.push(`${configured.purpose}:${configured.model}`);
+    return new FakeRuntimeAiService(makeHealth(configured.model, configured.baseUrl));
+  });
+  assert.equal(await service.isImageIntentConfigured(), true);
+  assert.deepEqual(await service.classifyImageIntent({
+    sanitizedText: "帮我画一张海报",
+    facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+  }), {
+    action: "chat",
+    modelId: "intent",
+    model: "dafeiyu-small",
+  });
+  assert.deepEqual(created, ["image_intent:dafeiyu-small"]);
+  assert.equal(fallback.imageIntentCalls, 0);
+});
+
+test("ConfiguredAiService does not fall back to a reply model for an unavailable image router", async (t) => {
+  const store = await createSettingsStore(t);
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  await store.update({
+    models: [model({ id: "reply", model: "reply-model" })],
+    selectedModelIds: { image_intent: "" },
+  });
+  const service = new ConfiguredAiService(fallback, store, "reply");
+
+  assert.equal(await service.isImageIntentConfigured(), false);
+  await assert.rejects(
+    service.classifyImageIntent({
+      sanitizedText: "生成一张海报",
+      facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+    }),
+    (error: unknown) => error instanceof ImageIntentRouterError && error.code === "unavailable",
+  );
+  assert.equal(fallback.imageIntentCalls, 0);
+});
+
+test("ConfiguredAiService retains selected router model metadata for a safe classifier failure", async (t) => {
+  const store = await createSettingsStore(t);
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  await store.update({
+    models: [{
+      ...model({ id: "intent", model: "dafeiyu-small", purpose: "image_intent" }),
+      capabilities: { toolCalling: true },
+    }],
+    selectedModelIds: { image_intent: "intent" },
+  });
+  const failingService = new FakeRuntimeAiService(makeHealth("dafeiyu-small", "https://intent.example/v1"));
+  failingService.classifyImageIntent = async () => {
+    throw new ImageIntentClassificationError("invalid_response");
+  };
+  const service = new ConfiguredAiService(fallback, store, "reply", () => failingService);
+
+  await assert.rejects(
+    service.classifyImageIntent({
+      sanitizedText: "将我头像美化一下",
+      facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+    }),
+    (error: unknown) => error instanceof ImageIntentRouterError &&
+      error.code === "invalid_response" &&
+      error.modelId === "intent" &&
+      error.model === "dafeiyu-small",
+  );
 });
 
 test("ConfiguredAiService falls back when no usable selected model remains", async (t) => {

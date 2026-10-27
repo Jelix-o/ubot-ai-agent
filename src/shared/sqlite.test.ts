@@ -263,6 +263,8 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 24, name: "persist-canonical-message-segments" },
       { version: 25, name: "add-durable-image-request-ledger" },
       { version: 26, name: "stage-image-previews-until-outbox-link" },
+      { version: 27, name: "add-image-intent-route-ledger" },
+      { version: 28, name: "add-message-execution-leases" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -280,12 +282,14 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   assert.equal(tables.some((table) => table.name === "admin_bulk_previews"), true);
   assert.equal(tables.some((table) => table.name === "admin_bulk_results"), true);
   assert.equal(tables.some((table) => table.name === "image_previews"), true);
+  assert.equal(tables.some((table) => table.name === "image_intent_routes"), true);
+  assert.equal(tables.some((table) => table.name === "message_execution_leases"), true);
   first.close();
 
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -321,6 +325,89 @@ test("pollMessages uses the same monotonic id order as its watermark", (t) => {
   // Separate consumer key starts from the beginning.
   assert.equal(db.pollMessages("worker:other", 10).length, 3);
   db.close();
+});
+
+test("message execution leases fence concurrent owners, reclaim expiry, and atomically acknowledge the consumer", (t) => {
+  const dbPath = tempDb(t);
+  const first = new SharedDb(dbPath);
+  const second = new SharedDb(dbPath);
+  const sourceRowId = first.insertMessage({
+    groupId: "lease-group",
+    userId: "lease-user",
+    selfId: "bot",
+    msgId: "lease-source",
+    msgTime: 10_000,
+    text: "#生图 lighthouse",
+    imagesJson: "[]",
+    hasAtBot: true,
+    isBotMsg: false,
+    createdAt: 10_000,
+  });
+  const initial = first.claimMessageExecutionLease({ sourceRowId, now: 10_000, leaseMs: 1_000 });
+  assert.equal(initial.state, "claimed");
+  if (initial.state !== "claimed") throw new Error("expected initial execution owner");
+  assert.equal(initial.reclaimed, false);
+  const busy = second.claimMessageExecutionLease({ sourceRowId, now: 10_001, leaseMs: 1_000 });
+  assert.equal(busy.state, "busy");
+  assert.equal(first.renewMessageExecutionLease({
+    sourceRowId,
+    leaseToken: initial.leaseToken,
+    now: 10_500,
+    leaseMs: 1_000,
+  }), true, "current owner can extend a live lease");
+  assert.equal(first.hasLiveMessageExecutionLeaseForSource({
+    groupId: "lease-group",
+    sourceMessageId: "lease-source",
+    now: 11_499,
+  }), true);
+  assert.equal(second.completeConsumerMessageWithExecutionLease({
+    consumerKey: "worker:second",
+    sourceRowId,
+    leaseToken: initial.leaseToken,
+    completedAt: 11_000,
+  }), true, "the current owner fences and advances its consumer in one transaction");
+  assert.equal(first.claimMessageExecutionLease({ sourceRowId, now: 11_001 }).state, "completed");
+  assert.deepEqual(second.pollMessages("worker:second", 10), []);
+
+  const reclaimableRowId = first.insertMessage({
+    groupId: "lease-group",
+    userId: "lease-user",
+    selfId: "bot",
+    msgId: "lease-expired",
+    msgTime: 20_000,
+    text: "#生图 moon",
+    imagesJson: "[]",
+    hasAtBot: true,
+    isBotMsg: false,
+    createdAt: 20_000,
+  });
+  const expiredOwner = first.claimMessageExecutionLease({ sourceRowId: reclaimableRowId, now: 20_000, leaseMs: 1_000 });
+  assert.equal(expiredOwner.state, "claimed");
+  if (expiredOwner.state !== "claimed") throw new Error("expected expiring execution owner");
+  const reclaimed = second.claimMessageExecutionLease({ sourceRowId: reclaimableRowId, now: 21_000, leaseMs: 1_000 });
+  assert.equal(reclaimed.state, "claimed");
+  if (reclaimed.state !== "claimed") throw new Error("expected reclaimed execution owner");
+  assert.equal(reclaimed.reclaimed, true);
+  assert.notEqual(reclaimed.leaseToken, expiredOwner.leaseToken);
+  assert.equal(first.renewMessageExecutionLease({
+    sourceRowId: reclaimableRowId,
+    leaseToken: expiredOwner.leaseToken,
+    now: 21_000,
+  }), false, "expired owner cannot renew after another worker takes over");
+  assert.equal(first.completeConsumerMessageWithExecutionLease({
+    consumerKey: "worker:first",
+    sourceRowId: reclaimableRowId,
+    leaseToken: expiredOwner.leaseToken,
+    completedAt: 21_001,
+  }), false, "expired owner cannot acknowledge a reclaimed row");
+  assert.equal(second.releaseMessageExecutionLease({
+    sourceRowId: reclaimableRowId,
+    leaseToken: reclaimed.leaseToken,
+  }), true);
+  assert.equal(first.claimMessageExecutionLease({ sourceRowId: reclaimableRowId, now: 21_002 }).state, "claimed");
+
+  first.close();
+  second.close();
 });
 
 test("pollMessages does not skip rows when a batch contains out-of-order timestamps", (t) => {
@@ -1036,7 +1123,7 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   old.close();
   const upgraded = new SharedDb(dbPath);
   assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
-  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 26);
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 28);
   const columns = upgraded.db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string; dflt_value: string | null }>;
   assert.equal(columns.find(column => column.name === "publication_state")?.dflt_value, "'published'");
   const now = Date.now();
@@ -1055,5 +1142,23 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   upgraded.close();
   const reapplied = new SharedDb(dbPath);
   assert.equal(reapplied.listSchemaMigrations().filter(m => m.version === 26).length, 1);
+  reapplied.db.exec("DELETE FROM schema_migrations WHERE version = 27");
+  reapplied.db.exec("DROP TABLE image_intent_routes");
   reapplied.close();
+  const routeLedgerReapplied = new SharedDb(dbPath);
+  assert.equal(routeLedgerReapplied.listSchemaMigrations().filter(m => m.version === 27).length, 1);
+  assert.equal(
+    routeLedgerReapplied.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_intent_routes'").get()?.name,
+    "image_intent_routes",
+  );
+  routeLedgerReapplied.db.exec("DELETE FROM schema_migrations WHERE version = 28");
+  routeLedgerReapplied.db.exec("DROP TABLE message_execution_leases");
+  routeLedgerReapplied.close();
+  const executionLeasesReapplied = new SharedDb(dbPath);
+  assert.equal(executionLeasesReapplied.listSchemaMigrations().filter(m => m.version === 28).length, 1);
+  assert.equal(
+    executionLeasesReapplied.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_execution_leases'").get()?.name,
+    "message_execution_leases",
+  );
+  executionLeasesReapplied.close();
 });

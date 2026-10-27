@@ -103,6 +103,7 @@ function failureReasonLabel(reason?: string): string {
     provider_disabled: "生图能力未启用",
     result_unknown: "生成结果未知",
     upstream_network: "上游网络异常",
+    upstream_rate_limit: "上游限流",
     upstream_rejected: "上游拒绝请求",
     upstream_timeout: "上游超时",
     upstream_unavailable: "上游暂不可用",

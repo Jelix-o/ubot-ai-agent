@@ -3,12 +3,21 @@ import { ReplyModelRouter } from "./reply-model-router.js";
 import type { GroupBotConfig } from "../types.js";
 import { logWarn } from "../logger.js";
 import type { SystemModelConfig, SystemModelPurpose } from "../types.js";
-import type { AiService } from "./ai-service.js";
-import { AiService as OpenAiService } from "./ai-service.js";
+import {
+  AiService as OpenAiService,
+  ImageIntentClassificationError,
+  type AiService,
+} from "./ai-service.js";
 import { resolveProviderCapabilities } from "./ai-provider.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { ProviderCapabilityPolicy, ProviderProtocol } from "./capability-policy-service.js";
 import type { SystemSettingsStore } from "./system-settings-store.js";
+import {
+  ImageIntentRouterError,
+  type ImageIntentClassifier,
+  type ImageIntentRoute,
+  type ImageIntentRouterInput,
+} from "./image-intent-router-plugin.js";
 
 export type RuntimeAiService = Pick<
   AiService,
@@ -21,7 +30,7 @@ export type RuntimeAiService = Pick<
   | "generateBroadcastQuip"
   | "generateScheduledReminderText"
   | "generateChatPeriodSummary"
-> & Partial<Pick<AiService, "resolveConversationContext">>;
+> & Partial<Pick<AiService, "resolveConversationContext" | "classifyImageIntent">>;
 
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
@@ -45,7 +54,7 @@ export class ConfiguredModelUnavailableError extends Error {
   }
 }
 
-export class ConfiguredAiService implements RuntimeAiService {
+export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassifier {
   private auxiliaryRouter?: ReplyModelRouter;
   private readonly modelIds = new WeakMap<object, string>();
   private cachedService?: {
@@ -67,14 +76,20 @@ export class ConfiguredAiService implements RuntimeAiService {
           reasoningEffort: model.reasoningEffort,
           maxCompletionTokens: model.maxCompletionTokens,
           timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
-          providerCapabilities,
+          providerCapabilities: {
+            ...providerCapabilities,
+            toolCalling: model.capabilities?.toolCalling === true,
+          },
         });
       }
       return new OpenAiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
         reasoningEffort: model.reasoningEffort,
         maxCompletionTokens: model.maxCompletionTokens,
         timeoutMs: providerCapabilities.requestTimeout ? model.requestTimeoutMs : undefined,
-        providerCapabilities,
+        providerCapabilities: {
+          ...providerCapabilities,
+          toolCalling: model.capabilities?.toolCalling === true,
+        },
       });
     },
     private readonly selectedModelId?: string,
@@ -90,6 +105,53 @@ export class ConfiguredAiService implements RuntimeAiService {
   async generateReply(args: Parameters<AiService["generateReply"]>[0]): ReturnType<AiService["generateReply"]> {
     const service = await this.resolveService();
     return withModelOperation("reply", undefined, () => service.generateReply(args), this.modelIds.get(service));
+  }
+
+  /**
+   * Image routing is intentionally bound to the explicitly selected dedicated
+   * model. It never borrows the reply model or the environment fallback.
+   */
+  async isImageIntentConfigured(): Promise<boolean> {
+    try {
+      await this.resolveSelectedImageIntentService();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async classifyImageIntent(input: ImageIntentRouterInput): Promise<ImageIntentRoute> {
+    let selectedModel: SystemModelConfig | undefined;
+    try {
+      const { service, model } = await this.resolveSelectedImageIntentService();
+      selectedModel = model;
+      if (!service.classifyImageIntent) {
+        throw new ConfiguredModelUnavailableError(model.id);
+      }
+      const classify = service.classifyImageIntent.bind(service);
+      const result = await withModelOperation(
+        "image_intent",
+        undefined,
+        () => classify(input),
+        model.id,
+      );
+      return {
+        action: result.action,
+        modelId: model.id,
+        model: result.model,
+      };
+    } catch (error) {
+      if (error instanceof ImageIntentRouterError) {
+        throw error;
+      }
+      const modelMetadata = selectedModel
+        ? { modelId: selectedModel.id, model: selectedModel.model }
+        : {};
+      if (error instanceof ImageIntentClassificationError && error.code === "invalid_response") {
+        throw new ImageIntentRouterError("invalid_response", { cause: error, ...modelMetadata });
+      }
+      throw new ImageIntentRouterError("unavailable", { cause: error, ...modelMetadata });
+    }
   }
 
   async resolveConversationContext(args: Parameters<AiService["resolveConversationContext"]>[0]): Promise<string> {
@@ -210,6 +272,53 @@ export class ConfiguredAiService implements RuntimeAiService {
     }
   }
 
+  private async resolveSelectedImageIntentService(): Promise<{
+    service: RuntimeAiService;
+    model: SystemModelConfig;
+  }> {
+    const settings = await this.systemSettingsStore.getInternal();
+    const selectedModelId = settings.selectedModelIds.image_intent;
+    const model = selectedModelId
+      ? settings.models.find((item) => item.id === selectedModelId && isUsableImageIntentModel(item))
+      : undefined;
+    if (!model) {
+      throw new ConfiguredModelUnavailableError(selectedModelId || "image_intent");
+    }
+
+    const protocol = normalizeProtocol(model.apiProtocol);
+    this.requireProviderChat(protocol);
+    const policyCapabilities = this.capabilityPolicy?.getProviderCapabilityOverrides(protocol);
+    const key = [
+      model.id,
+      model.baseUrl,
+      model.model,
+      model.apiKey,
+      model.apiProtocol,
+      JSON.stringify(model.capabilities ?? {}),
+      model.supportsVision,
+      model.reasoningEffort,
+      model.maxCompletionTokens,
+      model.requestTimeoutMs,
+      JSON.stringify(policyCapabilities ?? {}),
+    ].join("|");
+    if (this.cachedService?.key === key) {
+      if (!this.cachedService.service.classifyImageIntent) {
+        throw new ConfiguredModelUnavailableError(model.id);
+      }
+      return { service: this.cachedService.service, model };
+    }
+
+    // Unlike ordinary reply composition, the classifier has no fallback
+    // model. A malformed or unavailable configured router is a closed gate.
+    const service = this.factory(model, policyCapabilities);
+    if (!service.classifyImageIntent) {
+      throw new ConfiguredModelUnavailableError(model.id);
+    }
+    this.modelIds.set(service, model.id);
+    this.cachedService = { key, service };
+    return { service, model };
+  }
+
   private requireProviderChat(protocol: ProviderProtocol): void {
     if (this.capabilityPolicy?.isProviderFeatureEnabled(protocol, "chat") === false) {
       throw new ProviderCapabilityDisabledError(protocol, "chat");
@@ -270,6 +379,13 @@ function isUsableModel(model: SystemModelConfig): boolean {
     Boolean(model.baseUrl.trim()) &&
     Boolean(model.model.trim()) &&
     Boolean(model.apiKey?.trim());
+}
+
+function isUsableImageIntentModel(model: SystemModelConfig): boolean {
+  return model.purpose === "image_intent" &&
+    model.apiProtocol !== "anthropic" &&
+    model.capabilities?.toolCalling === true &&
+    isUsableModel(model);
 }
 
 function isSelectableModelPurpose(purpose: SystemModelPurpose): boolean {

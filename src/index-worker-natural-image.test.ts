@@ -234,13 +234,13 @@ test("Worker routes only canonical bot mentions into per-member natural image qu
   ], "canonical segment order must survive ingress-to-worker replay");
 
   assert.ok(routeFacts.some((fact) => fact.messageId === "1001" && fact.hasTrustedBotMention));
-  assert.ok(routeFacts.some((fact) => fact.messageId === "1004" && !fact.hasTrustedBotMention));
   assert.ok(routeFacts.some((fact) => fact.messageId === "1005" && fact.hasTrustedReply));
   assert.ok(routeFacts.some((fact) => fact.messageId === "1005" && fact.replyIsGeneratedImage));
-  assert.ok(routeFacts.some((fact) => fact.messageId === "1006" && !fact.hasTrustedReply));
-  assert.ok(routeFacts.some((fact) => fact.messageId === "1006" && !fact.replyIsGeneratedImage));
-  assert.ok(routeFacts.some((fact) => fact.messageId === "1007" && fact.hasTrustedReply));
-  assert.ok(routeFacts.some((fact) => fact.messageId === "1007" && !fact.replyIsGeneratedImage));
+  assert.equal(
+    routeFacts.some((fact) => ["1004", "1006", "1007"].includes(fact.messageId)),
+    false,
+    "untrusted mentions, legacy replies, and unpublished image receipts must be rejected before natural parsing",
+  );
   assert.equal(
     hasImageRoutingOptions(handled.find((entry) => entry.messageId === "1005")?.options),
     true,

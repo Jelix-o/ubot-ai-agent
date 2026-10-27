@@ -123,6 +123,11 @@ function normalizeFile(value: Partial<ModelHealthHistoryFile>): ModelHealthHisto
 }
 
 function normalizeEntry(value: Partial<ModelHealthHistoryEntry>): ModelHealthHistoryEntry {
+  const probeType = value.probeType === "chat" || value.probeType === "image" || value.probeType === "image_intent"
+    ? value.probeType
+    : undefined;
+  const upstreamStatusCode = normalizeUpstreamStatusCode(value.upstreamStatusCode);
+  const failureKind = normalizeFailureKind(value.failureKind);
   return {
     id: String(value.id || "").trim().slice(0, 80),
     purpose: normalizePurpose(value.purpose),
@@ -138,6 +143,9 @@ function normalizeEntry(value: Partial<ModelHealthHistoryEntry>): ModelHealthHis
     cached: value.cached === true,
     skipped: value.skipped === true,
     source: value.source === "manual" || value.source === "overview" || value.source === "runtime" ? value.source : "health",
+    ...(probeType ? { probeType } : {}),
+    ...(upstreamStatusCode === undefined ? {} : { upstreamStatusCode }),
+    ...(failureKind ? { failureKind } : {}),
   };
 }
 
@@ -146,6 +154,7 @@ function normalizePurpose(value: unknown): SystemModelPurpose {
     value === "summary" ||
     value === "knowledge" ||
     value === "image" ||
+    value === "image_intent" ||
     value === "custom"
     ? value
     : "custom";
@@ -160,6 +169,23 @@ function normalizeIso(value: unknown): string | undefined {
 function normalizeLatency(value: unknown): number {
   const numberValue = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numberValue) ? Math.max(0, Math.floor(numberValue)) : 0;
+}
+
+function normalizeUpstreamStatusCode(value: unknown): number | undefined {
+  const statusCode = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined;
+}
+
+function normalizeFailureKind(value: unknown): AiHealthStatus["failureKind"] | undefined {
+  return value === "auth" ||
+    value === "rate_limit" ||
+    value === "unavailable" ||
+    value === "timeout" ||
+    value === "network" ||
+    value === "format_error" ||
+    value === "unknown"
+    ? value
+    : undefined;
 }
 
 function cloneEntry(entry: ModelHealthHistoryEntry): ModelHealthHistoryEntry {

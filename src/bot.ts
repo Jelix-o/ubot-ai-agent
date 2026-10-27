@@ -118,7 +118,9 @@ import {
 } from "./services/image-preview-archive-service.js";
 import {
   parseNaturalImageRequest,
+  parseNaturalImageRequestForIntent,
   type NaturalImageRequest,
+  type NaturalImageIntentAction,
 } from "./services/natural-image-request.js";
 import type { ImageRequestKind, ImageRequestRepository, ImageRequestTriggerSource } from "./services/image-request-repository.js";
 import type {
@@ -455,11 +457,19 @@ interface HandleGroupMessageOptions {
   hasTrustedBotMention?: boolean;
   hasTrustedReply?: boolean;
   replyIsGeneratedImage?: boolean;
+  /**
+   * A Worker-owned image intent route. Its action has already been classified
+   * and persisted, so this turn must not re-run the legacy text parser.
+   */
+  naturalImageRequest?: NaturalImageRequest;
+  naturalImageRoutingDecided?: boolean;
 }
 
 interface ImageRequestExecutionOptions {
   avatarRequest?: AvatarEditRequest;
   parsedPrompt?: ReturnType<typeof parseImagePrompt>;
+  /** A router-selected natural generation must not inherit message media. */
+  ignoreMessageReferences?: boolean;
   /** Durable ingress row when the Worker owns this message. */
   sourceRowId?: number;
   triggerSource?: "command" | "natural";
@@ -669,11 +679,52 @@ export class BotApplication {
       this.isAvailableGeneratedImageReply(groupId, parsed.replyMessageId));
     return parseNaturalImageRequest({
       message: parsed,
+      promptText: extractNaturalImagePromptText(event.message, this.botQq),
       hasTrustedBotMention: facts.hasTrustedBotMention,
       hasTrustedReply,
       replyIsGeneratedImage,
       isExplicitCommand: isSystemCommandText(commandText, runtimeCommands),
     });
+  }
+
+  /**
+   * Worker-only conversion of a persisted image-intent action. The action is
+   * intentionally the only untrusted model output; prompt, ratio, target,
+   * and references remain locally parsed from the original platform message.
+   */
+  async getNaturalImageRequestForIntent(
+    event: NapcatGroupMessageEvent,
+    facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean },
+    action: NaturalImageIntentAction,
+  ): Promise<NaturalImageRequest | undefined> {
+    const groupId = String(event.group_id);
+    const groupConfig = await this.groupConfigService.getGroup(groupId);
+    if (!groupConfig || groupConfig.enabled === false || groupConfig.naturalImageRequestsEnabled === false) return undefined;
+    const parsed = parseGroupMessage(event.message, this.botQq);
+    const commandText = extractCommandText(event.message);
+    const runtimeCommands = await this.getRuntimeCommands();
+    const hasTrustedReply = facts.hasTrustedReply ?? Boolean(
+      parsed.replyMessageId && Array.isArray(event.message) && event.message.some((segment) =>
+        typeof segment !== "string" && segment.type === "reply" &&
+        String(segment.data?.id ?? "").trim() === parsed.replyMessageId,
+      ),
+    );
+    const replyIsGeneratedImage = hasTrustedReply && (facts.replyIsGeneratedImage ??
+      this.isAvailableGeneratedImageReply(groupId, parsed.replyMessageId));
+    return parseNaturalImageRequestForIntent({
+      message: parsed,
+      promptText: extractNaturalImagePromptText(event.message, this.botQq),
+      hasTrustedBotMention: facts.hasTrustedBotMention,
+      hasTrustedReply,
+      replyIsGeneratedImage,
+      isExplicitCommand: isSystemCommandText(commandText, runtimeCommands),
+    }, action);
+  }
+
+  /** Avoid invoking the routing model for disabled or unknown groups. */
+  async isNaturalImageRoutingEnabled(groupId: string): Promise<boolean> {
+    const groupConfig = await this.groupConfigService.getGroup(groupId);
+    return Boolean(groupConfig && groupConfig.enabled !== false && groupConfig.naturalImageRequestsEnabled !== false);
   }
 
   /**
@@ -1046,11 +1097,14 @@ export class BotApplication {
       return;
     }
 
-    const naturalImageRequest = await this.getNaturalImageRequest(event, {
-      hasTrustedBotMention: options.hasTrustedBotMention === true,
-      hasTrustedReply: options.hasTrustedReply,
-      replyIsGeneratedImage: options.replyIsGeneratedImage,
-    });
+    const naturalImageRequest = options.naturalImageRequest ??
+      (options.naturalImageRoutingDecided
+        ? undefined
+        : await this.getNaturalImageRequest(event, {
+            hasTrustedBotMention: options.hasTrustedBotMention === true,
+            hasTrustedReply: options.hasTrustedReply,
+            replyIsGeneratedImage: options.replyIsGeneratedImage,
+          }));
     if (naturalImageRequest) {
       await this.handleNaturalImageRequest(groupConfig, event, naturalImageRequest, signal, parsedMessage, options);
       return;
@@ -1869,7 +1923,7 @@ export class BotApplication {
     if (!parsed.prompt) {
       const commands = await this.getRuntimeCommands();
       await this.sendText(groupId, avatarRequest
-        ? "头像改图格式：#改图 让<目标>（的）头像（去）<动作>"
+        ? "头像改图格式：#改图 （让 / 将 / 把）<目标>（的）头像（去）<动作>，或 #改图 我头像<动作>"
         : editOnly
         ? "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"
         : `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
@@ -1904,7 +1958,9 @@ export class BotApplication {
     try {
       const referenceImages = avatarRequest
         ? await this.resolveAvatarEditReferences(groupConfig, event, avatarRequest, parsedMessage)
-        : await this.resolveImageEditReferences(groupId, event);
+        : executionOptions.ignoreMessageReferences
+          ? []
+          : await this.resolveImageEditReferences(groupId, event);
       editing ||= referenceImages.length > 0;
       if (editOnly && referenceImages.length === 0) {
         await this.sendText(groupId, "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"); return;
@@ -2120,11 +2176,11 @@ export class BotApplication {
     if (groupConfig.naturalImageRequestsEnabled === false) return;
     if (request.kind === "clarification") {
       const text = request.reason === "missing_reference"
-        ? "改图请附图，或回复会仙已生成的图片后说明要怎么改"
+        ? "改图请附图，或回复会仙已确认投递的生成图片后说明要怎么改"
         : request.reason === "reference_requires_edit_instruction"
           ? "附图后请明确说明怎么改，例如“把天空改成晚霞”"
           : request.reason === "avatar_syntax"
-            ? "头像改图格式：让<目标>（的）头像（去）<动作>"
+            ? "头像改图格式：（让 / 将 / 把）<目标>（的）头像（去）<动作>，也可说“我头像<动作>”"
             : request.reason === "invalid_ratio"
               ? "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"
               : "可说“生成一张 <描述>”，或附图后说“把这张图改成 <要求>”";
@@ -2159,6 +2215,7 @@ export class BotApplication {
       parsedMessage,
       {
         parsedPrompt: { prompt: request.prompt, ...(request.size ? { size: request.size } : {}) },
+        ...(request.kind === "generate" ? { ignoreMessageReferences: true } : {}),
         sourceRowId: handleOptions.imageRequestSourceRowId,
         triggerSource: "natural",
         requestKind: request.kind === "edit" ? "edit" : "generation",
@@ -5722,6 +5779,37 @@ function extractCommandText(message: NapcatGroupMessageEvent["message"]): string
     .trim();
 }
 
+/**
+ * Builds the user-controlled portion of a natural image prompt without
+ * serializing verified QQ identities from platform @ segments. Typed text is
+ * intentionally preserved: it is not a verified identity and must not gain
+ * special semantics merely because it resembles an @ mention.
+ */
+function extractNaturalImagePromptText(
+  message: NapcatGroupMessageEvent["message"],
+  botQq: string,
+): string | undefined {
+  if (!Array.isArray(message)) return undefined;
+  const parts: string[] = [];
+  for (const segment of message) {
+    if (typeof segment === "string") {
+      parts.push(segment);
+      continue;
+    }
+    if (segment.type === "text") {
+      parts.push(segment.data?.text ?? "");
+      continue;
+    }
+    if (segment.type === "at") {
+      const userId = String(segment.data?.qq ?? "").trim();
+      if (userId && userId !== botQq) {
+        parts.push("一位群成员");
+      }
+    }
+  }
+  return parts.join(" ").replace(/\s+/gu, " ").trim();
+}
+
 function extractRepeatableText(message: NapcatGroupMessageEvent["message"], botQq: string): string | undefined {
   const parsedMessage = parseGroupMessage(message, botQq);
   if (parsedMessage.hasAtBot) {
@@ -6344,8 +6432,8 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
         "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
-        "编辑：附图或引用图片后发送 #改图 <修改要求>；也可用 #改图 让<目标>（的）头像（去）<动作>，最多 4 张参考图。",
-        "自然语言：真实 @会仙 后说“生成一张 <描述>”或附图后说“把这张图改成 <要求>”；回复会仙已生成图也可连续改图。",
+        "编辑：附图或引用图片后发送 #改图 <修改要求>；头像可用 #改图 （让 / 将 / 把）<目标>（的）头像（去）<动作>，或 #改图 我头像<动作>，最多 4 张参考图。",
+        "自然语言：真实 @会仙 后直接说明要生成、修改或让/将/把谁的头像做什么；已配置图片意图判断模型时自动选择能力。回复会仙已确认投递的生成图也可连续改图。",
         `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；文生图冷却 60 秒，图生图与改图冷却 15 秒`,
       ],
     }] : []),
@@ -6419,7 +6507,7 @@ function buildHelpOverviewMessage(
   const features = [
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图、引用或 #改图 让<目标>头像（去）<动作> 可编辑；真实 @会仙 可用明确自然语言请求`] : []),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图、引用或 #改图 （让 / 将 / 把）<目标>头像（去）<动作> 可编辑；配置图片意图判断模型后，真实 @会仙 可直接说图片需求`] : []),
     ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
     ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
     ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),
@@ -6908,7 +6996,9 @@ function formatModelPurpose(purpose: string): string {
 }
 
 function imageRequestLedgerErrorCode(error: unknown): string {
-  if (error instanceof ImageGenerationError) return error.code;
+  if (error instanceof ImageGenerationError) {
+    return confirmedImageRequestFailureCode(error) ?? error.code;
+  }
   if (error instanceof ImageEditReferenceError) return "invalid_reference";
   if (error instanceof ImagePreviewArchiveError) return "archive_failed";
   if (error instanceof NapCatActionOutcomeUnknownError) return "delivery_unknown";
@@ -6920,7 +7010,28 @@ function isImageRequestOutcomeUnknown(error: unknown, signal?: AbortSignal): boo
   if (error instanceof NapCatActionOutcomeUnknownError) return true;
   return error instanceof ImageGenerationError &&
     error.code === "upstream_unavailable" &&
-    error.diagnostics?.failureKind !== "rate_limit";
+    confirmedImageRequestFailureCode(error) === undefined;
+}
+
+/**
+ * A transport failure after submitting an image may have reached the provider,
+ * so it must stay quarantined. These diagnostic kinds instead prove that the
+ * provider rejected or completed the request, allowing a normal failed state.
+ */
+function confirmedImageRequestFailureCode(error: ImageGenerationError): string | undefined {
+  if (error.code !== "upstream_unavailable") return undefined;
+  switch (error.diagnostics?.failureKind) {
+    case "rate_limit":
+      return "upstream_rate_limit";
+    case "auth":
+      return "upstream_rejected";
+    case "content_blocked":
+      return "content_blocked";
+    case "format_error":
+      return "invalid_image_response";
+    default:
+      return undefined;
+  }
 }
 
 class ImageEditReferenceError extends Error {}

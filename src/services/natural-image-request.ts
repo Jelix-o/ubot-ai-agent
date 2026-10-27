@@ -7,6 +7,18 @@ import { parseImagePrompt } from "./image-generation-service.js";
 
 export type NaturalImageReferenceSource = "attachment" | "reply";
 
+/**
+ * The only action surface exposed by the image-intent routing plugin. It
+ * deliberately carries no prompt, identity, image URL, or execution option;
+ * those values are recovered and validated locally from trusted segments.
+ */
+export type NaturalImageIntentAction =
+  | "chat"
+  | "generate"
+  | "edit"
+  | "avatar_edit"
+  | "clarification";
+
 export type NaturalImageClarificationReason =
   | "avatar_syntax"
   | "invalid_ratio"
@@ -45,6 +57,12 @@ export type NaturalImageRequest =
  */
 export interface NaturalImageRequestInput {
   message: Pick<ParsedGroupMessage, "text" | "images" | "replyMessageId">;
+  /**
+   * Optional display-safe prompt text reconstructed from trusted message
+   * segments. It must not contain identifiers from structured @ segments.
+   * Local avatar-target parsing continues to use `message.text`.
+   */
+  promptText?: string;
   /** True only when the original platform event contained a real @bot segment. */
   hasTrustedBotMention: boolean;
   /** True only when the original platform event contained the matching reply segment. */
@@ -53,6 +71,85 @@ export interface NaturalImageRequestInput {
   replyIsGeneratedImage: boolean;
   /** Prevent a configured explicit command from being reinterpreted as natural text. */
   isExplicitCommand?: boolean;
+}
+
+/**
+ * Converts an already-authorized, model-selected image action into the same
+ * bounded request used by explicit commands. The router never supplies a
+ * prompt or an identity; it can only choose this action enum.
+ */
+export function parseNaturalImageRequestForIntent(
+  input: NaturalImageRequestInput,
+  action: NaturalImageIntentAction,
+): NaturalImageRequest | undefined {
+  const text = input.message.text.trim();
+  if (input.isExplicitCommand || text.startsWith("#")) return undefined;
+  if (text && (isQuestionOrNegative(text) || PAGE_WORDING.test(text))) return undefined;
+  const promptText = (input.promptText ?? text).trim();
+
+  const hasAttachment = input.message.images.length > 0;
+  const hasTrustedReply = Boolean(input.message.replyMessageId && input.hasTrustedReply);
+  const hasGeneratedReply = hasTrustedReply && input.replyIsGeneratedImage;
+  const hasReference = hasAttachment || hasTrustedReply;
+  const isAuthorized = input.hasTrustedBotMention || hasGeneratedReply;
+
+  if (action === "chat") return undefined;
+  if (action === "clarification") {
+    return { kind: "clarification", reason: "unrecognized_intent" };
+  }
+
+  if (action === "avatar_edit") {
+    if (!input.hasTrustedBotMention) return undefined;
+    const avatar = parseAvatarEditRequest(text);
+    if (avatar.kind === "invalid_avatar_edit") {
+      return { kind: "clarification", reason: "avatar_syntax" };
+    }
+    if (avatar.kind !== "avatar_edit") {
+      return { kind: "clarification", reason: "avatar_syntax" };
+    }
+    const promptAvatar = parseAvatarEditRequest(promptText);
+    const promptAction = promptAvatar.kind === "avatar_edit"
+      ? promptAvatar.request.action
+      : avatar.request.action;
+    const parsed = parsePrompt(promptAction);
+    if (!parsed) return { kind: "clarification", reason: "invalid_ratio" };
+    if (!parsed.prompt) return { kind: "clarification", reason: "missing_prompt" };
+    return {
+      kind: "avatar_edit",
+      request: { ...avatar.request, action: parsed.prompt },
+      prompt: parsed.prompt,
+      ...(parsed.size ? { size: parsed.size } : {}),
+    };
+  }
+
+  if (action === "generate") {
+    if (!input.hasTrustedBotMention) return undefined;
+    // Preserve the raw user wording for arbitrary requests, while removing
+    // only a deterministic generation lead when it is present. The routing
+    // model never creates or rewrites the prompt. A router-selected generation
+    // deliberately ignores attached or quoted media instead of turning into an
+    // edit merely because media is present on the message.
+    const parsed = parsePrompt(findGenerationRequest(promptText)?.[1] ?? promptText);
+    if (!parsed) return { kind: "clarification", reason: "invalid_ratio" };
+    if (!parsed.prompt) return { kind: "clarification", reason: "missing_prompt" };
+    return {
+      kind: "generate",
+      prompt: parsed.prompt,
+      ...(parsed.size ? { size: parsed.size } : {}),
+    };
+  }
+
+  if (!isAuthorized) return undefined;
+  if (!hasReference) return { kind: "clarification", reason: "missing_reference" };
+  const parsed = parsePrompt(promptText);
+  if (!parsed) return { kind: "clarification", reason: "invalid_ratio" };
+  if (!parsed.prompt) return { kind: "clarification", reason: "missing_prompt" };
+  return {
+    kind: "edit",
+    prompt: parsed.prompt,
+    ...(parsed.size ? { size: parsed.size } : {}),
+    referenceSource: hasTrustedReply ? "reply" : "attachment",
+  };
 }
 
 const DRAW_GENERATION_REQUEST = /^(?:请\s*)?(?:(?:帮我|给我|麻烦(?:你)?|帮忙)\s*)?(?:画|绘制)\s*(?:一(?:张|幅|副))?\s*(?:图片|图|图像|照片|插画|海报|壁纸)?(?:[：:,，]\s*|\s+)?([\s\S]*)$/u;

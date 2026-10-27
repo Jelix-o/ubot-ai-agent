@@ -108,6 +108,9 @@ export class SystemSettingsStore {
     }, this.defaultModels);
     if (input.replyRouting !== undefined) validateReplyRouting(input.replyRouting, nextModels);
     if (input.selectedModelIds?.reply && !nextModels.some(model => model.id === input.selectedModelIds!.reply && model.purpose === "reply" && model.enabled && model.hasApiKey)) throw new Error("reply_model_not_approved");
+    if (input.selectedModelIds?.image_intent && !isApprovedImageIntentModel(nextModels.find(model => model.id === input.selectedModelIds!.image_intent))) {
+      throw new Error("image_intent_model_not_approved");
+    }
     return next;
   }
 
@@ -402,8 +405,8 @@ function validateModelUpdateInput(value: unknown): void {
     if (!isRuntimeModelPurpose(record.purpose)) {
       throw new Error("invalid_model_purpose");
     }
-    if (record.purpose === "image" && record.apiProtocol === "anthropic") {
-      throw new Error("invalid_image_model_protocol");
+    if ((record.purpose === "image" || record.purpose === "image_intent") && record.apiProtocol === "anthropic") {
+      throw new Error(record.purpose === "image" ? "invalid_image_model_protocol" : "invalid_image_intent_model_protocol");
     }
     const name = String(record.name ?? "").trim();
     const shortName = String(record.shortName ?? "").trim();
@@ -480,7 +483,7 @@ function normalizeModel(value: Partial<SystemModelConfig>): SystemModelConfig | 
   if (!purpose) {
     return undefined;
   }
-  const apiProtocol = purpose === "image"
+  const apiProtocol = purpose === "image" || purpose === "image_intent"
     ? "openai"
     : value.apiProtocol === "anthropic" ? "anthropic" : "openai";
   const isDefaultGptReply = id === "gpt" && purpose === "reply";
@@ -531,6 +534,7 @@ function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
     value === "summary" ||
     value === "knowledge" ||
     value === "image" ||
+    value === "image_intent" ||
     value === "custom";
 }
 
@@ -546,6 +550,7 @@ function normalizeModelCapabilities(
     requestTimeout: true,
     imageGeneration: protocol === "openai" && value.imageGeneration === true,
     ...(value.imageEditing !== undefined ? { imageEditing: protocol === "openai" && value.imageEditing === true } : {}),
+    ...(value.toolCalling !== undefined ? { toolCalling: value.toolCalling === true } : {}),
   };
 }
 
@@ -563,18 +568,33 @@ function normalizeSelectedModelIds(value: unknown, models: SystemModelConfig[]):
       if (modelIdValue === "") { selected[purpose] = ""; continue; }
       const modelId = typeof modelIdValue === "string" ? normalizeModelId(modelIdValue.trim()) : "";
       const model = modelId ? modelById.get(modelId) : undefined;
-      if (model && model.purpose === purpose) {
+      if (model && model.purpose === purpose && canSelectModelForPurpose(model)) {
         selected[purpose] = model.id;
       }
     }
   }
   for (const model of models) {
     if (!isRuntimeModelPurpose(model.purpose)) continue;
-    if (!Object.hasOwn(selected, model.purpose) && model.enabled && model.hasApiKey) {
+    if (!Object.hasOwn(selected, model.purpose) && canSelectModelForPurpose(model)) {
       selected[model.purpose] = model.id;
     }
   }
   return selected;
+}
+
+function canSelectModelForPurpose(model: SystemModelConfig): boolean {
+  if (!model.enabled || !model.hasApiKey) return false;
+  return model.purpose !== "image_intent" || isApprovedImageIntentModel(model);
+}
+
+function isApprovedImageIntentModel(model: SystemModelConfig | undefined): boolean {
+  return Boolean(
+    model &&
+    model.purpose === "image_intent" &&
+    model.enabled &&
+    Boolean(model.apiKey?.trim()) &&
+    model.capabilities?.toolCalling === true,
+  );
 }
 
 function mergeModelApiKeyState(current: SystemModelConfig[], incoming: unknown): SystemSettingsUpdateInput["models"] {
@@ -645,7 +665,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "bt_search", title: "BT 资源搜索", primary: "#bt", aliases: ["/bt"], permission: "member", help: "搜索动漫、影视和成人资源，返回磁力与种子链接；支持 --fast、--full 和来源筛选" },
     { id: "conversation", title: "对话", primary: "#对话", aliases: ["#clear"], permission: "member", help: "清空或管理当前群对话上下文" },
     { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
-    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图", "#改图"], permission: "member", help: "根据文字生成图片；真实 @会仙 的明确请求或回复会仙生成图的明确改图也可触发；附图、引用或 #改图 让<目标>头像（去）<动作> 可编辑，最多 4 张参考图" },
+    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图", "#改图"], permission: "member", help: "根据文字生成图片；配置图片意图判断模型后，真实 @会仙 的请求或回复会仙已确认投递生成图的改图也可触发；附图、引用或 #改图 （让 / 将 / 把）<目标>头像（去）<动作> 可编辑，最多 4 张参考图" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
     { id: "model", title: "模型", primary: "#模型", permission: "super_admin", help: "查看模型状态；超级管理员可切换模型或恢复跟随统一默认" },
     { id: "mute", title: "静默模式", primary: "#闭嘴", aliases: ["#说话"], permission: "group_admin", help: "让机器人进入或退出静默模式" },

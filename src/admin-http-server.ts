@@ -124,7 +124,7 @@ type HealthStatusResponse = {
   checkedAt?: string;
   latencyMs?: number;
   cached?: boolean;
-  probeType?: "chat" | "image";
+  probeType?: "chat" | "image" | "image_intent";
   upstreamStatusCode?: number;
   failureKind?: AiHealthStatus["failureKind"];
 };
@@ -189,7 +189,7 @@ type ImageRequestStatus = "accepted" | "submitting" | "generated" | "queued" | "
 const SAFE_IMAGE_REQUEST_FAILURE_REASONS = new Set([
   "archive_failed", "busy", "content_blocked", "cooldown", "delivery_failed", "delivery_not_queued", "delivery_unknown",
   "editing_not_configured", "invalid_image_response", "invalid_reference", "invalid_size", "not_configured",
-  "provider_disabled", "result_unknown", "upstream_network", "upstream_rejected", "upstream_timeout", "upstream_unavailable",
+  "provider_disabled", "result_unknown", "upstream_network", "upstream_rate_limit", "upstream_rejected", "upstream_timeout", "upstream_unavailable",
 ]);
 
 /**
@@ -2530,6 +2530,8 @@ export class AdminHttpServer {
           "duplicate_model_id",
           "invalid_model_purpose",
           "invalid_image_model_protocol",
+          "invalid_image_intent_model_protocol",
+          "image_intent_model_not_approved",
           "voice_feature_retired",
           "invalid_memory_confidence_thresholds",
         ].includes(errorCode)) {
@@ -4188,6 +4190,7 @@ function normalizeModelPurpose(value: string): SystemModelPurpose {
     value === "summary" ||
     value === "knowledge" ||
     value === "image" ||
+    value === "image_intent" ||
     value === "custom"
     ? value
     : "custom";
@@ -4198,7 +4201,7 @@ function runtimeModels(settings: SystemSettings): RuntimeSystemModelConfig[] {
 }
 
 function isRuntimeModelPurpose(value: unknown): value is SystemModelPurpose {
-  return value === "reply" || value === "summary" || value === "knowledge" || value === "image" || value === "custom";
+  return value === "reply" || value === "summary" || value === "knowledge" || value === "image" || value === "image_intent" || value === "custom";
 }
 
 function normalizeLogLimit(value: string | undefined): number {

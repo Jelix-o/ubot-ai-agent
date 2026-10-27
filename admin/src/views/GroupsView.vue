@@ -71,7 +71,7 @@ const capabilities = [
   { key: "visionEnabled", label: "图片理解", detail: "理解群聊中提供的图片。" },
   { key: "ambientGroupContextEnabled", label: "短时群聊语境", detail: "使用近期群聊上下文组织回复。" },
   { key: "htmlPreviewEnabled", label: "静态网页预览", detail: "允许生成并分享网页预览。" },
-  { key: "naturalImageRequestsEnabled", label: "自然语言生图与改图", detail: "仅真实 @会仙 或回复会仙生成的图片时，允许使用自然语言请求图片。" },
+  { key: "naturalImageRequestsEnabled", label: "自然语言生图与改图", detail: "仅真实 @会仙 或回复会仙已确认投递的生成图片时，允许由图片意图判断模型处理自然语言请求。" },
   { key: "opsAlertsEnabled", label: "运维告警", detail: "向当前群发送运行告警。" },
 ] as const;
 

@@ -61,7 +61,34 @@ test("parses the avatar-edit form with optional command, 的 and 头像", () => 
     kind: "avatar_edit",
     request: { targetText: "@40001", action: "吐舌头", hasExplicitAvatarWord: true },
   });
+  assert.deepEqual(parseAvatarEditRequest("将我头像美化一下"), {
+    kind: "avatar_edit",
+    request: { targetText: "我", action: "美化一下", hasExplicitAvatarWord: true },
+  });
+  assert.deepEqual(parseAvatarEditRequest("把 产品王 的头像去海边散步"), {
+    kind: "avatar_edit",
+    request: { targetText: "产品王", action: "海边散步", hasExplicitAvatarWord: true },
+  });
+  assert.deepEqual(parseAvatarEditRequest("我头像美化一下"), {
+    kind: "avatar_edit",
+    request: { targetText: "我", action: "美化一下", hasExplicitAvatarWord: true },
+  });
+  assert.deepEqual(
+    parseAvatarEditRequest("产品王头像美化一下"),
+    { kind: "not_avatar_edit" },
+    "only the self shorthand may omit 让 / 将 / 把",
+  );
   assert.deepEqual(parseAvatarEditRequest("给图片加一条狗"), { kind: "not_avatar_edit" });
+  assert.deepEqual(parseAvatarEditRequest("把产品王去海边散步"), { kind: "not_avatar_edit" });
+  assert.deepEqual(
+    parseAvatarEditRequest("把这张图片改成我的头像风格"),
+    { kind: "not_avatar_edit" },
+    "ordinary image editing wording must not be captured as an avatar target",
+  );
+  assert.deepEqual(parseAvatarEditRequest("把图图头像去海边散步"), {
+    kind: "avatar_edit",
+    request: { targetText: "图图", action: "海边散步", hasExplicitAvatarWord: true },
+  });
   assert.deepEqual(parseAvatarEditRequest("让小王头像"), { kind: "invalid_avatar_edit", code: "action_missing" });
   assert.deepEqual(parseAvatarEditRequest("让头像去跑步"), { kind: "invalid_avatar_edit", code: "target_missing" });
 });

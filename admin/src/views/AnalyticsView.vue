@@ -18,7 +18,7 @@ const filters=reactive({groupId:typeof route.query.analyticsGroup==="string"?rou
 const data=shallowRef<AnalyticsData|null>(null), requests=shallowRef<RequestRecord[]>([]), pagination=reactive<Pagination>({page:1,pageSize:25,total:0,totalPages:1});
 useUrlState(pagination,["page","pageSize"],"request");
 const loading=shallowRef(false),failed=shallowRef(""),detailLoading=shallowRef(false),trend=shallowRef<TrendKey>("calls");
-const purposeLabels:Record<string,string>={reply:"对话",html:"网页生成",image:"图片生成",probe:"检测",summary:"总结",knowledge:"知识",memory:"记忆",broadcast:"播报",reminder:"提醒",background:"后台任务"};
+const purposeLabels:Record<string,string>={reply:"对话",html:"网页生成",image:"图片生成",image_intent:"图片意图判断",probe:"检测",summary:"总结",knowledge:"知识",memory:"记忆",broadcast:"播报",reminder:"提醒",background:"后台任务"};
 const currentRange=computed(()=>range.value==="custom"?`${filters.fromDate} 至 ${filters.toDate}`:range.value==="24h"?"近 24 小时":range.value==="7d"?"近 7 天":"近 30 天");
 const chargeLines=computed(()=>Object.entries(data.value?.summary.charges||{}));
 const metricCards=computed(()=>{const summary=data.value?.summary;return [

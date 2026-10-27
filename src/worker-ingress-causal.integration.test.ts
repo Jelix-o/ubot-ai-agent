@@ -896,12 +896,9 @@ test("raw CQ-looking text stays non-authoritative through ingress while #改图 
   assert.deepEqual(JSON.parse(forgedSource.canonical_segments_json ?? "null"), [
     { type: "text", text: rawNatural },
   ]);
-  assert.deepEqual(naturalFacts.find((fact) => fact.text === rawNatural), {
-    text: rawNatural,
-    hasTrustedBotMention: false,
-    hasTrustedReply: false,
-    replyIsGeneratedImage: false,
-  });
+  // Raw CQ-looking text has no structured provenance. It must not reach the
+  // natural image parser at all, so it cannot turn into a router/model call.
+  assert.equal(naturalFacts.some((fact) => fact.text === rawNatural), false);
 
   const rawCommandDelivery = received.find((delivery) => {
     const first = delivery.event.message[0];

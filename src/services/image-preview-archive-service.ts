@@ -41,6 +41,7 @@ const SAFE_IMAGE_REQUEST_FAILURE_REASONS = new Set([
   "provider_disabled",
   "result_unknown",
   "upstream_network",
+  "upstream_rate_limit",
   "upstream_rejected",
   "upstream_timeout",
   "upstream_unavailable",
@@ -343,8 +344,9 @@ export class ImagePreviewArchiveService {
    * Crash recovery for the narrow interval after private bytes and metadata
    * were stored but before the generated-image Outbox transaction committed.
    * Pending records have never been visible or delivered, so discard them
-   * rather than trying a second delivery after restart. The worker invokes
-   * this before creating its consumer, so it cannot race a live enqueue.
+   * rather than trying a second delivery after restart. A separately running
+   * Worker can own the same ingress row, however, so `discardUnpublished`
+   * rechecks its durable execution lease inside the deletion transaction.
    */
   async recoverUnpublished(now = this.now()): Promise<number> {
     let recovered = 0;
@@ -368,6 +370,18 @@ export class ImagePreviewArchiveService {
     const result = this.repository.runAtomically(() => {
       const current = this.repository.get(id);
       if (!current || current.publicationState !== "pending") return { state: "unchanged" } as const;
+
+      // `recoverUnpublished` may run while another Worker is still between
+      // archive creation and its Outbox transaction. The execution lease is
+      // the cross-process ownership boundary for that source row; never turn
+      // an active request into a terminal failed preview underneath its owner.
+      if (this.sharedDb.hasLiveMessageExecutionLeaseForSource({
+        groupId: current.groupId,
+        sourceMessageId: current.sourceMessageId,
+        now,
+      })) {
+        return { state: "unchanged" } as const;
+      }
 
       const linked = this.imageRequestRepository.getBySource(current.groupId, current.sourceMessageId);
       const outbox = this.sharedDb.db.prepare(

@@ -214,7 +214,7 @@ export interface HealthStatus {
   latencyMs?: number;
   cached?: boolean;
   skipped?: boolean;
-  probeType?: "chat" | "image";
+  probeType?: "chat" | "image" | "image_intent";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -335,12 +335,12 @@ export interface AdminAuthAuditEntry {
   createdAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "image_intent" | "custom";
 export type ReasoningEffort = "high" | "xhigh";
 
 export interface SystemModelConfig {
   id: string;
-  capabilities?: { imageEditing?: boolean; [key: string]: unknown };
+  capabilities?: { imageEditing?: boolean; toolCalling?: boolean; [key: string]: unknown };
   name: string;
   shortName: string;
   baseUrl: string;

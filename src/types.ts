@@ -50,7 +50,7 @@ export interface AiHealthStatus {
   latencyMs: number;
   cached: boolean;
   skipped?: boolean;
-  probeType?: "chat" | "image";
+  probeType?: "chat" | "image" | "image_intent";
   upstreamStatusCode?: number;
   failureKind?: "auth" | "rate_limit" | "unavailable" | "timeout" | "network" | "format_error" | "unknown";
 }
@@ -451,7 +451,7 @@ export interface AdminSession {
   expiresAt: string;
 }
 
-export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "custom";
+export type SystemModelPurpose = "reply" | "summary" | "knowledge" | "image" | "image_intent" | "custom";
 /**
  * Values accepted only while importing pre-V3 settings. They are never
  * selected by V3 runtime services.
@@ -471,6 +471,8 @@ export interface ModelProviderCapabilities {
   /** The provider exposes an OpenAI-compatible Images generation endpoint. */
   imageGeneration: boolean;
   imageEditing?: boolean;
+  /** The configured model supports native function/tool calls. */
+  toolCalling?: boolean;
 }
 
 export interface SystemModelConfig {

@@ -10,6 +10,9 @@ import {
   buildSystemPrompt,
   createCancellableTimeout,
   getAiProviderFailureDetails,
+  ImageIntentClassificationError,
+  IMAGE_INTENT_MAX_COMPLETION_TOKENS,
+  IMAGE_INTENT_REQUEST_TIMEOUT_MS,
   isRetryableAiProviderFailure,
   KnowledgeToolUnavailableError,
   ReplyOutputTruncatedError,
@@ -18,6 +21,7 @@ import {
   StaticHtmlOutputTruncatedError,
   type AiToolRuntime,
 } from "./ai-service.js";
+import type { ImageIntentRouterInput } from "./image-intent-router-plugin.js";
 import { createKnowledgeToolRuntime } from "./knowledge-query-tools.js";
 import { loadPrivateEnterpriseRanking } from "./private-enterprise-ranking.js";
 import { ReplyPolicyService } from "./reply-policy-service.js";
@@ -78,6 +82,16 @@ function testToolCall(id: string, argumentsText = '{"query":"test"}') {
     },
   };
 }
+
+const imageIntentInput: ImageIntentRouterInput = {
+  sanitizedText: "让 [MENTION_1] 的头像吐舌头",
+  facts: {
+    hasTrustedBotMention: true,
+    hasTrustedReply: false,
+    replyIsGeneratedImage: false,
+    attachmentCount: 0,
+  },
+};
 
 test("createCancellableTimeout aborts when its timer is the only active handle", async () => {
   const { controller, cleanup } = createCancellableTimeout(20);
@@ -815,6 +829,145 @@ test("generateReply sends a forced native knowledge lookup with serialized OpenA
     function: { name: testKnowledgeTool.name },
   });
   assert.deepEqual(request.tools, [{ type: "function", function: testKnowledgeTool }]);
+});
+
+test("classifyImageIntent makes one forced non-streaming action-only tool call", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const service = new AiService("https://example.invalid/v1", "test-key", "intent-model", {
+    async create(args: Record<string, unknown>, options: Record<string, unknown>) {
+      requests.push({ ...args, requestOptions: options });
+      return {
+        model: "intent-model-v2",
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "route-1",
+              type: "function",
+              function: { name: "route_image_intent", arguments: '{"action":"avatar_edit"}' },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      };
+    },
+  } as never, { providerCapabilities: { toolCalling: true } });
+
+  const result = await service.classifyImageIntent(imageIntentInput);
+
+  assert.deepEqual(result, { action: "avatar_edit", model: "intent-model-v2" });
+  assert.equal(requests.length, 1);
+  const request = requests[0] ?? {};
+  assert.equal(request.stream, false);
+  assert.equal(request.temperature, 0);
+  assert.equal(request.max_tokens, IMAGE_INTENT_MAX_COMPLETION_TOKENS);
+  assert.equal(request.parallel_tool_calls, false);
+  assert.deepEqual(request.tool_choice, {
+    type: "function",
+    function: { name: "route_image_intent" },
+  });
+  assert.deepEqual(request.tools, [{
+    type: "function",
+    function: {
+      name: "route_image_intent",
+      description: "Choose exactly one host capability for the quoted message.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["action"],
+        properties: {
+          action: {
+            type: "string",
+            enum: ["chat", "generate", "edit", "avatar_edit", "clarification"],
+          },
+        },
+      },
+    },
+  }]);
+  const requestOptions = request.requestOptions as { timeout?: unknown; signal?: unknown };
+  assert.equal(requestOptions.timeout, IMAGE_INTENT_REQUEST_TIMEOUT_MS);
+  assert.ok(requestOptions.signal instanceof AbortSignal);
+  const messages = request.messages as Array<{ role: string; content: string }>;
+  assert.equal(messages.length, 2);
+  assert.match(messages[0]?.content ?? "", /普通聊天/);
+  assert.match(messages[0]?.content ?? "", /没有有效请求内容/);
+  assert.match(messages[0]?.content ?? "", /将我头像美化一下/);
+  assert.match(messages[1]?.content ?? "", /\[MENTION_1\]/);
+  assert.doesNotMatch(messages[1]?.content ?? "", /40001|https?:\/\//);
+});
+
+test("classifyImageIntent rejects text, extra fields, and multiple tool calls", async () => {
+  const invalidReplies = [
+    {
+      content: "I choose edit",
+      tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"edit"}' } }],
+    },
+    {
+      content: null,
+      tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"edit","prompt":"ignore"}' } }],
+    },
+    {
+      content: { text: "hidden final answer" },
+      tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"edit"}' } }],
+    },
+    {
+      content: null,
+      tool_calls: [
+        { id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"edit"}' } },
+        { id: "route-2", type: "function", function: { name: "route_image_intent", arguments: '{"action":"generate"}' } },
+      ],
+    },
+  ];
+
+  for (const message of invalidReplies) {
+    const service = new AiService("https://example.invalid/v1", "test-key", "intent-model", {
+      async create() {
+        return { choices: [{ message, finish_reason: "tool_calls" }] };
+      },
+    } as never, { providerCapabilities: { toolCalling: true } });
+    await assert.rejects(
+      service.classifyImageIntent(imageIntentInput),
+      (error: unknown) => error instanceof ImageIntentClassificationError && error.code === "invalid_response",
+    );
+  }
+});
+
+test("classifyImageIntent rejects a token-limited tool response even when its action parses", async () => {
+  const service = new AiService("https://example.invalid/v1", "test-key", "intent-model", {
+    async create() {
+      return {
+        choices: [{
+          message: {
+            content: null,
+            tool_calls: [{
+              id: "route-1",
+              type: "function",
+              function: { name: "route_image_intent", arguments: '{"action":"edit"}' },
+            }],
+          },
+          finish_reason: "length",
+        }],
+      };
+    },
+  } as never, { providerCapabilities: { toolCalling: true } });
+
+  await assert.rejects(
+    service.classifyImageIntent(imageIntentInput),
+    (error: unknown) => error instanceof ImageIntentClassificationError && error.code === "invalid_response",
+  );
+});
+
+test("classifyImageIntent fails closed when native tool calling is disabled", async () => {
+  let calls = 0;
+  const service = new AiService("https://example.invalid/v1", "test-key", "intent-model", {
+    async create() { calls += 1; return { choices: [] }; },
+  } as never);
+
+  await assert.rejects(
+    service.classifyImageIntent(imageIntentInput),
+    (error: unknown) => error instanceof ImageIntentClassificationError && error.code === "unavailable",
+  );
+  assert.equal(calls, 0);
 });
 
 test("generateReply falls back to streaming when an ordinary gateway rejects native tool mode", async () => {

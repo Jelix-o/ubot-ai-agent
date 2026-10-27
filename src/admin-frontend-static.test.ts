@@ -32,6 +32,24 @@ test("admin presents a single memory workspace without candidate routes", async 
   assert.doesNotMatch(api, /CandidateListResponse|pendingCandidateCount|type:\s*"candidate"/);
 });
 
+test("admin exposes a dedicated tool-capable image intent model configuration", async () => {
+  const [settings, api, health, analytics] = await Promise.all([
+    readAdmin(path.join("views", "SettingsView.vue")),
+    readAdmin(path.join("services", "api.ts")),
+    readAdmin(path.join("views", "HealthView.vue")),
+    readAdmin(path.join("views", "AnalyticsView.vue")),
+  ]);
+
+  assert.match(api, /image_intent/);
+  assert.match(api, /toolCalling\?: boolean/);
+  assert.match(settings, /图片意图判断/);
+  assert.match(settings, /支持原生工具调用/);
+  assert.match(settings, /isUsableImageIntentModel/);
+  assert.match(health, /图片意图判断模型/);
+  assert.match(health, /图片意图工具调用/);
+  assert.match(analytics, /image_intent:"图片意图判断"/);
+});
+
 test("admin exposes a dedicated Huixian persona editor instead of a skills marketplace", async () => {
   const [router, persona, groups, server, profileAsset] = await Promise.all([
     readAdmin("router.ts"),

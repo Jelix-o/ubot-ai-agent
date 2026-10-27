@@ -1,19 +1,24 @@
 import { withModelOperation } from "./model-telemetry.js";
 import os from "node:os";
 
-import { AiService } from "./ai-service.js";
+import {
+  AiService,
+  ImageIntentClassificationError,
+  getAiProviderFailureDetails,
+} from "./ai-service.js";
 import { AnthropicChatCompletions } from "./anthropic-adapter.js";
 import type { AiHealthStatus, SystemModelConfig } from "../types.js";
 import { classifyUpstreamFailure } from "../utils/upstream-failure.js";
 import { requestGeneratedImage } from "./image-generation-service.js";
 
 export interface ModelProbeStatus extends AiHealthStatus {
-  probeType: "chat" | "image";
+  probeType: "chat" | "image" | "image_intent";
   upstreamStatusCode?: number;
 }
 
 export async function probeSystemModel(model: Pick<SystemModelConfig, "baseUrl" | "model" | "purpose" | "apiKey" | "apiProtocol" | "requestTimeoutMs"> & { id?: string }): Promise<ModelProbeStatus> { return withModelOperation("probe", undefined, async () => {
   if (model.purpose === "image") return probeImageModel(model);
+  if (model.purpose === "image_intent") return probeImageIntentModel(model);
   return probeChatModel(model);
 }, model.id); }
 
@@ -90,6 +95,69 @@ async function probeImageModel(
     };
   }
 }
+
+/**
+ * A normal chat check cannot establish that an OpenAI-compatible gateway
+ * honors forced function calls. Exercise the exact bounded tool-call boundary
+ * used by the natural image router without sending user content.
+ */
+async function probeImageIntentModel(
+  model: Pick<SystemModelConfig, "baseUrl" | "model" | "apiKey" | "apiProtocol">,
+): Promise<ModelProbeStatus> {
+  const startedAt = Date.now();
+  try {
+    if (model.apiProtocol === "anthropic") {
+      throw new ImageIntentClassificationError("unavailable");
+    }
+    const service = new AiService(model.baseUrl, model.apiKey ?? "", model.model, undefined, {
+      providerCapabilities: { toolCalling: true },
+    });
+    const result = await service.classifyImageIntent({
+      sanitizedText: "生成一张蓝色圆形图标",
+      facts: {
+        hasTrustedBotMention: true,
+        hasTrustedReply: false,
+        replyIsGeneratedImage: false,
+        attachmentCount: 0,
+      },
+    });
+    return {
+      ok: true,
+      detail: "图片意图判断模型连接正常，已完成一次原生工具调用检测。",
+      model: result.model || model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      cached: false,
+      probeType: "image_intent",
+    };
+  } catch (error) {
+    const details = getAiProviderFailureDetails(error);
+    const invalidToolResult = error instanceof ImageIntentClassificationError && error.code === "invalid_response";
+    return {
+      ok: false,
+      detail: invalidToolResult
+        ? "图片意图判断模型未返回有效的原生工具调用结果。"
+        : `图片意图工具调用失败：${imageIntentProbeErrorMessage(error)}`,
+      model: model.model,
+      baseUrl: model.baseUrl,
+      checkedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt,
+      cached: false,
+      probeType: "image_intent",
+      failureKind: invalidToolResult ? "format_error" : details.kind,
+      ...(details.statusCode === undefined ? {} : { upstreamStatusCode: details.statusCode }),
+    };
+  }
+}
+
+function imageIntentProbeErrorMessage(error: unknown): string {
+  if (error instanceof ImageIntentClassificationError && error.cause instanceof Error) {
+    return error.cause.message;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 function normalizeProbeDetail(detail: string): string {
   return detail.replace(/^画像\/记忆模型不可用：?/, "模型检测不通过：");
 }
