@@ -122,6 +122,7 @@ export interface AiProviderFailureDetails {
   kind: UpstreamFailureKind;
   statusCode?: number;
   errorName: string;
+  retryableModelNotFound?: true;
 }
 
 /**
@@ -144,19 +145,29 @@ export function getAiProviderFailureDetails(error: unknown): AiProviderFailureDe
     if (typeof record.type === "string") messages.push(record.type);
     pending.push(record.cause, record.error);
   }
-  const kind = statusCode === 409
+  const message = messages.join(" ");
+  const retryableModelNotFound = isMissingConfiguredModelFailure(statusCode, message);
+  const kind = statusCode === 409 || retryableModelNotFound
     ? "unavailable"
-    : classifyUpstreamFailure({ statusCode, error, message: messages.join(" ") });
+    : classifyUpstreamFailure({ statusCode, error, message });
   return {
     kind,
     ...(statusCode === undefined ? {} : { statusCode }),
     errorName: error instanceof Error ? error.name : typeof error,
+    ...(retryableModelNotFound ? { retryableModelNotFound: true as const } : {}),
   };
+}
+
+/** A configured fallback can handle a model that the upstream no longer serves. */
+function isMissingConfiguredModelFailure(statusCode: number | undefined, message: string): boolean {
+  if (statusCode !== 404) return false;
+  return /(?:model|deployment|engine)\b[\s\S]{0,120}\b(?:not\s+(?:supported|found|available)|does\s+not\s+exist|unsupported)\b|\b(?:unknown|unsupported|missing|no)\s+(?:model|deployment|engine)\b|\b(?:model|deployment|engine)[_ -]?(?:not[_ -]?found|unsupported)\b/i.test(message);
 }
 
 export function isRetryableAiProviderFailure(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) return false;
-  const { kind } = getAiProviderFailureDetails(error);
+  const { kind, statusCode, retryableModelNotFound } = getAiProviderFailureDetails(error);
+  if (statusCode === 404) return retryableModelNotFound === true;
   return kind === "rate_limit" || kind === "unavailable" || kind === "timeout" || kind === "network";
 }
 

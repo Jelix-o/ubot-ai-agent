@@ -62,6 +62,16 @@ test("routes primary first and uses configured backups once, silently", async ()
   assert.equal(result.value, "ds"); assert.equal(result.modelId, "ds"); assert.equal(result.fallbackUsed, true);
   assert.deepEqual(f.calls, ["sol", "gpt", "ds"]);
 });
+test("an explicit unsupported-model 404 reaches a configured backup without treating ordinary 404s as retryable", async () => {
+  const missingModel = Object.assign(new Error('Model "retired-model" is not supported by any configured account.'), { status: 404 });
+  const fallback = fixture(); fallback.behavior.sol = () => Promise.reject(missingModel);
+  assert.equal((await fallback.execute()).modelId, "gpt");
+  assert.deepEqual(fallback.calls, ["sol", "gpt"]);
+
+  const ordinary = fixture(); ordinary.behavior.sol = () => Promise.reject(Object.assign(new Error("Service unavailable: route not found"), { status: 404 }));
+  await assert.rejects(ordinary.execute());
+  assert.deepEqual(ordinary.calls, ["sol"]);
+});
 test("group exceptions replace primary and candidates are deduplicated", async () => {
   const f = fixture(); f.behavior.gpt = unavailable;
   await f.execute({}, { groupId: "test", replyModelSource: "override", replyModelMode: "gpt" });

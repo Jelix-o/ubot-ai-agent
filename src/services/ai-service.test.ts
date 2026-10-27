@@ -30,6 +30,16 @@ test("AI provider failure classification permits only transient cross-model fall
   assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("conflict"), { status: 409 })), true);
   assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("invalid request"), { status: 400 })), false);
   assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("invalid key"), { status: 401 })), false);
+  const missingModel = Object.assign(new Error('Model "retired-model" is not supported by any configured account.'), { status: 404 });
+  assert.equal(isRetryableAiProviderFailure(missingModel), true);
+  assert.deepEqual(getAiProviderFailureDetails(missingModel), {
+    kind: "unavailable",
+    statusCode: 404,
+    errorName: "Error",
+    retryableModelNotFound: true,
+  });
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("Not found"), { status: 404 })), false);
+  assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("Service unavailable: route not found"), { status: 404 })), false);
   const controller = new AbortController();
   controller.abort();
   assert.equal(isRetryableAiProviderFailure(Object.assign(new Error("service unavailable"), { status: 503 }), controller.signal), false);
