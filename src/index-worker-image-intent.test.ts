@@ -13,6 +13,7 @@ import {
 } from "./services/image-intent-router-plugin.js";
 import { openSharedDb } from "./shared/sqlite.js";
 import { parseNaturalImageRequestForIntent } from "./services/natural-image-request.js";
+import { ImageIntentRouteRepository } from "./services/image-intent-route-repository.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 
@@ -479,7 +480,7 @@ test("Worker does not classify a recalled natural-image message", async (t) => {
   assert.equal(count.count, 0);
 });
 
-test("Worker sends router clarification outside the member image queue and without an image request source", async (t) => {
+test("Worker sends uncertainty to conversation without blocking the member image queue", async (t) => {
   const fixture = createFixture("worker-image-intent-clarification-");
   let releaseClarification!: () => void;
   const clarificationReleased = new Promise<void>((resolve) => { releaseClarification = resolve; });
@@ -500,11 +501,8 @@ test("Worker sends router clarification outside the member image queue and witho
     async isImageGenerationCommand(text: string) { return text.trim().startsWith("#生图"); },
     async isSystemCommand() { return false; },
     async isNaturalImageRoutingEnabled() { return true; },
-    async getNaturalImageRequestForIntent(_event: NapcatGroupMessageEvent, _facts: unknown, action: string) {
-      assert.equal(action, "clarification");
-      return { kind: "clarification" as const, reason: "unrecognized_intent" as const };
-    },
-    async getParticipationDecision() { return ignoredParticipation(); },
+    async getNaturalImageRequestForIntent() { assert.fail("uncertainty must not be materialized as an image request"); },
+    async getParticipationDecision() { return { action: "reply", reason: "direct_mention", score: 1, policyVersion: "test", signals: {} }; },
     async handleGroupMessage(event: NapcatGroupMessageEvent, _signal?: AbortSignal, _route?: unknown, options?: unknown) {
       const messageId = String(event.message_id);
       handled.push({ messageId, options: asRecord(options) });
@@ -542,10 +540,9 @@ test("Worker sends router clarification outside the member image queue and witho
   assert.ok(clarification);
   assert.equal(clarification.imageRequestSourceRowId, undefined);
   assert.equal(clarification.naturalImageRoutingDecided, true);
-  assert.deepEqual(clarification.naturalImageRequest, {
-    kind: "clarification",
-    reason: "unrecognized_intent",
-  });
+  assert.equal(clarification.naturalImageRequest, undefined);
+  assert.equal(fixture.db.db.prepare("SELECT count(*) AS count FROM conversation_message_routes").get()?.count, 1);
+  assert.equal(fixture.db.db.prepare("SELECT action FROM image_intent_routes").get()?.action, "clarification");
   assert.equal(
     handled.find((entry) => entry.messageId === "8502")?.options?.imageRequestSourceRowId !== undefined,
     true,
@@ -555,6 +552,47 @@ test("Worker sends router clarification outside the member image queue and witho
     "SELECT COUNT(*) AS count FROM image_requests WHERE source_message_id = ?",
   ).get("8501") as { count: number };
   assert.equal(imageRequestCount.count, 0);
+});
+
+test("an existing uncertain route falls back to chat without modifying or reclassifying its ledger", async t => {
+  const fixture = createFixture("existing-uncertain-route-");
+  t.after(() => fixture.dispose());
+  const sourceRowId = fixture.insert({ msgId: "existing", text: "那个记者", canonicalSegmentsJson: botMentionSegments("那个记者") });
+  const ledger = new ImageIntentRouteRepository(fixture.db);
+  const claim = ledger.claim({ sourceRowId });
+  assert.equal(claim.state, "claimed");
+  if (claim.state !== "claimed") return;
+  ledger.complete({ sourceRowId, leaseToken: claim.leaseToken, action: "clarification", modelId: "old-intent", model: "old-model" });
+  const original = ledger.getBySourceRow(sourceRowId);
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const worker = fixture.createWorker(createChatBot({ handled,
+    onLegacyNatural() { assert.fail("legacy image rules"); }, onMaterialize() { assert.fail("image materialization"); },
+  }), {
+    async isConfigured() { assert.fail("existing route must not probe model configuration"); },
+    async classify() { assert.fail("existing route must not be classified again"); },
+  });
+  fixture.setWorker(worker);
+  worker.start();
+  await waitFor(() => handled.length === 1);
+  assert.equal(handled[0]?.options?.naturalImageRoutingDecided, true);
+  assert.equal(handled[0]?.options?.naturalImageRequest, undefined);
+  assert.deepEqual(ledger.getBySourceRow(sourceRowId), original);
+});
+
+test("a bare mention never invokes the configured image router", async t => {
+  const fixture = createFixture("empty-image-intent-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const worker = fixture.createWorker(createChatBot({ handled }), {
+    async isConfigured() { assert.fail("empty message must not probe the router"); },
+    async classify() { assert.fail("empty message must not be classified"); },
+  });
+  fixture.setWorker(worker);
+  const id = fixture.insert({ msgId: "bare", text: "", canonicalSegmentsJson: botMentionSegments("") });
+  worker.start();
+  await waitFor(() => Number(fixture.db.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get(fixture.consumerKey)?.watermark_id) === id);
+  assert.deepEqual(handled, []);
+  assert.equal(fixture.db.db.prepare("SELECT count(*) AS count FROM image_intent_routes").get()?.count, 0);
 });
 
 test("polite generation waits for same-member confirmation across restart without reclassification", async t => {

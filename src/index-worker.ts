@@ -238,9 +238,8 @@ export class WorkerApp {
         if (naturalImageRoute?.kind === "clarification") {
           return `${message.group_id}:image-intent-clarification:${message.id}`;
         }
-        // A bare real @bot is retained by ingress only so an enabled natural
-        // image entry point can provide a usage hint.  With no matching
-        // request it must not create a participation decision or a chat turn.
+        // A bare real @bot has no request to process. Do not create a
+        // participation decision, a chat turn, or an image usage hint.
         if (!message.text.trim() && parseImages(message.images_json).length === 0) {
           return `${message.group_id}:passive`;
         }
@@ -543,6 +542,9 @@ export class WorkerApp {
           // reinterpret it as an image request on the way to the chat path.
           ...(naturalImageRoute?.kind === "chat" ? { naturalImageRoutingDecided: true } : {}),
         });
+        if (naturalImageRoute?.kind === "chat" && this.imageIntentRoutes.getBySourceRow(message.id)?.action === "clarification") {
+          this.metrics.inc("image_intent_router_clarification_to_chat");
+        }
         this.metrics.inc("tasks_completed");
         completed = true;
         if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "awaiting_delivery");
@@ -594,6 +596,7 @@ export class WorkerApp {
     canonical_segments_json?: string | null;
     has_at_bot?: number;
   }, options: { classify?: boolean } = {}): Promise<NaturalImageRoute | undefined> {
+    if (!message.text.trim() && parseImages(message.images_json).length === 0) return undefined;
     // Explicit #生图 / #改图 retain their established command path. They
     // must never spend an intent-classification request or inherit a model
     // choice from this optional natural-language plugin.
@@ -664,6 +667,7 @@ export class WorkerApp {
         replyIsGeneratedImage,
       });
       if (!request) return undefined;
+      if (request.kind === "clarification" && request.reason === "unrecognized_intent") return { ...base, kind: "chat" };
       return request.kind === "clarification"
         ? { ...base, kind: "clarification", request }
         : { ...base, kind: "image", request };
@@ -801,7 +805,10 @@ export class WorkerApp {
     if (record.status === "classifying") return { ...base, kind: "pending" };
     if (record.status !== "classified" || !record.action) return { ...base, kind: "chat" };
 
-    if (record.action === "chat") return { ...base, kind: "chat" };
+    // Preserve the model's original action in the ledger, including old
+    // records, but uncertainty must not interrupt the conversation with a
+    // generic image hint. Replays reuse this same local interpretation.
+    if (record.action === "chat" || record.action === "clarification") return { ...base, kind: "chat" };
     const request = await this.options.botApp.getNaturalImageRequestForIntent(
       base.event,
       {

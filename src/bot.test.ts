@@ -8536,6 +8536,31 @@ test("router-selected natural generation ignores quoted and attached media", asy
   assert.equal(transport.generatedImages.length, 1);
 });
 
+test("legacy unknown image hints fall through to conversation while specific image errors stay targeted", async t => {
+  const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
+  const aiService = new FakeAiService(async () => ({ text: "继续刚才的话题", model: "test", skillId: "assistant" }));
+  const { app, transport } = createApp({ aiService, imageGenerationService: imageEditTestRuntime(inputs) });
+  t.after(() => app.stop());
+  await app.handleGroupMessage(createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text: "那个记者" } }]), undefined, undefined, {
+    naturalImageRoutingDecided: true, naturalImageRequest: { kind: "clarification", reason: "unrecognized_intent" },
+  });
+  assert.equal(aiService.calls.length, 1);
+  assert.equal(transport.sent[0]?.text, "继续刚才的话题");
+  for (const [action, text, expected] of [
+    ["generate", "生成一张", "想生成什么画面？补充一下主体或场景吧。"],
+    ["edit", "把天空改成晚霞", "改图请附图"],
+    ["avatar_edit", "将我美化一下", "头像改图格式"],
+  ] as const) {
+    const event = createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }]);
+    const request = await app.getNaturalImageRequestForIntent(event, { hasTrustedBotMention: true }, action);
+    assert.equal(request?.kind, "clarification");
+    await app.handleGroupMessage(event, undefined, undefined, { naturalImageRoutingDecided: true, naturalImageRequest: request });
+    assert.ok(transport.sent.at(-1)?.text.includes(expected));
+  }
+  assert.equal(inputs.length, 0);
+  assert.equal(aiService.calls.length, 1);
+});
+
 test("natural image requests anonymize structured member mentions without rewriting typed text", async t => {
   const inputs: Array<Parameters<ImageGenerationRuntime["generate"]>[0]> = [];
   const archived: ImagePreviewArchiveInput[] = [];

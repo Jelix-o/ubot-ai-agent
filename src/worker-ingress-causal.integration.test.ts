@@ -19,6 +19,7 @@ import { RecentGroupEvidenceService } from "./services/recent-group-evidence-ser
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { REQUIRED_V3_RUNTIME_CAPABILITIES } from "./services/v3-runtime-state.js";
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
+import { readMetricsSummary } from "./shared/metrics.js";
 import type {
   AiReply,
   AiIdentityContext,
@@ -913,7 +914,7 @@ test("raw CQ-looking text stays non-authoritative through ingress while #改图 
   assert.equal(parsedCommand.text, rawAvatarCommand);
 });
 
-test("a standalone real bot @ reaches natural-image clarification without becoming ordinary chat", async (t) => {
+test("a standalone real bot @ stays empty without image hints or ordinary chat", async (t) => {
   const runCase = async (naturalImageRequestsEnabled: boolean, messageId: number) => {
     const dataDir = mkdtempSync(path.join(os.tmpdir(), "worker-standalone-natural-mention-"));
     const readApiPort = await reservePort();
@@ -984,8 +985,8 @@ test("a standalone real bot @ reaches natural-image clarification without becomi
   };
 
   const enabled = await runCase(true, 108);
-  await waitFor(() => enabled.napcat.sent.length === 1);
-  assert.match(enabled.napcat.sent[0]?.text ?? "", /可说“生成一张 <描述>”/u);
+  assert.equal(enabled.napcat.sent.length, 0);
+  assert.equal(enabled.observerDb.db.prepare("SELECT count(*) AS count FROM outbox").get()?.count, 0);
   assert.equal(enabled.aiService.calls.length, 0, "a standalone @ must not invoke ordinary chat");
   assert.equal(
     (enabled.observerDb.db.prepare("SELECT COUNT(*) AS count FROM participation_decisions").get() as { count: number }).count,
@@ -1526,8 +1527,57 @@ function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConf
     for (const row of rows) db.ackOutboxDelivery(row.id, `receipt-${row.id}`, time + 100);
   };
   const identity = (index = ai.calls.length - 1) => ai.calls[index]?.identityContext as AiIdentityContext;
-  return { db, repository, transport, ai, bot, add, ask, ack, identity };
+  return { dataDir, db, repository, transport, ai, bot, add, ask, ack, identity };
 }
+
+test("uncertain image routes preserve delivered conversation context and replay without classifying or replying again", async t => {
+  const f = conversationReplay(t);
+  f.ai.replies.push({ text: "我们继续聊这位记者" });
+  await f.ask("聊聊一位记者的经历");
+  f.ack();
+  f.bot.getNaturalImageRequest = async () => { assert.fail("a decided chat route must not re-enter legacy image rules"); };
+  f.bot.getNaturalImageRequestForIntent = async () => { assert.fail("uncertainty must not enter image materialization"); };
+  let classifications = 0;
+  const createWorker = (consumerKey: string) => new WorkerApp({
+    dataDir: f.dataDir, sharedDb: f.db, botApp: f.bot, consumerKey,
+    isBlacklistedUser: async () => false,
+    imageIntentRouter: {
+      async isConfigured() { return true; },
+      async classify() { classifications++; return { action: "clarification", modelId: "intent-test", model: "test" }; },
+    },
+  });
+  let worker = createWorker("uncertainty-chat");
+  try {
+    worker.start();
+    let lastSource = 0;
+    for (const text of ["那个记者", "她后来呢", "没错，姓李"]) {
+      f.ai.replies.push({ text: "接着这个话题说" });
+      const message = f.add(text, USER_ID, { replyToMessageId: "receipt-1" });
+      lastSource = message.input.sourceRowId;
+      f.db.db.prepare("UPDATE messages SET canonical_segments_json = ?, reply_to = ? WHERE id = ?").run(JSON.stringify([
+        { type: "reply", id: "receipt-1" }, { type: "at", qq: BOT_QQ }, { type: "text", text },
+      ]), "receipt-1", lastSource);
+      await waitFor(() => Number(f.db.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("uncertainty-chat")?.watermark_id) === lastSource);
+      assert.match(JSON.stringify(f.ai.calls.at(-1)?.history), /我们继续聊这位记者/);
+      f.ack();
+    }
+    await worker.stop();
+    assert.equal(classifications, 3);
+    assert.equal(f.ai.calls.length, 4);
+    assert.equal(f.db.db.prepare("SELECT count(*) AS count FROM image_requests").get()?.count, 0);
+    assert.equal(f.db.db.prepare("SELECT count(*) AS count FROM image_intent_routes WHERE action='clarification'").get()?.count, 3);
+    assert.equal(f.db.db.prepare("SELECT count(*) AS count FROM conversation_turns WHERE role='assistant'").get()?.count, 4);
+    const outbox = f.db.db.prepare("SELECT text FROM outbox ORDER BY id").all();
+    assert.doesNotMatch(JSON.stringify(outbox), /可说|生成一张 <描述>/);
+    assert.equal(readMetricsSummary(path.join(f.dataDir, "shared", "metrics")).counters.image_intent_router_clarification_to_chat, 3);
+    worker = createWorker("uncertainty-chat-restart");
+    worker.start();
+    await waitFor(() => Number(f.db.db.prepare("SELECT watermark_id FROM consumers WHERE key = ?").get("uncertainty-chat-restart")?.watermark_id) === lastSource);
+    assert.equal(classifications, 3);
+    assert.equal(f.ai.calls.length, 4);
+    assert.deepEqual(f.db.db.prepare("SELECT text FROM outbox ORDER BY id").all(), outbox);
+  } finally { await worker.stop(); }
+});
 
 const replayIdentities = [
   { userIds: [USER_ID], names: ["成员甲", "甲别称", "管理员"], note: "不应读取的个人画像" },

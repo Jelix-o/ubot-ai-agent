@@ -226,6 +226,7 @@ test("model-selected actions are materialized locally without exposing prompt or
     reason: "missing_reference",
   });
   assert.equal(parseNaturalImageRequestForIntent(direct, "chat"), undefined);
+  assert.equal(parseNaturalImageRequestForIntent(direct, "clarification"), undefined);
   assert.deepEqual(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("将我美化一下"),
@@ -300,11 +301,13 @@ test("questions, explicit negative requests, commands, and ordinary chat do not 
   }), undefined);
 });
 
-test("direct image-like but incomplete requests receive a controlled clarification", () => {
-  assert.deepEqual(request("", { hasTrustedBotMention: true }), {
-    kind: "clarification",
-    reason: "unrecognized_intent",
-  });
+test("uncertain wording stays in chat while definite incomplete image requests clarify", () => {
+  for (const text of ["", "帮我生图", "那个记者", "她后来呢", "没错，姓李", "头像挺好看"]) {
+    assert.equal(request(text, { hasTrustedBotMention: true }), undefined, text);
+    assert.equal(parseNaturalImageRequestForIntent({
+      message: parsed(text), hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false,
+    }, "clarification"), undefined, text);
+  }
   assert.deepEqual(request("生成一张", { hasTrustedBotMention: true }), {
     kind: "clarification",
     reason: "missing_prompt",
@@ -312,10 +315,6 @@ test("direct image-like but incomplete requests receive a controlled clarificati
   assert.deepEqual(request("让成员甲头像", { hasTrustedBotMention: true }), {
     kind: "clarification",
     reason: "avatar_syntax",
-  });
-  assert.deepEqual(request("帮我生图", { hasTrustedBotMention: true }), {
-    kind: "clarification",
-    reason: "unrecognized_intent",
   });
   assert.deepEqual(request("生成一张 --比例 4:5 风景", { hasTrustedBotMention: true }), {
     kind: "clarification",

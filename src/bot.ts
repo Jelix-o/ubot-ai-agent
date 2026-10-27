@@ -1135,7 +1135,7 @@ export class BotApplication {
             hasTrustedReply: options.hasTrustedReply,
             replyIsGeneratedImage: options.replyIsGeneratedImage,
           }));
-    if (naturalImageRequest) {
+    if (naturalImageRequest && !(naturalImageRequest.kind === "clarification" && naturalImageRequest.reason === "unrecognized_intent")) {
       await this.handleNaturalImageRequest(groupConfig, event, naturalImageRequest, signal, parsedMessage, options);
       return;
     }
@@ -2335,8 +2335,10 @@ export class BotApplication {
             ? "头像改图格式：（让 / 将 / 把）<目标>（的）头像（去）<动作>，也可说“我头像<动作>”"
             : request.reason === "invalid_ratio"
               ? "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"
-              : "可说“生成一张 <描述>”，或附图后说“把这张图改成 <要求>”";
-      await this.sendText(groupId, text);
+              : request.reason === "missing_prompt"
+                ? "想生成什么画面？补充一下主体或场景吧。"
+                : undefined;
+      if (text) await this.sendText(groupId, text);
       return;
     }
     const commands = await this.getRuntimeCommands();

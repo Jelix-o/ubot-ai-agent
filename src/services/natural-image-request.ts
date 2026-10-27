@@ -95,10 +95,7 @@ export function parseNaturalImageRequestForIntent(
   const hasReference = hasAttachment || hasTrustedReply;
   const isAuthorized = input.hasTrustedBotMention || hasGeneratedReply;
 
-  if (action === "chat") return undefined;
-  if (action === "clarification") {
-    return { kind: "clarification", reason: "unrecognized_intent" };
-  }
+  if (action === "chat" || action === "clarification") return undefined;
 
   if (action === "avatar_edit") {
     if (!input.hasTrustedBotMention) return undefined;
@@ -161,7 +158,6 @@ const DRAW_GENERATION_REQUEST = /^(?:请\s*)?(?:(?:帮我|给我|麻烦(?:你)?|
 // real @ mention still cannot accidentally consume an image request.
 const EXPLICIT_IMAGE_GENERATION_REQUEST = /^(?:请\s*)?(?:(?:帮我|给我|麻烦(?:你)?|帮忙)\s*)?(?:生成|制作|创建|做|来)\s*(?:(?:一(?:张|幅|副))\s*(?:图片|图|图像|照片|插画|海报|壁纸)?|(?:图片|图|图像|照片|插画|海报|壁纸))(?:[：:,，]\s*|\s+)?([\s\S]*)$/u;
 const EDIT_WORDING = /(?:改成|改图|修改|变成|换成|替换|编辑|修图|加上|添加|去掉|删除|移除|抹掉|加(?:一|个|些|点))/u;
-const IMAGE_INTENT_WORDING = /(?:生成|画|绘制|生图|改图|编辑|修图|头像|图片|图像|插画|海报|壁纸)/u;
 const PAGE_WORDING = /(?:网页|网站|html|静态页面|静态网页|web页面)/iu;
 const IMAGE_ACTION_WORDING = /(?:生成|画|绘制|制作|创建|做|生图|改图|改成|修改|变成|换成|替换|编辑|修图|加上|添加|去掉|删除|移除|抹掉)/u;
 
@@ -175,14 +171,7 @@ export function parseNaturalImageRequest(
   input: NaturalImageRequestInput,
 ): NaturalImageRequest | undefined {
   const text = input.message.text.trim();
-  if (!text) {
-    // A real direct mention with no meaningful text is intentionally a
-    // clarification, not a model request. This gives the caller a compact
-    // usage hint without treating a typed @ or a reply alone as authority.
-    return input.hasTrustedBotMention && !input.isExplicitCommand
-      ? { kind: "clarification", reason: "unrecognized_intent" }
-      : undefined;
-  }
+  if (!text) return undefined;
   if (input.isExplicitCommand || text.startsWith("#")) return undefined;
   if (isQuestionOrNegative(text) || PAGE_WORDING.test(text)) return undefined;
 
@@ -192,7 +181,7 @@ export function parseNaturalImageRequest(
   const hasReference = hasAttachment || hasTrustedReply;
   const isAuthorized = input.hasTrustedBotMention || hasGeneratedReply;
 
-  if (input.hasTrustedBotMention) {
+  if (input.hasTrustedBotMention && /^(?:(?:让|将|把)\s*|我\s*(?:的\s*)?头像)/u.test(text)) {
     const avatar = parseAvatarEditRequest(text);
     if (avatar.kind === "avatar_edit") {
       const parsed = parsePrompt(avatar.request.action);
@@ -238,9 +227,6 @@ export function parseNaturalImageRequest(
     };
   }
 
-  if (input.hasTrustedBotMention && IMAGE_INTENT_WORDING.test(text)) {
-    return { kind: "clarification", reason: "unrecognized_intent" };
-  }
   return undefined;
 }
 
