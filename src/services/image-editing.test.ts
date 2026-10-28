@@ -14,6 +14,25 @@ const reference = imageReferenceFromDataUrl(`data:image/png;base64,${PNG.toStrin
 const model = { id: "edit", model: "image", baseUrl: "https://image.example/v1", apiKey: "test", enabled: true, hasApiKey: true, purpose: "image", capabilities: { imageEditing: true } };
 const response = () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64") }] }), { status: 200 });
 
+test("Grok image edits use compatible parameters while retaining the uploaded reference", async () => {
+  await requestGeneratedImage({ ...model, model: "grok-imagine-image-edit" }, "Make the circle red", {
+    referenceImages: [reference],
+    fetchImpl: async (url, init) => {
+      assert.equal(url, "https://image.example/v1/images/edits");
+      assert.ok(init?.body instanceof FormData);
+      const form = init.body;
+      assert.equal(form.get("aspect_ratio"), "auto");
+      assert.equal(form.get("response_format"), "b64_json");
+      assert.equal(form.get("prompt"), "Make the circle red");
+      for (const key of ["quality", "output_format", "size"]) assert.equal(form.has(key), false);
+      const file = form.get("image") as File;
+      assert.equal(file.name, "image1.png");
+      assert.deepEqual(Buffer.from(await file.arrayBuffer()), PNG);
+      return response();
+    },
+  });
+});
+
 test("image edit uploads real files in order and preserves explicit aspect ratio", async () => {
   for (const count of [1, 2, 4]) {
     await requestGeneratedImage(model, "combine image1 and image2", {

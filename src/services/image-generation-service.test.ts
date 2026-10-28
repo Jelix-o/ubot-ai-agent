@@ -11,9 +11,70 @@ import {
   IMAGE_GENERATION_MAX_PROMPT_CHARS,
   ImageGenerationError,
   isGeneratedImagePath,
+  requestGeneratedImage,
 } from "./image-generation-service.js";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==", "base64");
+
+test("configured Grok generation requests Base64 and maps supported sizes to aspect ratios", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ubot-grok-image-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const grok = model("grok", "https://grok.example/v1", "grok-imagine-image-2.0", "grok-test-key");
+  const settings = {
+    async getInternal() { return { models: [grok], selectedModelIds: { image: grok.id } }; },
+  } as unknown as SystemSettingsStore;
+  const sizes = [
+    [undefined, "1:1"], ["auto", "auto"], ["1024x1024", "1:1"],
+    ["1024x1536", "2:3"], ["1536x1024", "3:2"],
+    ["864x1536", "9:16"], ["1536x864", "16:9"],
+  ] as const;
+  let calls = 0;
+  const service = new ConfiguredImageGenerationService(settings, root, undefined, undefined, async (url, init) => {
+    assert.equal(url, "https://grok.example/v1/images/generations");
+    assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer grok-test-key");
+    assert.equal((init?.headers as Record<string, string>)["Idempotency-Key"], `grok-request-${calls}`);
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.model, grok.model);
+    assert.equal(body.prompt, "A blue circle on a white background");
+    assert.equal(body.n, 1);
+    assert.equal(body.aspect_ratio, sizes[calls++]![1]);
+    if ("quality" in body || "output_format" in body || "size" in body) {
+      return jsonResponse(400, { error: { code: "invalid_parameter" } });
+    }
+    // Match the gateway's URL default so omitting response_format reproduces
+    // the production parsing failure rather than silently passing the test.
+    return jsonResponse(200, { data: [body.response_format === "b64_json"
+      ? { b64_json: PNG.toString("base64") }
+      : { url: "https://grok.example/generated.png" }] });
+  });
+  for (const [index, [size]] of sizes.entries()) {
+    const result = await service.generate({
+      groupId: `group-${index}`, userId: "user", prompt: "A blue circle on a white background",
+      size, requestId: `grok-request-${index}`,
+    });
+    assert.equal(result.modelId, grok.id);
+    assert.equal(result.fallbackUsed, false);
+    assert.equal(result.mimeType, "image/png");
+    assert.deepEqual(await readFile(result.filePath), PNG);
+  }
+  assert.equal(calls, sizes.length);
+});
+
+test("Grok responses still require valid Base64 and never fetch returned URLs", async () => {
+  for (const item of [
+    { url: "https://untrusted.example/generated.png" },
+    { b64_json: "invalid base64" },
+    { b64_json: Buffer.from("not an image").toString("base64") },
+  ]) {
+    let calls = 0;
+    await assert.rejects(requestGeneratedImage(
+      model("grok", "https://grok.example/v1", "grok-imagine-image", "grok-test-key"), "circle", {
+        fetchImpl: async () => { calls++; return jsonResponse(200, { data: [item] }); },
+      },
+    ), (error: unknown) => error instanceof ImageGenerationError && error.code === "invalid_image_response");
+    assert.equal(calls, 1);
+  }
+});
 
 test("configured image generation calls the selected model and stages a validated image", async (t) => {
   let started = 0;

@@ -356,9 +356,13 @@ export async function requestGeneratedImage(
   if (options.signal?.aborted) controller.abort();
   try {
     const size = options.size ?? (editing ? "auto" : "1024x1024");
-    const parameters = { model: model.model, prompt: imagePromptWithSize(prompt, size), n: 1,
-      size,
-      quality: options.quality ?? "auto", output_format: "png" };
+    const grokImage = model.model.startsWith("grok-imagine-");
+    // Grok2API rejects quality=auto and defaults to URL output. Use its
+    // aspect-ratio/Base64 contract instead of GPT Image's output controls.
+    const parameters = grokImage
+      ? { model: model.model, prompt, n: 1, aspect_ratio: imageAspectRatio(size), response_format: "b64_json" }
+      : { model: model.model, prompt: imagePromptWithSize(prompt, size), n: 1,
+          size, quality: options.quality ?? "auto", output_format: "png" };
     let body: string | FormData = JSON.stringify(parameters);
     if (editing) {
       const form = new FormData();
@@ -576,12 +580,17 @@ export function imageReferenceFromDataUrl(value: string): ImageReference {
 }
 
 
-function imagePromptWithSize(prompt: string, size: string): string {
-  if (size === "auto") return prompt;
+function imageAspectRatio(size: string): string {
+  if (size === "auto") return "auto";
   const [width, height] = size.split("x").map(Number) as [number, number];
   const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
   const divisor = gcd(width, height);
+  return `${width / divisor}:${height / divisor}`;
+}
+
+function imagePromptWithSize(prompt: string, size: string): string {
+  if (size === "auto") return prompt;
   // OAuth image gateways can normalize the tool's size to auto. Repeat the
   // user's format in the prompt so framing follows it on those gateways too.
-  return `${prompt}\n\nOutput canvas: aspect ratio ${width / divisor}:${height / divisor} (${size} pixels). Adjust the framing to fill this canvas. This output format takes precedence over other aspect ratios in the description.`;
+  return `${prompt}\n\nOutput canvas: aspect ratio ${imageAspectRatio(size)} (${size} pixels). Adjust the framing to fill this canvas. This output format takes precedence over other aspect ratios in the description.`;
 }

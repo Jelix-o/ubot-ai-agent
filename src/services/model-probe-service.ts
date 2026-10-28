@@ -73,7 +73,7 @@ async function probeImageModel(
     const image = await requestGeneratedImage(model, "A simple solid blue circle on a white background", { quality: "low" });
     return {
       ok: image.data.byteLength > 0,
-      detail: "图片模型连接正常，已完成一次低质量测试生成。",
+      detail: "图片模型连接正常，已完成一次测试生成。",
       model: model.model,
       baseUrl: model.baseUrl,
       checkedAt: new Date().toISOString(),

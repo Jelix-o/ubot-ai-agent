@@ -31,6 +31,48 @@ async function withStubbedImageIntent(
   }
 }
 
+test("Grok image probes use the same compatible Base64 request as runtime generation", async (t) => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = async (url, init) => {
+    calls++;
+    assert.equal(url, "https://grok.example/v1/images/generations");
+    const body = JSON.parse(String(init?.body));
+    if ("quality" in body || "output_format" in body || "size" in body) {
+      return Response.json({ error: { code: "invalid_parameter" } }, { status: 400 });
+    }
+    assert.equal(body.aspect_ratio, "1:1");
+    return Response.json({ data: [body.response_format === "b64_json"
+      ? { b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==" }
+      : { url: "https://grok.example/generated.png" }] });
+  };
+  t.mock.method(globalThis, "fetch", fetchImpl);
+  const status = await probeSystemModel({
+    id: "grok", purpose: "image", model: "grok-imagine-image-2.0",
+    baseUrl: "https://grok.example/v1", apiKey: "grok-test-key",
+  });
+  assert.equal(status.ok, true);
+  assert.equal(status.probeType, "image");
+  assert.equal(calls, 1);
+});
+
+test("GPT image probes retain their low-quality PNG request", async (t) => {
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.size, "1024x1024");
+    assert.equal(body.quality, "low");
+    assert.equal(body.output_format, "png");
+    assert.equal(body.aspect_ratio, undefined);
+    return Response.json({ data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==" }] });
+  };
+  t.mock.method(globalThis, "fetch", fetchImpl);
+  const status = await probeSystemModel({
+    purpose: "image", model: "gpt-image-2.5-sunburst",
+    baseUrl: "https://image.example/v1", apiKey: "image-test-key",
+  });
+  assert.equal(status.ok, true);
+  assert.equal(status.probeType, "image");
+});
+
 test("probeSystemModel always reports chat probe type", async () => {
   await withStubbedHealth(async () => {
     const status = await probeSystemModel({
