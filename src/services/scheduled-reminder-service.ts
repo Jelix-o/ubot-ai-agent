@@ -1,3 +1,4 @@
+import { nextModelCallAt, MODEL_CALL_TIMEZONE } from "./model-call-schedule.js";
 import type { ScheduledReminderTask } from "../types.js";
 import { isSmartWorkday } from "../utils/china-workday-calendar.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
@@ -7,6 +8,9 @@ import { ScheduledReminderStore } from "./scheduled-reminder-store.js";
 type ScheduledReminderAiService = Partial<Pick<AiService, "generateScheduledReminderText">>;
 
 export interface ReminderCreateRequest {
+  kind?: ScheduledReminderTask["kind"];
+  modelId?: string;
+  timezone?: string;
   intervalMinutes: number;
   topic: string;
   executionStartTime?: string;
@@ -81,7 +85,14 @@ export class ScheduledReminderService {
     enabled?: boolean;
     now?: Date;
   }): Promise<ScheduledReminderTask> {
+    if (args.request.kind === "model_call") {
+      if (!args.request.modelId?.trim() || args.request.timezone && args.request.timezone !== MODEL_CALL_TIMEZONE || args.request.dateRule && args.request.dateRule !== "all") throw new Error("invalid_model_call_task");
+      nextModelCallAt(args.request.scheduledTime ?? "", args.now);
+    }
     return this.store.addTask({
+      kind: args.request.kind,
+      modelId: args.request.modelId,
+      timezone: args.request.kind === "model_call" ? MODEL_CALL_TIMEZONE : undefined,
       groupId: args.groupId,
       creatorUserId: args.creatorUserId,
       intervalMinutes: args.request.intervalMinutes,
@@ -145,6 +156,8 @@ export class ScheduledReminderService {
   async updateTask(
     taskId: string,
     updates: {
+      modelId?: string;
+      timezone?: string;
       intervalMinutes?: number;
       topic?: string;
       executionStartTime?: string;
@@ -157,6 +170,13 @@ export class ScheduledReminderService {
       weekdays?: number[];
     },
   ): Promise<ScheduledReminderTask | undefined> {
+    const modelTask = await this.store.getTask(taskId);
+    if (modelTask?.kind === "model_call") {
+      if (updates.timezone && updates.timezone !== MODEL_CALL_TIMEZONE || updates.dateRule && updates.dateRule !== "all" || updates.modelId !== undefined && !updates.modelId.trim()) throw new Error("invalid_model_call_task");
+      const time = updates.scheduledTime ?? updates.executionStartTime ?? modelTask.scheduledTime!;
+      return this.store.updateTask(taskId, { ...updates, timezone: MODEL_CALL_TIMEZONE, scheduledTime: time, executionStartTime: time, executionEndTime: time,
+        nextRunAt: nextModelCallAt(time) });
+    }
     const hasRangeScheduleUpdate = updates.executionStartTime !== undefined ||
       updates.executionEndTime !== undefined ||
       updates.executionIntervalMinutes !== undefined ||
@@ -167,7 +187,7 @@ export class ScheduledReminderService {
     const nextRunAt = !hasRangeScheduleUpdate && updates.intervalMinutes
       ? adjustToWorkHours(new Date(Date.now() + updates.intervalMinutes * 60 * 1000)).toISOString()
       : undefined;
-    return this.store.updateTask(taskId, { ...updates, nextRunAt });
+    return this.store.updateTask(taskId, { ...updates, timezone: undefined, modelId: undefined, nextRunAt });
   }
 }
 

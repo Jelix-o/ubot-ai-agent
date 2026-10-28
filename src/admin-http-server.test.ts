@@ -7,6 +7,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { AdminHttpServer, resolveTrustedClientIp } from "./admin-http-server.js";
+import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
+import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { SharedDb } from "./shared/sqlite.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
 import { AdminTaskStore } from "./services/admin-task-store.js";
@@ -369,6 +371,7 @@ async function startFixture(
     privateEnterpriseRanking: loadPrivateEnterpriseRanking(),
     characterProfileService,
     systemSettingsStore: settings,
+    scheduledReminderService: new ScheduledReminderService(new ScheduledReminderStore(path.join(dir, "reminders.json"), repository), {}),
     adminTaskStore: tasks,
     htmlPreviewService,
     imagePreviewService,
@@ -399,7 +402,7 @@ async function startFixture(
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, db, memories, operations, tasks, htmlPreviewService, imagePreviewService, memeLibraryService };
+  return { baseUrl, db, settings, memories, operations, tasks, htmlPreviewService, imagePreviewService, memeLibraryService };
 }
 
 function createStartupOnlyServer(port: number, ensureInitialized: () => Promise<void>): AdminHttpServer {
@@ -1941,4 +1944,33 @@ test("analytics endpoints restrict group administrators to authorized group usag
   assert.equal((await superReport.json() as { summary: { calls: number } }).summary.calls, 3);
   const outside = await request(baseUrl, `/api/analytics/summary?${query}&groupId=100200`, { headers: { Cookie: admin.cookie } });
   assert.equal(outside.status, 403);
+});
+
+
+test("scheduled model-call API preserves ordinary tasks and restricts all model-call mutations to super admins", async t => {
+  const { baseUrl, settings } = await startFixture(t);
+  await settings.update({ models: [{ id:"sol", name:"Scheduled GPT", shortName:"sol", purpose:"reply", model:"fixed-model", enabled:true, baseUrl:"http://127.0.0.1:63199/v1", apiKey:"fixture-only" }] });
+  const root = await login(baseUrl);
+  const headers = (auth: Auth) => ({ Cookie:auth.cookie, "X-CSRF-Token":auth.csrf, "Content-Type":"application/json" });
+  const route = "/api/groups/67890/reminders";
+  const task = { kind:"model_call", modelId:"sol", timezone:"Asia/Shanghai", scheduledTime:"05:59", dateRule:"all", topic:"Scheduled GPT" };
+  const invite = await request(baseUrl, "/api/admin-accounts/invites", { method:"POST", headers:headers(root), body:JSON.stringify({ role:"group_admin", groupIds:["67890"], expiresHours:1 }) });
+  const member = await acceptInviteAsAdmin(baseUrl, (await invite.json() as { token:string }).token, "schedule-editor");
+  const create = (auth:Auth, body:unknown) => request(baseUrl, route, { method:"POST", headers:headers(auth), body:JSON.stringify(body) });
+  assert.equal((await create(member, task)).status, 403);
+  assert.equal((await create(root, { ...task, modelId:"not-configured" })).status, 400);
+  assert.equal((await create(root, { ...task, timezone:"UTC" })).status, 400);
+  assert.equal((await create(root, { ...task, scheduledTime:"25:00" })).status, 400);
+  const ordinary = await create(member, { topic:"喝水", scheduledTime:"10:00" });
+  assert.equal(ordinary.status, 201);
+  const created = await create(root, task);
+  assert.equal(created.status, 201);
+  const modelTask = await created.json() as { id:string; kind:string; modelId:string; timezone:string; nextRunAt:string };
+  assert.equal(modelTask.kind, "model_call"); assert.equal(modelTask.modelId,"sol"); assert.equal(modelTask.timezone,"Asia/Shanghai");
+  const item = route + "/" + modelTask.id;
+  assert.equal((await request(baseUrl, item, { method:"PUT", headers:headers(member), body:JSON.stringify({ enabled:false }) })).status, 403);
+  assert.equal((await request(baseUrl, item, { method:"DELETE", headers:headers(member) })).status, 403);
+  assert.equal((await request(baseUrl, item, { method:"PUT", headers:headers(root), body:JSON.stringify({ enabled:false }) })).status, 200);
+  assert.equal((await request(baseUrl, item, { method:"PUT", headers:headers(root), body:JSON.stringify({ enabled:true }) })).status, 200);
+  assert.equal((await request(baseUrl, item, { method:"DELETE", headers:headers(root) })).status, 200);
 });

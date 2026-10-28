@@ -993,6 +993,7 @@ export class V3StateRepository {
       const candidates = this.sharedDb.db.prepare(
         `SELECT id, task_json FROM v3_scheduled_reminders
           WHERE enabled = 1 AND next_run_at <= ?
+            AND COALESCE(json_extract(task_json, '$.kind'), 'reminder') <> 'model_call'
             AND (lease_expires_at IS NULL OR lease_expires_at < ?)
           ORDER BY next_run_at, id`,
       ).all(now, now) as Array<{ id: string; task_json: string }>;

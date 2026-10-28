@@ -1,3 +1,4 @@
+import { nextModelCallAt } from "./model-call-schedule.js";
 import { stat } from "node:fs/promises";
 
 import type { ScheduledReminderTask, ScheduledRemindersFile } from "../types.js";
@@ -18,6 +19,9 @@ export class ScheduledReminderStore {
   async addTask(args: {
     groupId: string;
     creatorUserId: string;
+    kind?: ScheduledReminderTask["kind"];
+    modelId?: string;
+    timezone?: ScheduledReminderTask["timezone"];
     intervalMinutes: number;
     topic: string;
     executionStartTime?: string;
@@ -42,6 +46,7 @@ export class ScheduledReminderStore {
     });
     const task: ScheduledReminderTask = {
       id: createTaskId(now, data.tasks),
+      ...(args.kind === "model_call" ? { kind: args.kind, modelId: args.modelId, timezone: args.timezone } : {}),
       groupId: args.groupId,
       creatorUserId: args.creatorUserId,
       intervalMinutes: schedule.intervalMinutes,
@@ -54,7 +59,7 @@ export class ScheduledReminderStore {
       dateRule: normalizeDateRule(args.dateRule),
       weekdays: normalizeWeekdays(args.weekdays),
       createdAt: now.toISOString(),
-      nextRunAt: calculateNextRunAt({
+      nextRunAt: args.kind === "model_call" ? nextModelCallAt(args.scheduledTime!, now) : calculateNextRunAt({
         now,
         intervalMinutes: schedule.intervalMinutes,
         executionStartTime: schedule.executionStartTime,
@@ -78,6 +83,10 @@ export class ScheduledReminderStore {
     return task;
   }
 
+  async getTask(id: string): Promise<ScheduledReminderTask | undefined> {
+    return this.v3State ? this.v3State.getScheduledReminder(id) : (await this.readData()).tasks[id];
+  }
+
   async listGroupTasks(groupId: string, options: { includeDisabled?: boolean } = {}): Promise<ScheduledReminderTask[]> {
     if (this.v3State) {
       return this.v3State.listScheduledReminders(groupId, options.includeDisabled === true)
@@ -92,6 +101,8 @@ export class ScheduledReminderStore {
   async updateTask(
     taskId: string,
     updates: {
+      modelId?: string;
+      timezone?: ScheduledReminderTask["timezone"];
       intervalMinutes?: number;
       topic?: string;
       executionStartTime?: string;
@@ -137,6 +148,8 @@ export class ScheduledReminderStore {
     });
     const updated: ScheduledReminderTask = {
       ...task,
+      ...(updates.modelId !== undefined ? { modelId: updates.modelId } : {}),
+      ...(updates.timezone !== undefined ? { timezone: updates.timezone } : {}),
       intervalMinutes: schedule.intervalMinutes,
       ...(schedule.executionStartTime !== undefined ? { executionStartTime: schedule.executionStartTime } : {}),
       ...(schedule.executionEndTime !== undefined ? { executionEndTime: schedule.executionEndTime } : {}),
@@ -192,7 +205,7 @@ export class ScheduledReminderStore {
     const data = await this.readData();
     const nowMs = now.getTime();
     return Object.values(data.tasks)
-      .filter((task) => task.enabled && new Date(task.nextRunAt).getTime() <= nowMs)
+      .filter((task) => task.kind !== "model_call" && task.enabled && new Date(task.nextRunAt).getTime() <= nowMs)
       .sort((left, right) => left.nextRunAt.localeCompare(right.nextRunAt));
   }
 
@@ -293,6 +306,8 @@ export class ScheduledReminderStore {
 function buildUpdatedTask(
   task: ScheduledReminderTask,
   updates: {
+    modelId?: string;
+    timezone?: ScheduledReminderTask["timezone"];
     intervalMinutes?: number;
     topic?: string;
     executionStartTime?: string;
@@ -324,6 +339,8 @@ function buildUpdatedTask(
   });
   const updated: ScheduledReminderTask = {
     ...task,
+    ...(updates.modelId !== undefined ? { modelId: updates.modelId } : {}),
+    ...(updates.timezone !== undefined ? { timezone: updates.timezone } : {}),
     intervalMinutes: schedule.intervalMinutes,
     ...(schedule.executionStartTime !== undefined ? { executionStartTime: schedule.executionStartTime } : {}),
     ...(schedule.executionEndTime !== undefined ? { executionEndTime: schedule.executionEndTime } : {}),

@@ -29,6 +29,7 @@ import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import { HolidayCountdownStore } from "./services/holiday-countdown-store.js";
+import { ScheduledModelCallService } from "./services/scheduled-model-call-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -1243,6 +1244,8 @@ async function buildBotApp(
     new ImageRequestRepository(sharedDb),
     new GroupInteractionService(sharedDb, config.botQq),
   );
+  if (v3State) botApp.setScheduledModelCallService(new ScheduledModelCallService(sharedDb, systemSettingsStore, groupConfigService, undefined,
+    protocol => capabilityPolicy?.isProviderFeatureEnabled(protocol === "anthropic" ? "anthropic" : "openai", "chat") !== false));
   return { botApp, groupConfigService, imageIntentRouter };
 }
 

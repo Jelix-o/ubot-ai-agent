@@ -506,7 +506,11 @@ interface OpsAlertRuntimeState {
   lastAlertSummary?: string;
 }
 
+import type { ScheduledModelCallService } from "./services/scheduled-model-call-service.js";
+
 export class BotApplication {
+  private scheduledModelCallService?: Pick<ScheduledModelCallService, "tick">;
+  setScheduledModelCallService(service: Pick<ScheduledModelCallService, "tick">): void { this.scheduledModelCallService = service; }
   private readonly participationService: GroupParticipationService;
   private readonly maintenanceScheduler: MaintenanceScheduler;
   private readonly explicitMemoryService?: ExplicitMemoryService;
@@ -1852,6 +1856,8 @@ export class BotApplication {
     if (!this.isCapabilityEnabled("scheduled_reminders")) {
       return;
     }
+    try { await this.scheduledModelCallService?.tick(now); }
+    catch (error) { logError("Scheduled model call tick failed.", { error: error instanceof Error ? error.message : "unknown" }); }
     if (!isWithinWorkHours(now)) {
       return;
     }
@@ -3342,6 +3348,8 @@ export class BotApplication {
         return;
       }
 
+      const target = (await this.scheduledReminderService.listGroupTasks(groupId, { includeDisabled: true })).find(task => task.id === taskId);
+      if (target?.kind === "model_call" && !await this.isSuperAdmin(groupConfig, userId)) { await this.sendText(groupId, "模型调用任务请由超级管理员在后台管理"); return; }
       const removed = await this.scheduledReminderService.removeGroupTask(groupId, taskId);
       if (removed) {
         await this.logAdminOperation(groupId, userId, "定时任务删除", taskId);
@@ -3372,6 +3380,7 @@ export class BotApplication {
         return;
       }
 
+      if (existing.kind === "model_call") { await this.sendText(groupId, "模型调用任务请由超级管理员在后台管理"); return; }
       const updated = await this.scheduledReminderService.updateTask(modifyRequest.taskId, {
         intervalMinutes: modifyRequest.request.intervalMinutes,
         topic: modifyRequest.request.topic,

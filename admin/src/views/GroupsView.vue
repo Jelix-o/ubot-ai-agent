@@ -42,6 +42,8 @@ const originalConfig = shallowRef<Record<string, unknown>>({});
 const loadError = shallowRef("");
 let loadSerial = 0;
 const reminderForm = reactive({
+  kind: "reminder" as "reminder" | "model_call",
+  modelId: "",
   intervalMinutes: 60,
   topic: "",
   executionStartTime: "09:00",
@@ -307,6 +309,8 @@ function weekdayLabel(value: number): string {
 function resetReminderForm(): void {
   if (readonly.value) return;
   editingReminderId.value = null;
+  reminderForm.kind = "reminder";
+  reminderForm.modelId = defaultReplyModelId.value;
   reminderForm.topic = "";
   reminderForm.executionStartTime = "09:00";
   reminderForm.executionEndTime = "18:00";
@@ -320,6 +324,8 @@ function resetReminderForm(): void {
 
 function fillReminderForm(reminder: ScheduledReminderTask, mode: "edit" | "copy"): void {
   editingReminderId.value = mode === "edit" ? reminder.id : null;
+  reminderForm.kind = reminder.kind ?? "reminder";
+  reminderForm.modelId = reminder.modelId ?? defaultReplyModelId.value;
   reminderForm.topic = reminder.topic;
   reminderForm.executionStartTime = reminder.executionStartTime || reminder.scheduledTime || reminderTimeLabel(reminder);
   reminderForm.executionEndTime = reminder.executionEndTime || reminder.executionStartTime || reminder.scheduledTime || reminderTimeLabel(reminder);
@@ -344,6 +350,7 @@ function copyReminder(reminder: ScheduledReminderTask): void {
 }
 
 function reminderTimeLabel(reminder: ScheduledReminderTask): string {
+  if (reminder.kind === "model_call") return reminder.scheduledTime + " 北京时间";
   if (reminder.executionStartTime && reminder.executionEndTime) {
     return `${reminder.executionStartTime} - ${reminder.executionEndTime}`;
   }
@@ -354,12 +361,27 @@ function reminderTimeLabel(reminder: ScheduledReminderTask): string {
 }
 
 function reminderIntervalLabel(reminder: ScheduledReminderTask): string {
+  if (reminder.kind === "model_call") return "每天一次";
   const minutes = reminder.executionIntervalMinutes ?? reminder.intervalMinutes;
   return `${minutes} 分钟`;
 }
 
 function reminderStatusClass(reminder: ScheduledReminderTask): string {
   return reminder.enabled ? "enabled" : "paused";
+}
+
+function modelTaskReadonly(task: ScheduledReminderTask): boolean { return readonly.value || task.kind === "model_call" && app.role !== "super_admin"; }
+function lastRunLabel(task: ScheduledReminderTask): string {
+  const run = task.lastRun;
+  if (!run) return "尚未执行";
+  return [formatDateTime(run.startedAt), ({ running:"执行中", succeeded:"成功", failed:"失败", unknown:"结果未确认", missed:"错过", skipped:"跳过" } as const)[run.status], run.detail].filter(Boolean).join(" · ");
+}
+async function toggleReminder(task: ScheduledReminderTask): Promise<void> {
+  if (modelTaskReadonly(task)) return;
+  try {
+    await api("/api/groups/" + encodeURIComponent(app.groupId) + "/reminders/" + encodeURIComponent(task.id), { method:"PUT", body:JSON.stringify({ enabled:!task.enabled }) });
+    await loadReminders(); await loadSchedulePreview();
+  } catch (error) { app.showToast((error as Error).message, "error"); }
 }
 
 async function submitReminder(): Promise<void> {
@@ -375,20 +397,23 @@ async function submitReminder(): Promise<void> {
     app.showToast("请选择执行开始时间和结束时间", "error");
     return;
   }
-  if (reminderForm.executionStartTime > reminderForm.executionEndTime) {
+  if (reminderForm.kind !== "model_call" && reminderForm.executionStartTime > reminderForm.executionEndTime) {
     app.showToast("执行开始时间不能晚于结束时间", "error");
     return;
   }
   remindersLoading.value = true;
   try {
     const intervalMinutes = Math.max(1, Number(reminderForm.executionIntervalMinutes) || 1);
+    const modelCall = reminderForm.kind === "model_call";
     const payload = {
+      kind: reminderForm.kind,
+      ...(modelCall ? { modelId:reminderForm.modelId, timezone:"Asia/Shanghai", scheduledTime:reminderForm.executionStartTime } : {}),
       intervalMinutes,
       topic: reminderForm.topic.trim(),
       executionStartTime: reminderForm.executionStartTime,
-      executionEndTime: reminderForm.executionEndTime,
+      executionEndTime: modelCall ? reminderForm.executionStartTime : reminderForm.executionEndTime,
       executionIntervalMinutes: intervalMinutes,
-      dateRule: reminderForm.dateRule,
+      dateRule: modelCall ? "all" : reminderForm.dateRule,
       weekdays: reminderForm.weekdays,
       enabled: reminderForm.enabled,
     };
@@ -616,19 +641,21 @@ watch(() => app.groupId, () => {
         <div v-if="remindersError" class="error-state reminder-error" role="alert"><span>群定时任务暂不可用</span><button class="ghost-btn" type="button" :disabled="remindersLoading" @click="retryReminders">重试加载</button></div>
         <div class="reminder-form" :class="{ editing: Boolean(editingReminderId) }">
           <div class="reminder-main-fields">
-            <label class="reminder-topic">
+            <div class="reminder-topic">
               <span class="reminder-field-label">提醒内容</span>
+                <select v-if="app.role === 'super_admin'" v-model="reminderForm.kind" class="input" aria-label="定时任务类型" :disabled="Boolean(editingReminderId)" @change="reminderForm.kind === 'model_call' && (reminderForm.topic ||= '模型定时调用', reminderForm.modelId ||= defaultReplyModelId)"><option value="reminder">普通提醒</option><option value="model_call">模型调用</option></select>
+                <label v-if="reminderForm.kind === 'model_call'">固定调用模型<select v-model="reminderForm.modelId" class="input" aria-label="定时调用模型"><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }} / {{ model.id }}</option></select></label>
                 <input v-model="reminderForm.topic" class="input" placeholder="输入提醒内容，例如喝水、整理日报" :disabled="readonly || Boolean(remindersError)" />
-            </label>
+            </div>
             <label class="reminder-time">
-              <span class="reminder-field-label">执行开始时间</span>
+              <span class="reminder-field-label">{{ reminderForm.kind === "model_call" ? "执行时刻（北京时间）" : "执行开始时间" }}</span>
                 <input v-model="reminderForm.executionStartTime" class="input" type="time" :disabled="readonly || Boolean(remindersError)" />
             </label>
-            <label class="reminder-time">
+            <label v-if="reminderForm.kind !== 'model_call'" class="reminder-time">
               <span class="reminder-field-label">执行结束时间</span>
                 <input v-model="reminderForm.executionEndTime" class="input" type="time" :disabled="readonly || Boolean(remindersError)" />
             </label>
-            <label class="reminder-advance">
+            <label v-if="reminderForm.kind !== 'model_call'" class="reminder-advance">
               <span class="reminder-field-label">执行间隔</span>
               <div class="suffix-input">
                 <input v-model.number="reminderForm.executionIntervalMinutes" class="input interval-input" type="number" min="1" :disabled="readonly || Boolean(remindersError)" />
@@ -652,7 +679,8 @@ watch(() => app.groupId, () => {
               <span>日期规则</span>
               <small>选择任务在哪些日期执行</small>
             </div>
-            <DateRulePicker
+            <p v-if="reminderForm.kind === 'model_call'" class="muted">每天按北京时间执行一次。固定模型不回退，调用结果会发到本群。</p>
+            <DateRulePicker v-else
               v-model:rule="reminderForm.dateRule"
               v-model:weekdays="reminderForm.weekdays"
               compact
@@ -675,7 +703,7 @@ watch(() => app.groupId, () => {
             <span>操作</span>
           </div>
           <article v-for="reminder in reminders" :key="reminder.id" class="reminder-row">
-            <strong class="reminder-topic-text">{{ reminder.topic }}</strong>
+            <div class="reminder-topic-text"><strong>{{ reminder.kind === "model_call" ? "[模型调用] " : "" }}{{ reminder.topic }}</strong><small v-if="reminder.kind === 'model_call'" class="muted" style="display:block">{{ reminder.modelId }} · {{ lastRunLabel(reminder) }}</small></div>
             <span class="rule-tag" :class="scheduleRuleClass(reminder.dateRule)">
               {{ scheduleRuleLabel(reminder.dateRule, reminder.weekdays || []) }}
             </span>
@@ -686,9 +714,10 @@ watch(() => app.groupId, () => {
             </span>
             <span class="muted next-run">{{ formatDateTime(reminder.nextRunAt) }}</span>
             <div class="reminder-actions">
-              <button class="link-btn" type="button" :disabled="readonly || remindersLoading" @click="editReminder(reminder)">编辑</button>
-              <button class="link-btn" type="button" :disabled="readonly" @click="copyReminder(reminder)">复制</button>
-              <button class="link-btn danger" type="button" :disabled="readonly || remindersLoading" @click="deleteReminder(reminder)">删除</button>
+              <button class="link-btn" type="button" :disabled="modelTaskReadonly(reminder) || remindersLoading" @click="editReminder(reminder)">编辑</button>
+              <button class="link-btn" type="button" :disabled="modelTaskReadonly(reminder)" @click="copyReminder(reminder)">复制</button>
+              <button class="link-btn" type="button" :disabled="modelTaskReadonly(reminder) || remindersLoading" @click="toggleReminder(reminder)">{{ reminder.enabled ? "暂停" : "启用" }}</button>
+              <button class="link-btn danger" type="button" :disabled="modelTaskReadonly(reminder) || remindersLoading" @click="deleteReminder(reminder)">删除</button>
             </div>
           </article>
         </div>

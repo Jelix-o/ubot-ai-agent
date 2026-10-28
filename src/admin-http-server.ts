@@ -897,7 +897,7 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "forbidden" }, 403);
         return;
       }
-      await this.handleGroupReminderItem(req, res, reminderItemRoute.groupId, reminderItemRoute.id);
+      await this.handleGroupReminderItem(req, res, reminderItemRoute.groupId, reminderItemRoute.id, session);
       return;
     }
 
@@ -2719,6 +2719,11 @@ export class AdminHttpServer {
     this.sendJson(res, { syncedCount: napcatGroups.length, groups });
   }
 
+  private async validateScheduledCallModel(id: unknown): Promise<void> {
+    const settings = await this.options.systemSettingsStore?.getInternal();
+    if (!settings?.models.some(model => model.id === id && model.purpose === "reply" && model.enabled && model.apiKey?.trim() && model.apiProtocol !== "anthropic")) throw new AdminRequestBodyError("invalid_model_call_model", 400);
+  }
+
   private async handleGroupReminders(req: IncomingMessage, res: ServerResponse, groupId: string, session: AdminSession): Promise<void> {
     if (!this.options.scheduledReminderService) {
       this.sendJson(res, { error: "scheduled_reminders_unavailable" }, 503);
@@ -2730,6 +2735,13 @@ export class AdminHttpServer {
     }
     if (req.method === "POST") {
       const body = await readJsonBody(req);
+      if (body.kind !== undefined && !["reminder", "model_call"].includes(String(body.kind))) { this.sendJson(res, { error: "invalid_task_kind" }, 400); return; }
+      if (body.kind === "model_call") {
+        if (session.role !== "super_admin") { this.sendJson(res, { error: "forbidden" }, 403); return; }
+        if (body.timezone !== undefined && body.timezone !== "Asia/Shanghai" || body.dateRule !== undefined && body.dateRule !== "all") throw new AdminRequestBodyError("invalid_model_call_task", 400);
+        await this.validateScheduledCallModel(body.modelId);
+        if (typeof body.scheduledTime !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(body.scheduledTime)) { this.sendJson(res, { error: "invalid_model_call_time" }, 400); return; }
+      }
       const executionStartTime = normalizeReminderTime(body.executionStartTime ?? body.scheduledTime) ?? "09:00";
       const executionEndTime = normalizeReminderTime(body.executionEndTime ?? body.scheduledTime) ?? executionStartTime;
       const executionIntervalMinutes = normalizeReminderInterval(body.executionIntervalMinutes ?? body.intervalMinutes ?? body.advanceMinutes ?? 60);
@@ -2740,6 +2752,9 @@ export class AdminHttpServer {
         groupId,
         creatorUserId: session.userId ?? session.username,
         request: {
+          kind: body.kind === "model_call" ? "model_call" : "reminder",
+          modelId: body.kind === "model_call" ? requiredString(body.modelId) : undefined,
+          timezone: body.kind === "model_call" ? (body.timezone === undefined ? "Asia/Shanghai" : requiredString(body.timezone)) : undefined,
           intervalMinutes: executionIntervalMinutes,
           topic,
           executionStartTime,
@@ -2758,19 +2773,28 @@ export class AdminHttpServer {
     this.sendJson(res, { error: "method_not_allowed" }, 405);
   }
 
-  private async handleGroupReminderItem(req: IncomingMessage, res: ServerResponse, groupId: string, taskId: string): Promise<void> {
+  private async handleGroupReminderItem(req: IncomingMessage, res: ServerResponse, groupId: string, taskId: string, session: AdminSession): Promise<void> {
     if (!this.options.scheduledReminderService) {
       this.sendJson(res, { error: "scheduled_reminders_unavailable" }, 503);
       return;
     }
+    const task = (await this.options.scheduledReminderService.listGroupTasks(groupId, { includeDisabled: true })).find(item => item.id === taskId);
+    if (task?.kind === "model_call" && session.role !== "super_admin") { this.sendJson(res, { error: "forbidden" }, 403); return; }
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
+      if (body.kind !== undefined && body.kind !== (task?.kind ?? "reminder")) { this.sendJson(res, { error: "invalid_task_kind" }, 400); return; }
       const existing = (await this.options.scheduledReminderService.listGroupTasks(groupId, { includeDisabled: true })).find((task) => task.id === taskId);
       if (!existing) {
         this.sendJson(res, { error: "not_found" }, 404);
         return;
       }
+      if (existing.kind === "model_call") {
+        if (body.timezone !== undefined && body.timezone !== "Asia/Shanghai" || body.dateRule !== undefined && body.dateRule !== "all" || body.scheduledTime !== undefined && (typeof body.scheduledTime !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(body.scheduledTime))) throw new AdminRequestBodyError("invalid_model_call_task", 400);
+        await this.validateScheduledCallModel(body.modelId ?? existing.modelId);
+      }
       const reminder = await this.options.scheduledReminderService.updateTask(taskId, {
+        ...(existing.kind === "model_call" && body.modelId !== undefined ? { modelId: requiredString(body.modelId) } : {}),
+        ...(existing.kind === "model_call" && body.timezone !== undefined ? { timezone: requiredString(body.timezone) } : {}),
         ...(body.intervalMinutes !== undefined ? { intervalMinutes: normalizeReminderInterval(body.intervalMinutes) } : {}),
         ...(body.executionIntervalMinutes !== undefined ? { intervalMinutes: normalizeReminderInterval(body.executionIntervalMinutes), executionIntervalMinutes: normalizeReminderInterval(body.executionIntervalMinutes) } : {}),
         ...(body.topic !== undefined ? { topic: requiredString(body.topic).slice(0, 80) } : {}),

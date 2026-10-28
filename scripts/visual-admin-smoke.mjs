@@ -506,7 +506,20 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await poke.uncheck();
     await saveGroup();
 
-    await desktop.goto(`${baseUrl}/memes`, { waitUntil: "networkidle" });
+    await desktop.goto(baseUrl + "/groups?tab=schedule", { waitUntil: "networkidle" });
+    await desktop.getByLabel("定时任务类型").selectOption("model_call");
+    const modelSelect = desktop.getByLabel("定时调用模型");
+    await modelSelect.selectOption(await modelSelect.locator("option").first().getAttribute("value"));
+    await desktop.locator(".reminder-time input").fill("05:59");
+    await desktop.getByRole("button", { name:"添加任务", exact:true }).click();
+    const modelRow = desktop.locator(".reminder-row").filter({ hasText:"[模型调用]" });
+    await modelRow.getByText("05:59 北京时间", { exact:true }).waitFor();
+    await modelRow.getByText(/尚未执行/).waitFor();
+    await modelRow.getByRole("button", { name:"暂停", exact:true }).click();
+    await modelRow.getByRole("button", { name:"启用", exact:true }).waitFor();
+    await assertNoHorizontalOverflow(desktop, "scheduled model-call desktop");
+    await desktop.screenshot({ path:path.join(screenshotDir, "scheduled-model-call-desktop.png"), fullPage:true });
+    await desktop.goto(baseUrl + "/memes", { waitUntil: "networkidle" });
     if (await desktop.getByLabel("选图方式").inputValue() !== "model_tag" || await desktop.getByRole("spinbutton", { name: "发送概率" }).inputValue() !== "60") throw new Error("Meme defaults are incorrect.");
     await desktop.getByText(/单张最大 10 MiB/).waitFor();
     await desktop.getByRole("spinbutton", { name: "发送概率" }).fill("41");

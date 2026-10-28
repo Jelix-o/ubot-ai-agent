@@ -425,7 +425,23 @@ export interface ControlledMentionDecision {
   reason?: string;
 }
 
+export interface ScheduledModelCallRun {
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: "running" | "succeeded" | "failed" | "unknown" | "missed" | "skipped";
+  modelId: string;
+  model?: string;
+  durationMs?: number;
+  detail?: string;
+}
+
 export interface ScheduledReminderTask {
+  kind?: "reminder" | "model_call";
+  modelId?: string;
+  timezone?: "Asia/Shanghai";
+  lastRun?: ScheduledModelCallRun;
+
   id: string;
   groupId: string;
   creatorUserId: string;
