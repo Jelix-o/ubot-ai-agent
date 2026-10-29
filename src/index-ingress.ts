@@ -2,7 +2,7 @@ import { MemeLibraryService } from "./services/meme-library-service.js";
 import { GroupInteractionService, type GroupPokeEvent } from "./services/group-interaction-service.js";
 import { loadConfig } from "./config.js";
 import { parseForwardNodes, sendForwardOrFallback } from "./forward-message.js";
-import { readFile, rm } from "node:fs/promises";
+import { lstat, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { logError, logInfo, logWarn } from "./logger.js";
 import {
@@ -66,6 +66,28 @@ export function normalizeIngressMessageTime(eventTimeSeconds: unknown, receivedA
   return Math.min(eventTimeMs, receivedAtMs);
 }
 
+async function resolveGeneratedImageFile(rootDir: string | undefined, filePath: string): Promise<string> {
+  const outside = () => new Error("Generated image outbox path is outside the managed directory.");
+  if (!rootDir) throw outside();
+  let root: string, parent: string;
+  try {
+    [root, parent] = await Promise.all([realpath(rootDir), realpath(path.dirname(filePath))]);
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw outside();
+    throw error;
+  }
+  // Release directories may alias the same data directory. Resolve parents
+  // only so that lstat still rejects a symlink in the final file component.
+  const resolved = path.join(parent, path.basename(filePath));
+  if (!isGeneratedImagePath(root, resolved)) throw outside();
+  const entry = await lstat(resolved);
+  if (!entry.isFile()) throw outside();
+  if (entry.size === 0 || entry.size > IMAGE_GENERATION_MAX_BYTES) {
+    throw new Error("Generated image outbox file has an invalid size or type.");
+  }
+  return resolved;
+}
+
 /**
  * Delivers one already-claimed outbox row and commits the real platform id.
  * Keeping this boundary outside IngressApp makes the cross-process receipt
@@ -118,14 +140,11 @@ export async function deliverOutboxRow(
   } else if (row.kind === "image") {
     receipt = await transport.sendGroupImage(row.group_id, row.text);
   } else if (row.kind === "generated_image") {
-    if (!generatedImageRoot || !isGeneratedImagePath(generatedImageRoot, row.text)) {
-      throw new Error("Generated image outbox path is outside the managed directory.");
-    }
-    const image = await readFile(row.text);
+    generatedImagePath = await resolveGeneratedImageFile(generatedImageRoot, row.text);
+    const image = await readFile(generatedImagePath);
     if (image.byteLength === 0 || image.byteLength > IMAGE_GENERATION_MAX_BYTES || !isSupportedGeneratedImage(image)) {
       throw new Error("Generated image outbox file has an invalid size or type.");
     }
-    generatedImagePath = row.text;
     receipt = await transport.sendGroupImage(row.group_id, `base64://${image.toString("base64")}`);
   } else {
     receipt = await transport.sendGroupMessage(row.group_id, row.text, row.reply_to ? { replyToMessageId: row.reply_to } : undefined);

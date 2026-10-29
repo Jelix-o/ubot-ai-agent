@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
 
@@ -18,9 +19,21 @@ function optionalEnv(name: string): string | undefined {
   return process.env[name]?.trim() || undefined;
 }
 
+function resolveDataDir(cwd: string): string {
+  const dataDir = path.join(cwd, "data");
+  try {
+    return realpathSync(dataDir);
+  } catch (error) {
+    // A fresh installation creates data later; deployed release symlinks must
+    // instead resolve to the same persistent directory in every process.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return dataDir;
+    throw error;
+  }
+}
+
 export function loadConfig(): AppConfig {
   const cwd = process.cwd();
-  const dataDir = path.join(cwd, "data");
+  const dataDir = resolveDataDir(cwd);
   const napcatMode = (process.env.NAPCAT_MODE ?? "forward").trim().toLowerCase();
   const reversePort = Number(process.env.NAPCAT_REVERSE_WS_PORT ?? "6199");
   const adminHttpPort = Number(process.env.ADMIN_HTTP_PORT ?? "6200");
@@ -71,16 +84,16 @@ export function loadConfig(): AppConfig {
     botQq: requireEnv("BOT_QQ"),
     groupsConfigPath: path.join(cwd, "config", "groups.json"),
     skillsDir: path.join(cwd, "skills"),
-    conversationsPath: path.join(cwd, "data", "conversations.json"),
-    dailyReportStorePath: path.join(cwd, "data", "daily-report-store.json"),
-    holidayCountdownStorePath: path.join(cwd, "data", "holiday-countdown-store.json"),
-    scheduledReminderStorePath: path.join(cwd, "data", "scheduled-reminders.json"),
-    adminOperationLogPath: path.join(cwd, "data", "admin-operations.jsonl"),
-    groupMemoryPath: path.join(cwd, "data", "group-memory.json"),
-    knowledgeBasePath: path.join(cwd, "data", "knowledge-base.json"),
-    systemSettingsPath: path.join(cwd, "data", "system-settings.json"),
-    adminTasksPath: path.join(cwd, "data", "admin-tasks.json"),
-    modelHealthHistoryPath: path.join(cwd, "data", "model-health-history.json"),
+    conversationsPath: path.join(dataDir, "conversations.json"),
+    dailyReportStorePath: path.join(dataDir, "daily-report-store.json"),
+    holidayCountdownStorePath: path.join(dataDir, "holiday-countdown-store.json"),
+    scheduledReminderStorePath: path.join(dataDir, "scheduled-reminders.json"),
+    adminOperationLogPath: path.join(dataDir, "admin-operations.jsonl"),
+    groupMemoryPath: path.join(dataDir, "group-memory.json"),
+    knowledgeBasePath: path.join(dataDir, "knowledge-base.json"),
+    systemSettingsPath: path.join(dataDir, "system-settings.json"),
+    adminTasksPath: path.join(dataDir, "admin-tasks.json"),
+    modelHealthHistoryPath: path.join(dataDir, "model-health-history.json"),
     adminHttpEnabled: (process.env.ADMIN_HTTP_ENABLED ?? "false").trim().toLowerCase() === "true",
     adminHttpHost: optionalEnv("ADMIN_HTTP_HOST") ?? "127.0.0.1",
     adminHttpPort,

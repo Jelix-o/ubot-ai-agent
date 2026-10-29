@@ -1,7 +1,48 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { loadConfig } from "./config.js";
+
+test("release aliases use one physical data directory while a fresh install can still create data", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "ubot-config-data-"));
+  const originalEnv = process.env;
+  t.after(() => { process.env = originalEnv; rmSync(root, { recursive: true, force: true }); });
+  process.env = {
+    NAPCAT_MODE: "reverse", OPENAI_BASE_URL: "https://example.test/v1",
+    OPENAI_API_KEY: "fixture-key", OPENAI_MODEL: "fixture-model",
+    INGRESS_READ_API_TOKEN: "fixture-token", BOT_QQ: "12345",
+  };
+  const persistent = path.join(root, "persistent");
+  mkdirSync(persistent);
+  let cwd = "";
+  t.mock.method(process, "cwd", () => cwd);
+  for (const version of ["old-release", "new-release"]) {
+    cwd = path.join(root, version);
+    mkdirSync(cwd);
+    symlinkSync(persistent, path.join(cwd, "data"), "junction");
+    const config = loadConfig();
+    assert.equal(config.dataDir, realpathSync(persistent));
+    assert.equal(config.htmlPreviewRoot, path.join(config.dataDir, "generated-pages"));
+    for (const key of ["conversationsPath", "dailyReportStorePath", "holidayCountdownStorePath",
+      "scheduledReminderStorePath", "adminOperationLogPath", "groupMemoryPath", "knowledgeBasePath",
+      "systemSettingsPath", "adminTasksPath", "modelHealthHistoryPath"] as const) {
+      assert.equal(path.dirname(config[key]), config.dataDir, key);
+    }
+    assert.equal(config.groupsConfigPath, path.join(cwd, "config", "groups.json"));
+  }
+  cwd = path.join(root, "fresh-release");
+  mkdirSync(cwd);
+  const config = loadConfig();
+  assert.equal(config.dataDir, path.join(cwd, "data"));
+  assert.equal(existsSync(config.dataDir), false);
+  mkdirSync(config.dataDir);
+  assert.equal(loadConfig().dataDir, realpathSync(config.dataDir));
+  process.env.HTML_PREVIEW_ROOT = path.join(root, "custom-preview");
+  assert.equal(loadConfig().htmlPreviewRoot, process.env.HTML_PREVIEW_ROOT);
+});
 
 test("startup refuses a retired Gemini environment model", () => {
   const originalEnv = { ...process.env };
