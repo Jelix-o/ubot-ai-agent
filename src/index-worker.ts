@@ -1,3 +1,8 @@
+import { imageIntentText, restoreImageIntentTarget } from "./services/image-intent-text.js";
+import { ImagePendingRequestRepository, type ImageIntentMaterialization } from "./services/image-pending-request-repository.js";
+import type { IngressMessageRow } from "./shared/sqlite.js";
+import type { ImageIntentRoute } from "./services/image-intent-router-plugin.js";
+import type { NaturalImageIntentDetails } from "./services/natural-image-request.js";
 import { GroupInteractionService } from "./services/group-interaction-service.js";
 import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
 import { BtSearchService } from "./services/bt-search-service.js";
@@ -65,7 +70,6 @@ import {
   type ImageIntentRouter,
 } from "./services/image-intent-router-plugin.js";
 import type { NaturalImageRequest } from "./services/natural-image-request.js";
-import { ImageGenerationConfirmationRepository } from "./services/image-generation-confirmation-repository.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import { buildDefaultSystemModels } from "./system-model-defaults.js";
 import {
@@ -125,6 +129,7 @@ export class WorkerApp {
   private readonly atmosphere: AtmosphereSummarizer;
   private readonly imageRequests: ImageRequestRepository;
   private readonly imageIntentRoutes: ImageIntentRouteRepository;
+  private readonly imagePendingRequests: ImagePendingRequestRepository;
   private readonly runner: ConsumerRunner;
   private maxQueueDepthSeen = 0;
   readonly llmGate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>;
@@ -154,6 +159,7 @@ export class WorkerApp {
     this.contextRouter = new ConversationContextRouter(this.contextRepository);
     this.imageRequests = new ImageRequestRepository(this.sharedDb);
     this.imageIntentRoutes = new ImageIntentRouteRepository(this.sharedDb);
+    this.imagePendingRequests = new ImagePendingRequestRepository(this.sharedDb);
     const v3State = resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey);
     v3State?.retireRoastModeForExistingGroupsOnce();
     this.atmosphere = new AtmosphereSummarizer(
@@ -357,6 +363,12 @@ export class WorkerApp {
       Boolean(message.has_at_bot),
     );
     const isPreview = Boolean(previewRequest);
+    if (await this.isImageGenerationCommand(message.text)) {
+      this.imageIntentRoutes.runAtomically(() => this.imagePendingRequests.settle({
+        sourceRowId: message.id,
+        outcome: "completed",
+      }));
+    }
     const naturalImageRoute = await this.getNaturalImageRoute(message);
     if (naturalImageRoute?.kind === "pending") {
       this.metrics.inc("image_intent_router_pending");
@@ -643,35 +655,11 @@ export class WorkerApp {
     if (this.options.botApp.canRouteNaturalImageRequest && !await this.options.botApp.canRouteNaturalImageRequest(event)) {
       return { ...base, kind: "chat" };
     }
-    if (hasTrustedBotMention && /^确认生成[。！!]?$/u.test(parseGroupMessage(event.message, this.options.botApp.getBotQq()).text.trim())) {
-      if (this.options.imageIntentRouter && !await this.options.imageIntentRouter.isConfigured()) return { ...base, kind: "chat" };
-      const originalId = new ImageGenerationConfirmationRepository(this.sharedDb).confirm(message.id);
-      const original = originalId === undefined ? undefined : this.sharedDb.db.prepare("SELECT * FROM messages WHERE id = ?")
-        .get(originalId) as typeof message | undefined;
-      if (original && !this.sharedDb.isRetracted(original.group_id, original.msg_id)) {
-        const request = await this.options.botApp.getNaturalImageRequestForIntent(this.buildEvent(original),
-          { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false }, "generate");
-        if (request?.kind === "generate") {
-          return { ...base, kind: "image", request: { ...request, requiresConfirmation: false } };
-        }
-      }
-      return { ...base, kind: "clarification", request: { kind: "clarification", reason: "confirmation_expired" } };
-    }
-
     const router = this.options.imageIntentRouter;
     if (!router) {
-      // Compatibility for focused tests and older embedders that do not wire
-      // the plugin. Production always provides the dedicated router.
-      const request = await this.options.botApp.getNaturalImageRequest(event, {
-        hasTrustedBotMention,
-        hasTrustedReply,
-        replyIsGeneratedImage,
-      });
-      if (!request) return undefined;
-      if (request.kind === "clarification" && request.reason === "unrecognized_intent") return { ...base, kind: "chat" };
-      return request.kind === "clarification"
-        ? { ...base, kind: "clarification", request }
-        : { ...base, kind: "image", request };
+      // Natural requests only enter through the intent model. The legacy
+      // parser remains available for explicit image commands inside BotApp.
+      return { ...base, kind: "chat" };
     }
 
     const persisted = this.imageIntentRoutes.getBySourceRow(message.id);
@@ -716,8 +704,14 @@ export class WorkerApp {
       return { ...base, kind: "pending" };
     }
 
+    const pending = hasTrustedBotMention ? this.imagePendingRequests.get(message.id) : undefined;
+    const previous = pending ? this.imageIntentRoutes.getBySourceRow(pending.latestSourceRowId) : undefined;
+    const previousSources = previous?.materialization?.sourceRowIds ?? (pending ? [pending.latestSourceRowId] : []);
+    const pendingEvents = previousSources.map(id => this.imageSourceEvent(id, base)).filter(event => event !== undefined);
+    const cancelled = Boolean(pending && /^(?:取消|算了|不用了|不要了|停止|取消生图|取消改图|取消图片请求)[。！!]?$/u.test(
+      parseGroupMessage(event.message, this.options.botApp.getBotQq()).text.trim()));
     try {
-      const classified = await this.backgroundLlmGate(async () => {
+      const classified: ImageIntentRoute = cancelled ? { action: "chat", modelId: "host", model: "host" } : await this.backgroundLlmGate(async () => {
         // Claim ownership once more after the semaphore wait.  This closes the
         // crash/replay window where another worker can terminalize an expired
         // route before this worker actually reaches the upstream model.
@@ -730,7 +724,12 @@ export class WorkerApp {
         });
         if (!ownsLease) throw new ImageIntentRouteLeaseLostError();
         return router.classify({
-          sanitizedText: sanitizeImageIntentText(canonicalSegments, this.options.botApp.getBotQq()),
+          sanitizedText: imageIntentText(canonicalSegments, this.options.botApp.getBotQq(), message.id).text,
+          ...(pending && previous?.action && pendingEvents.length === previousSources.length ? { pending: {
+            action: previous.action,
+            missingFields: previous.materialization?.missingFields ?? [],
+            messages: pendingEvents.map((event, index) => imageIntentText(event.message, this.options.botApp.getBotQq(), previousSources[index]).text),
+          } } : {}),
           facts: {
             hasTrustedBotMention,
             hasTrustedReply,
@@ -739,12 +738,64 @@ export class WorkerApp {
           },
         });
       });
-      const saved = this.imageIntentRoutes.complete({
-        sourceRowId: message.id,
-        leaseToken: claim.leaseToken,
-        action: classified.action,
-        modelId: classified.modelId,
-        model: classified.model,
+      const isImage = classified.action !== "chat" && classified.action !== "clarification";
+      const continuation = classified.continuesPending === true && pending && pendingEvents.length === previousSources.length ? pending : undefined;
+      // A continuation without a live request must not turn a short fragment into a new image request.
+      const staleContinuation = classified.continuesPending === true && !continuation;
+      const materialization: ImageIntentMaterialization = {
+        sourceRowIds: continuation ? [...previousSources.slice(0, 1), ...previousSources.slice(1).slice(-6), message.id] : [message.id],
+        missingFields: classified.missingFields ?? [],
+        ...(continuation ? { pendingSourceRowId: continuation.sourceRowId, target: previous?.materialization?.target } : {}),
+      };
+      if (classified.avatarTarget) {
+        materialization.target = this.findAvatarTargetSpan(
+          materialization.sourceRowIds,
+          classified.avatarTarget,
+          base,
+          continuation && previous?.materialization?.missingFields.includes("target")
+            ? message.id
+            : undefined,
+        );
+        if (!materialization.target) materialization.missingFields = [...new Set([...materialization.missingFields, "target" as const])];
+      }
+      let action = staleContinuation ? "chat" as const : classified.action;
+      const assembled = this.assembleImageIntent(materialization, base);
+      const request = isImage && !staleContinuation && assembled
+        ? await this.options.botApp.getNaturalImageRequestForIntent(assembled.base.event, assembled.base, action, assembled.details)
+        : undefined;
+      const saved = this.imageIntentRoutes.runAtomically(() => {
+        // Validate lease ownership before changing the pending state.
+        const now = Date.now();
+        const owned = this.imageIntentRoutes.getBySourceRow(message.id);
+        if (owned?.status !== "classifying" || owned.leaseToken !== claim.leaseToken || (owned.leaseExpiresAt ?? 0) <= now) throw new ImageIntentRouteLeaseLostError();
+        if (cancelled) {
+          if (!this.imagePendingRequests.settle({ sourceRowId: message.id, outcome: "cancelled", continuation: pending, now })) {
+            action = "chat";
+          }
+        } else if (isImage && !staleContinuation && request) {
+          if (request.kind === "clarification") {
+            if (request.reason === "missing_reference") materialization.missingFields = [...new Set([...materialization.missingFields, "reference" as const])];
+            if (request.reason === "missing_avatar_target" || request.reason === "avatar_syntax") materialization.missingFields = [...new Set([...materialization.missingFields, "target" as const])];
+            if (request.reason === "missing_prompt" || request.reason === "missing_edit_instruction") materialization.missingFields = [...new Set([...materialization.missingFields, "instruction" as const])];
+          }
+          const outcome = request.kind === "clarification" ? "waiting" : "completed";
+          if (!this.imagePendingRequests.settle({
+            sourceRowId: message.id,
+            outcome,
+            continuation,
+            now,
+          })) action = "chat";
+        }
+        const completed = this.imageIntentRoutes.complete({
+          sourceRowId: message.id, leaseToken: claim.leaseToken, action,
+          materialization: { ...materialization, ...(cancelled ? { cancelled: true } : {}) },
+          modelId: classified.modelId, model: classified.model,
+          now,
+        });
+        // Never commit a consumed wait without its terminal route. Throwing
+        // rolls both writes back if ownership changed or readback failed.
+        if (!completed) throw new ImageIntentRouteLeaseLostError();
+        return completed;
       });
       if (!saved) {
         // A reclaimed lease completed first. Its durable answer, if any, is
@@ -799,25 +850,87 @@ export class WorkerApp {
     }
   }
 
+  private imageSourceEvent(id: number, base: NaturalImageRouteBase): NapcatGroupMessageEvent | undefined {
+    const source = this.sharedDb.db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as IngressMessageRow | undefined;
+    if (!source || source.group_id !== String(base.event.group_id) || source.user_id !== String(base.event.user_id) ||
+        this.sharedDb.isRetracted(source.group_id, source.msg_id) || !restoreCanonicalMessageSegments(source.canonical_segments_json)) return undefined;
+    return this.buildEvent(source);
+  }
+
+  private findAvatarTargetSpan(
+    sourceRowIds: readonly number[],
+    excerpt: string,
+    base: NaturalImageRouteBase,
+    standaloneSourceRowId?: number,
+  ): ImageIntentMaterialization["target"] | undefined {
+    for (const id of [...sourceRowIds].reverse()) {
+      const source = this.imageSourceEvent(id, base);
+      if (!source) continue;
+      const text = imageIntentText(source.message, this.options.botApp.getBotQq(), id).text;
+      const start = text.indexOf(excerpt);
+      if (start < 0 || text.indexOf(excerpt, start + 1) >= 0 ||
+          !isSafeAvatarTargetExcerpt(text, excerpt, start, id === standaloneSourceRowId)) continue;
+      return { sourceRowId: id, start, end: start + excerpt.length };
+    }
+    return undefined;
+  }
+
+  private assembleImageIntent(metadata: ImageIntentMaterialization, base: NaturalImageRouteBase): {
+    base: NaturalImageRouteBase; details: NaturalImageIntentDetails;
+  } | undefined {
+    const events = metadata.sourceRowIds.map(id => this.imageSourceEvent(id, base));
+    if (events.some(event => !event)) return undefined;
+    let avatarTargetText: string | undefined;
+    let avatarTargetPromptText: string | undefined;
+    if (metadata.target) {
+      const source = this.imageSourceEvent(metadata.target.sourceRowId, base);
+      if (!source) return undefined;
+      const display = imageIntentText(source.message, this.options.botApp.getBotQq(), metadata.target.sourceRowId);
+      const excerpt = display.text.slice(metadata.target.start, metadata.target.end);
+      avatarTargetText = restoreImageIntentTarget(excerpt, display.targets);
+      avatarTargetPromptText = /^\[MEMBER_MENTION_(?:S\d+_)?\d+\]$/u.test(excerpt) ? "一位群成员" : avatarTargetText;
+    }
+    // Preserve every real mention in the target source and current message
+    // so local target validation can still reject multiple/conflicting @s.
+    // Other historical mentions cannot become targets of this avatar request.
+    const segments = events.flatMap((event, index) => [
+      ...(Array.isArray(event!.message) ? event!.message : []).filter(segment =>
+        typeof segment === "string" || segment.type !== "at" ||
+        !metadata.target ||
+        metadata.sourceRowIds[index] === metadata.target.sourceRowId ||
+        index === events.length - 1 ||
+        String(segment.data?.qq ?? "").trim() === this.options.botApp.getBotQq(),
+      ),
+      ...(index < events.length - 1 ? [{ type: "text" as const, data: { text: " " } }] : []),
+    ]);
+    const event = { ...base.event, message: segments };
+    const parsed = parseGroupMessage(segments, this.options.botApp.getBotQq());
+    return {
+      base: { ...base, event, hasTrustedReply: Boolean(parsed.replyMessageId), replyIsGeneratedImage:
+        Boolean(parsed.replyMessageId && this.isAvailableGeneratedImageReply(String(event.group_id), parsed.replyMessageId)) },
+      details: {
+        ...(avatarTargetText ? { avatarTargetText } : {}),
+        ...(avatarTargetPromptText ? { avatarTargetPromptText } : {}),
+        missingFields: metadata.missingFields,
+      },
+    };
+  }
+
   private async routeFromPersistedImageIntent(
     record: ImageIntentRouteRecord,
     base: NaturalImageRouteBase,
   ): Promise<NaturalImageRoute> {
     if (record.status === "classifying") return { ...base, kind: "pending" };
     if (record.status !== "classified" || !record.action) return { ...base, kind: "chat" };
+    if (record.invalidMaterialization) return { ...base, kind: "chat" };
 
-    // Preserve the model's original action in the ledger, including old
-    // records, but uncertainty must not interrupt the conversation with a
-    // generic image hint. Replays reuse this same local interpretation.
+    if (record.materialization?.cancelled) return { ...base, kind: "clarification", request: { kind: "clarification", reason: "request_cancelled" } };
     if (record.action === "chat" || record.action === "clarification") return { ...base, kind: "chat" };
+    const assembled = record.materialization ? this.assembleImageIntent(record.materialization, base) : undefined;
+    if (record.materialization && !assembled) return { ...base, kind: "chat" };
+    const effectiveBase = assembled?.base ?? base;
     const request = await this.options.botApp.getNaturalImageRequestForIntent(
-      base.event,
-      {
-        hasTrustedBotMention: base.hasTrustedBotMention,
-        hasTrustedReply: base.hasTrustedReply,
-        replyIsGeneratedImage: base.replyIsGeneratedImage,
-      },
-      record.action,
+      effectiveBase.event, effectiveBase, record.action, assembled?.details,
     );
     if (!request) {
       // The model has no authority to override local trust, group settings, or
@@ -826,13 +939,9 @@ export class WorkerApp {
       return { ...base, kind: "chat" };
     }
     if (request.kind === "clarification") {
-      return { ...base, kind: "clarification", request };
+      return { ...effectiveBase, kind: "clarification", request };
     }
-    if (request.kind === "generate" && request.requiresConfirmation) {
-      new ImageGenerationConfirmationRepository(this.sharedDb).request(record.sourceRowId);
-      return { ...base, kind: "clarification", request: { kind: "clarification", reason: "generation_confirmation" } };
-    }
-    return { ...base, kind: "image", request };
+    return { ...effectiveBase, kind: "image", request };
   }
 
   /**
@@ -1386,45 +1495,29 @@ function parseImages(imagesJson?: string): Array<{ url?: string; file?: string; 
   }
 }
 
-/**
- * Reduces the platform message to routing text without leaking member IDs,
- * image locations, reply identifiers, or a real @ target to the classifier.
- * The position of each real mention remains visible through an opaque marker,
- * which is enough for the model to distinguish the avatar grammar.
- */
-function sanitizeImageIntentText(
-  segments: NapcatGroupMessageEvent["message"] | undefined,
-  botQq: string,
-): string {
-  if (!Array.isArray(segments)) return "";
-  let memberMentionIndex = 0;
-  const parts: string[] = [];
-  for (const segment of segments) {
-    if (typeof segment === "string") {
-      parts.push(sanitizeImageIntentTextFragment(segment));
-      continue;
-    }
-    if (segment.type === "text") {
-      parts.push(sanitizeImageIntentTextFragment(String(segment.data?.text ?? "")));
-      continue;
-    }
-    if (segment.type === "at") {
-      const mentionedQq = String(segment.data?.qq ?? "").trim();
-      parts.push(mentionedQq === botQq ? "[BOT_MENTION]" : `[MEMBER_MENTION_${++memberMentionIndex}]`);
-    }
-    // Reply and image segments are represented only by the trusted facts.
-    // Their IDs, URLs, and file names are not useful to action selection.
-  }
-  return parts.join("").replace(/\s+/gu, " ").trim().slice(0, 4_000);
-}
-
-function sanitizeImageIntentTextFragment(value: string): string {
-  return value
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    // URLs can embed QQ or hosted-media identifiers and do not influence
-    // whether the request should be treated as a picture action.
-    .replace(/(?:https?:\/\/|www\.)\S+/giu, "[URL]")
-    .replace(/(?<!\d)\d{5,12}(?!\d)/gu, "[NUMBER]");
+/** Reject substrings such as the `我` in `我们` before they can select a person. */
+function isSafeAvatarTargetExcerpt(
+  text: string,
+  excerpt: string,
+  start: number,
+  allowStandaloneTarget: boolean,
+): boolean {
+  if (!excerpt) return false;
+  const before = text.slice(0, start);
+  const after = text.slice(start + excerpt.length);
+  // The target must be the whole local avatar noun phrase rather than an
+  // arbitrary substring (for example, do not allow the `甲` inside `成员甲`).
+  // This preserves flexible natural wording while keeping a model-selected
+  // target tied to the source text it actually denotes.
+  const hasTargetLead = !before.replace(/\[BOT_MENTION\]/gu, "").trim() ||
+    /(?:[\s，。！!？?、:：]|[用给把让将以拿为])\s*$/u.test(before);
+  if (!hasTargetLead) return false;
+  if (/^\s*(?:的\s*)?头像/u.test(after)) return true;
+  // A pending avatar request that specifically lacks a target may be
+  // completed by a concise reply such as "我", "我的", or a real @member.
+  // This exception is limited to that current follow-up source; old message
+  // fragments cannot become a target merely because a later turn is pending.
+  return allowStandaloneTarget && /^\s*(?:的\s*)?(?:[，。！!？?、:：]|$)/u.test(after);
 }
 
 function participationDecisionFromRow(row: {

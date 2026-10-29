@@ -20,9 +20,10 @@ export type NaturalImageIntentAction =
   | "clarification";
 
 export type NaturalImageClarificationReason =
-  | "generation_confirmation"
-  | "confirmation_expired"
   | "avatar_syntax"
+  | "missing_avatar_target"
+  | "missing_edit_instruction"
+  | "request_cancelled"
   | "invalid_ratio"
   | "missing_prompt"
   | "missing_reference"
@@ -34,7 +35,6 @@ export type NaturalImageRequest =
       kind: "generate";
       prompt: string;
       size?: string;
-      requiresConfirmation?: boolean;
     }
   | {
       kind: "edit";
@@ -58,6 +58,13 @@ export type NaturalImageRequest =
  * parser deliberately does not turn a textual @, a reply id, or an arbitrary
  * image into an authorization signal on its own.
  */
+export interface NaturalImageIntentDetails {
+  avatarTargetText?: string;
+  /** Safe local rendering of the target in promptText, never model output. */
+  avatarTargetPromptText?: string;
+  missingFields?: ("target" | "instruction" | "reference")[];
+}
+
 export interface NaturalImageRequestInput {
   message: Pick<ParsedGroupMessage, "text" | "images" | "replyMessageId">;
   /**
@@ -84,6 +91,7 @@ export interface NaturalImageRequestInput {
 export function parseNaturalImageRequestForIntent(
   input: NaturalImageRequestInput,
   action: NaturalImageIntentAction,
+  details?: NaturalImageIntentDetails,
 ): NaturalImageRequest | undefined {
   const text = input.message.text.trim();
   if (input.isExplicitCommand || text.startsWith("#")) return undefined;
@@ -98,7 +106,23 @@ export function parseNaturalImageRequestForIntent(
   if (action === "chat" || action === "clarification") return undefined;
 
   if (action === "avatar_edit") {
+    // A reply to a generated image can authorize its own edit, but cannot
+    // authorize selecting somebody's avatar or creating a new image.
     if (!input.hasTrustedBotMention) return undefined;
+    if (details) {
+      if (!details.avatarTargetText || details.missingFields?.includes("target")) return { kind: "clarification", reason: "missing_avatar_target" };
+      if (details.missingFields?.includes("instruction")) return { kind: "clarification", reason: "missing_edit_instruction" };
+      const avatarPrompt = stripAvatarTarget(
+        promptText,
+        details.avatarTargetText,
+        details.avatarTargetPromptText,
+      );
+      const parsed = parsePrompt(avatarPrompt);
+      if (!parsed) return { kind: "clarification", reason: "invalid_ratio" };
+      if (!parsed.prompt) return { kind: "clarification", reason: "missing_edit_instruction" };
+      return { kind: "avatar_edit", request: { targetText: details.avatarTargetText, action: parsed.prompt,
+        hasExplicitAvatarWord: /头像/u.test(text) }, prompt: parsed.prompt, ...(parsed.size ? { size: parsed.size } : {}) };
+    }
     const avatar = parseAvatarEditRequest(text);
     if (avatar.kind === "invalid_avatar_edit") {
       return { kind: "clarification", reason: "avatar_syntax" };
@@ -123,6 +147,7 @@ export function parseNaturalImageRequestForIntent(
 
   if (action === "generate") {
     if (!input.hasTrustedBotMention) return undefined;
+    if (details?.missingFields?.includes("instruction")) return { kind: "clarification", reason: "missing_prompt" };
     // Preserve the raw user wording for arbitrary requests, while removing
     // only a deterministic generation lead when it is present. The routing
     // model never creates or rewrites the prompt. A router-selected generation
@@ -134,13 +159,13 @@ export function parseNaturalImageRequestForIntent(
     return {
       kind: "generate",
       prompt: parsed.prompt,
-      ...(isPoliteGenerationQuestion(text) ? { requiresConfirmation: true } : {}),
       ...(parsed.size ? { size: parsed.size } : {}),
     };
   }
 
   if (!isAuthorized) return undefined;
   if (!hasReference) return { kind: "clarification", reason: "missing_reference" };
+  if (details?.missingFields?.includes("instruction")) return { kind: "clarification", reason: "missing_edit_instruction" };
   const parsed = parsePrompt(promptText);
   if (!parsed) return { kind: "clarification", reason: "invalid_ratio" };
   if (!parsed.prompt) return { kind: "clarification", reason: "missing_prompt" };
@@ -150,6 +175,24 @@ export function parseNaturalImageRequestForIntent(
     ...(parsed.size ? { size: parsed.size } : {}),
     referenceSource: hasTrustedReply ? "reply" : "attachment",
   };
+}
+
+function stripAvatarTarget(prompt: string, target: string, safeTarget: string | undefined): string {
+  const phrase = target === "我"
+    ? "(?:我本人|我自己|我的|我|本人|自己)"
+    : escapeRegex(safeTarget?.trim() || target.trim());
+  if (!phrase) return prompt;
+  return prompt
+    .replace(new RegExp(`(?:用|给|把|让|以|拿)?\\s*${phrase}\\s*(?:的\\s*)?头像`, "gu"), " ")
+    // Target-only supplements are kept for local identity verification but
+    // must not expose that identity in the image model's prompt.
+    .replace(new RegExp(`(?:^|\\s)(?:用|给|把|让|以|拿)?\\s*${phrase}\\s*(?:的)?[。！!]?\\s*$`, "u"), " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const DRAW_GENERATION_REQUEST = /^(?:请\s*)?(?:(?:帮我|给我|麻烦(?:你)?|帮忙)\s*)?(?:画|绘制)\s*(?:一(?:张|幅|副))?\s*(?:图片|图|图像|照片|插画|海报|壁纸)?(?:[：:,，]\s*|\s+)?([\s\S]*)$/u;

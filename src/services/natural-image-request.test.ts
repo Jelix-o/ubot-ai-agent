@@ -186,17 +186,41 @@ test("natural avatar editing is direct-mention only and keeps target resolution 
   });
 });
 
-test("model-selected actions are materialized locally without exposing prompt or target control", () => {
+test("model-selected actions materialize natural avatar wording from locally restored details", () => {
   const direct = {
-    message: parsed("将我头像美化一下"),
+    message: parsed("用我的头像做个太空人"),
     hasTrustedBotMention: true,
     hasTrustedReply: false,
     replyIsGeneratedImage: false,
   } satisfies NaturalImageRequestInput;
-  assert.deepEqual(parseNaturalImageRequestForIntent(direct, "avatar_edit"), {
+  assert.deepEqual(parseNaturalImageRequestForIntent(direct, "avatar_edit", {
+    avatarTargetText: "我",
+  }), {
     kind: "avatar_edit",
-    request: { targetText: "我", action: "美化一下", hasExplicitAvatarWord: true },
-    prompt: "美化一下",
+    request: { targetText: "我", action: "做个太空人", hasExplicitAvatarWord: true },
+    prompt: "做个太空人",
+  });
+  assert.deepEqual(parseNaturalImageRequestForIntent({
+    ...direct,
+    message: parsed("给成员甲的头像加顶帽子"),
+  }, "avatar_edit", {
+    avatarTargetText: "成员甲",
+  }), {
+    kind: "avatar_edit",
+    request: { targetText: "成员甲", action: "加顶帽子", hasExplicitAvatarWord: true },
+    prompt: "加顶帽子",
+  });
+  assert.deepEqual(parseNaturalImageRequestForIntent({
+    ...direct,
+    message: parsed("给@40001的头像加顶帽子", { verifiedMentionUserIds: ["40001"] }),
+    promptText: "给 一位群成员 的头像加顶帽子",
+  }, "avatar_edit", {
+    avatarTargetText: "@40001",
+    avatarTargetPromptText: "一位群成员",
+  }), {
+    kind: "avatar_edit",
+    request: { targetText: "@40001", action: "加顶帽子", hasExplicitAvatarWord: true },
+    prompt: "加顶帽子",
   });
 
   // The router can select generation for phrasing that old keyword rules do
@@ -229,14 +253,26 @@ test("model-selected actions are materialized locally without exposing prompt or
   assert.equal(parseNaturalImageRequestForIntent(direct, "clarification"), undefined);
   assert.deepEqual(parseNaturalImageRequestForIntent({
     ...direct,
-    message: parsed("将我美化一下"),
-  }, "avatar_edit"), {
+    message: parsed("给成员甲的头像"),
+  }, "avatar_edit", {
+    avatarTargetText: "成员甲",
+    missingFields: ["instruction"],
+  }), {
     kind: "clarification",
-    reason: "avatar_syntax",
+    reason: "missing_edit_instruction",
+  });
+  assert.deepEqual(parseNaturalImageRequestForIntent({
+    ...direct,
+    message: parsed("把头像改成太空人"),
+  }, "avatar_edit", {
+    missingFields: ["target"],
+  }), {
+    kind: "clarification",
+    reason: "missing_avatar_target",
   });
 });
 
-test("model-selected polite generation asks confirmation and question punctuation does not veto edits", () => {
+test("model-selected polite generation runs immediately and question punctuation does not veto edits", () => {
   const direct = {
     message: parsed("能帮我生成一张海边灯塔吗？"),
     hasTrustedBotMention: true,
@@ -244,7 +280,7 @@ test("model-selected polite generation asks confirmation and question punctuatio
     replyIsGeneratedImage: false,
   } satisfies NaturalImageRequestInput;
   assert.deepEqual(parseNaturalImageRequestForIntent(direct, "generate"), {
-    kind: "generate", prompt: "能帮我生成一张海边灯塔吗？", requiresConfirmation: true,
+    kind: "generate", prompt: "能帮我生成一张海边灯塔吗？",
   });
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
@@ -254,8 +290,8 @@ test("model-selected polite generation asks confirmation and question punctuatio
   }, "edit")?.kind, "edit");
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
-    message: parsed("将我头像美化一下吗？"),
-  }, "avatar_edit")?.kind, "avatar_edit");
+    message: parsed("用我的头像做个太空人吗？"),
+  }, "avatar_edit", { avatarTargetText: "我" })?.kind, "avatar_edit");
   assert.equal(parseNaturalImageRequestForIntent({
     ...direct,
     message: parsed("不要生成一张灯塔"),
@@ -273,6 +309,42 @@ test("model-selected polite generation asks confirmation and question punctuatio
     ...direct,
     message: parsed("生成一张"),
   }, "generate"), { kind: "clarification", reason: "missing_prompt" });
+});
+
+test("model detail fields cannot broaden a generated-image reply into a new image or avatar request", () => {
+  const replyOnly = {
+    message: parsed("继续", { replyMessageId: "generated-1" }),
+    hasTrustedBotMention: false,
+    hasTrustedReply: true,
+    replyIsGeneratedImage: true,
+  } satisfies NaturalImageRequestInput;
+
+  assert.equal(parseNaturalImageRequestForIntent(replyOnly, "generate", {
+    missingFields: ["instruction"],
+  }), undefined);
+  assert.equal(parseNaturalImageRequestForIntent(replyOnly, "avatar_edit", {
+    avatarTargetText: "我",
+    missingFields: ["instruction"],
+  }), undefined);
+  assert.deepEqual(parseNaturalImageRequestForIntent(replyOnly, "edit", {
+    missingFields: ["instruction"],
+  }), {
+    kind: "clarification",
+    reason: "missing_edit_instruction",
+  });
+});
+
+test("target-only supplements keep member names out of the image prompt", () => {
+  for (const target of ["我", "成员甲", "一位群成员"]) {
+    const request = parseNaturalImageRequestForIntent({
+      message: parsed(`把头像做成太空人 ${target}`),
+      hasTrustedBotMention: true,
+      hasTrustedReply: false,
+      replyIsGeneratedImage: false,
+    }, "avatar_edit", { avatarTargetText: target });
+    assert.equal(request?.kind, "avatar_edit");
+    assert.equal(request?.kind === "avatar_edit" && request.prompt, "把头像做成太空人");
+  }
 });
 
 test("questions, explicit negative requests, commands, and ordinary chat do not become image work", () => {
@@ -312,9 +384,17 @@ test("uncertain wording stays in chat while definite incomplete image requests c
     kind: "clarification",
     reason: "missing_prompt",
   });
-  assert.deepEqual(request("让成员甲头像", { hasTrustedBotMention: true }), {
+  assert.deepEqual(parseNaturalImageRequestForIntent({
+    message: parsed("给成员甲的头像"),
+    hasTrustedBotMention: true,
+    hasTrustedReply: false,
+    replyIsGeneratedImage: false,
+  }, "avatar_edit", {
+    avatarTargetText: "成员甲",
+    missingFields: ["instruction"],
+  }), {
     kind: "clarification",
-    reason: "avatar_syntax",
+    reason: "missing_edit_instruction",
   });
   assert.deepEqual(request("生成一张 --比例 4:5 风景", { hasTrustedBotMention: true }), {
     kind: "clarification",

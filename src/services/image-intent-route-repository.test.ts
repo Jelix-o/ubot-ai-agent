@@ -213,6 +213,29 @@ test("requires a persisted message source and bounded controlled metadata", asyn
   );
 });
 
+test("marks malformed persisted materialization as invalid instead of accepting content fields", async (t) => {
+  const fixture = await createFixture(t);
+  const sourceRowId = insertMessage(fixture.db, "route-invalid-materialization");
+  const claim = fixture.repository.claim({ sourceRowId, now: NOW });
+  assert.equal(claim.state, "claimed");
+  if (claim.state !== "claimed") throw new Error("expected claimed image intent route");
+  assert.ok(fixture.repository.complete({
+    sourceRowId,
+    leaseToken: claim.leaseToken,
+    action: "generate",
+    materialization: { sourceRowIds: [sourceRowId], missingFields: [] },
+    now: NOW + 1,
+  }));
+
+  fixture.db.db.prepare(
+    "UPDATE image_intent_routes SET materialization_json = ? WHERE source_row_id = ?",
+  ).run('{"sourceRowIds":[1],"missingFields":[],"prompt":"must-not-persist"}', sourceRowId);
+
+  const route = fixture.repository.getBySourceRow(sourceRowId);
+  assert.equal(route?.materialization, undefined);
+  assert.equal(route?.invalidMaterialization, true);
+});
+
 function pickRoute(route: ReturnType<ImageIntentRouteRepository["getBySourceRow"]>): {
   status: string | undefined;
   action: string | undefined;

@@ -995,6 +995,28 @@ function addImageIntentRouteLedger(db: DatabaseSync): void {
 }
 
 /**
+ * The migration can be replayed against an installation that has the schema
+ * but lost its migration bookkeeping. Several historical upgrade paths do
+ * exactly that, so every statement here must be independently idempotent.
+ */
+function addNaturalImageFollowups(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(image_intent_routes)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "materialization_json")) {
+    db.exec("ALTER TABLE image_intent_routes ADD COLUMN materialization_json TEXT");
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS image_pending_requests (
+      source_row_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      latest_source_row_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('waiting', 'completed', 'cancelled')),
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_image_pending_latest
+      ON image_pending_requests(latest_source_row_id, status, expires_at);
+  `);
+}
+
+/**
  * Durable ownership for the whole Worker handler, rather than a single
  * feature's sub-step. This is deliberately distinct from consumer progress:
  * concurrent workers may have different cursors but must never invoke a
@@ -1395,6 +1417,11 @@ const MIGRATIONS: readonly SqliteMigration[] = [
       confirmed_source_row_id INTEGER UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
       expires_at INTEGER NOT NULL
     )`),
+  },
+  {
+    version: 31,
+    name: "add-natural-image-followups",
+    apply: addNaturalImageFollowups,
   },
 ];
 

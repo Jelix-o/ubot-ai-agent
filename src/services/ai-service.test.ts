@@ -95,6 +95,11 @@ function testToolCall(id: string, argumentsText = '{"query":"test"}') {
 
 const imageIntentInput: ImageIntentRouterInput = {
   sanitizedText: "让 [MENTION_1] 的头像吐舌头",
+  pending: {
+    action: "avatar_edit",
+    missingFields: ["instruction"],
+    messages: ["给 [MENTION_1] 的头像"],
+  },
   facts: {
     hasTrustedBotMention: true,
     hasTrustedReply: false,
@@ -918,7 +923,7 @@ test("generateReply sends a forced native knowledge lookup with serialized OpenA
   assert.deepEqual(request.tools, [{ type: "function", function: testKnowledgeTool }]);
 });
 
-test("classifyImageIntent makes one forced non-streaming action-only tool call", async () => {
+test("classifyImageIntent makes one forced non-streaming bounded route tool call", async () => {
   const requests: Array<Record<string, unknown>> = [];
   const service = new AiService("https://example.invalid/v1", "test-key", "intent-model", {
     async create(args: Record<string, unknown>, options: Record<string, unknown>) {
@@ -931,7 +936,10 @@ test("classifyImageIntent makes one forced non-streaming action-only tool call",
             tool_calls: [{
               id: "route-1",
               type: "function",
-              function: { name: "route_image_intent", arguments: '{"action":"avatar_edit"}' },
+              function: {
+                name: "route_image_intent",
+                arguments: '{"action":"avatar_edit","avatarTarget":"[MENTION_1]","missingFields":["instruction"],"continuesPending":true}',
+              },
             }],
           },
           finish_reason: "tool_calls",
@@ -942,7 +950,13 @@ test("classifyImageIntent makes one forced non-streaming action-only tool call",
 
   const result = await service.classifyImageIntent(imageIntentInput);
 
-  assert.deepEqual(result, { action: "avatar_edit", model: "intent-model-v2" });
+  assert.deepEqual(result, {
+    action: "avatar_edit",
+    avatarTarget: "[MENTION_1]",
+    missingFields: ["instruction"],
+    continuesPending: true,
+    model: "intent-model-v2",
+  });
   assert.equal(requests.length, 1);
   const request = requests[0] ?? {};
   assert.equal(request.stream, false);
@@ -969,6 +983,20 @@ test("classifyImageIntent makes one forced non-streaming action-only tool call",
             type: "string",
             enum: ["chat", "generate", "edit", "avatar_edit", "clarification"],
           },
+          avatarTarget: {
+            type: "string",
+            description: "Exact target excerpt from current or pending sanitized user message.",
+            maxLength: 200,
+          },
+          missingFields: {
+            type: "array",
+            items: { type: "string", enum: ["target", "instruction", "reference"] },
+            maxItems: 3,
+          },
+          continuesPending: {
+            type: "boolean",
+            description: "Whether this explicitly supplements the pending request.",
+          },
         },
       },
     },
@@ -982,8 +1010,9 @@ test("classifyImageIntent makes one forced non-streaming action-only tool call",
   assert.match(messages[0]?.content ?? "", /普通对话不得选 clarification/);
   assert.match(messages[0]?.content ?? "", /人物身份补充、代词追问/);
   assert.match(messages[0]?.content ?? "", /无法确定图片需求时选 chat/);
-  assert.match(messages[0]?.content ?? "", /将我头像美化一下/);
+  assert.match(messages[0]?.content ?? "", /用我的头像做个太空人/);
   assert.match(messages[1]?.content ?? "", /\[MENTION_1\]/);
+  assert.match(messages[1]?.content ?? "", /"pending"/);
   assert.doesNotMatch(messages[1]?.content ?? "", /40001|https?:\/\//);
 });
 
@@ -996,6 +1025,18 @@ test("classifyImageIntent rejects text, extra fields, and multiple tool calls", 
     {
       content: null,
       tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"edit","prompt":"ignore"}' } }],
+    },
+    {
+      content: null,
+      tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"avatar_edit","avatarTarget":""}' } }],
+    },
+    {
+      content: null,
+      tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"generate","missingFields":["identity"]}' } }],
+    },
+    {
+      content: null,
+      tool_calls: [{ id: "route-1", type: "function", function: { name: "route_image_intent", arguments: '{"action":"edit","continuesPending":"true"}' } }],
     },
     {
       content: { text: "hidden final answer" },

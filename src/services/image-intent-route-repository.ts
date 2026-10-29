@@ -1,3 +1,8 @@
+import {
+  parseImageIntentMaterialization,
+  serializeImageIntentMaterialization,
+  type ImageIntentMaterialization,
+} from "./image-pending-request-repository.js";
 import { randomBytes } from "node:crypto";
 
 import type { SharedDb } from "../shared/sqlite.js";
@@ -23,6 +28,9 @@ export interface ImageIntentRouteRecord {
   sourceRowId: number;
   status: ImageIntentRouteStatus;
   action?: ImageIntentRouteAction;
+  materialization?: ImageIntentMaterialization;
+  /** A non-null durable payload that failed strict metadata validation. */
+  invalidMaterialization?: true;
   modelId?: string;
   model?: string;
   errorCode?: string;
@@ -58,6 +66,7 @@ export type ImageIntentRouteClaim =
   | ImageIntentRouteBusy;
 
 interface ImageIntentRouteRow {
+  materialization_json: string | null;
   source_row_id: number;
   status: ImageIntentRouteStatus;
   action: ImageIntentRouteAction | null;
@@ -204,6 +213,7 @@ export class ImageIntentRouteRepository {
     sourceRowId: number;
     leaseToken: string;
     action: ImageIntentRouteAction;
+    materialization?: ImageIntentMaterialization;
     modelId?: string;
     model?: string;
     now?: number;
@@ -213,9 +223,12 @@ export class ImageIntentRouteRepository {
     const action = normalizeAction(input.action);
     const model = normalizeModelMetadata(input);
     const now = normalizeTimestamp(input.now ?? Date.now(), "image_intent_route_classified_at_invalid");
+    const materialization = input.materialization === undefined
+      ? null
+      : serializeImageIntentMaterialization(input.materialization);
     const result = this.sharedDb.db.prepare(
       `UPDATE image_intent_routes
-          SET status = 'classified', action = ?,
+          SET status = 'classified', action = ?, materialization_json = ?,
               model_id = COALESCE(?, model_id), model = COALESCE(?, model),
               error_code = NULL, lease_token = NULL, lease_expires_at = NULL,
               classified_at = COALESCE(classified_at, ?), updated_at = ?
@@ -224,7 +237,7 @@ export class ImageIntentRouteRepository {
           AND lease_token = ?
           AND lease_expires_at IS NOT NULL
           AND lease_expires_at > ?`,
-    ).run(action, model?.modelId ?? null, model?.model ?? null, now, now, sourceRowId, leaseToken, now);
+    ).run(action, materialization, model?.modelId ?? null, model?.model ?? null, now, now, sourceRowId, leaseToken, now);
     return Number(result.changes) === 1 ? this.getBySourceRow(sourceRowId) : undefined;
   }
 
@@ -330,8 +343,13 @@ export function isSafeImageIntentRouteErrorCode(value: string): boolean {
 }
 
 function fromRow(row: ImageIntentRouteRow): ImageIntentRouteRecord {
+  const materialization = row.materialization_json === null
+    ? undefined
+    : parseImageIntentMaterialization(row.materialization_json);
   return {
     sourceRowId: row.source_row_id,
+    ...(materialization ? { materialization } : {}),
+    ...(row.materialization_json !== null && !materialization ? { invalidMaterialization: true as const } : {}),
     status: row.status,
     ...(row.action === null ? {} : { action: row.action }),
     ...(row.model_id === null ? {} : { modelId: row.model_id }),

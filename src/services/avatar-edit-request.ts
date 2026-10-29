@@ -235,9 +235,9 @@ export function avatarEditTargetErrorMessage(code: AvatarEditTargetErrorCode): s
 }
 
 export function avatarEditRequestParseErrorMessage(
-  _code: Extract<AvatarEditRequestParseResult, { kind: "invalid_avatar_edit" }> ["code"],
+  code: Extract<AvatarEditRequestParseResult, { kind: "invalid_avatar_edit" }> ["code"],
 ): string {
-  return "头像改图格式：#改图 （让 / 将 / 把）<目标>（的）头像（去）<动作>，或 #改图 我头像<动作>";
+  return code === "target_missing" ? "想用谁的头像？可以说是自己的，或 @那位成员。" : "想把头像改成什么样？";
 }
 
 function resolveDirectoryTarget(

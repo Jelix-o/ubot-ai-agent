@@ -8,6 +8,7 @@ import { BotApplication } from "./bot.js";
 import { WorkerApp } from "./index-worker.js";
 import { openSharedDb } from "./shared/sqlite.js";
 import { ImageRequestRepository } from "./services/image-request-repository.js";
+import type { ImageIntentRouter } from "./services/image-intent-router-plugin.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 
 const BOT_QQ = "12345";
@@ -41,7 +42,7 @@ test("Worker routes only canonical bot mentions into per-member natural image qu
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isSystemCommand() { return false; },
-    async getNaturalImageRequest(
+    async getNaturalImageRequestForIntent(
       event: NapcatGroupMessageEvent,
       facts: { hasTrustedBotMention: boolean; hasTrustedReply: boolean; replyIsGeneratedImage: boolean },
     ) {
@@ -75,6 +76,16 @@ test("Worker routes only canonical bot mentions into per-member natural image qu
       }
     },
   } as unknown as BotApplication;
+  const imageIntentRouter: ImageIntentRouter = {
+    async isConfigured() { return true; },
+    async classify(input) {
+      return {
+        action: input.facts.replyIsGeneratedImage ? "edit" : "generate",
+        modelId: "test-intent",
+        model: "test-intent",
+      };
+    },
+  };
 
   const worker = new WorkerApp({
     dataDir,
@@ -82,6 +93,7 @@ test("Worker routes only canonical bot mentions into per-member natural image qu
     botApp: bot,
     consumerKey: "worker:natural-image",
     isBlacklistedUser: async () => false,
+    imageIntentRouter,
   });
   t.after(async () => {
     releaseFirst();
@@ -402,19 +414,26 @@ test("Worker records natural image outcomes from ledger status without content f
     getBotQq: () => BOT_QQ,
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
-    async getNaturalImageRequest() { return { kind: "generate", prompt: "unused" }; },
+    async getNaturalImageRequestForIntent() { return { kind: "generate", prompt: "unused" }; },
     async isSystemCommand() { return false; },
     async getParticipationDecision() {
       return { action: "ignore", reason: "no_trigger", score: 0, policyVersion: "test", signals: {} };
     },
     async handleGroupMessage() {},
   } as unknown as BotApplication;
+  const imageIntentRouter: ImageIntentRouter = {
+    async isConfigured() { return true; },
+    async classify() {
+      return { action: "generate", modelId: "test-intent", model: "test-intent" };
+    },
+  };
   const worker = new WorkerApp({
     dataDir,
     sharedDb: db,
     botApp: bot,
     consumerKey: "worker:image-metrics",
     isBlacklistedUser: async () => false,
+    imageIntentRouter,
   });
   t.after(async () => {
     await worker.stop();

@@ -11,6 +11,11 @@ import {
 
 const input: ImageIntentRouterInput = {
   sanitizedText: "  将 [MENTION_1] 的头像美化一下\u0000  ",
+  pending: {
+    action: "avatar_edit",
+    missingFields: ["instruction"],
+    messages: ["给 [MENTION_1] 的头像"],
+  },
   facts: {
     hasTrustedBotMention: true,
     hasTrustedReply: false,
@@ -19,13 +24,20 @@ const input: ImageIntentRouterInput = {
   },
 };
 
-test("ImageIntentRouterPlugin normalizes untrusted input and returns only a validated action route", async () => {
+test("ImageIntentRouterPlugin normalizes untrusted input and returns only validated source-backed route details", async () => {
   let received: ImageIntentRouterInput | undefined;
   const classifier: ImageIntentClassifier = {
     async isImageIntentConfigured() { return true; },
     async classifyImageIntent(value) {
       received = value;
-      return { action: "avatar_edit", modelId: "dafeiyu", model: "fish-small" };
+      return {
+        action: "avatar_edit",
+        avatarTarget: " [MENTION_1] ",
+        missingFields: ["instruction", "instruction"],
+        continuesPending: true,
+        modelId: "dafeiyu",
+        model: "fish-small",
+      };
     },
   };
   const router = new ImageIntentRouterPlugin(classifier);
@@ -33,11 +45,19 @@ test("ImageIntentRouterPlugin normalizes untrusted input and returns only a vali
   assert.equal(await router.isConfigured(), true);
   assert.deepEqual(await router.classify(input), {
     action: "avatar_edit",
+    avatarTarget: "[MENTION_1]",
+    missingFields: ["instruction"],
+    continuesPending: true,
     modelId: "dafeiyu",
     model: "fish-small",
   });
   assert.deepEqual(received, {
     sanitizedText: "将 [MENTION_1] 的头像美化一下",
+    pending: {
+      action: "avatar_edit",
+      missingFields: ["instruction"],
+      messages: ["给 [MENTION_1] 的头像"],
+    },
     facts: {
       hasTrustedBotMention: true,
       hasTrustedReply: false,
@@ -68,6 +88,25 @@ test("ImageIntentRouterPlugin fails closed for unavailable or malformed classifi
     malformed.classify(input),
     (error: unknown) => error instanceof ImageIntentRouterError && error.code === "invalid_response",
   );
+
+  for (const details of [
+    { avatarTarget: "" },
+    { avatarTarget: "x".repeat(201) },
+    { missingFields: ["unknown"] },
+    { missingFields: ["target", "instruction", "reference", "target"] },
+    { continuesPending: "yes" },
+  ]) {
+    const invalidDetails = new ImageIntentRouterPlugin({
+      async isImageIntentConfigured() { return true; },
+      async classifyImageIntent() {
+        return { action: "avatar_edit", modelId: "dafeiyu", model: "fish-small", ...details } as never;
+      },
+    });
+    await assert.rejects(
+      invalidDetails.classify(input),
+      (error: unknown) => error instanceof ImageIntentRouterError && error.code === "invalid_response",
+    );
+  }
 });
 
 test("normalizeImageIntentRouterInput clears malformed facts without adding interpretation", () => {
@@ -88,4 +127,19 @@ test("normalizeImageIntentRouterInput clears malformed facts without adding inte
       attachmentCount: 0,
     },
   });
+});
+
+test("normalizeImageIntentRouterInput drops malformed pending state without throwing", () => {
+  for (const pending of [
+    null,
+    { action: "unknown", missingFields: [], messages: [] },
+    { action: "edit", missingFields: ["unknown"], messages: [] },
+    { action: "edit", missingFields: [], messages: [42] },
+  ]) {
+    const normalized = normalizeImageIntentRouterInput({
+      ...input,
+      pending: pending as never,
+    });
+    assert.equal(normalized.pending, undefined);
+  }
 });

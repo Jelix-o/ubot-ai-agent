@@ -545,7 +545,7 @@ onMounted(() => {
         <div class="routing-preview" aria-live="polite"><span class="routing-preview-label">统一默认调用顺序</span><ol v-if="replyRoutePreview.length"><li v-for="id in replyRoutePreview" :key="id"><code>{{ id }}</code></li></ol><span v-else>暂无可用模型</span><small>{{ routing.fallbackEnabled ? '已去重；实际调用还会按能力与策略筛选。' : '自动降级已关闭，仅尝试主模型。' }}</small></div>
       </section>
       <section v-if="activePurpose === 'image_intent'" class="reply-routing-panel">
-        <div class="section-intro"><h2>图片意图判断</h2><p>复用现有模型连接和密钥，独立于对话降级链。具体生图问法先确认，直接请求直接执行。</p></div>
+        <div class="section-intro"><h2>图片意图判断</h2><p>复用现有模型连接和密钥，独立于对话降级链。明确的图片需求直接执行，缺信息时自然追问。</p></div>
         <label class="policy-toggle"><span>启用图片意图判断</span><input v-model="intentRouting.enabled" type="checkbox" /></label>
         <div class="routing-grid">
           <label class="routing-field">判断模型<select v-model="settings.selectedModelIds.image_intent" class="select"><option value="">未配置</option><option v-for="model in intentModels" :key="model.id" :value="model.id" :disabled="!isUsableImageIntentModel(model)">{{ model.name }} · {{ model.id }}{{ isUsableImageIntentModel(model) ? '' : '（需启用、密钥和工具调用）' }}</option></select></label>

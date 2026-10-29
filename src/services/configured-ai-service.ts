@@ -138,7 +138,7 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
         model.id,
       );
       return {
-        action: result.action,
+        ...result,
         modelId: model.id,
         model: result.model,
       };

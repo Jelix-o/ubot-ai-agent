@@ -1,3 +1,4 @@
+import type { NaturalImageIntentDetails } from "./services/natural-image-request.js";
 import { GroupInteractionService, isInteractionQuietHour } from "./services/group-interaction-service.js";
 import { parseMemeReply, memeReplyInstruction, allowsEntertainmentMeme } from "./services/meme-reply-protocol.js";
 import { cleanReplyHistory, hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
@@ -716,6 +717,7 @@ export class BotApplication {
     event: NapcatGroupMessageEvent,
     facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean },
     action: NaturalImageIntentAction,
+    details?: NaturalImageIntentDetails,
   ): Promise<NaturalImageRequest | undefined> {
     const groupId = String(event.group_id);
     const groupConfig = await this.groupConfigService.getGroup(groupId);
@@ -738,7 +740,7 @@ export class BotApplication {
       hasTrustedReply,
       replyIsGeneratedImage,
       isExplicitCommand: isSystemCommandText(commandText, runtimeCommands),
-    }, action);
+    }, action, details);
   }
 
   /** Avoid invoking the routing model for disabled or unknown groups. */
@@ -2075,12 +2077,11 @@ export class BotApplication {
       await this.sendText(groupId, "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"); return;
     }
     if (!parsed.prompt) {
-      const commands = await this.getRuntimeCommands();
       await this.sendText(groupId, avatarRequest
-        ? "头像改图格式：#改图 （让 / 将 / 把）<目标>（的）头像（去）<动作>，或 #改图 我头像<动作>"
+        ? "想把头像改成什么样？"
         : editOnly
-        ? "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"
-        : `画图命令格式：${runtimeCommandPrimary(commands, "image_generation")} <提示词>`);
+        ? "把要修改的图片发给我，或回复那张图，再说说怎么改。最多可用 4 张参考图。"
+        : "想生成什么画面？说说主体、场景或风格吧。");
       return;
     }
     const prompt = avatarRequest ? buildAvatarEditPrompt(parsed.prompt) : parsed.prompt;
@@ -2117,7 +2118,7 @@ export class BotApplication {
           : await this.resolveImageEditReferences(groupId, event);
       editing ||= referenceImages.length > 0;
       if (editOnly && referenceImages.length === 0) {
-        await this.sendText(groupId, "改图命令格式：附图或引用图片后发送 #改图 <修改要求>，最多 4 张参考图"); return;
+        await this.sendText(groupId, "把要修改的图片发给我，或回复那张图，再说说怎么改。最多可用 4 张参考图。"); return;
       }
       const requestKind: ImageRequestKind = avatarRequest
         ? "avatar_edit"
@@ -2329,16 +2330,18 @@ export class BotApplication {
     const groupId = groupConfig.groupId;
     if (groupConfig.naturalImageRequestsEnabled === false) return;
     if (request.kind === "clarification") {
-      const text = request.reason === "generation_confirmation"
-        ? "要按这个描述生成图片吗？请在两分钟内 @我 回复“确认生成”。"
-        : request.reason === "confirmation_expired"
-          ? "没有可确认的生图请求，或请求已过期，请重新描述图片需求。"
-        : request.reason === "missing_reference"
-        ? "改图请附图，或回复机器人已生成的图片后说明要怎么改"
+      const text = request.reason === "missing_reference"
+        ? "把要修改的图片发给我，或回复那张图，再说说怎么改。"
         : request.reason === "reference_requires_edit_instruction"
           ? "附图后请明确说明怎么改，例如“把天空改成晚霞”"
           : request.reason === "avatar_syntax"
-            ? "头像改图格式：（让 / 将 / 把）<目标>（的）头像（去）<动作>，也可说“我头像<动作>”"
+            ? "想用谁的头像？可以说是自己的，或 @那位成员。"
+            : request.reason === "missing_avatar_target"
+              ? "想用谁的头像？可以说是自己的，或 @那位成员。"
+            : request.reason === "missing_edit_instruction"
+              ? "想把图片或头像改成什么样？"
+            : request.reason === "request_cancelled"
+              ? "已取消这次图片请求。"
             : request.reason === "invalid_ratio"
               ? "支持的比例：1:1、2:3、3:2、9:16、16:9，例如 --比例 9:16"
               : request.reason === "missing_prompt"
@@ -6632,8 +6635,8 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `1. ${command("image_generation")} <提示词>`,
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
         "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
-        "编辑：附图或引用图片后发送 #改图 <修改要求>；头像可用 #改图 （让 / 将 / 把）<目标>（的）头像（去）<动作>，或 #改图 我头像<动作>，最多 4 张参考图。",
-        `自然语言：真实 @${personaName} 后直接说明图片需求；具体生图问法先确认。回复机器人已投递生成图可连续改图。需配置图片意图判断模型。`,
+        "编辑：@我并附图或回复图片，直接说怎么改；头像也可以说“用我的头像做个太空人”。#改图 仍可使用，最多 4 张参考图。",
+        `自然语言：真实 @${personaName} 后直接说明图片需求；明确需求会直接执行，缺信息时会追问。回复机器人已投递生成图可连续改图。需配置图片意图判断模型。`,
         `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；文生图冷却 60 秒，图生图与改图冷却 15 秒`,
       ],
     }] : []),
@@ -6708,7 +6711,7 @@ function buildHelpOverviewMessage(
   const features = [
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图、引用或 #改图 （让 / 将 / 把）<目标>头像（去）<动作> 可编辑；配置图片意图判断模型后，真实 @${personaName} 可说图片需求，具体生图问法先确认`] : []),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置图片意图判断模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
     ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
     ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
     ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),

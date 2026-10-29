@@ -7,6 +7,7 @@
 export interface ImageIntentRouterInput {
   /** Sanitized message content, with real member mentions represented opaquely. */
   sanitizedText: string;
+  pending?: { action: ImageIntentAction; missingFields: ImageIntentMissingField[]; messages: string[] };
   facts: {
     hasTrustedBotMention: boolean;
     hasTrustedReply: boolean;
@@ -27,9 +28,17 @@ export type ImageIntentAction = typeof IMAGE_INTENT_ACTIONS[number];
 
 /**
  * Metadata identifies the configured router model for the durable route
- * ledger. The upstream tool itself is restricted to the `action` property.
+ * ledger. The upstream tool may also extract bounded source-backed request details.
  */
-export interface ImageIntentRoute {
+export type ImageIntentMissingField = "target" | "instruction" | "reference";
+export interface ImageIntentDetails {
+  /** Exact excerpt of the sanitized current or pending user message. */
+  avatarTarget?: string;
+  missingFields?: ImageIntentMissingField[];
+  continuesPending?: boolean;
+}
+
+export interface ImageIntentRoute extends ImageIntentDetails {
   action: ImageIntentAction;
   modelId: string;
   model: string;
@@ -99,7 +108,7 @@ export class ImageIntentRouterPlugin implements ImageIntentRouter {
       if (!modelId || !model) {
         throw new ImageIntentRouterError("invalid_response");
       }
-      return { action: result.action, modelId, model };
+      return { action: result.action, ...validateImageIntentDetails(result), modelId, model };
     } catch (error) {
       if (error instanceof ImageIntentRouterError) {
         throw error;
@@ -123,8 +132,10 @@ export function normalizeImageIntentRouterInput(input: ImageIntentRouterInput): 
     ? input.sanitizedText.replace(/\u0000/g, "").trim().slice(0, 4_000)
     : "";
   const facts = input?.facts;
+  const pending = normalizePendingImageIntent(input?.pending);
   return {
     sanitizedText: text,
+    ...(pending ? { pending } : {}),
     facts: {
       hasTrustedBotMention: facts?.hasTrustedBotMention === true,
       hasTrustedReply: facts?.hasTrustedReply === true,
@@ -134,7 +145,44 @@ export function normalizeImageIntentRouterInput(input: ImageIntentRouterInput): 
   };
 }
 
+function normalizePendingImageIntent(value: unknown): ImageIntentRouterInput["pending"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const pending = value as { action?: unknown; missingFields?: unknown; messages?: unknown };
+  const action = pending.action;
+  const missingFields = pending.missingFields;
+  const messages = pending.messages;
+  if (!isImageIntentAction(action) || !Array.isArray(missingFields) || missingFields.length > 3 ||
+    !missingFields.every(isImageIntentMissingField) || !Array.isArray(messages) ||
+    !messages.every((message): message is string => typeof message === "string")) {
+    return undefined;
+  }
+  return {
+    action,
+    missingFields: [...new Set(missingFields)],
+    messages: messages.slice(-8).map(message => message.replace(/\u0000/g, "").slice(0, 4_000)),
+  };
+}
+
+function isImageIntentMissingField(value: unknown): value is ImageIntentMissingField {
+  return value === "target" || value === "instruction" || value === "reference";
+}
+
 function normalizeAttachmentCount(value: unknown): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(4, Math.floor(value as number)));
+}
+
+export function validateImageIntentDetails(value: ImageIntentDetails): ImageIntentDetails {
+  if (value.avatarTarget !== undefined && (typeof value.avatarTarget !== "string" ||
+      !value.avatarTarget.trim() || value.avatarTarget.length > 200)) throw new ImageIntentRouterError("invalid_response");
+  if (value.missingFields !== undefined && (!Array.isArray(value.missingFields) ||
+      value.missingFields.length > 3 || value.missingFields.some(field => field !== "target" && field !== "instruction" && field !== "reference"))) {
+    throw new ImageIntentRouterError("invalid_response");
+  }
+  if (value.continuesPending !== undefined && typeof value.continuesPending !== "boolean") throw new ImageIntentRouterError("invalid_response");
+  return {
+    ...(value.avatarTarget === undefined ? {} : { avatarTarget: value.avatarTarget.trim() }),
+    ...(value.missingFields === undefined ? {} : { missingFields: [...new Set(value.missingFields)] }),
+    ...(value.continuesPending === undefined ? {} : { continuesPending: value.continuesPending }),
+  };
 }

@@ -267,6 +267,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 28, name: "add-image-intent-route-ledger" },
       { version: 29, name: "add-message-execution-leases" },
       { version: 30, name: "add-image-generation-confirmations" },
+      { version: 31, name: "add-natural-image-followups" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -286,12 +287,13 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   assert.equal(tables.some((table) => table.name === "image_previews"), true);
   assert.equal(tables.some((table) => table.name === "image_intent_routes"), true);
   assert.equal(tables.some((table) => table.name === "message_execution_leases"), true);
+  assert.equal(tables.some((table) => table.name === "image_pending_requests"), true);
   first.close();
 
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    Array.from({ length: 30 }, (_, i) => i + 1),
+    Array.from({ length: 31 }, (_, i) => i + 1),
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -1139,7 +1141,7 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   old.close();
   const upgraded = new SharedDb(dbPath);
   assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
-  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 30);
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 31);
   const columns = upgraded.db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string; dflt_value: string | null }>;
   assert.equal(columns.find(column => column.name === "publication_state")?.dflt_value, "'published'");
   const now = Date.now();
@@ -1177,4 +1179,33 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
     "message_execution_leases",
   );
   executionLeasesReapplied.close();
+});
+
+test("natural image followup migration upgrades and replays against an already-upgraded schema", t => {
+  const dbPath = tempDb(t);
+  const old = new SharedDb(dbPath);
+  old.db.exec("DELETE FROM schema_migrations WHERE version = 31");
+  old.db.exec("DROP INDEX idx_image_pending_latest");
+  old.db.exec("DROP TABLE image_pending_requests");
+  old.db.exec("ALTER TABLE image_intent_routes DROP COLUMN materialization_json");
+  old.close();
+
+  const upgraded = new SharedDb(dbPath);
+  assert.equal(upgraded.listSchemaMigrations().filter(migration => migration.version === 31).length, 1);
+  const columns = upgraded.db.prepare("PRAGMA table_info(image_intent_routes)").all() as Array<{ name: string }>;
+  assert.equal(columns.some(column => column.name === "materialization_json"), true);
+  assert.equal(
+    upgraded.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_pending_requests'").get()?.name,
+    "image_pending_requests",
+  );
+  upgraded.db.exec("DELETE FROM schema_migrations WHERE version = 31");
+  upgraded.close();
+
+  const replayed = new SharedDb(dbPath);
+  assert.equal(replayed.listSchemaMigrations().filter(migration => migration.version === 31).length, 1);
+  assert.equal(
+    replayed.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_image_pending_latest'").get()?.name,
+    "idx_image_pending_latest",
+  );
+  replayed.close();
 });

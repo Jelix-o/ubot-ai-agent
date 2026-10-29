@@ -14,6 +14,7 @@ import {
 import { openSharedDb } from "./shared/sqlite.js";
 import { parseNaturalImageRequestForIntent } from "./services/natural-image-request.js";
 import { ImageIntentRouteRepository } from "./services/image-intent-route-repository.js";
+import { resolveAvatarEditTarget } from "./services/avatar-edit-request.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import type { NapcatGroupMessageEvent } from "./types.js";
 
@@ -28,7 +29,7 @@ test("Worker classifies a trusted mention once and passes only the locally mater
   const classifierInputs: ImageIntentRouterInput[] = [];
   let classifyCalls = 0;
   let legacyNaturalCalls = 0;
-  const materializedActions: string[] = [];
+  const materializedRequests: unknown[] = [];
   const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
 
   const bot = {
@@ -43,21 +44,19 @@ test("Worker classifies a trusted mention once and passes only the locally mater
       return { kind: "generate", prompt: "legacy parser must not run" };
     },
     async getNaturalImageRequestForIntent(
-      _event: NapcatGroupMessageEvent,
-      _facts: unknown,
+      event: NapcatGroupMessageEvent,
+      facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean },
       action: string,
+      details: unknown,
     ) {
-      materializedActions.push(action);
-      assert.equal(action, "avatar_edit");
-      return {
-        kind: "avatar_edit" as const,
-        prompt: "美化一下",
-        request: {
-          targetText: "我",
-          action: "美化一下",
-          hasExplicitAvatarWord: true,
-        },
-      };
+      const request = parseNaturalImageRequestForIntent({
+        message: parseGroupMessage(event.message, BOT_QQ),
+        ...facts,
+        hasTrustedReply: facts.hasTrustedReply === true,
+        replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
+      }, action as "avatar_edit", details as never);
+      materializedRequests.push(request);
+      return request;
     },
     async getParticipationDecision() {
       return ignoredParticipation();
@@ -75,7 +74,13 @@ test("Worker classifies a trusted mention once and passes only the locally mater
     async classify(input) {
       classifyCalls += 1;
       classifierInputs.push(input);
-      return { action: "avatar_edit", modelId: "intent-small", model: "dafeiyu-small" };
+      return {
+        action: "avatar_edit",
+        avatarTarget: "我",
+        missingFields: [],
+        modelId: "intent-small",
+        model: "dafeiyu-small",
+      };
     },
   };
   const worker = fixture.createWorker(bot, router);
@@ -83,13 +88,8 @@ test("Worker classifies a trusted mention once and passes only the locally mater
 
   const sourceRowId = fixture.insert({
     msgId: "8101",
-    text: "将我头像美化一下",
-    canonicalSegmentsJson: JSON.stringify([
-      { type: "at", qq: BOT_QQ },
-      { type: "text", text: " 将" },
-      { type: "at", qq: TARGET_QQ },
-      { type: "text", text: "的头像美化一下" },
-    ]),
+    text: "用我的头像做个太空人",
+    canonicalSegmentsJson: botMentionSegments("用我的头像做个太空人"),
   });
 
   worker.start();
@@ -97,10 +97,14 @@ test("Worker classifies a trusted mention once and passes only the locally mater
 
   assert.equal(classifyCalls, 1, "queue selection and handling must reuse the durable route");
   assert.equal(legacyNaturalCalls, 0, "a configured router must replace the legacy natural parser");
-  // `keyOf` and the eventual handler each locally materialize the already
-  // durable action. That work is deterministic and side-effect-free; only
-  // the router model itself must run once.
-  assert.deepEqual(materializedActions, ["avatar_edit", "avatar_edit"]);
+  // The staging lane, durable route readback, and final image lane each
+  // locally materialize the request. That work is deterministic and
+  // side-effect-free; only the router model itself must run once.
+  assert.deepEqual(materializedRequests, Array.from({ length: 3 }, () => ({
+    kind: "avatar_edit",
+    prompt: "做个太空人",
+    request: { targetText: "我", action: "做个太空人", hasExplicitAvatarWord: true },
+  })));
   assert.equal(classifierInputs.length, 1);
   const classifierInput = classifierInputs[0]!;
   assert.deepEqual(classifierInput.facts, {
@@ -109,7 +113,7 @@ test("Worker classifies a trusted mention once and passes only the locally mater
     replyIsGeneratedImage: false,
     attachmentCount: 0,
   });
-  assert.match(classifierInput.sanitizedText, /美化一下/u);
+  assert.match(classifierInput.sanitizedText, /用我的头像做个太空人/u);
   assert.equal(classifierInput.sanitizedText.includes(BOT_QQ), false, "the bot QQ must not reach the router");
   assert.equal(classifierInput.sanitizedText.includes(TARGET_QQ), false, "a real target mention must be opaque to the router");
 
@@ -118,10 +122,10 @@ test("Worker classifies a trusted mention once and passes only the locally mater
   assert.equal(options?.naturalImageRoutingDecided, true);
   assert.deepEqual(options?.naturalImageRequest, {
     kind: "avatar_edit",
-    prompt: "美化一下",
+    prompt: "做个太空人",
     request: {
       targetText: "我",
-      action: "美化一下",
+      action: "做个太空人",
       hasExplicitAvatarWord: true,
     },
   });
@@ -181,6 +185,46 @@ test("Worker records an unconfigured router as chat and never invokes the legacy
     model_id: null,
     model: null,
     error_code: "model_not_configured",
+  });
+});
+
+test("Worker rejects a partial free-form avatar target even when it appears in the source text", async t => {
+  const fixture = createFixture("worker-image-intent-target-span-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const bot = createChatBot({ handled });
+  bot.getNaturalImageRequestForIntent = async (event, facts, action, details) => parseNaturalImageRequestForIntent({
+    message: parseGroupMessage(event.message, BOT_QQ),
+    ...facts,
+    hasTrustedReply: facts.hasTrustedReply === true,
+    replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
+  }, action, details);
+  const worker = fixture.createWorker(bot, {
+    async isConfigured() { return true; },
+    async classify() {
+      return {
+        action: "avatar_edit",
+        // `甲` is a substring of the user-supplied name `成员甲`, not a
+        // source-bounded avatar target in its own right.
+        avatarTarget: "甲",
+        missingFields: [],
+        modelId: "intent-small",
+        model: "dafeiyu-small",
+      };
+    },
+  });
+  fixture.setWorker(worker);
+  fixture.insert({
+    msgId: "partial-target",
+    text: "给成员甲的头像加顶帽子",
+    canonicalSegmentsJson: botMentionSegments("给成员甲的头像加顶帽子"),
+  });
+
+  worker.start();
+  await waitFor(() => handled.length === 1);
+  assert.deepEqual(handled[0]?.options?.naturalImageRequest, {
+    kind: "clarification",
+    reason: "missing_avatar_target",
   });
 });
 
@@ -595,8 +639,8 @@ test("a bare mention never invokes the configured image router", async t => {
   assert.equal(fixture.db.db.prepare("SELECT count(*) AS count FROM image_intent_routes").get()?.count, 0);
 });
 
-test("polite generation waits for same-member confirmation across restart without reclassification", async t => {
-  const fixture = createFixture("image-confirmation-");
+test("polite generation runs directly and old confirmation records cannot replay it", async t => {
+  const fixture = createFixture("image-direct-generation-");
   t.after(() => fixture.dispose());
   const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
   const bot = createChatBot({ handled });
@@ -604,31 +648,199 @@ test("polite generation waits for same-member confirmation across restart withou
     message: parseGroupMessage(event.message, BOT_QQ), ...facts,
     hasTrustedReply: facts.hasTrustedReply === true, replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
   }, action);
+  bot.getParticipationDecision = async () => ({
+    action: "reply", reason: "direct_mention", score: 1, policyVersion: "test", signals: {},
+  });
   let calls = 0;
-  const router: ImageIntentRouter = { async isConfigured() { return true; }, async classify() {
-    calls++; return { action: "generate", modelId: "ds", model: "small" };
+  const router: ImageIntentRouter = { async isConfigured() { return true; }, async classify(input) {
+    calls++;
+    return input.sanitizedText.includes("确认生成")
+      ? { action: "chat", modelId: "ds", model: "small" }
+      : { action: "generate", modelId: "ds", model: "small" };
   } };
   let worker = fixture.createWorker(bot, router);
   fixture.setWorker(worker);
   const text = "你能生成一张蓝色鲸鱼图片吗";
-  fixture.insert({ msgId: "question", text, canonicalSegmentsJson: botMentionSegments(text) });
+  const questionRow = fixture.insert({ msgId: "question", text, canonicalSegmentsJson: botMentionSegments(text) });
   worker.start();
   await waitFor(() => handled.length === 1);
-  assert.deepEqual(handled[0]?.options?.naturalImageRequest, { kind: "clarification", reason: "generation_confirmation" });
-  assert.equal(handled[0]?.options?.imageRequestSourceRowId, undefined);
+  assert.deepEqual(handled[0]?.options?.naturalImageRequest, { kind: "generate", prompt: text });
+  assert.equal(handled[0]?.options?.imageRequestSourceRowId, questionRow);
+  fixture.db.db.prepare(
+    "INSERT INTO image_generation_confirmations (source_row_id, expires_at) VALUES (?, ?)",
+  ).run(questionRow, Date.now() + 120_000);
   await worker.stop();
-  const confirmationRow = fixture.insert({ msgId: "confirm", text: "确认生成", canonicalSegmentsJson: botMentionSegments("确认生成") });
+  fixture.insert({ msgId: "confirm", text: "确认生成", canonicalSegmentsJson: botMentionSegments("确认生成") });
   worker = fixture.createWorker(bot, router);
   fixture.setWorker(worker);
   worker.start();
   await waitFor(() => handled.length === 2);
-  assert.equal(calls, 1);
-  assert.deepEqual(handled[1]?.options?.naturalImageRequest, { kind: "generate", prompt: text, requiresConfirmation: false });
-  assert.equal(handled[1]?.options?.imageRequestSourceRowId, confirmationRow);
-  fixture.insert({ msgId: "confirm-again", text: "确认生成", canonicalSegmentsJson: botMentionSegments("确认生成") });
-  await waitFor(() => handled.length === 3);
-  assert.deepEqual(handled[2]?.options?.naturalImageRequest, { kind: "clarification", reason: "confirmation_expired" });
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  assert.equal(handled[1]?.options?.naturalImageRoutingDecided, true);
+  assert.equal(handled[1]?.options?.naturalImageRequest, undefined);
+  assert.equal(handled[1]?.options?.imageRequestSourceRowId, undefined);
+});
+
+test("a same-member natural avatar supplement consumes one durable pending request", async t => {
+  const fixture = createFixture("image-pending-avatar-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const classifierInputs: ImageIntentRouterInput[] = [];
+  const bot = createChatBot({ handled });
+  bot.getNaturalImageRequestForIntent = async (event, facts, action, details) => parseNaturalImageRequestForIntent({
+    message: parseGroupMessage(event.message, BOT_QQ),
+    ...facts,
+    hasTrustedReply: facts.hasTrustedReply === true,
+    replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
+  }, action, details);
+  const router: ImageIntentRouter = {
+    async isConfigured() { return true; },
+    async classify(input) {
+      classifierInputs.push(input);
+      return input.pending
+        ? {
+            action: "avatar_edit",
+            avatarTarget: "我",
+            missingFields: [],
+            continuesPending: true,
+            modelId: "intent-small",
+            model: "dafeiyu-small",
+          }
+        : {
+            action: "avatar_edit",
+            missingFields: ["target"],
+            modelId: "intent-small",
+            model: "dafeiyu-small",
+          };
+    },
+  };
+  let worker = fixture.createWorker(bot, router);
+  fixture.setWorker(worker);
+  const firstRow = fixture.insert({
+    msgId: "pending-avatar",
+    text: "把头像做成太空人",
+    canonicalSegmentsJson: botMentionSegments("把头像做成太空人"),
+  });
+
+  worker.start();
+  await waitFor(() => handled.length === 1);
+  assert.deepEqual(handled[0]?.options?.naturalImageRequest, {
+    kind: "clarification",
+    reason: "missing_avatar_target",
+  });
+  const waiting = fixture.db.db.prepare(
+    "SELECT latest_source_row_id, status FROM image_pending_requests WHERE source_row_id = ?",
+  ).get(firstRow) as { latest_source_row_id: number; status: string } | undefined;
+  assert.equal(waiting?.latest_source_row_id, firstRow);
+  assert.equal(waiting?.status, "waiting");
+  await worker.stop();
+  worker = fixture.createWorker(bot, router);
+  fixture.setWorker(worker);
+
+  const supplementRow = fixture.insert({
+    msgId: "pending-avatar-target",
+    text: "我的",
+    canonicalSegmentsJson: botMentionSegments("我的"),
+  });
+  worker.start();
+  await waitFor(() => handled.length === 2);
+
+  assert.deepEqual(classifierInputs[1]?.pending, {
+    action: "avatar_edit",
+    missingFields: ["target"],
+    messages: ["[BOT_MENTION] 把头像做成太空人"],
+  });
+  assert.deepEqual(handled[1]?.options?.naturalImageRequest, {
+    kind: "avatar_edit",
+    prompt: "把头像做成太空人",
+    request: { targetText: "我", action: "把头像做成太空人", hasExplicitAvatarWord: true },
+  });
+  assert.equal(handled[1]?.options?.imageRequestSourceRowId, supplementRow);
+  const completed = fixture.db.db.prepare(
+    "SELECT latest_source_row_id, status FROM image_pending_requests WHERE source_row_id = ?",
+  ).get(firstRow) as { latest_source_row_id: number; status: string } | undefined;
+  assert.equal(completed?.latest_source_row_id, supplementRow);
+  assert.equal(completed?.status, "completed");
+  assert.equal(fixture.db.db.prepare("SELECT count(*) AS count FROM image_pending_requests").get()?.count, 1);
+});
+
+test("pending avatar markers keep their original member and preserve conflicting real mentions", async t => {
+  const fixture = createFixture("pending-avatar-target-provenance-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  let originalMarker = "";
+  const bot = createChatBot({ handled });
+  const materializedMentions: string[][] = [];
+  bot.getNaturalImageRequestForIntent = async (event, facts, action, details) => {
+    const message = parseGroupMessage(event.message, BOT_QQ);
+    materializedMentions.push(message.verifiedMentionUserIds);
+    return parseNaturalImageRequestForIntent({ message, ...facts,
+      hasTrustedReply: facts.hasTrustedReply === true,
+      replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
+    }, action, details);
+  };
+  const worker = fixture.createWorker(bot, {
+    async isConfigured() { return true; },
+    async classify(input) {
+      const marker = input.sanitizedText.match(/\[MEMBER_MENTION_[^\]]+\]/u)?.[0];
+      assert.ok(marker);
+      if (!input.pending) originalMarker = marker;
+      else assert.notEqual(marker, originalMarker);
+      return { action: "avatar_edit", avatarTarget: originalMarker,
+        missingFields: input.pending ? [] : ["instruction"],
+        continuesPending: Boolean(input.pending), modelId: "intent", model: "intent" };
+    },
+  });
+  fixture.setWorker(worker);
+  fixture.insert({ msgId: "target-original", text: "用成员甲的头像", canonicalSegmentsJson: JSON.stringify([
+    { type: "at", qq: BOT_QQ }, { type: "text", text: " 用" },
+    { type: "at", qq: TARGET_QQ }, { type: "text", text: "的头像" },
+  ]) });
+  worker.start();
+  await waitFor(() => handled.length === 1);
+  fixture.insert({ msgId: "target-followup", text: "给成员乙的头像加顶帽子", canonicalSegmentsJson: JSON.stringify([
+    { type: "at", qq: BOT_QQ }, { type: "text", text: " 给" },
+    { type: "at", qq: "54322" }, { type: "text", text: "的头像加顶帽子" },
+  ]) });
+  await waitFor(() => handled.length === 2);
+  const request = handled[1]?.options?.naturalImageRequest as { kind: string; request: { targetText: string; action: string; hasExplicitAvatarWord: boolean } };
+  assert.equal(request.kind, "avatar_edit");
+  assert.equal(request.request.targetText, `@${TARGET_QQ}`);
+  assert.deepEqual(materializedMentions.at(-1), [TARGET_QQ, "54322"]);
+  assert.deepEqual(resolveAvatarEditTarget({ request: request.request,
+    requesterUserId: "20001", botUserId: BOT_QQ,
+    verifiedMentionUserIds: materializedMentions.at(-1)!, members: [],
+  }), { ok: false, code: "multiple_mentions" });
+});
+
+test("a real target-only mention completes a missing avatar target", async t => {
+  const fixture = createFixture("pending-avatar-real-mention-");
+  t.after(() => fixture.dispose());
+  const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
+  const bot = createChatBot({ handled });
+  bot.getNaturalImageRequestForIntent = async (event, facts, action, details) => parseNaturalImageRequestForIntent({
+    message: parseGroupMessage(event.message, BOT_QQ), ...facts,
+    hasTrustedReply: facts.hasTrustedReply === true, replyIsGeneratedImage: facts.replyIsGeneratedImage === true,
+  }, action, details);
+  const worker = fixture.createWorker(bot, {
+    async isConfigured() { return true; },
+    async classify(input) {
+      return { action: "avatar_edit", modelId: "intent", model: "intent",
+        ...(input.pending ? { avatarTarget: input.sanitizedText.match(/\[MEMBER_MENTION_[^\]]+\]/u)![0],
+          missingFields: [], continuesPending: true } : { missingFields: ["target"] }) };
+    },
+  });
+  fixture.setWorker(worker);
+  fixture.insert({ msgId: "missing", text: "把头像做成太空人", canonicalSegmentsJson: botMentionSegments("把头像做成太空人") });
+  worker.start();
+  await waitFor(() => handled.length === 1);
+  fixture.insert({ msgId: "target-only", text: `@${TARGET_QQ}`, canonicalSegmentsJson: JSON.stringify([
+    { type: "at", qq: BOT_QQ }, { type: "at", qq: TARGET_QQ },
+  ]) });
+  await waitFor(() => handled.length === 2);
+  const request = handled[1]?.options?.naturalImageRequest as { kind: string; request: { targetText: string } };
+  assert.equal(request.kind, "avatar_edit");
+  assert.equal(request.request.targetText, `@${TARGET_QQ}`);
 });
 
 test("image permission preflight prevents classifier and legacy rule fallback", async t => {

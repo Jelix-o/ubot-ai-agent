@@ -2413,7 +2413,7 @@ test("#画图 explains missing prompts and ignores the retired per-group switch"
   }], ["20001"]);
   const enabled = createApp({ groupConfigService: enabledGroups, imageGenerationService });
   await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图" } }]));
-  assert.match(enabled.transport.sent[0]?.text ?? "", /#画图 <提示词>/);
+  assert.match(enabled.transport.sent[0]?.text ?? "", /想生成什么画面/);
   await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 海边灯塔" } }]));
   assert.equal(calls, 1);
   assert.equal(enabled.transport.sent[1]?.text, "正在生成图片，请稍候…");
@@ -8485,7 +8485,7 @@ test("image edit requires explicit references and uses quoted pictures before at
   groupConfigService.groups[0]!.visionEnabled = false;
   await app.handleGroupMessage(createEvent("#改图 加上帆船"));
   assert.equal(inputs.length, 0);
-  assert.match(transport.sent.at(-1)?.text ?? "", /附图或引用/);
+  assert.match(transport.sent.at(-1)?.text ?? "", /把要修改的图片/);
   transport.messagesById["old"] = { messageId: "old", groupId: "67890", text: "", images: [{ url: editTestPng, summary: "quoted-1" }, { url: editTestPng, summary: "quoted-2" }] };
   await app.handleGroupMessage(createEvent([
     { type: "reply", data: { id: "old" } },
@@ -8548,8 +8548,8 @@ test("legacy unknown image hints fall through to conversation while specific ima
   assert.equal(transport.sent[0]?.text, "继续刚才的话题");
   for (const [action, text, expected] of [
     ["generate", "生成一张", "想生成什么画面？补充一下主体或场景吧。"],
-    ["edit", "把天空改成晚霞", "改图请附图"],
-    ["avatar_edit", "将我美化一下", "头像改图格式"],
+    ["edit", "把天空改成晚霞", "把要修改的图片"],
+    ["avatar_edit", "将我美化一下", "想用谁的头像？"],
   ] as const) {
     const event = createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }]);
     const request = await app.getNaturalImageRequestForIntent(event, { hasTrustedBotMention: true }, action);
