@@ -23,6 +23,17 @@ export function resolveMemeCategory<T extends { id: string; name: string }>(tags
 export function memeCategoryLabel(name: string): string {
   return ALIASES[name]?.[0] ? `${ALIASES[name]![0]}（${name}）` : name;
 }
+export function suggestMemeCategories(tags:Array<{name:string}>,selector:string):string[] {
+  const key=selector.normalize("NFKC").trim().toLowerCase().slice(0,80);
+  const distance=(name:string)=>{
+    const value=name.toLowerCase().slice(0,80);
+    if(key && (value.startsWith(key)||key.startsWith(value)))return Math.abs(value.length-key.length)/10;
+    let row=Array.from({length:value.length+1},(_,i)=>i);
+    for(let i=0;i<key.length;i++){const next=[i+1];for(let j=0;j<value.length;j++)next[j+1]=Math.min(next[j]!+1,row[j+1]!+1,row[j]!+Number(key[i]!==value[j]));row=next;}
+    return row[value.length]!;
+  };
+  return tags.map(t=>({name:t.name,score:Math.min(...[t.name,...(ALIASES[t.name]??[])].map(distance))})).sort((a,b)=>a.score-b.score||a.name.localeCompare(b.name)).slice(0,3).map(t=>t.name);
+}
 
 /** Prefer unused content, then the least recently used pack within this category. */
 export function pickVariedMeme(assets: MemeAsset[], recent: MemeUse[], random: () => number): MemeAsset | undefined {

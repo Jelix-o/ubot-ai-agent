@@ -59,6 +59,7 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "htmlPreviewEnabled"
   | "naturalImageRequestsEnabled"
   | "groupExperienceEnabled"
+  | "interactionAssistanceEnabled"
   | "personalRemindersEnabled"
   | "audioReplyEnabled"
   | "singingEnabled"
@@ -655,6 +656,7 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     // entry point is available to existing groups unless disabled explicitly.
     naturalImageRequestsEnabled: group.naturalImageRequestsEnabled !== false,
     groupExperienceEnabled: group.groupExperienceEnabled === true,
+    interactionAssistanceEnabled: group.interactionAssistanceEnabled === true,
     personalRemindersEnabled: group.personalRemindersEnabled === true,
     audioReplyEnabled: group.audioReplyEnabled === true,
     singingEnabled: group.singingEnabled === true,
@@ -785,7 +787,7 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   if ("naturalImageRequestsEnabled" in input) {
     next.naturalImageRequestsEnabled = normalizeBoolean(input.naturalImageRequestsEnabled, "invalid_group_config");
   }
-  for (const key of ["groupExperienceEnabled", "personalRemindersEnabled", "audioReplyEnabled", "singingEnabled"] as const) {
+  for (const key of ["groupExperienceEnabled", "interactionAssistanceEnabled", "personalRemindersEnabled", "audioReplyEnabled", "singingEnabled"] as const) {
     if (key in input) next[key] = normalizeBoolean(input[key], "invalid_group_config");
   }
   return normalizeGroupConfig(next);

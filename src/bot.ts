@@ -1,3 +1,6 @@
+import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
+import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { naturalMemeSelector } from "./services/meme-request-intent.js";
 import type { NaturalImageIntentDetails } from "./services/natural-image-request.js";
 import { GroupInteractionService, isInteractionQuietHour } from "./services/group-interaction-service.js";
 import { parseMemeReply, memeReplyInstruction, allowsEntertainmentMeme } from "./services/meme-reply-protocol.js";
@@ -155,6 +158,7 @@ import type {
   GroupMemberIdentity,
   GroupBotConfig,
   MessageImageInput,
+  MessageSegment,
   NapcatGroupInfo,
   NapcatGroupMember,
   NapcatGroupMessageEvent,
@@ -259,6 +263,7 @@ const RUNTIME_COMMAND_SPECS = {
   self_memory_edit: { builtinPrefix: "#记忆修改", builtinAliases: [] },
   self_memory_delete: { builtinPrefix: "#忘记", builtinAliases: [] },
   personal_reminder: { builtinPrefix: "#提醒", builtinAliases: [] },
+  request_status: { builtinPrefix: "#进度", builtinAliases: [] },
   interaction_status: { builtinPrefix: "#互动状态", builtinAliases: [] },
   spoken_reply: { builtinPrefix: "#语音", builtinAliases: [] },
   original_song: { builtinPrefix: "#唱歌", builtinAliases: [] },
@@ -463,6 +468,11 @@ export interface MemeNormalChatClaimResult {
   reason: MemeNormalChatClaimReason;
   selection?: MemeImageSelection;
   matchedTagIds: string[];
+  retryAfterSeconds?: number;
+  suggestions?: string[];
+  missingPreviousCategory?: boolean;
+  invalidCategory?: boolean;
+  fileUnavailable?: boolean;
 }
 
 /**
@@ -620,6 +630,7 @@ export class BotApplication {
         { id: "daily-report", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReport, run: () => this.runDailyReportTick() },
         { id: "holiday-countdown", intervalMs: BOT_MAINTENANCE_INTERVALS.holidayCountdown, run: () => this.runHolidayCountdownTick() },
         { id: "scheduled-reminder", intervalMs: BOT_MAINTENANCE_INTERVALS.scheduledReminder, run: () => this.runScheduledReminderTick() },
+        { id: "interaction-assistance", intervalMs: 1_000, run: async () => { this.requestFeedbackService?.tick(); this.reminderInteractionService?.cleanup(); } },
         { id: "audio-generation", intervalMs: 10_000, run: async () => { void this.audioGenerationService?.tick().catch(() => logError("Audio queue tick failed.")); } },
         { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
@@ -833,6 +844,8 @@ export class BotApplication {
     const parsedMessage = parseGroupMessage(event.message, this.botQq);
     const commandText = extractCommandText(event.message);
     const runtimeCommands = await this.getRuntimeCommands();
+    // Status reads must not interrupt a running reply or mutate continuation state.
+    if(!this.isBlacklistedUser(groupConfig,userId) && await this.handleRequestStatus(groupConfig,event,commandText,this.assistanceFacts(event).hasAtBot,runtimeCommands))return;
     if (!this.isBlacklistedUser(groupConfig, userId) && (parsedMessage.hasAtBot || options.allowReplyWithoutMention === true || isSystemCommandText(commandText, runtimeCommands))) {
       this.automaticReplyControllers.get(groupId)?.abort();
     }
@@ -920,7 +933,12 @@ export class BotApplication {
       return;
     }
 
-    if (await this.handleMemeCollection(groupConfig, event, parsedMessage, commandText)) return;
+    const memeSelector=groupConfig.interactionAssistanceEnabled ? naturalMemeSelector(commandText,this.assistanceFacts(event).hasAtBot) : undefined;
+    if(memeSelector!==undefined && (!groupConfig.groupExperienceEnabled || !this.memeLibraryService?.listTags)){
+      if(!groupConfig.botMuted)await this.sendText(groupId,"本群表情功能当前未启用，请联系管理员检查群聊体验和图库设置。");
+      return;
+    }
+    if (await this.handleMemeCollection(groupConfig, event, parsedMessage, memeSelector === undefined ? commandText : "#表情 "+memeSelector)) return;
     if (await this.handleSelfMemory(groupConfig, event, commandText, runtimeCommands)) return;
     if (await this.handlePersonalReminder(groupConfig, event, commandText, parsedMessage.hasAtBot, runtimeCommands)) return;
     if (await this.handleAudioRequest(groupConfig,event,commandText,parsedMessage.hasAtBot,runtimeCommands)) return;
@@ -1593,10 +1611,49 @@ export class BotApplication {
   private readonly memeCollectionWindows = new Map<string, { tagId: string; expiresAt: number }>();
   private selfMemoryService?: SelfMemoryService;
   setSelfMemoryService(service: SelfMemoryService): void { this.selfMemoryService = service; }
+  private reminderInteractionService?: ReminderInteractionService;
+  private requestFeedbackService?: RequestFeedbackService;
+  setInteractionAssistance(reminders: ReminderInteractionService, feedback: RequestFeedbackService): void { this.reminderInteractionService=reminders; this.requestFeedbackService=feedback; }
   private personalReminderService?: PersonalReminderService;
   setPersonalReminderService(service: PersonalReminderService): void { this.personalReminderService = service; }
   private audioGenerationService?: AudioGenerationService;
   setAudioGenerationService(service: AudioGenerationService): void { this.audioGenerationService = service; }
+
+  private assistanceFacts(event:NapcatGroupMessageEvent) {
+    const segments:MessageSegment[]=typeof event.message==="string"?[{type:"text",data:{text:event.message}}]:event.message.map(segment=>typeof segment==="string"?{type:"text",data:{text:segment}}:segment);
+    return parseGroupMessage(segments,this.botQq);
+  }
+  private reminderInput(event:NapcatGroupMessageEvent,text:string,explicit:boolean) {
+    const parsed=this.assistanceFacts(event),groupId=String(event.group_id),userId=String(event.user_id),messageId=String(event.message_id);
+    const fallback=typeof event.time==="number"&&Number.isFinite(event.time)&&event.time>0?event.time*1000:Date.now();
+    return {groupId,userId,messageId,text,explicit,hasAtBot:parsed.hasAtBot,replyTo:parsed.replyMessageId,receivedAt:this.reminderInteractionService?.receivedAt(groupId,userId,messageId,fallback)??fallback};
+  }
+  /** Local preflight runs before the paid image-intent classifier and chat routing. */
+  async isInteractionAssistanceMessage(event:NapcatGroupMessageEvent):Promise<boolean> {
+    const group=await this.groupConfigService.getGroup(String(event.group_id));
+    if(!group?.interactionAssistanceEnabled || group.enabled===false || group.botMuted || this.isBlacklistedUser(group,String(event.user_id)))return false;
+    const text=extractCommandText(event.message),parsed=this.assistanceFacts(event),commands=await this.getRuntimeCommands();
+    if(naturalMemeSelector(text,parsed.hasAtBot)!==undefined)return true;
+    if(group.groupExperienceEnabled && parsed.hasAtBot && /^(?:做好了吗|处理到哪了|进度[呢吗]?)[？?。！!]*$/u.test(text) && this.requestFeedbackService?.hasActive(group.groupId,String(event.user_id)))return true;
+    const match=matchRuntimeCommand(text,commands,"personal_reminder");
+    return Boolean(group.personalRemindersEnabled && this.reminderInteractionService?.canHandle(this.reminderInput(event,match?match.suffix.trim():text,Boolean(match))));
+  }
+  async canTrackAssistedRequest(event:NapcatGroupMessageEvent,kind:"conversation"|"image"):Promise<boolean> {
+    const group=await this.groupConfigService.getGroup(String(event.group_id));
+    if(!group?.interactionAssistanceEnabled || !group.groupExperienceEnabled || group.enabled===false || group.botMuted || this.isBlacklistedUser(group,String(event.user_id)))return false;
+    const id=kind==="image"?"image_generation":"conversation",policy=(await this.getRuntimeCommands()).find(c=>c.id===id);
+    return Boolean(policy?.enabled && this.isCapabilityEnabled(id) && await this.canUseRuntimeCommand(policy,group,event));
+  }
+  private async handleRequestStatus(group:GroupBotConfig,event:NapcatGroupMessageEvent,text:string,hasAtBot:boolean,commands:SystemCommandConfig[]):Promise<boolean> {
+    const command=matchRuntimeCommand(text,commands,"request_status");
+    const natural=group.interactionAssistanceEnabled && group.groupExperienceEnabled && hasAtBot && /^(?:做好了吗|处理到哪了|进度[呢吗]?)[？?。！!]*$/u.test(text) && this.requestFeedbackService?.hasActive(group.groupId,String(event.user_id));
+    if(!command&&!natural)return false;
+    const policy=commands.find(c=>c.id==="request_status");
+    if(group.botMuted || !policy?.enabled || !await this.canUseRuntimeCommand(policy,group,event))return true;
+    if(group.interactionAssistanceEnabled && group.groupExperienceEnabled && this.requestFeedbackService)this.requestFeedbackService.enqueueQuery(group.groupId,String(event.user_id));
+    else await this.sendText(group.groupId,"本群暂未开启交互辅助进度查询。");
+    return true;
+  }
 
   private async handleAudioRequest(group: GroupBotConfig, event: NapcatGroupMessageEvent, text: string, hasAtBot: boolean, commands: SystemCommandConfig[]): Promise<boolean> {
     const speech = matchRuntimeCommand(text,commands,"spoken_reply"), song = matchRuntimeCommand(text,commands,"original_song");
@@ -1617,6 +1674,12 @@ export class BotApplication {
 
   private async handlePersonalReminder(group: GroupBotConfig, event: NapcatGroupMessageEvent, text: string, hasAtBot: boolean, commands: SystemCommandConfig[]): Promise<boolean> {
     const match = matchRuntimeCommand(text, commands, "personal_reminder");
+    const interaction=this.reminderInput(event,match ? match.suffix.trim() : text,Boolean(match));
+    if(group.interactionAssistanceEnabled && group.personalRemindersEnabled && this.reminderInteractionService?.canHandle(interaction)){
+      const policy=commands.find(c=>c.id==="personal_reminder");
+      if(policy && await this.canUseRuntimeCommand(policy,group,event) && this.isCapabilityEnabled("scheduled_reminders") && !group.botMuted)this.reminderInteractionService.handle(interaction);
+      return true;
+    }
     if (!match && !(hasAtBot && /(?:提醒我|叫我)/u.test(text))) return false;
     const policy = commands.find(c => c.id === "personal_reminder");
     if (!policy || !await this.canUseRuntimeCommand(policy, group, event)) return true;
@@ -1642,6 +1705,7 @@ export class BotApplication {
       }
     } catch (error) {
       const messages: Record<string,string> = { reminder_limit: "个人提醒已达上限：每人在本群五条、每群五十条。", reminder_unavailable: "本群个人提醒当前不可用。", invalid_content: "提醒内容需要 1–300 字，不能包含密码或密钥。", invalid_time: "请指定未来 366 天内的时间。" };
+      Object.assign(messages,{reminder_already_sent:"这条提醒已经送达，无法取消或修改。",reminder_delivery_unconfirmed:"这条提醒正在发送或结果未确认，暂时不能修改或取消。",reminder_already_settled:"这条提醒已经结束，请重新设置。"});
       await this.sendText(group.groupId, messages[(error as Error).message] ?? "这次提醒操作未完成，请稍后重试。");
     }
     return true;
@@ -1719,7 +1783,11 @@ export class BotApplication {
         if (result.selection) {
           if (result.selection.assetId && this.transport.sendMemeGroupImage) await this.transport.sendMemeGroupImage(group.groupId, result.selection.assetId);
           else await this.transport.sendGroupImage(group.groupId, result.selection.imageFile);
-        } else await this.sendText(group.groupId, result.reason === "cooldown" ? "稍等几秒再换：每人十秒、每群五秒一次。" : result.reason === "policy_disabled" ? "本群表情功能当前未启用。" : "暂时没有可用图片。试试 #表情 分类；换图前请先指定一次分类。");
+        } else {
+          const suggestion=result.suggestions?.map(memeCategoryLabel).join("、");
+          const message=group.interactionAssistanceEnabled ? result.reason==="cooldown"?`再等 ${result.retryAfterSeconds??1} 秒就能换图。`:result.reason==="policy_disabled"?"本群表情功能当前未启用。":result.missingPreviousCategory?"你还没选过分类，想要哪类表情？例如 #表情 开心。":result.invalidCategory?`没找到这个分类。${suggestion?"可试试："+suggestion+"。":"可用 #表情 分类 查看图库。"}`:result.fileUnavailable?"这张图片文件暂时不可用，请稍后再试或联系管理员检查图库。":"这个分类暂时没有可用图片，可以用 #表情 分类 换一类。" : result.reason === "cooldown" ? "稍等几秒再换：每人十秒、每群五秒一次。" : result.reason === "policy_disabled" ? "本群表情功能当前未启用。" : "暂时没有可用图片。试试 #表情 分类；换图前请先指定一次分类。";
+          await this.sendText(group.groupId,message);
+        }
         return true;
       }
       if (text.startsWith("#表情")) { await this.sendText(group.groupId, "用法：#表情 分类 / #表情 <分类> / #表情 换一张 / #表情 收藏 <分类>"); return true; }
@@ -3621,6 +3689,7 @@ export class BotApplication {
     const capabilityByCommand: Record<string,V3RuntimeCapability> = { conversation:"conversation",image_generation:"image_generation",html_preview:"html_preview",bt_search:"bt_search",memory:"explicit_memory",self_memory:"explicit_memory",self_memory_edit:"explicit_memory",self_memory_delete:"explicit_memory",knowledge:"knowledge",daily_report:"daily_reports",holiday_countdown:"holiday_countdown",scheduled_reminder:"scheduled_reminders",personal_reminder:"scheduled_reminders",spoken_reply:"audio_generation",original_song:"audio_generation" };
     for (const command of runtimeCommands) {
       if (capabilityByCommand[command.id] && !this.isCapabilityEnabled(capabilityByCommand[command.id]!)) continue;
+      if (command.id === "request_status" && (!groupConfig.interactionAssistanceEnabled || !groupConfig.groupExperienceEnabled)) continue;
       if (["self_memory","self_memory_edit","self_memory_delete"].includes(command.id) && !groupConfig.groupExperienceEnabled) continue;
       if (command.id === "personal_reminder" && !groupConfig.personalRemindersEnabled || command.id === "spoken_reply" && !groupConfig.audioReplyEnabled || command.id === "original_song" && !groupConfig.singingEnabled) continue;
       if (command.id === "model" && command.enabled || await this.canUseRuntimeCommand(command, groupConfig, event)) visible.push(command);
@@ -4799,6 +4868,7 @@ export class BotApplication {
         });
         return;
       }
+      if(conversationRoute)this.requestFeedbackService?.fail(conversationRoute.sourceRowId);
       const failureKind = classifyUpstreamFailure({ error });
       logError("Failed to generate AI reply.", {
         groupId: groupConfig.groupId,
@@ -6793,6 +6863,7 @@ type HelpSection = {
 
 function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false, hiddenIds = new Set<string>()): HelpSection[] {
   return [
+    {commandId:"request_status",title:"请求进度",aliases:["进度","请求进度"],lines:[command("request_status"),"查看本人在本群的对话和图片请求；完成记录保留十分钟。","真实 @机器人问“做好了吗”也能查正在处理的请求，不会重新调用模型。"]},
     ...(experienceEnabled ? [{title:"表情",aliases:["表情","表情包","meme"],lines:["#表情 分类 / #表情 开心 / #表情 换一张","支持中文分类和英文原名；主动索图每人十秒、每群五秒一次。","自动配图仍按既有概率和群冷却执行；只有超级管理员可用 #表情 收藏 <分类> 收图。"]}] : []),
     { commandId:"personal_reminder",title:"个人提醒",aliases:["个人提醒","一次性提醒","提醒"],lines:[`${command("personal_reminder")} 10分钟后 喝水`,`${command("personal_reminder")} 明天9点 开会`,`${command("personal_reminder")} 列表 / 取消 <编号>`,"北京时间，全天可用；只管理本人在本群的提醒，每人五条、每群五十条。"] },
     { commandId:"self_memory",title:"我的记忆",aliases:["我的记忆","自助记忆","记忆"],lines:[
@@ -6907,6 +6978,7 @@ function buildHelpOverviewMessage(
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
     ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置图片意图判断模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
     ...show("personal_reminder",`个人提醒：${command("personal_reminder")} 10分钟后 喝水；列表 / 取消 <编号>（北京时间，全天可用）`),
+    ...show("request_status",`请求进度：${command("request_status")} 查看本人当前群的处理和最近完成结果`),
     ...show("self_memory",`本人记忆：${command("self_memory")} 查看或保存；修改、删除需本人归属检查`),
     ...show("spoken_reply",`语音：${command("spoken_reply")} <内容>；也可 @机器人要求语音回答`),
     ...show("original_song",`短歌：${command("original_song")} <主题>，创作 15–30 秒原创歌曲`),

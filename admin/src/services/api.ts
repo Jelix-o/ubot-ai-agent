@@ -11,6 +11,7 @@ export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "sel
 
 export interface GroupConfig {
   groupExperienceEnabled?: boolean;
+  interactionAssistanceEnabled?: boolean;
   personalRemindersEnabled?: boolean;
   audioReplyEnabled?: boolean;
   singingEnabled?: boolean;

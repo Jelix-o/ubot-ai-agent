@@ -494,12 +494,15 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     const poke = desktop.getByRole("checkbox", { name: /^回戳/ });
     const experience = desktop.getByRole("checkbox", { name: /^群聊体验增强/ });
     const personalReminders = desktop.getByRole("checkbox", { name: /^个人一次性提醒/ });
+    const assistance = desktop.getByRole("checkbox", { name: /^交互辅助/ });
+    if(await assistance.isChecked()) throw new Error("Interaction assistance must default off.");
     if (await ambient.isChecked() || await poke.isChecked()) throw new Error("Group interactions must default off.");
     if (await experience.isChecked() || await personalReminders.isChecked()) throw new Error("New experience controls must default off.");
     await ambient.check();
     await poke.check();
     await experience.check();
     await personalReminders.check();
+    await assistance.check();
     await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).fill("900");
     await desktop.getByRole("spinbutton", { name: "回戳概率（%）" }).fill("40");
     const saveGroup = async () => {
@@ -511,6 +514,7 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await desktop.reload({ waitUntil: "networkidle" });
     if (!await ambient.isChecked() || !await poke.isChecked() || await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).inputValue() !== "900") throw new Error("Interaction controls did not persist.");
     if (!await experience.isChecked() || !await personalReminders.isChecked()) throw new Error("Experience and personal reminder controls did not persist.");
+    if(!await assistance.isChecked()) throw new Error("Interaction assistance control did not persist.");
     await assertNoHorizontalOverflow(desktop, "desktop group interactions");
     await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-desktop.png"), fullPage: true });
     await ambient.uncheck();

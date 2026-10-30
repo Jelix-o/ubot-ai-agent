@@ -1,3 +1,6 @@
+import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
+import { V3StateRepository } from "./services/v3-state-repository.js";
 import { imageIntentText, restoreImageIntentTarget } from "./services/image-intent-text.js";
 import { ImagePendingRequestRepository, type ImageIntentMaterialization } from "./services/image-pending-request-repository.js";
 import type { IngressMessageRow } from "./shared/sqlite.js";
@@ -123,6 +126,7 @@ class ImageIntentRouteLeaseLostError extends Error {
  */
 export class WorkerApp {
   private readonly sharedDb: SharedDb;
+  private readonly requestFeedback: RequestFeedbackService;
   private readonly metrics: Metrics;
   private readonly stopArtifactObservation: () => void;
   private readonly inflight: InflightManager;
@@ -165,6 +169,9 @@ export class WorkerApp {
     this.imagePendingRequests = new ImagePendingRequestRepository(this.sharedDb);
     const v3State = resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey);
     v3State?.retireRoastModeForExistingGroupsOnce();
+    const assistanceState=v3State??new V3StateRepository(this.sharedDb);
+    this.requestFeedback=new RequestFeedbackService(assistanceState);
+    this.options.botApp.setInteractionAssistance?.(new ReminderInteractionService(assistanceState),this.requestFeedback);
     this.atmosphere = new AtmosphereSummarizer(
       this.options.dataDir,
       {},
@@ -219,6 +226,7 @@ export class WorkerApp {
         if (await this.isBlacklistedMessage(message)) {
           return `${message.group_id}:blacklisted`;
         }
+        if (await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message)))return `${message.group_id}:assistance:${message.user_id}`;
         if (await this.options.botApp.getBtCommand(message.text)) {
           await this.getOrRecordParticipationDecision(message);
           // Each request reaches the bounded global search queue immediately.
@@ -240,6 +248,7 @@ export class WorkerApp {
           // Natural image requests use a separate group/member queue. This
           // preserves a member's one-at-a-time image work without holding up
           // unrelated group conversation or another member's request.
+          await this.trackAssistedRequest(message,"image");
           return `${message.group_id}:image:${message.user_id}`;
         }
         if (naturalImageRoute?.kind === "pending") {
@@ -257,6 +266,7 @@ export class WorkerApp {
           // Explicit #生图/#改图 requests share the same per-member image
           // queue as natural requests. This also makes their durable request
           // ledger source row available before an upstream call.
+          await this.trackAssistedRequest(message,"image");
           return `${message.group_id}:image:${message.user_id}`;
         }
         // 指令消息（# 开头）不需要 @ 也要路由处理（生产事故：群里 #对话/#clear
@@ -283,6 +293,7 @@ export class WorkerApp {
           policyVersion: decision.policyVersion,
         });
         const route = await this.resolveRoute(message);
+        await this.trackAssistedRequest(message,"conversation");
         return `${message.group_id}:${route.branchId}`;
       },
       handler: async (message, done, handoff, currentKey) => {
@@ -292,6 +303,10 @@ export class WorkerApp {
       batchSize: 50,
       maxConcurrentKeys: 8,
     });
+  }
+
+  private async trackAssistedRequest(message:Parameters<WorkerApp["buildEvent"]>[0]&{id:number},kind:"conversation"|"image"):Promise<void> {
+    if(await this.options.botApp.canTrackAssistedRequest?.(this.buildEvent(message as IngressMessageRow),kind))this.requestFeedback.track(message.id,kind);
   }
 
   private async handleMessage(
@@ -358,6 +373,11 @@ export class WorkerApp {
       return;
     }
 
+    if(await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message))){
+      await this.options.botApp.handleGroupMessage(this.buildEvent(message),undefined,undefined,{naturalImageRoutingDecided:true});
+      await done();return;
+    }
+
     // Preflight only chooses a bounded staging lane. This handler claims the
     // route once; later attempts read the durable source-row result instead of
     // rerouting or submitting a second classifier call.
@@ -386,6 +406,7 @@ export class WorkerApp {
     }
     const isImageCommand = await this.isImageGenerationCommand(message.text);
     const isImageRequest = isNaturalImage || isImageCommand;
+    if(isImageRequest)await this.trackAssistedRequest(message,"image");
     // This is a status-only lookup. It lets metrics distinguish a replay from
     // a first submission without recording a prompt or any member metadata.
     const hadExistingImageRequest = isImageRequest && this.hasImageRequest(
@@ -402,6 +423,7 @@ export class WorkerApp {
     const route = !isRoutedConversation
       ? undefined
       : this.contextRepository.getRouteBySourceRowId(message.id) ?? await this.resolveRoute(message);
+    if(route)await this.trackAssistedRequest(message,"conversation");
     const key = isBt
       ? `${message.group_id}:bt-search:${message.id}`
       : isPreview
@@ -511,6 +533,7 @@ export class WorkerApp {
         throw error;
       } finally {
         if (isImageRequest) {
+          this.requestFeedback.finish(message.id);
           this.recordImageRequestMetrics({
             isNaturalImage,
             hadExistingImageRequest,
@@ -564,6 +587,7 @@ export class WorkerApp {
         this.metrics.inc("tasks_completed");
         completed = true;
         if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "awaiting_delivery");
+        this.requestFeedback.finish(message.id);
         // 指标 #4：端到端回复延迟 p95（计划 §6）。
         this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
       } finally {
@@ -571,6 +595,7 @@ export class WorkerApp {
       }
     } catch (error) {
       if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "failed");
+      this.requestFeedback.fail(message.id);
       logError("Worker message handling failed.", {
         key,
         msgId: message.msg_id,

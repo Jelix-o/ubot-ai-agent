@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
 import { normalizeMemeTagSelector } from "./meme-reply-protocol.js";
-import { appendMemeUse, pickVariedMeme, resolveMemeCategory, type MemeUse } from "./meme-variety.js";
+import { appendMemeUse, pickVariedMeme, resolveMemeCategory, suggestMemeCategories, type MemeUse } from "./meme-variety.js";
 import { InteractionDiagnostics } from "./interaction-diagnostics.js";
 
 export const MEME_LIBRARY_DOCUMENT_TYPE = "meme-library";
@@ -146,6 +146,11 @@ export interface MemeNormalChatImageClaim {
   reason: MemeNormalChatImageClaimReason;
   matchedTagIds: string[];
   selection?: MemeImageSelection;
+  retryAfterSeconds?: number;
+  suggestions?: string[];
+  missingPreviousCategory?: boolean;
+  invalidCategory?: boolean;
+  fileUnavailable?: boolean;
 }
 
 export const DEFAULT_MEME_LIBRARY_POLICY: MemeLibraryPolicy = Object.freeze({
@@ -702,9 +707,16 @@ export class MemeLibraryService {
       const policy = this.readLibraryDocument(repository).policy;
       if (!policy.enabled) { result.reason = "policy_disabled"; return current; }
       const member = repository.getDocument<{ at: number; tagId?: string }>("meme-request-member", `${groupId}:${userId}`, { at: 0 });
-      if ((current.at && now - current.at < 5_000) || (member.at && now - member.at < 10_000)) { result.reason = "cooldown"; return current; }
+      const wait=Math.max(current.at ? 5_000-(now-current.at) : 0,member.at ? 10_000-(now-member.at) : 0);
+      if (wait>0) { result.reason = "cooldown";result.retryAfterSeconds=Math.ceil(wait/1000);return current; }
       const tag = resolveMemeCategory(this.readTagDocument(repository).tags, selector === "换一张" ? member.tagId ?? "" : selector);
-      if (!tag) return current;
+      if (!tag) {
+        result.missingPreviousCategory=selector==="换一张"&&!member.tagId;
+        result.invalidCategory=!result.missingPreviousCategory;
+        const active=this.readAssetDocument(repository).assets.filter(a=>this.isPackActive(a,policy));
+        result.suggestions=suggestMemeCategories(this.readTagDocument(repository).tags.filter(t=>active.some(a=>matchesNormalChatTags(a,[t.id]))),selector);
+        return current;
+      }
       result.matchedTagIds = [tag.id];
       const history = repository.getDocument<MemeUse[]>(VARIETY_TYPE, groupId, []);
       const assets = this.readAssetDocument(repository).assets.filter(a => this.isPackActive(a, policy) && matchesNormalChatTags(a, [tag.id]));
@@ -727,7 +739,7 @@ export class MemeLibraryService {
           if (JSON.stringify(history) === JSON.stringify(appendMemeUse(old.history,result.selection!.asset))) repository.saveDocument(VARIETY_TYPE, groupId, old.history, now);
           return old.current;
         }, now);
-        return { reason: "asset_unavailable", matchedTagIds: result.matchedTagIds };
+        return { reason: "asset_unavailable", matchedTagIds: result.matchedTagIds, fileUnavailable: true };
       }
       result.selection.imageFile = image;
     }

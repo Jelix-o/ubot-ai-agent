@@ -27,7 +27,7 @@ export class PersonalReminderService {
       const active = this.repo.listScheduledReminders(groupId, false).filter(t => t.kind === "personal_reminder");
       if (active.length >= 50 || active.filter(t => t.creatorUserId === userId).length >= 5) throw new Error("reminder_limit");
       const task: ScheduledReminderTask = { id, kind: "personal_reminder", groupId, creatorUserId: userId,
-        timezone: "Asia/Shanghai", intervalMinutes: 0, topic: content, createdAt: new Date(now).toISOString(), nextRunAt: dueAt, enabled: true, recentMessages: [] };
+        timezone: "Asia/Shanghai", intervalMinutes: 0, topic: content, createdAt: new Date(now).toISOString(), nextRunAt: dueAt, enabled: true, recentMessages: [], personalRevision: 1 };
       this.repo.saveScheduledReminder(task);
       return task;
     });
@@ -38,10 +38,42 @@ export class PersonalReminderService {
   }
   cancel(groupId: string, userId: string, selector: string): boolean {
     return this.repo.runAtomically(() => {
-      const tasks = this.list(groupId, userId).filter(t => t.id === selector || t.id.slice(9).startsWith(selector));
+      this.checkAccess(groupId,userId);
+      const tasks = this.repo.listScheduledReminders(groupId,true).filter(t => t.kind === "personal_reminder" && t.creatorUserId === userId && (t.id === selector || t.id.slice(9).startsWith(selector)));
       if (selector.length < 8 || tasks.length !== 1) return false;
-      this.repo.saveScheduledReminder({ ...tasks[0]!, enabled: false, personalResult: "cancelled" });
+      this.cancelTask(groupId,userId,tasks[0]!.id);
       return true;
+    });
+  }
+  own(groupId: string, userId: string, id: string): ScheduledReminderTask {
+    this.checkAccess(groupId,userId);
+    const task=this.repo.getScheduledReminder(id);
+    if (!task || task.groupId!==groupId || task.creatorUserId!==userId || task.kind!=="personal_reminder") throw new Error("reminder_not_owned");
+    return task;
+  }
+  private releasePending(task: ScheduledReminderTask): void {
+    if (task.personalOutboxId) {
+      const row=this.repo.sharedDb.db.prepare("SELECT status FROM outbox WHERE id=? AND group_id=?").get(task.personalOutboxId,task.groupId) as {status:string}|undefined;
+      if (row?.status === "sent") throw new Error("reminder_already_sent");
+      if (row && row.status !== "pending" && row.status !== "cancelled") throw new Error("reminder_delivery_unconfirmed");
+      if (row?.status === "pending") this.repo.sharedDb.db.prepare("UPDATE outbox SET status='cancelled',retry_after=NULL,updated_at=? WHERE id=? AND status='pending'").run(Date.now(),task.personalOutboxId);
+    } else if (!task.enabled) throw new Error("reminder_already_settled");
+  }
+  cancelTask(groupId: string,userId: string,id: string): ScheduledReminderTask {
+    return this.repo.runAtomically(()=>{
+      const task=this.own(groupId,userId,id);this.releasePending(task);
+      const next={...task,enabled:false,personalResult:"cancelled" as const,personalRevision:(task.personalRevision??0)+1};
+      this.repo.saveScheduledReminder(next);return next;
+    });
+  }
+  changeTime(groupId: string,userId: string,id: string,dueAt: string,now=Date.now()): ScheduledReminderTask {
+    if (!Number.isFinite(Date.parse(dueAt)) || Date.parse(dueAt)<=now || Date.parse(dueAt)-now>366*86_400_000) throw new Error("invalid_time");
+    return this.repo.runAtomically(()=>{
+      const task=this.own(groupId,userId,id);
+      if (!task.enabled) { const active=this.list(groupId,userId);const all=this.repo.listScheduledReminders(groupId,false).filter(t=>t.kind==="personal_reminder");if(active.length>=5||all.length>=50)throw new Error("reminder_limit"); }
+      this.releasePending(task);
+      const next={...task,nextRunAt:dueAt,enabled:true,personalOutboxId:undefined,personalResult:undefined,personalRevision:(task.personalRevision??0)+1};
+      this.repo.saveScheduledReminder(next);return next;
     });
   }
   /** Claim, terminal state and outbox are committed together: crashes cannot replay a reminder. */

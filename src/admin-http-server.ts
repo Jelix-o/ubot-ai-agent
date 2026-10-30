@@ -4356,6 +4356,7 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "visionEnabled",
     "ambientReplyEnabled",
     "groupExperienceEnabled",
+    "interactionAssistanceEnabled",
     "personalRemindersEnabled",
     "ambientReplyCooldownSeconds",
     "pokeReplyEnabled",

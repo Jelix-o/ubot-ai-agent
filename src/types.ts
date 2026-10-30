@@ -363,6 +363,7 @@ export interface GroupBotConfig {
   naturalImageRequestsEnabled?: boolean;
   /** Opt-in rollout of bounded follow-ups, manual memes and self-service memory. */
   groupExperienceEnabled?: boolean;
+  interactionAssistanceEnabled?: boolean;
   personalRemindersEnabled?: boolean;
   audioReplyEnabled?: boolean;
   singingEnabled?: boolean;
@@ -445,6 +446,9 @@ export interface ScheduledReminderTask {
   kind?: "reminder" | "model_call" | "personal_reminder";
   personalResult?: "queued" | "missed" | "cancelled" | "skipped";
   personalOutboxId?: number;
+  personalRevision?: number;
+  confirmationOutboxId?: number;
+  parentReminderId?: string;
   modelId?: string;
   timezone?: "Asia/Shanghai";
   lastRun?: ScheduledModelCallRun;

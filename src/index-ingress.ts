@@ -4,6 +4,9 @@ import { AudioAssetStore } from "./services/audio-asset-store.js";
 import { AudioSettingsService } from "./services/audio-settings-service.js";
 import type { AudioJob } from "./services/audio-generation-service.js";
 import { personalReminderNotice } from "./services/personal-reminder-service.js";
+import { validateReminderControl } from "./services/reminder-interaction-service.js";
+import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { V3StateRepository } from "./services/v3-state-repository.js";
 import { loadConfig } from "./config.js";
 import { parseForwardNodes, sendForwardOrFallback } from "./forward-message.js";
 import { lstat, readFile, realpath, rm } from "node:fs/promises";
@@ -123,7 +126,12 @@ export async function deliverOutboxRow(
     sharedDb.markOutboxSent(row.id);
     return undefined;
   }
-  if (row.kind === "audio_asset") {
+  if (row.kind === "request_progress") {
+    const text=new RequestFeedbackService(new V3StateRepository(sharedDb)).validate(row,sentAtMs??Date.now());
+    receipt=await transport.sendGroupMessage(row.group_id,text,row.reply_to?{replyToMessageId:row.reply_to}:undefined);
+  } else if(row.kind === "reminder_control") {
+    receipt=await transport.sendGroupMessage(row.group_id,validateReminderControl(sharedDb,row,sentAtMs??Date.now()),row.reply_to?{replyToMessageId:row.reply_to}:undefined);
+  } else if (row.kind === "audio_asset") {
     if (!audioAssets || !transport.sendGroupAudio) throw new Error("audio_transport_unavailable");
     const saved = sharedDb.db.prepare("SELECT document_json FROM v3_state_documents WHERE document_type='audio-job' AND document_key=?").get(row.text) as {document_json:string}|undefined;
     const job = saved ? JSON.parse(saved.document_json) as AudioJob : undefined;
@@ -145,7 +153,7 @@ export async function deliverOutboxRow(
     if (typeof notice.text !== "string" || typeof notice.taskId !== "string") throw new Error("invalid_personal_reminder_notice");
     const saved = sharedDb.db.prepare("SELECT task_json FROM v3_scheduled_reminders WHERE id=? AND group_id=?").get(notice.taskId,row.group_id) as {task_json:string}|undefined;
     const task = saved ? JSON.parse(saved.task_json) as ScheduledReminderTask : undefined;
-    if (!task || task.kind !== "personal_reminder" || !["queued","missed"].includes(task.personalResult ?? "")) throw new Error("personal_reminder_unavailable");
+    if (!task || task.kind !== "personal_reminder" || task.personalOutboxId !== row.id || !["queued","missed"].includes(task.personalResult ?? "")) throw new Error("personal_reminder_unavailable");
     const current = personalReminderNotice(task, sentAtMs ?? Date.now());
     sharedDb.withImmediateTransaction(() => {
       if (current.missed && task.personalResult !== "missed") sharedDb.db.prepare("UPDATE v3_scheduled_reminders SET task_json=?,updated_at=? WHERE id=?").run(JSON.stringify({...task,personalResult:"missed"}),sentAtMs ?? Date.now(),task.id);
@@ -234,15 +242,24 @@ function isMalformedConversationOutboxRow(row: OutboxRow, sharedDb: SharedDb): b
 
 export type OutboxFailureDisposition = "retryable" | "terminal";
 
+function obsoleteAssistanceNotice(row: Pick<OutboxRow,"kind">,error:unknown):boolean {
+  return error instanceof Error && (row.kind==="request_progress" && /^request_progress_(?:expired|unavailable|finished)$/u.test(error.message) || row.kind==="reminder_control" && /^(?:reminder_question_expired|reminder_control_disabled)$/u.test(error.message));
+}
+
 export function markOutboxDeliveryFailed(
   sharedDb: SharedDb,
   row: Pick<OutboxRow, "id" | "kind">,
   error: unknown,
 ): OutboxFailureDisposition {
+  if(obsoleteAssistanceNotice(row,error)){
+    sharedDb.db.prepare("UPDATE outbox SET status='cancelled',retry_after=NULL,updated_at=? WHERE id=? AND status<>'sent'").run(Date.now(),row.id);
+    return "terminal";
+  }
   const retiredVoice = row.kind === "record" || row.kind === "airecord";
   const retryable = !(error instanceof ConversationOutboxEnvelopeError) &&
+    row.kind !== "request_progress" &&
     !retiredVoice &&
-    (!["generated_image", "forward", "poke", "meme_image", "personal_reminder_notice", "audio_asset", "audio_caption", "audio_progress"].includes(row.kind) || error instanceof NapCatActionNotSentError);
+    (!["generated_image", "forward", "poke", "meme_image", "personal_reminder_notice", "reminder_control", "audio_asset", "audio_caption", "audio_progress"].includes(row.kind) || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }
@@ -606,7 +623,7 @@ export class IngressApp {
           const notice = JSON.parse(row.text) as { taskId: string };
           const task = this.v3State?.getScheduledReminder(notice.taskId);
           const group = this.v3State?.getGroup(row.group_id);
-          if (!task || task.groupId !== row.group_id || !["queued", "missed"].includes(task.personalResult ?? "") || !group?.personalRemindersEnabled || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(task.creatorUserId)) throw new Error("personal_reminder_disabled");
+          if (!task || task.groupId !== row.group_id || task.personalOutboxId !== row.id || !["queued", "missed"].includes(task.personalResult ?? "") || !group?.personalRemindersEnabled || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(task.creatorUserId)) throw new Error("personal_reminder_disabled");
         }
         if (row.kind === "poke") {
           const group = this.v3State?.getGroup(row.group_id);
@@ -633,6 +650,11 @@ export class IngressApp {
           platformMessageId,
         });
       } catch (error) {
+        if(obsoleteAssistanceNotice(row,error)){
+          markOutboxDeliveryFailed(this.sharedDb,row,error);
+          this.metrics.inc("assistance_notice_discarded");
+          continue;
+        }
         if (!(error instanceof OutboxAcknowledgementError)) {
           const disposition = markOutboxDeliveryFailed(this.sharedDb, row, error);
           if (row.kind === "generated_image" && disposition === "terminal") {

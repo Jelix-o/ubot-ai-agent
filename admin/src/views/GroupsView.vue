@@ -60,7 +60,7 @@ const blacklistedUserIds = computed<string[]>({
     form.blacklistedUserIds = userIds;
   },
 });
-const editableFields = ["groupExperienceEnabled", "personalRemindersEnabled", "audioReplyEnabled", "singingEnabled", "ambientReplyEnabled", "ambientReplyCooldownSeconds", "pokeReplyEnabled", "pokeReplyProbabilityPercent", "pokeReplyUserCooldownSeconds", "pokeReplyGroupCooldownSeconds", "enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+const editableFields = ["interactionAssistanceEnabled", "groupExperienceEnabled", "personalRemindersEnabled", "audioReplyEnabled", "singingEnabled", "ambientReplyEnabled", "ambientReplyCooldownSeconds", "pokeReplyEnabled", "pokeReplyProbabilityPercent", "pokeReplyUserCooldownSeconds", "pokeReplyGroupCooldownSeconds", "enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
 function configValues(): Record<string, unknown> {
   return Object.fromEntries(editableFields.filter(key => app.role === "super_admin" || !["replyModelMode", "replyModelSource"].includes(key)).map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
 }
@@ -70,6 +70,7 @@ const reminderDirty = computed(() => JSON.stringify(reminderForm) !== reminderBa
 useUnsavedChanges(computed(() => dirty.value || reminderDirty.value));
 const capabilities = [
   { key: "groupExperienceEnabled", label: "群聊体验增强", detail: "开启两轮无 @ 定向追问、中文分类索图、表情轮换和本人记忆自助管理。" },
+  { key: "interactionAssistanceEnabled", label: "交互辅助", detail: "提醒补充与引用修改、慢请求反馈和自然索图；仍遵守各功能原有开关与权限。" },
   { key: "personalRemindersEnabled", label: "个人一次性提醒", detail: "成员可用 #提醒 设置本人提醒；每人五条，每群五十条，不影响管理员定时任务。" },
   { key: "audioReplyEnabled", label: "语音回复", detail: "启用独立音频服务后支持点播及偶尔语音；需要超级管理员开通。" },
   { key: "singingEnabled", label: "原创短歌", detail: "按主题生成 15–30 秒原创歌曲；需要超级管理员开通。" },
@@ -123,7 +124,7 @@ function defaultGroupConfig(): GroupConfig {
     holidayCountdownDateRule: "all",
     holidayCountdownWeekdays: [],
     botMuted: false,
-    groupExperienceEnabled: false, personalRemindersEnabled: false, audioReplyEnabled: false, singingEnabled: false,
+    interactionAssistanceEnabled: false, groupExperienceEnabled: false, personalRemindersEnabled: false, audioReplyEnabled: false, singingEnabled: false,
     ambientReplyEnabled: false, ambientReplyCooldownSeconds: 600,
     pokeReplyEnabled: false, pokeReplyProbabilityPercent: 25, pokeReplyUserCooldownSeconds: 60, pokeReplyGroupCooldownSeconds: 30,
     scheduledRemindersEnabled: false,

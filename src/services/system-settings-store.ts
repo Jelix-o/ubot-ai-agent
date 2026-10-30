@@ -689,6 +689,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "self_memory_edit", title: "修改自己的记忆", primary: "#记忆修改", permission: "member", help: "修改本人显式记忆：<编号> <内容>" },
     { id: "self_memory_delete", title: "忘记自己的记忆", primary: "#忘记", permission: "member", help: "删除本人显式记忆：<编号>；全部删除需确认" },
     { id: "personal_reminder", title: "个人提醒", primary: "#提醒", permission: "member", help: "一次性提醒：明天9点 开会 / 10分钟后 喝水；列表 / 取消 <编号>" },
+    { id: "request_status", title: "请求进度", primary: "#进度", permission: "member", help: "查看本人在本群的对话、图片请求进度和最近完成结果" },
     { id: "interaction_status", title: "互动状态", primary: "#互动状态", permission: "group_admin", help: "查看本群读空气、回戳及表情的条件和最近结果" },
     { id: "spoken_reply", title: "语音点播", primary: "#语音", permission: "member", help: "朗读指定内容：#语音 今天也要好好吃饭；也可 @机器人要求用语音回答" },
     { id: "original_song", title: "原创短歌", primary: "#唱歌", permission: "member", help: "按主题创作 15–30 秒原创短歌：#唱歌 周五下班" },

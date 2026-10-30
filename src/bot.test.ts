@@ -43,6 +43,10 @@ import type { MemeTag, MemeLibraryUploadInput } from "./services/meme-library-se
 import { GroupInteractionService } from "./services/group-interaction-service.js";
 import type { AudioGenerationService } from "./services/audio-generation-service.js";
 import { PersonalReminderService } from "./services/personal-reminder-service.js";
+import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
+import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { ConversationContextRepository } from "./services/conversation-context-repository.js";
+import { WorkerApp } from "./index-worker.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -8964,4 +8968,64 @@ test("memory category help hides individually disabled and privileged mutation c
   await f.app.handleGroupMessage(createEvent("#帮助 我的记忆"));
   const text=f.transport.sent.at(-1)?.text??"";
   assert.match(text,/#我的记忆.*保存/);assert.doesNotMatch(text,/#记忆修改|#忘记|三十秒/);
+});
+
+test("assistance entry points bypass image classification, retain reminders and honor renamed progress permission",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"bot-assistance-entry-")),db=new SharedDb(path.join(root,"state.db"));
+  const repo=new V3StateRepository(db,{stateEncryptionKey:"0".repeat(64)}),settings=new SystemSettingsStore(path.join(root,"settings.json"));
+  const f=createApp({systemSettingsStore:settings,memeLibraryService:new FakeMemeLibraryService()});
+  const group=f.groupConfigService.groups[0]!;Object.assign(group,{enabled:true,interactionAssistanceEnabled:true,groupExperienceEnabled:true,personalRemindersEnabled:true});repo.saveGroup(group);
+  const reminders=new ReminderInteractionService(repo),feedback=new RequestFeedbackService(repo);
+  f.app.setInteractionAssistance(reminders,feedback);
+  const mention=(text:string,id:number)=>createEvent([{type:"at",data:{qq:"12345"}},{type:"text",data:{text}}],20001,67890,id);
+  assert.equal(await f.app.isInteractionAssistanceMessage(createEvent("[CQ:at,qq=12345]来张开心的表情")),false);
+  assert.equal(await f.app.isInteractionAssistanceMessage(createEvent("[CQ:reply,id=fake]取消这个")),false);
+  await f.app.handleGroupMessage(mention("提醒我开会",810));
+  assert.equal(new PersonalReminderService(repo).list("67890","20001").length,0);
+  assert.equal(await f.app.isInteractionAssistanceMessage(mention("明天下午三点半",811)),true);
+  await f.app.handleGroupMessage(mention("明天下午三点半",811));
+  assert.equal(new PersonalReminderService(repo).list("67890","20001")[0]?.topic,"开会");
+  assert.equal(f.aiService.calls.length,0);
+  const source=db.insertMessage({groupId:"67890",userId:"20001",selfId:"12345",msgId:"slow",msgTime:Date.now(),text:"慢请求",imagesJson:"[]",hasAtBot:true,isBotMsg:false,processable:false,createdAt:Date.now()});
+  const contexts=new ConversationContextRepository(db),route=contexts.saveMessageRoute({sourceRowId:source,groupId:"67890",userId:"20001",sourceMessageId:"slow",content:"慢请求",createdAt:Date.now(),routeReason:"new-topic"});
+  contexts.orchestration.registerTask(route,"67890","20001","new");feedback.track(source,"conversation");
+  assert.equal(await f.app.isInteractionAssistanceMessage(mention("做好了吗",812)),true);
+  const queries=()=>db.db.prepare("SELECT * FROM outbox WHERE kind='request_progress' ORDER BY id DESC").all() as Array<{id:number;text:string;group_id:string}>;
+  await f.app.handleGroupMessage(mention("做好了吗",812));assert.match(feedback.validate(queries()[0]!),/排队中/);assert.equal(f.aiService.calls.length,0);
+  const current=await settings.getInternal();await settings.update({commands:current.commands.map(c=>c.id==="request_status"?{...c,primary:"#办理进度",permission:"super_admin"}:c)});
+  const before=queries().length;await f.app.handleGroupMessage(mention("做好了吗",813));assert.equal(queries().length,before);
+  await settings.update({commands:(await settings.getInternal()).commands.map(c=>c.id==="request_status"?{...c,permission:"member"}:c)});
+  await f.app.handleGroupMessage(createEvent("#办理进度",20001,67890,814));assert.match(feedback.validate(queries()[0]!),/排队中/);
+  let classified=0;
+  const handled=new Set<string>(),original=f.app.handleGroupMessage.bind(f.app);
+  f.app.handleGroupMessage=async (...args)=>{await original(...args);handled.add(String(args[0].message_id));};
+  const worker=new WorkerApp({dataDir:root,sharedDb:db,botApp:f.app,consumerKey:"worker:assistance-entry",isBlacklistedUser:async()=>false,imageIntentRouter:{async isConfigured(){return true;},async classify(){classified++;return {action:"chat",modelId:"test",model:"test"};}}});
+  t.after(async()=>{await worker.stop();await f.app.stop();db.close();await rm(root,{recursive:true,force:true});});
+  for(const [id,text]of [[820,"来张开心的表情"],[821,"做好了吗"],[822,"#提醒 明天九点 喝水"]] as const)db.insertMessage({groupId:"67890",userId:"20001",selfId:"12345",msgId:String(id),msgTime:Date.now(),text,canonicalSegmentsJson:JSON.stringify([{type:"at",qq:"12345"},{type:"text",text}]),imagesJson:"[]",hasAtBot:true,isBotMsg:false,createdAt:Date.now()});
+  worker.start();const deadline=Date.now()+4000;while(handled.size<3&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(handled.size,3);assert.equal(classified,0);assert.equal(f.aiService.calls.length,0);
+  assert.equal(await f.app.isInteractionAssistanceMessage(mention("画一个开心表情包",823)),false);
+});
+
+test("Worker registers ordinary requests before waiting and progress queries run while the model is busy",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"worker-feedback-")),db=new SharedDb(path.join(root,"state.db"));
+  const repo=new V3StateRepository(db,{stateEncryptionKey:"0".repeat(64)}),gate=deferred(),started=deferred();
+  const ai=new FakeAiService(async()=>{started.resolve();await gate.promise;return{text:"处理完了",model:"test",skillId:"assistant"};});
+  const f=createApp({systemSettingsStore:new SystemSettingsStore(path.join(root,"settings.json")),messageTransport:new WorkerTransport(db),aiService:ai,conversationContextRepository:new ConversationContextRepository(db) as never});
+  const group=f.groupConfigService.groups[0]!;Object.assign(group,{enabled:true,interactionAssistanceEnabled:true,groupExperienceEnabled:true});repo.saveGroup(group);
+  const worker=new WorkerApp({dataDir:root,sharedDb:db,botApp:f.app,consumerKey:"worker:feedback",isBlacklistedUser:async()=>false});
+  t.after(async()=>{gate.resolve();await worker.stop();await f.app.stop();db.close();await rm(root,{recursive:true,force:true});});
+  const insert=(msgId:string,text:string,createdAt=Date.now())=>db.insertMessage({groupId:"67890",userId:"20001",selfId:"12345",msgId,msgTime:createdAt,text,imagesJson:"[]",canonicalSegmentsJson:JSON.stringify([{type:"at",qq:"12345"},{type:"text",text}]),hasAtBot:true,isBotMsg:false,createdAt});
+  const source=insert("slow-worker","帮我整理一下",Date.now()-9000);worker.start();await started.promise;
+  const feedback=new RequestFeedbackService(repo);assert.equal(feedback.list("67890","20001")[0]?.stage,"processing");
+  feedback.tick();feedback.tick();assert.equal(db.db.prepare("SELECT count(*) n FROM outbox WHERE kind='request_progress'").get()!.n,1);
+  insert("query-worker","做好了吗");const deadline=Date.now()+4000;
+  while(!db.db.prepare("SELECT 1 FROM outbox WHERE kind='request_progress' AND json_extract(text,'$.queryUserId') IS NOT NULL").get()&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  const query=db.db.prepare("SELECT * FROM outbox WHERE kind='request_progress' AND json_extract(text,'$.queryUserId') IS NOT NULL").get() as {id:number;text:string;group_id:string};
+  assert.ok(query);assert.match(feedback.validate(query),/处理中/);assert.equal(ai.calls.length,1);
+  gate.resolve();while(feedback.list("67890","20001")[0]?.stage!=="awaiting_delivery"&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(feedback.list("67890","20001")[0]?.stage,"awaiting_delivery");
+  const progress=db.db.prepare("SELECT * FROM outbox WHERE kind='request_progress' AND json_extract(text,'$.sourceRowId') IS NOT NULL").get() as {id:number;text:string;group_id:string};
+  const result=db.db.prepare("SELECT id FROM outbox WHERE branch_id IS NOT NULL AND kind='text'").get() as {id:number};db.ackOutboxDelivery(result.id,"real-result",Date.now());
+  assert.throws(()=>feedback.validate(progress),/finished/);assert.equal(feedback.list("67890","20001")[0]?.sourceRowId,source);assert.equal(feedback.list("67890","20001")[0]?.stage,"completed");
 });
