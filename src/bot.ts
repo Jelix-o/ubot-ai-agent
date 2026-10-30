@@ -1,6 +1,12 @@
 import type { NaturalImageIntentDetails } from "./services/natural-image-request.js";
 import { GroupInteractionService, isInteractionQuietHour } from "./services/group-interaction-service.js";
 import { parseMemeReply, memeReplyInstruction, allowsEntertainmentMeme } from "./services/meme-reply-protocol.js";
+import { memeCategoryLabel, resolveMemeCategory } from "./services/meme-variety.js";
+import type { SelfMemoryService } from "./services/self-memory-service.js";
+import type { PersonalReminderService } from "./services/personal-reminder-service.js";
+import { beijingTime, parsePersonalReminder } from "./services/personal-reminder-parser.js";
+import { INTERACTION_REASON_LABELS } from "./services/interaction-diagnostics.js";
+import { AudioGenerationService, permitsAutomaticVoice } from "./services/audio-generation-service.js";
 import { cleanReplyHistory, hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
 import type { MemeTag, MemeLibraryUploadInput } from "./services/meme-library-service.js";
 import { ReplyModelRouter, effectiveReplyModelId } from "./services/reply-model-router.js";
@@ -249,6 +255,13 @@ const RUNTIME_COMMAND_SPECS = {
   image_generation: { builtinPrefix: IMAGE_GENERATION_PREFIX, builtinAliases: ["#生图"] },
   live_chat: { builtinPrefix: LIVE_CHAT_PREFIX, builtinAliases: [] },
   memory: { builtinPrefix: MEMORY_PREFIX, builtinAliases: [] },
+  self_memory: { builtinPrefix: "#我的记忆", builtinAliases: [] },
+  self_memory_edit: { builtinPrefix: "#记忆修改", builtinAliases: [] },
+  self_memory_delete: { builtinPrefix: "#忘记", builtinAliases: [] },
+  personal_reminder: { builtinPrefix: "#提醒", builtinAliases: [] },
+  interaction_status: { builtinPrefix: "#互动状态", builtinAliases: [] },
+  spoken_reply: { builtinPrefix: "#语音", builtinAliases: [] },
+  original_song: { builtinPrefix: "#唱歌", builtinAliases: [] },
   model: { builtinPrefix: MODEL_PREFIX, builtinAliases: [] },
   mute: { builtinPrefix: MUTE_COMMAND, builtinAliases: [UNMUTE_COMMAND] },
   operation_log: { builtinPrefix: OPERATION_LOG_PREFIX, builtinAliases: [] },
@@ -356,6 +369,7 @@ export interface ForwardAutoRecallOptions {
 }
 
 export interface MessageTransport {
+  sendGroupAudio?(groupId: string, audioFile: string): Promise<void | MessageReceipt>;
   sendGroupMessageBatch?(groupId: string, texts: string[]): Promise<MessageReceipt[]>;
   sendMemeGroupImage?(groupId: string, assetId: string, afterDeliveryId?: string): Promise<void | MessageReceipt>;
   sendGroupPoke?(groupId: string, userId: string): Promise<void>;
@@ -418,6 +432,8 @@ interface ConversationOptions {
  * probability, cooldowns and file validation remain owned by the meme service.
  */
 export interface MemeLibraryRuntimeService {
+  claimRequestedImage?(groupId: string, userId: string, selector: string): Promise<MemeNormalChatClaimResult>;
+  listAvailableTags?(): Promise<MemeTag[]>;
   getReplyTags?(): Promise<MemeTag[]>;
   listTags?(): Promise<MemeTag[]>;
   uploadAsset?(input: MemeLibraryUploadInput): Promise<unknown>;
@@ -604,6 +620,7 @@ export class BotApplication {
         { id: "daily-report", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReport, run: () => this.runDailyReportTick() },
         { id: "holiday-countdown", intervalMs: BOT_MAINTENANCE_INTERVALS.holidayCountdown, run: () => this.runHolidayCountdownTick() },
         { id: "scheduled-reminder", intervalMs: BOT_MAINTENANCE_INTERVALS.scheduledReminder, run: () => this.runScheduledReminderTick() },
+        { id: "audio-generation", intervalMs: 10_000, run: async () => { void this.audioGenerationService?.tick().catch(() => logError("Audio queue tick failed.")); } },
         { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
         { id: "html-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runHtmlPreviewCleanupTick() },
@@ -629,6 +646,7 @@ export class BotApplication {
 
   async stop(): Promise<void> {
     this.maintenanceScheduler.stop();
+    await this.audioGenerationService?.stop();
     await this.btSearchService?.stop?.();
     await this.conversationStore.flush();
   }
@@ -903,6 +921,20 @@ export class BotApplication {
     }
 
     if (await this.handleMemeCollection(groupConfig, event, parsedMessage, commandText)) return;
+    if (await this.handleSelfMemory(groupConfig, event, commandText, runtimeCommands)) return;
+    if (await this.handlePersonalReminder(groupConfig, event, commandText, parsedMessage.hasAtBot, runtimeCommands)) return;
+    if (await this.handleAudioRequest(groupConfig,event,commandText,parsedMessage.hasAtBot,runtimeCommands)) return;
+    if (matchRuntimeCommand(commandText, runtimeCommands, "interaction_status")) {
+      const policy = runtimeCommands.find(c => c.id === "interaction_status");
+      if (policy && await this.canUseRuntimeCommand(policy, groupConfig, event) && this.groupInteractionService) {
+        const status = this.groupInteractionService.status(groupConfig);
+        await this.sendText(groupId, ["本群互动状态", `读空气：${status.ambientEnabled ? "开启" : "关闭"}；免打扰：北京时间 01:00–07:00${status.quietHours ? "（当前生效）" : ""}`,
+          `机器人静默还需 ${status.botQuietRemainingSeconds} 秒；主动接话冷却 ${status.ambientRemainingSeconds} 秒；处理中：${status.pendingReply ? "是" : "否"}`,
+          `回戳：${status.pokeEnabled ? "开启" : "关闭"}，概率 ${status.pokeProbabilityPercent}%；成员 ${groupConfig.pokeReplyUserCooldownSeconds ?? 60} 秒／群 ${groupConfig.pokeReplyGroupCooldownSeconds ?? 30} 秒冷却`,
+          ...status.recent.slice(0,5).map(r => `${({ meme:"表情", ambient:"读空气", poke:"回戳", audio:"语音" })[r.feature]}：${INTERACTION_REASON_LABELS[r.reason] ?? r.reason}`)].join("\n"));
+      }
+      return;
+    }
 
     if (isRetiredPersonaCommand(commandText)) {
       const persona = await this.skillService.getSkill(groupConfig.currentSkillId);
@@ -1342,13 +1374,16 @@ export class BotApplication {
     options: { hasImages?: boolean; replyToBot?: boolean; userId?: string } = {},
   ): Promise<ParticipationDecision> {
     const decision = await this.participationService.decide(groupId, text, hasAtBot, options);
-    if (decision.action === "observe" && options.userId && isDirectedFollowUp(text) && this.isCapabilityEnabled("conversation")) {
+    if (decision.action === "observe" && options.userId && this.isCapabilityEnabled("conversation")) {
       const group = await this.groupConfigService.getGroup(groupId);
+      const profile = group?.groupExperienceEnabled ? await this.skillService.getSkill(group.currentSkillId) : undefined;
+      const directed = isDirectedFollowUp(text, group?.groupExperienceEnabled ? [profile?.name ?? "大肥鱼", "大肥鱼", "会仙", ...(group.manualIdentities ?? []).filter(identity => identity.userIds.includes(this.botQq)).flatMap(identity => identity.names)] : undefined);
       const active = this.conversationContextRepository?.getActiveRoute(groupId, options.userId);
-      if (group && group.enabled !== false && !group.botMuted && !(group.blacklistedUserIds ?? []).includes(options.userId) &&
+      if (directed && group && group.enabled !== false && !group.botMuted && !(group.blacklistedUserIds ?? []).includes(options.userId) &&
         active && Date.now() - active.updatedAt >= 0 && Date.now() - active.updatedAt <= 120_000) {
         const turns = this.conversationContextRepository!.getCausalTurns(active.branchId, active.headTurnId);
-        if (turns.some(turn => turn.role === "assistant" && this.conversationContextRepository!.orchestration.deliveredText(turn.id, turn.content, turn.deliveryId))) return { ...decision, action: "reply", reason: "directed_follow_up", score: 0.95, signals: { ...decision.signals, directedFollowUp: true } };
+        const allowed = group.groupExperienceEnabled ? this.conversationContextRepository!.canDirectedFollowUp(groupId, options.userId) : turns.some(turn => turn.role === "assistant" && this.conversationContextRepository!.orchestration.deliveredText(turn.id, turn.content, turn.deliveryId));
+        if (allowed) return { ...decision, action: "reply", reason: "directed_follow_up", score: 0.95, signals: { ...decision.signals, directedFollowUp: true } };
       }
     }
     if (decision.action === "reply" && !this.isCapabilityEnabled("conversation")) {
@@ -1556,6 +1591,114 @@ export class BotApplication {
   }
 
   private readonly memeCollectionWindows = new Map<string, { tagId: string; expiresAt: number }>();
+  private selfMemoryService?: SelfMemoryService;
+  setSelfMemoryService(service: SelfMemoryService): void { this.selfMemoryService = service; }
+  private personalReminderService?: PersonalReminderService;
+  setPersonalReminderService(service: PersonalReminderService): void { this.personalReminderService = service; }
+  private audioGenerationService?: AudioGenerationService;
+  setAudioGenerationService(service: AudioGenerationService): void { this.audioGenerationService = service; }
+
+  private async handleAudioRequest(group: GroupBotConfig, event: NapcatGroupMessageEvent, text: string, hasAtBot: boolean, commands: SystemCommandConfig[]): Promise<boolean> {
+    const speech = matchRuntimeCommand(text,commands,"spoken_reply"), song = matchRuntimeCommand(text,commands,"original_song");
+    const naturalSong = hasAtBot ? /^(?:请|帮我|请帮我)?(?:唱(?:一首|个)?(?:歌|短歌)?|写一首歌并唱出来)[，,:：\s]*(.*)$/su.exec(text) : null;
+    if (!speech && !song && !naturalSong) return false;
+    const kind = song || naturalSong ? "song" : "speech";
+    const policy = commands.find(c => c.id === (kind === "song" ? "original_song" : "spoken_reply"));
+    if (!policy || !await this.canUseRuntimeCommand(policy,group,event) || group.botMuted) return true;
+    const input = (song?.suffix ?? speech?.suffix ?? naturalSong?.[1] ?? "").trim();
+    if (!input) { await this.sendText(group.groupId,kind === "song" ? "用法：#唱歌 <主题>。我会创作 15–30 秒原创短歌。" : "用法：#语音 <朗读内容>；也可以 @我并说‘用语音回答’。"); return true; }
+    try {
+      if (!this.audioGenerationService || !this.isCapabilityEnabled("audio_generation")) throw new Error("audio_disabled");
+      this.audioGenerationService.enqueue({ groupId: group.groupId, userId: String(event.user_id), kind, text: input, sourceKey: String(event.message_id) });
+      void this.audioGenerationService.tick().catch(() => logError("Audio request failed."));
+    } catch (error) { await this.sendText(group.groupId,audioRequestError(error)); }
+    return true;
+  }
+
+  private async handlePersonalReminder(group: GroupBotConfig, event: NapcatGroupMessageEvent, text: string, hasAtBot: boolean, commands: SystemCommandConfig[]): Promise<boolean> {
+    const match = matchRuntimeCommand(text, commands, "personal_reminder");
+    if (!match && !(hasAtBot && /(?:提醒我|叫我)/u.test(text))) return false;
+    const policy = commands.find(c => c.id === "personal_reminder");
+    if (!policy || !await this.canUseRuntimeCommand(policy, group, event)) return true;
+    const service = this.personalReminderService;
+    if (!service || !group.personalRemindersEnabled || !this.isCapabilityEnabled("scheduled_reminders") || group.botMuted) {
+      if (!group.botMuted) await this.sendText(group.groupId, "本群暂未开启个人一次性提醒。");
+      return true;
+    }
+    const userId = String(event.user_id);
+    const input = match ? match.suffix.trim() : text.trim();
+    try {
+      if (input === "列表" || input === "我的") {
+        const tasks = service.list(group.groupId, userId);
+        await this.sendText(group.groupId, tasks.length ? "你在本群的一次性提醒：\n" + tasks.map(t => `${t.id.slice(9,17)}｜${beijingTime(t.nextRunAt)}｜${t.topic}`).join("\n") + "\n北京时间；#提醒 取消 <编号>" : "你在本群没有待办提醒。例：#提醒 10分钟后 喝水");
+      } else if (/^取消\s+/u.test(input)) {
+        const removed = service.cancel(group.groupId, userId, input.replace(/^取消\s+/u, ""));
+        await this.sendText(group.groupId, removed ? "已取消这条个人提醒。" : "没找到你的待办提醒，请用 #提醒 列表 查看编号。");
+      } else {
+        const parsed = parsePersonalReminder(input);
+        if ("question" in parsed) { await this.sendText(group.groupId, parsed.question); return true; }
+        const task = service.create(group.groupId, userId, parsed.dueAt, parsed.topic, Date.now(), String(event.message_id));
+        await this.sendText(group.groupId, `已设置一次性提醒：${beijingTime(task.nextRunAt)}（北京时间）\n${task.topic}\n编号 ${task.id.slice(9,17)}；#提醒 取消 ${task.id.slice(9,17)}`);
+      }
+    } catch (error) {
+      const messages: Record<string,string> = { reminder_limit: "个人提醒已达上限：每人在本群五条、每群五十条。", reminder_unavailable: "本群个人提醒当前不可用。", invalid_content: "提醒内容需要 1–300 字，不能包含密码或密钥。", invalid_time: "请指定未来 366 天内的时间。" };
+      await this.sendText(group.groupId, messages[(error as Error).message] ?? "这次提醒操作未完成，请稍后重试。");
+    }
+    return true;
+  }
+
+  private async handleSelfMemory(group: GroupBotConfig, event: NapcatGroupMessageEvent, text: string, commands: SystemCommandConfig[]): Promise<boolean> {
+    const command = (["self_memory", "self_memory_edit", "self_memory_delete"] as const).map(id => ({ id, match: matchRuntimeCommand(text, commands, id) })).find(c => c.match);
+    if (!command?.match) return false;
+    if (group.botMuted) return true;
+    const userId = String(event.user_id);
+    const policy = commands.find(c => c.id === command.id);
+    if (!policy || !await this.canUseRuntimeCommand(policy, group, event)) return true;
+    const service = this.selfMemoryService;
+    if (!service || !group.groupExperienceEnabled || !this.isCapabilityEnabled("explicit_memory")) {
+      await this.sendText(group.groupId, "本群暂未开启记忆自助管理。"); return true;
+    }
+    const input = command.match.rewrittenText.replace(/^\S+\s*/u, "").trim();
+    try {
+      service.checkAccess(group.groupId, userId);
+      if (command.id === "self_memory") {
+        const save = /^保存\s+(.+)$/s.exec(input);
+        if (save) { await this.captureExplicitMemory(group, event, save[1]!, "explicit_command"); return true; }
+        const page = input ? Number(input) : 1;
+        const list = service.list(group.groupId, userId, page);
+        await this.sendText(group.groupId, list.items.length
+          ? `你的显式记忆（第 ${list.page} 页，共 ${list.total} 条）：\n` + list.items.map(m => `${m.id.slice(0, 8)}：${m.content.replace(/\s+/g, " ").slice(0, 80)}`).join("\n") + "\n#记忆修改 <编号> <内容> / #忘记 <编号>"
+          : "这一页没有你的显式记忆。可以用 #我的记忆 保存 <内容>；管理员画像仍由管理员维护。");
+      } else if (command.id === "self_memory_edit") {
+        const edit = /^(\S+)\s+(.+)$/s.exec(input);
+        if (!edit) { await this.sendText(group.groupId, "用法：#记忆修改 <编号> <内容>；编号见 #我的记忆。"); return true; }
+        const current = service.resolve(group.groupId, userId, edit[1]!);
+        service.edit(group.groupId, userId, current.id, edit[2]!, current.revision);
+        await this.sendText(group.groupId, "这条记忆已更新。");
+      } else if (input === "全部") {
+        const code = service.prepareDeleteAll(group.groupId, userId);
+        await this.sendText(group.groupId, `将删除你在本群明确保存的全部记忆。确认请在 30 秒内发：#忘记 确认 ${code}`);
+      } else if (/^确认\s+\S+$/.test(input)) {
+        const count = service.confirmDeleteAll(group.groupId, userId, input.split(/\s+/)[1]!);
+        await this.sendText(group.groupId, `已删除你在本群明确保存的 ${count} 条记忆。`);
+      } else {
+        const current = service.resolve(group.groupId, userId, input);
+        service.remove(group.groupId, userId, current.id, current.revision);
+        await this.sendText(group.groupId, "这条记忆已删除。");
+      }
+    } catch (error) {
+      const code = (error as Error).message;
+      const messages: Record<string, string> = {
+        memory_unavailable: "你的记忆自助管理当前不可用，请检查本群开关或隐私退出设置。",
+        memory_not_found: "没找到你在本群明确保存的这条记忆。请查看 #我的记忆。",
+        sensitive_content: "密码、密钥等凭据不能保存为记忆。", invalid_content: "记忆需要 1–1800 个字。",
+        invalid_page: "页码需要是正整数，例如 #我的记忆 2。", target_changed: "记忆已发生变化，请重新查看后操作。",
+        confirmation_invalid: "确认码已失效或不匹配，请重新发 #忘记 全部。",
+      };
+      await this.sendText(group.groupId, messages[code] ?? "这次记忆操作未完成，请稍后再试。");
+    }
+    return true;
+  }
 
   private async handleMemeCollection(group: GroupBotConfig, event: NapcatGroupMessageEvent, parsed: ReturnType<typeof parseGroupMessage>, text: string): Promise<boolean> {
     if (group.botMuted || !this.memeLibraryService?.listTags) return text.startsWith("#表情");
@@ -1563,14 +1706,23 @@ export class BotApplication {
     const window = this.memeCollectionWindows.get(key);
     if (window && window.expiresAt < Date.now()) this.memeCollectionWindows.delete(key);
     if (text === "#表情 分类") {
-      const tags = await this.memeLibraryService.listTags();
-      await this.sendText(group.groupId, tags.length ? "可用分类：" + tags.map(tag => tag.name).join("、") : "图库暂无分类，请先在后台导入素材包。");
+      const tags = await (this.memeLibraryService.listAvailableTags?.() ?? this.memeLibraryService.listTags());
+      await this.sendText(group.groupId, tags.length ? "可用分类：" + tags.map(tag => memeCategoryLabel(tag.name)).join("、") : "图库暂无分类，请先在后台导入素材包。");
       return true;
     }
     const match = /^#表情\s+收藏\s+(\S+)\s*$/.exec(text);
     const collecting = window && window.expiresAt >= Date.now() && parsed.images.length > 0;
     if (!match && !collecting) {
-      if (text.startsWith("#表情")) { await this.sendText(group.groupId, "用法：#表情 分类 / #表情 收藏 <分类>"); return true; }
+      const request = /^#表情\s+(.+)$/.exec(text);
+      if (request && group.groupExperienceEnabled && this.memeLibraryService.claimRequestedImage) {
+        const result = await this.memeLibraryService.claimRequestedImage(group.groupId, String(event.user_id), request[1]!.trim());
+        if (result.selection) {
+          if (result.selection.assetId && this.transport.sendMemeGroupImage) await this.transport.sendMemeGroupImage(group.groupId, result.selection.assetId);
+          else await this.transport.sendGroupImage(group.groupId, result.selection.imageFile);
+        } else await this.sendText(group.groupId, result.reason === "cooldown" ? "稍等几秒再换：每人十秒、每群五秒一次。" : result.reason === "policy_disabled" ? "本群表情功能当前未启用。" : "暂时没有可用图片。试试 #表情 分类；换图前请先指定一次分类。");
+        return true;
+      }
+      if (text.startsWith("#表情")) { await this.sendText(group.groupId, "用法：#表情 分类 / #表情 <分类> / #表情 换一张 / #表情 收藏 <分类>"); return true; }
       return false;
     }
     if (!await this.isSuperAdmin(group, String(event.user_id))) {
@@ -1579,7 +1731,7 @@ export class BotApplication {
       return true;
     }
     const tags = await this.memeLibraryService.listTags();
-    const tag = match ? tags.find(tag => tag.name === match[1] || tag.id === match[1]) : tags.find(tag => tag.id === window?.tagId);
+    const tag = match ? resolveMemeCategory(tags, match[1]!) : tags.find(tag => tag.id === window?.tagId);
     if (!tag) { await this.sendText(group.groupId, "分类不存在，请先查看 #表情 分类。"); return true; }
     let images = parsed.images;
     if (!images.length && parsed.replyMessageId && this.transport.getMessage) images = (await this.transport.getMessage(parsed.replyMessageId))?.images ?? [];
@@ -1609,7 +1761,10 @@ export class BotApplication {
   private async runAmbientChatTick(): Promise<void> {
     if (!this.groupInteractionService || !this.isCapabilityEnabled("conversation")) return;
     for (const group of await this.getEnabledGroupConfigs()) {
-      if (this.groupLock.getActiveCount(group.groupId) > 0 || this.hasPendingSelectedMemberChat(group)) continue;
+      if (this.groupLock.getActiveCount(group.groupId) > 0 || this.hasPendingSelectedMemberChat(group)) {
+        if (group.ambientReplyEnabled) this.groupInteractionService.recordAmbientOutcome(group, this.groupLock.getActiveCount(group.groupId) > 0 ? "pending_reply" : "selected_member_priority");
+        continue;
+      }
       const rows = this.groupInteractionService.ambientCandidate(group);
       if (!rows.length) continue;
       const source = rows[rows.length - 1]!;
@@ -1625,7 +1780,10 @@ export class BotApplication {
           ? (await (await router.begin(group, "auxiliary", { signal, gate: this.backgroundLlmGate })).run((service, attemptSignal) => service.evaluateReplyDesire(skill, [], buffered, attemptSignal, true, { mode: "ambient" }))).value
           : await this.aiService.evaluateReplyDesire(skill, [], buffered, signal, false, { ...group, mode: "ambient" });
         logInfo("Ambient participation evaluated.", { groupId: group.groupId, sourceRowId: source.id, messageCount: rows.length, memberCount: new Set(rows.map(row => row.user_id)).size, decision });
-        if (decision !== "REPLY" || this.groupLock.getActiveCount(group.groupId) > 0) continue;
+        if (decision !== "REPLY" || this.groupLock.getActiveCount(group.groupId) > 0) {
+          this.groupInteractionService.recordAmbientOutcome(group, decision !== "REPLY" ? "model_skipped" : "pending_reply");
+          continue;
+        }
         await this.groupLock.run(group.groupId, async () => {
           const current = await this.groupConfigService.getGroup(group.groupId);
           if (signal.aborted || !current?.ambientReplyEnabled || current.enabled === false || current.botMuted || this.hasPendingSelectedMemberChat(current) || Date.now() - source.msg_time > 60_000 || !this.groupInteractionService!.claimAutomaticReply(current, true, Date.now(), rows.map(row => row.msg_id))) return;
@@ -1643,10 +1801,11 @@ export class BotApplication {
           if (!messages.length) return;
           const route = this.conversationContextRouter?.resolve({ sourceRowId: source.id, groupId: group.groupId, userId: source.user_id, sourceMessageId: source.msg_id, text: source.text });
           const receipts = await this.sendTextMessages(group.groupId, messages, [], route);
+          this.groupInteractionService!.recordAmbientOutcome(latest, "queued");
           await this.persistAssistantContext(route, parsed.text, receipts);
           await this.maybeSendNormalChatMeme({ groupConfig: latest, userInput: source.text, tagId: reply.memeTagId ?? parsed.memeTagId, afterDeliveryId: receipts.at(-1)?.deliveryId });
         });
-      } catch (error) { logWarn("Ambient reply skipped.", { groupId: group.groupId, errorType: error instanceof Error ? error.name : typeof error }); }
+      } catch (error) { this.groupInteractionService.recordAmbientOutcome(group, "evaluation_failed"); logWarn("Ambient reply skipped.", { groupId: group.groupId, errorType: error instanceof Error ? error.name : typeof error }); }
       finally { this.automaticReplyControllers.delete(group.groupId); }
     }
   }
@@ -1860,6 +2019,8 @@ export class BotApplication {
     }
     try { await this.scheduledModelCallService?.tick(now); }
     catch (error) { logError("Scheduled model call tick failed.", { error: error instanceof Error ? error.message : "unknown" }); }
+    try { this.personalReminderService?.tick(now); }
+    catch { logError("Personal reminder tick failed."); }
     if (!isWithinWorkHours(now)) {
       return;
     }
@@ -3323,7 +3484,7 @@ export class BotApplication {
       normalized === `${SCHEDULED_REMINDER_PREFIX} 列表` ||
       normalized === `${SCHEDULED_REMINDER_PREFIX} 查看`
     ) {
-      const tasks = await this.scheduledReminderService.listGroupTasks(groupId);
+      const tasks = (await this.scheduledReminderService.listGroupTasks(groupId)).filter(t => t.kind !== "personal_reminder");
       const statusLine = `定时任务总开关：${groupConfig.scheduledRemindersEnabled === false ? "已关闭" : "已开启"}`;
       if (tasks.length === 0) {
         await this.sendText(groupId, `${statusLine}\n当前群还没有定时任务`);
@@ -3352,6 +3513,7 @@ export class BotApplication {
       }
 
       const target = (await this.scheduledReminderService.listGroupTasks(groupId, { includeDisabled: true })).find(task => task.id === taskId);
+      if (target?.kind === "personal_reminder") { await this.sendText(groupId, "个人提醒请由创建者使用 #提醒 管理。"); return; }
       if (target?.kind === "model_call" && !await this.isSuperAdmin(groupConfig, userId)) { await this.sendText(groupId, "模型调用任务请由超级管理员在后台管理"); return; }
       const removed = await this.scheduledReminderService.removeGroupTask(groupId, taskId);
       if (removed) {
@@ -3383,6 +3545,7 @@ export class BotApplication {
         return;
       }
 
+      if (existing.kind === "personal_reminder") { await this.sendText(groupId, "个人提醒请由创建者使用 #提醒 管理。"); return; }
       if (existing.kind === "model_call") { await this.sendText(groupId, "模型调用任务请由超级管理员在后台管理"); return; }
       const updated = await this.scheduledReminderService.updateTask(modifyRequest.taskId, {
         intervalMinutes: modifyRequest.request.intervalMinutes,
@@ -3455,12 +3618,18 @@ export class BotApplication {
     runtimeCommands: SystemCommandConfig[],
   ): Promise<void> {
     const visible: SystemCommandConfig[] = [];
-    for (const command of runtimeCommands) if (command.id === "model" && command.enabled || await this.canUseRuntimeCommand(command, groupConfig, event)) visible.push(command);
+    const capabilityByCommand: Record<string,V3RuntimeCapability> = { conversation:"conversation",image_generation:"image_generation",html_preview:"html_preview",bt_search:"bt_search",memory:"explicit_memory",self_memory:"explicit_memory",self_memory_edit:"explicit_memory",self_memory_delete:"explicit_memory",knowledge:"knowledge",daily_report:"daily_reports",holiday_countdown:"holiday_countdown",scheduled_reminder:"scheduled_reminders",personal_reminder:"scheduled_reminders",spoken_reply:"audio_generation",original_song:"audio_generation" };
+    for (const command of runtimeCommands) {
+      if (capabilityByCommand[command.id] && !this.isCapabilityEnabled(capabilityByCommand[command.id]!)) continue;
+      if (["self_memory","self_memory_edit","self_memory_delete"].includes(command.id) && !groupConfig.groupExperienceEnabled) continue;
+      if (command.id === "personal_reminder" && !groupConfig.personalRemindersEnabled || command.id === "spoken_reply" && !groupConfig.audioReplyEnabled || command.id === "original_song" && !groupConfig.singingEnabled) continue;
+      if (command.id === "model" && command.enabled || await this.canUseRuntimeCommand(command, groupConfig, event)) visible.push(command);
+    }
     const imageCommand = runtimeCommands.find(command => command.id === "image_generation");
     const includeImageGeneration = !imageCommand || visible.some(command => command.id === "image_generation");
     await this.sendText(
       groupConfig.groupId,
-      buildFeatureListMessage(commandText, visible, includeImageGeneration, new Set(runtimeCommands.filter(command => !visible.includes(command)).map(command => command.id)), (await this.skillService.getSkill(groupConfig.currentSkillId))?.name),
+      buildFeatureListMessage(commandText, visible, includeImageGeneration, new Set(runtimeCommands.filter(command => !visible.includes(command)).map(command => command.id)), (await this.skillService.getSkill(groupConfig.currentSkillId))?.name,groupConfig.groupExperienceEnabled === true),
     );
   }
 
@@ -4544,7 +4713,20 @@ export class BotApplication {
       await this.persistAssistantContext(conversationRoute, deliveredReplyText, receipts,
         stateSources && conversationRoute ? { value: compactReply(outgoingMessages.join("")) === compactReply(replyText) ? reply.conversationUpdate : undefined,
           route: conversationRoute, sources: stateSources, expectedRevision: conversationState.revision } : undefined);
-      if (allowMemeForReply && !reply.knowledgeToolCalls?.length && normalizedUserInput.trim()) {
+      let audioQueued = false;
+      const explicitAudio = /(?:用|发|以)语音(?:回答|回复|说)/u.test(normalizedUserInput) && options.allowControlledMention === true;
+      const automaticAudio = permitsAutomaticVoice({ directed: options.allowControlledMention === true, input: normalizedUserInput, reply: deliveredReplyText, automaticReply: options.automaticReply, knowledge: Boolean(reply.knowledgeToolCalls?.length || realtimeLookup) });
+      const audioCommand = (explicitAudio || automaticAudio) ? (await this.getRuntimeCommands()).find(command => command.id === "spoken_reply") : undefined;
+      const audioRole = audioCommand?.enabled ? await this.isSuperAdmin(groupConfig,userId) ? "super_admin" : await this.isAdmin(groupConfig,userId) ? "group_admin" : "member" : "member";
+      if (this.audioGenerationService && this.isCapabilityEnabled("audio_generation") && audioCommand?.enabled && permissionAtLeast(audioRole, audioCommand.permission) && (explicitAudio || automaticAudio)) {
+        try {
+          this.audioGenerationService.enqueue({ groupId: groupConfig.groupId, userId, kind: "speech", text: deliveredReplyText, automatic: !explicitAudio,
+            sourceKey: messageContext.sourceMessageId, captionOutboxId: parseAudioCaptionOutboxId(receipts.at(-1)?.deliveryId), captionAlreadySent: Boolean(receipts.at(-1)?.platformMessageId ?? receipts.at(-1)?.messageId) });
+          audioQueued = true;
+          void this.audioGenerationService.tick().catch(() => logError("Audio reply failed."));
+        } catch { /* The complete text reply was already published. */ }
+      }
+      if (!audioQueued && allowMemeForReply && !reply.knowledgeToolCalls?.length && normalizedUserInput.trim()) {
         await this.maybeSendNormalChatMeme({
           groupConfig,
           userInput: normalizedUserInput,
@@ -6553,10 +6735,11 @@ function buildFeatureListMessage(
   includeImageGeneration = false,
   hiddenIds = new Set<string>(),
   personaName = "机器人",
+  experienceEnabled = false,
 ): string {
   const topic = parseHelpTopic(commandText);
   const helper = createCommandHelpFormatter(commands);
-  const sections = buildHelpSections(helper, includeImageGeneration, personaName).filter(section => !section.commandId || !hiddenIds.has(section.commandId));
+  const sections = buildHelpSections(helper, includeImageGeneration, personaName,experienceEnabled).filter(section => !section.commandId || !hiddenIds.has(section.commandId));
 
   if (!topic) {
     return buildHelpOverviewMessage(sections, helper, includeImageGeneration, hiddenIds, personaName);
@@ -6608,8 +6791,14 @@ type HelpSection = {
   lines: string[];
 };
 
-function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string): HelpSection[] {
+function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false): HelpSection[] {
   return [
+    ...(experienceEnabled ? [{title:"表情",aliases:["表情","表情包","meme"],lines:["#表情 分类 / #表情 开心 / #表情 换一张","支持中文分类和英文原名；主动索图每人十秒、每群五秒一次。","自动配图仍按既有概率和群冷却执行；只有超级管理员可用 #表情 收藏 <分类> 收图。"]}] : []),
+    { commandId:"personal_reminder",title:"个人提醒",aliases:["个人提醒","一次性提醒","提醒"],lines:[`${command("personal_reminder")} 10分钟后 喝水`,`${command("personal_reminder")} 明天9点 开会`,`${command("personal_reminder")} 列表 / 取消 <编号>`,"北京时间，全天可用；只管理本人在本群的提醒，每人五条、每群五十条。"] },
+    { commandId:"self_memory",title:"我的记忆",aliases:["我的记忆","自助记忆","记忆"],lines:[`${command("self_memory")} / ${command("self_memory")} 2`,`${command("self_memory")} 保存 喜欢无糖茶`,`${command("self_memory_edit")} <编号> <新内容>`,`${command("self_memory_delete")} <编号> / 全部`,"只管理本人明确保存的记忆；全部删除需要三十秒内二次确认，管理员画像保留原权限。"] },
+    { commandId:"spoken_reply",title:"语音",aliases:["语音","声音"],lines:[`${command("spoken_reply")} 今天也要好好吃饭`,"也可以 @机器人并说‘用语音回答’。字幕先于音频；复杂内容保留完整文字。"] },
+    { commandId:"original_song",title:"原创短歌",aliases:["唱歌","短歌","原创短歌"],lines:[`${command("original_song")} 周五下班`,"生成 15–30 秒原创短歌；同成员五分钟、同群十分钟冷却。", "语音与短歌共用每日三十分钟额度，按北京时间换日。"] },
+    { commandId:"interaction_status",title:"互动状态",aliases:["互动状态","互动","诊断"],lines:[command("interaction_status"),"查看表情未命中、读空气条件和回戳概率；只向管理员显示本群状态。"] },
     {
       commandId: "bt_search", title: "BT 搜索", aliases: ["bt", "资源", "bt搜索", "资源搜索"],
       lines: [`${command("bt_search")} <关键词> [anime|movie|adult]`,
@@ -6625,7 +6814,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `3. ${command("conversation")} 清空 <QQ号> / 全部`,
         `4. ${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })}`,
         "作用：使用当前 skill 进行文本对话，或清空当前群上下文",
-        `说明：普通群消息不会触发，必须 @机器人；${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })} 需要群管理员或超级管理员`,
+        `说明：主动提问请 @机器人；${experienceEnabled ? "已回复后的两分钟内可定向追问两轮，重新 @ 后重置；" : ""}${command("conversation", { alias: CLEAR_GROUP_CONTEXT_COMMAND })} 需要群管理员或超级管理员`,
       ],
     },
     ...(includeImageGeneration ? [{
@@ -6712,6 +6901,10 @@ function buildHelpOverviewMessage(
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
     ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置图片意图判断模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
+    ...show("personal_reminder",`个人提醒：${command("personal_reminder")} 10分钟后 喝水；列表 / 取消 <编号>（北京时间，全天可用）`),
+    ...show("self_memory",`本人记忆：${command("self_memory")} 查看或保存；修改、删除需本人归属检查`),
+    ...show("spoken_reply",`语音：${command("spoken_reply")} <内容>；也可 @机器人要求语音回答`),
+    ...show("original_song",`短歌：${command("original_song")} <主题>，创作 15–30 秒原创歌曲`),
     ...show("live_chat", `实时对话：${command("live_chat")} 列表、添加、移除、间隔 <分钟>`),
     ...show("scheduled_reminder", `定时任务：${command("scheduled_reminder")} 列表、添加、修改、删除、状态、开启、关闭`),
     ...show("daily_report", `日报：${command("daily_report")} 状态、发送、开启、关闭、时间 <HH:mm>`),
@@ -7234,3 +7427,11 @@ function confirmedImageRequestFailureCode(error: ImageGenerationError): string |
 }
 
 class ImageEditReferenceError extends Error {}
+
+function parseAudioCaptionOutboxId(deliveryId?: string): number | undefined {
+  const match = /^outbox:(\d+)$/u.exec(deliveryId ?? ""); return match ? Number(match[1]) : undefined;
+}
+function audioRequestError(error: unknown): string {
+  const code = error instanceof Error ? error.message : "unknown";
+  return ({ audio_disabled: "本群音频功能尚未开通，请由超级管理员在后台配置独立音频服务。", audio_text_invalid: "朗读内容请控制在 500 字内，短歌主题 100 字内；不能包含密码或密钥。", audio_queue_full: "音频队列已满，稍后再试。", audio_cooldown: "短歌需要休息一下：同成员五分钟、同群十分钟。" } as Record<string,string>)[code] ?? "这次音频请求未能加入队列，请稍后再试。";
+}

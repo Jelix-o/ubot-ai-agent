@@ -993,7 +993,7 @@ export class V3StateRepository {
       const candidates = this.sharedDb.db.prepare(
         `SELECT id, task_json FROM v3_scheduled_reminders
           WHERE enabled = 1 AND next_run_at <= ?
-            AND COALESCE(json_extract(task_json, '$.kind'), 'reminder') <> 'model_call'
+            AND COALESCE(json_extract(task_json, '$.kind'), 'reminder') = 'reminder'
             AND (lease_expires_at IS NULL OR lease_expires_at < ?)
           ORDER BY next_run_at, id`,
       ).all(now, now) as Array<{ id: string; task_json: string }>;
@@ -1327,6 +1327,13 @@ export class V3StateRepository {
   private encryptSecret(purpose: string, value: string): string {
     if (!this.cipher) throw new Error("UBOT_STATE_ENCRYPTION_KEY is required to encrypt state.");
     return this.cipher.encrypt(purpose, value);
+  }
+
+  getAudioGenerationApiKey(): string | undefined { return this.decryptSecret("audio_generation:api_key"); }
+  saveAudioGenerationApiKey(value: string): void {
+    if (!value) { this.sharedDb.db.prepare("DELETE FROM v3_system_secrets WHERE secret_key=?").run("audio_generation:api_key"); return; }
+    this.sharedDb.db.prepare("INSERT INTO v3_system_secrets(secret_key,ciphertext,key_version,updated_at) VALUES(?,?,1,?) ON CONFLICT(secret_key) DO UPDATE SET ciphertext=excluded.ciphertext, updated_at=excluded.updated_at")
+      .run("audio_generation:api_key", this.encryptSecret("audio_generation:api_key", value), Date.now());
   }
 
   private decryptSecret(purpose: string): string | undefined {

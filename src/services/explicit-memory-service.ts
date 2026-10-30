@@ -119,7 +119,7 @@ function comparableContent(value: string): string {
     .trim();
 }
 
-function containsSensitiveCredential(value: string): boolean {
+export function containsSensitiveCredential(value: string): boolean {
   const normalized = value.toLowerCase();
   return [
     /-----begin [a-z ]*private key-----/i,

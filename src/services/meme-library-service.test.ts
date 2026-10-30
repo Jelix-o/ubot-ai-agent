@@ -29,6 +29,27 @@ const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 
 const GIF = Buffer.concat([Buffer.from("GIF89a"), Buffer.from("test-gif")]);
 const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBP"), Buffer.from("test-webp")]);
 
+test("manual memes isolate member/group limits, survive restart and leave automatic policy untouched", async () => {
+  await withLibrary(async ({ service, dataDir, repository, seedPath }) => {
+    const tag = (await service.createTag({ name: "work", keywords: ["工作"] }))!;
+    await service.uploadAsset({ name: "one", scope: "normal_chat", tags: [tag.id], data: PNG });
+    await service.uploadAsset({ name: "two", scope: "normal_chat", tags: [tag.id], data: JPEG });
+    await service.updatePolicy({ probabilityPercent: 0, cooldownSeconds: 60 });
+    const first = await service.claimRequestedImage("10001", "20001", "摸鱼", 100_000);
+    assert.equal(first.reason, "sent_candidate");
+    assert.equal((await service.claimRequestedImage("10001", "20002", "work", 104_999)).reason, "cooldown");
+    assert.equal((await service.claimRequestedImage("10001", "20001", "换一张", 105_001)).reason, "cooldown");
+    const restored = new MemeLibraryService(dataDir, repository, { seedAssetPath: seedPath });
+    const next = await restored.claimRequestedImage("10001", "20001", "换一张", 110_000);
+    assert.equal(next.reason, "sent_candidate");
+    assert.notEqual(next.selection?.asset.sha256, first.selection?.asset.sha256);
+    assert.equal((await restored.claimRequestedImage("10002", "20001", "work", 110_000)).reason, "sent_candidate");
+    assert.equal((await restored.claimRequestedImage("10002", "20002", "换一张", 120_000)).reason, "no_match");
+    assert.equal((await service.getPolicy()).probabilityPercent, 0);
+    assert.equal(repository.getDocument("meme-library-cooldown", "10001", null), null);
+  });
+});
+
 interface LibraryFixture {
   dir: string;
   dataDir: string;

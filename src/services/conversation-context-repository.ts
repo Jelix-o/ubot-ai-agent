@@ -210,6 +210,33 @@ export class ConversationContextRepository {
       : undefined;
   }
 
+  /** Only acknowledged replies on this member's causal branch can open a follow-up window. */
+  canDirectedFollowUp(groupId: string, userId: string, now = Date.now()): boolean {
+    const active = this.getActiveRoute(groupId, userId);
+    if (!active || now < active.updatedAt || now - active.updatedAt > 120_000) return false;
+    const turns = this.getCausalTurns(active.branchId, active.headTurnId);
+    let delivered = false;
+    let unanswered = false;
+    let completedWithoutMention = 0;
+    for (const turn of [...turns].reverse()) {
+      if (turn.topicId !== active.topicId) break;
+      if (turn.role === "assistant") {
+        if ((turn.platformMessageId || turn.deliveryId?.startsWith("outbox:")) && this.orchestration.deliveredText(turn.id, turn.content, turn.deliveryId)) delivered = true;
+        else unanswered = true;
+        continue;
+      }
+      if (turn.userId !== userId || unanswered || !delivered) return false;
+      const source = this.sharedDb.db.prepare("SELECT has_at_bot FROM messages WHERE group_id=? AND msg_id=? AND user_id=? ORDER BY id DESC LIMIT 1")
+        .get(groupId, turn.sourceMessageId ?? "", userId) as { has_at_bot: number } | undefined;
+      if (!source) return false;
+      if (source.has_at_bot) return completedWithoutMention < 2;
+      completedWithoutMention++;
+      if (completedWithoutMention >= 2) return false;
+      delivered = false;
+    }
+    return false;
+  }
+
   getBranch(branchId: string): ConversationBranch | undefined {
     const row = this.sharedDb.db
       .prepare("SELECT * FROM conversation_branches WHERE branch_id = ?")

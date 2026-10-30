@@ -14,6 +14,7 @@ export const V3_RUNTIME_CAPABILITIES = [
   "html_preview",
   "image_generation",
   "bt_search",
+  "audio_generation",
 ] as const;
 
 export type V3RuntimeCapability = typeof V3_RUNTIME_CAPABILITIES[number];

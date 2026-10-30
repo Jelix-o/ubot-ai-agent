@@ -35,6 +35,9 @@ import { DailyReportStore } from "./services/daily-report-store.js";
 import { HolidayCountdownService } from "./services/holiday-countdown-service.js";
 import { HolidayCountdownStore } from "./services/holiday-countdown-store.js";
 import { ScheduledModelCallService } from "./services/scheduled-model-call-service.js";
+import { SelfMemoryService } from "./services/self-memory-service.js";
+import { PersonalReminderService } from "./services/personal-reminder-service.js";
+import { AudioGenerationService } from "./services/audio-generation-service.js";
 import { ScheduledReminderService } from "./services/scheduled-reminder-service.js";
 import { ScheduledReminderStore } from "./services/scheduled-reminder-store.js";
 import { AdminOperationLogService } from "./services/admin-operation-log-service.js";
@@ -1355,6 +1358,9 @@ async function buildBotApp(
   );
   if (v3State) botApp.setScheduledModelCallService(new ScheduledModelCallService(sharedDb, systemSettingsStore, groupConfigService, undefined,
     protocol => capabilityPolicy?.isProviderFeatureEnabled(protocol === "anthropic" ? "anthropic" : "openai", "chat") !== false));
+  if (v3State) botApp.setSelfMemoryService(new SelfMemoryService(v3State));
+  if (v3State) botApp.setPersonalReminderService(new PersonalReminderService(v3State));
+  if (v3State) botApp.setAudioGenerationService(new AudioGenerationService(v3State, path.join(dataDir,"audio-assets")));
   return { botApp, groupConfigService, imageIntentRouter };
 }
 

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { assertRevision, type MutationGuard } from "./state-mutation.js";
 import { normalizeMemeTagSelector } from "./meme-reply-protocol.js";
+import { appendMemeUse, pickVariedMeme, resolveMemeCategory, type MemeUse } from "./meme-variety.js";
+import { InteractionDiagnostics } from "./interaction-diagnostics.js";
 
 export const MEME_LIBRARY_DOCUMENT_TYPE = "meme-library";
 export const MEME_LIBRARY_DOCUMENT_KEY = "default";
@@ -15,6 +17,7 @@ export const MEME_LIBRARY_ASSET_DOCUMENT_TYPE = "meme-library-assets";
 export const MEME_LIBRARY_ASSET_DOCUMENT_KEY = "default";
 export const MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE = "meme-library-cooldown";
 export const MEME_LIBRARY_BLACKLISTED_SELECTION_DOCUMENT_TYPE = "meme-library-blacklisted-selection";
+const VARIETY_TYPE = "meme-library-variety";
 export const MEME_LIBRARY_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const BLACKLISTED_AT_MEME_SEED_ID = "blacklisted-at-meme-seed";
 
@@ -616,6 +619,12 @@ export class MemeLibraryService {
   async getReplyTags(): Promise<MemeTag[]> {
     const policy = await this.getPolicy();
     if (!policy.enabled || policy.selectionMode !== "model_tag") return [];
+    return this.listAvailableTags();
+  }
+
+  async listAvailableTags(): Promise<MemeTag[]> {
+    const policy = await this.getPolicy();
+    if (!policy.enabled) return [];
     const assets = (await this.listAssets("normal_chat")).filter(asset => asset.enabled && this.isPackActive(asset, policy));
     const ids = new Set(assets.flatMap(asset => asset.tags));
     return (await this.listTags()).filter(tag => ids.has(tag.id)).slice(0, 40);
@@ -635,6 +644,7 @@ export class MemeLibraryService {
     // All decisions, including cooldown claims, are made from current metadata.
     // Only the chosen file is loaded, rather than every multi-megabyte candidate.
     let previousCooldown: MemeCooldownDocument | undefined;
+    let previousHistory: MemeUse[] = [];
     let result: MemeNormalChatImageClaim = { reason: "no_match", matchedTagIds: [] };
     repository.updateDocument<MemeCooldownDocument>(MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE, groupId,
       DEFAULT_COOLDOWN_DOCUMENT, current => {
@@ -650,9 +660,15 @@ export class MemeLibraryService {
         if (isCooldownActive(cooldown, policy.cooldownSeconds, now)) { result = { reason: "cooldown", matchedTagIds: tagIds }; return cooldown; }
         if (!tagIds.length) return cooldown;
         if (randomPercent(this.random) >= policy.probabilityPercent) { result = { reason: "probability_miss", matchedTagIds: tagIds }; return cooldown; }
-        const candidates = assets.filter(asset => matchesNormalChatTags(asset, tagIds)).map(asset => ({ asset }));
-        const chosen = pickNonRepeating(candidates, cooldown.lastAssetId, this.random);
+        const candidates = assets.filter(asset => matchesNormalChatTags(asset, tagIds));
+        const history = repository.getDocument<MemeUse[]>(VARIETY_TYPE, groupId, []);
+        previousHistory = history;
+        const asset = repository.getGroup(groupId)?.groupExperienceEnabled
+          ? pickVariedMeme(candidates, history, this.random)
+          : pickNonRepeating(candidates.map(asset => ({ asset })), cooldown.lastAssetId, this.random)?.asset;
+        const chosen = asset ? { asset } : undefined;
         if (!chosen) { result = { reason: "asset_unavailable", matchedTagIds: tagIds }; return cooldown; }
+        repository.saveDocument(VARIETY_TYPE, groupId, appendMemeUse(history, chosen.asset), now);
         result = { reason: "sent_candidate", matchedTagIds: tagIds,
           selection: { asset: cloneAsset(chosen.asset), assetId: chosen.asset.id, imageFile: "" } };
         return { lastSentAt: now, lastAssetId: chosen.asset.id };
@@ -661,12 +677,67 @@ export class MemeLibraryService {
       const imageFile = await this.loadImageFile(result.selection.asset.id).catch(() => undefined);
       if (!imageFile) {
         const claimedId = result.selection.asset.id;
-        repository.updateDocument<MemeCooldownDocument>(MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE, groupId, DEFAULT_COOLDOWN_DOCUMENT, current => current.lastSentAt === now && current.lastAssetId === claimedId ? previousCooldown ?? DEFAULT_COOLDOWN_DOCUMENT : current);
+        repository.updateDocument<MemeCooldownDocument>(MEME_LIBRARY_COOLDOWN_DOCUMENT_TYPE, groupId, DEFAULT_COOLDOWN_DOCUMENT, current => {
+          if (current.lastSentAt !== now || current.lastAssetId !== claimedId) return current;
+          const history = repository.getDocument<MemeUse[]>(VARIETY_TYPE, groupId, []);
+          if (JSON.stringify(history) === JSON.stringify(appendMemeUse(previousHistory,result.selection!.asset))) repository.saveDocument(VARIETY_TYPE, groupId, previousHistory, now);
+          return previousCooldown ?? DEFAULT_COOLDOWN_DOCUMENT;
+        });
+        this.diagnostic(groupId, "asset_unavailable", now);
         return { reason: "asset_unavailable", matchedTagIds: result.matchedTagIds };
       }
       result.selection.imageFile = imageFile;
     }
+    this.diagnostic(groupId, result.reason, now);
     return result;
+  }
+
+  /** Explicit requests have their own durable limits and never change the automatic cooldown. */
+  async claimRequestedImage(groupId: string, userId: string, selector: string, now = this.now()): Promise<MemeNormalChatImageClaim> {
+    const repository = this.repository();
+    if (!repository || !normalizeGroupId(groupId) || !/^\d+$/.test(userId)) return { reason: "no_match", matchedTagIds: [] };
+    let result: MemeNormalChatImageClaim = { reason: "no_match", matchedTagIds: [] };
+    let previous: unknown;
+    repository.updateDocument<{ at: number; token?: string }>("meme-request-group", groupId, { at: 0 }, current => {
+      const policy = this.readLibraryDocument(repository).policy;
+      if (!policy.enabled) { result.reason = "policy_disabled"; return current; }
+      const member = repository.getDocument<{ at: number; tagId?: string }>("meme-request-member", `${groupId}:${userId}`, { at: 0 });
+      if ((current.at && now - current.at < 5_000) || (member.at && now - member.at < 10_000)) { result.reason = "cooldown"; return current; }
+      const tag = resolveMemeCategory(this.readTagDocument(repository).tags, selector === "换一张" ? member.tagId ?? "" : selector);
+      if (!tag) return current;
+      result.matchedTagIds = [tag.id];
+      const history = repository.getDocument<MemeUse[]>(VARIETY_TYPE, groupId, []);
+      const assets = this.readAssetDocument(repository).assets.filter(a => this.isPackActive(a, policy) && matchesNormalChatTags(a, [tag.id]));
+      const chosen = pickVariedMeme(assets, history, this.random);
+      if (!chosen) { result.reason = "asset_unavailable"; return current; }
+      previous = { current, member, history };
+      repository.saveDocument("meme-request-member", `${groupId}:${userId}`, { at: now, tagId: tag.id }, now);
+      repository.saveDocument(VARIETY_TYPE, groupId, appendMemeUse(history, chosen), now);
+      result = { reason: "sent_candidate", matchedTagIds: [tag.id], selection: { asset: cloneAsset(chosen), assetId: chosen.id, imageFile: "" } };
+      return { at: now, token: chosen.id };
+    }, now);
+    if (result.selection) {
+      const image = await this.loadImageFile(result.selection.asset.id).catch(() => undefined);
+      if (!image) {
+        repository.updateDocument<{ at: number; token?: string }>("meme-request-group", groupId, { at: 0 }, current => {
+          if (current.at !== now || current.token !== result.selection?.asset.id) return current;
+          const old = previous as { current: { at: number }; member: unknown; history: MemeUse[] };
+          repository.saveDocument("meme-request-member", `${groupId}:${userId}`, old.member, now);
+          const history = repository.getDocument<MemeUse[]>(VARIETY_TYPE,groupId,[]);
+          if (JSON.stringify(history) === JSON.stringify(appendMemeUse(old.history,result.selection!.asset))) repository.saveDocument(VARIETY_TYPE, groupId, old.history, now);
+          return old.current;
+        }, now);
+        return { reason: "asset_unavailable", matchedTagIds: result.matchedTagIds };
+      }
+      result.selection.imageFile = image;
+    }
+    this.diagnostic(groupId, result.reason, now);
+    return result;
+  }
+
+  private diagnostic(groupId: string, reason: string, now: number): void {
+    const repo = this.repository();
+    if (repo?.getGroup(groupId)?.groupExperienceEnabled) new InteractionDiagnostics(repo.sharedDb).record(groupId, "meme", reason, {}, now);
   }
 
   /** Selects a blacklist response image without applying normal chat policy or cooldown. */

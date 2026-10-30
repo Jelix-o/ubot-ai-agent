@@ -85,6 +85,7 @@ export class ScheduledReminderService {
     enabled?: boolean;
     now?: Date;
   }): Promise<ScheduledReminderTask> {
+    if (args.request.kind === "personal_reminder") throw new Error("personal_reminder_requires_owner_service");
     if (args.request.kind === "model_call") {
       if (!args.request.modelId?.trim() || args.request.timezone && args.request.timezone !== MODEL_CALL_TIMEZONE || args.request.dateRule && args.request.dateRule !== "all") throw new Error("invalid_model_call_task");
       nextModelCallAt(args.request.scheduledTime ?? "", args.now);
@@ -171,6 +172,7 @@ export class ScheduledReminderService {
     },
   ): Promise<ScheduledReminderTask | undefined> {
     const modelTask = await this.store.getTask(taskId);
+    if (modelTask?.kind === "personal_reminder") throw new Error("personal_reminder_requires_owner_service");
     if (modelTask?.kind === "model_call") {
       if (updates.timezone && updates.timezone !== MODEL_CALL_TIMEZONE || updates.dateRule && updates.dateRule !== "all" || updates.modelId !== undefined && !updates.modelId.trim()) throw new Error("invalid_model_call_task");
       const time = updates.scheduledTime ?? updates.executionStartTime ?? modelTask.scheduledTime!;

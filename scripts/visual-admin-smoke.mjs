@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { AdminHttpServer } from "../dist/admin-http-server.js";
+import { AudioGenerationService } from "../dist/services/audio-generation-service.js";
 import { AdminAuthService } from "../dist/services/admin-auth-service.js";
 import { SharedDb } from "../dist/shared/sqlite.js";
 import { AdminOperationLogService } from "../dist/services/admin-operation-log-service.js";
@@ -37,6 +38,7 @@ const visualArtifactDir = process.env.UBOT_VISUAL_ARTIFACT_DIR?.trim()
   : path.join(root, "visual-admin-smoke");
 let server;
 let sharedDb;
+let audioGenerationService;
 
 try {
   sharedDb = new SharedDb(path.join(root, "data", "shared", "bot-shared.db"));
@@ -158,6 +160,7 @@ try {
     operatorUserId: "99999",
   }, async () => ({ appliedCount: 0 }));
 
+  audioGenerationService = new AudioGenerationService(v3State, path.join(root,"audio-assets"));
   server = new AdminHttpServer({
     host: "127.0.0.1",
     port: 0,
@@ -177,6 +180,7 @@ try {
     scheduledReminderService: new ScheduledReminderService(new ScheduledReminderStore(path.join(root, "retired-reminders.json"), v3State), {}),
     imagePreviewService,
     memeLibraryService,
+    audioGenerationService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
     async listGroupMembers() { return [{ user_id: 2458031445, card: "外包仔", nickname: "原昵称", role: "member" }]; },
@@ -241,7 +245,7 @@ try {
   }, { Cookie: cookie, "X-CSRF-Token": csrf });
   if (!restoreSettings.response.ok) throw new Error("Reply token budget smoke fixture could not restore its settings.");
 
-  const pages = ["/", "/login", "/analytics", "/groups", "/groups/bulk", "/members", "/memories", "/knowledge", "/html-previews", "/image-previews", "/memes", "/tasks", "/audit", "/security", "/health", "/persona", "/commands", "/settings"];
+  const pages = ["/", "/login", "/analytics", "/groups", "/groups/bulk", "/members", "/memories", "/knowledge", "/html-previews", "/image-previews", "/memes", "/interactions", "/audio", "/tasks", "/audit", "/security", "/health", "/persona", "/commands", "/settings"];
   for (const page of pages) {
     const response = await fetch(`${baseUrl}${page}`, { headers: { Cookie: cookie } });
     if (!response.ok) throw new Error(`Admin page failed: ${page} ${response.status}`);
@@ -349,6 +353,7 @@ try {
     });
   }
 } finally {
+  await audioGenerationService?.stop();
   server?.close();
   sharedDb?.close();
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -487,9 +492,14 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await desktop.goto(`${baseUrl}/groups?tab=capabilities`, { waitUntil: "networkidle" });
     const ambient = desktop.getByRole("checkbox", { name: /^读空气/ });
     const poke = desktop.getByRole("checkbox", { name: /^回戳/ });
+    const experience = desktop.getByRole("checkbox", { name: /^群聊体验增强/ });
+    const personalReminders = desktop.getByRole("checkbox", { name: /^个人一次性提醒/ });
     if (await ambient.isChecked() || await poke.isChecked()) throw new Error("Group interactions must default off.");
+    if (await experience.isChecked() || await personalReminders.isChecked()) throw new Error("New experience controls must default off.");
     await ambient.check();
     await poke.check();
+    await experience.check();
+    await personalReminders.check();
     await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).fill("900");
     await desktop.getByRole("spinbutton", { name: "回戳概率（%）" }).fill("40");
     const saveGroup = async () => {
@@ -500,11 +510,37 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await saveGroup();
     await desktop.reload({ waitUntil: "networkidle" });
     if (!await ambient.isChecked() || !await poke.isChecked() || await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).inputValue() !== "900") throw new Error("Interaction controls did not persist.");
+    if (!await experience.isChecked() || !await personalReminders.isChecked()) throw new Error("Experience and personal reminder controls did not persist.");
     await assertNoHorizontalOverflow(desktop, "desktop group interactions");
     await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-desktop.png"), fullPage: true });
     await ambient.uncheck();
     await poke.uncheck();
     await saveGroup();
+
+    await desktop.goto(baseUrl + "/interactions", { waitUntil:"networkidle" });
+    await desktop.getByRole("heading",{name:"互动诊断",exact:true}).waitFor();
+    await desktop.locator(".conditions").getByText("已关闭",{exact:true}).first().waitFor();
+    await assertNoHorizontalOverflow(desktop,"desktop interaction diagnostics");
+    await desktop.screenshot({path:path.join(screenshotDir,"interaction-diagnostics-desktop.png"),fullPage:true});
+    await desktop.goto(baseUrl + "/audio",{waitUntil:"networkidle"});
+    await desktop.getByRole("heading",{name:"音频服务",exact:true}).waitFor();
+    if(await desktop.getByRole("checkbox",{name:"启用音频服务",exact:true}).isChecked()) throw new Error("Audio must stay disabled without a credential.");
+    await desktop.getByRole("checkbox",{name:"允许偶尔语音",exact:true}).uncheck();
+    const savedAudio=desktop.waitForResponse(response=>response.url().endsWith("/api/audio/settings") && response.request().method()==="PUT" && response.ok());
+    await desktop.getByRole("button",{name:"保存设置",exact:true}).click();await savedAudio;
+    await desktop.reload({waitUntil:"networkidle"});
+    if(await desktop.getByRole("checkbox",{name:"允许偶尔语音",exact:true}).isChecked()) throw new Error("Audio settings did not persist.");
+    if(!await desktop.getByRole("button",{name:"向当前群发送测试语音",exact:true}).isDisabled()) throw new Error("Audio test must require an enabled service.");
+    await assertNoHorizontalOverflow(desktop,"desktop audio settings");
+    await desktop.screenshot({path:path.join(screenshotDir,"audio-desktop.png"),fullPage:true});
+    await desktop.setViewportSize({width:390,height:844});
+    await assertNoHorizontalOverflow(desktop,"mobile audio settings");
+    await desktop.screenshot({path:path.join(screenshotDir,"audio-mobile.png"),fullPage:true});
+    await desktop.goto(baseUrl + "/interactions",{waitUntil:"networkidle"});
+    await desktop.locator(".conditions").waitFor();
+    await assertNoHorizontalOverflow(desktop,"mobile interaction diagnostics");
+    await desktop.screenshot({path:path.join(screenshotDir,"interaction-diagnostics-mobile.png"),fullPage:true});
+    await desktop.setViewportSize({width:1440,height:1000});
 
     await desktop.goto(baseUrl + "/groups?tab=schedule", { waitUntil: "networkidle" });
     await desktop.getByLabel("定时任务类型").selectOption("model_call");

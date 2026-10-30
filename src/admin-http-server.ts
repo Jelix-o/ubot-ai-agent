@@ -1,4 +1,7 @@
 import { PRESET_MEME_PACKS, type MemePackImportResult } from "./services/meme-pack-import-service.js";
+import { GroupInteractionService } from "./services/group-interaction-service.js";
+import { INTERACTION_REASON_LABELS } from "./services/interaction-diagnostics.js";
+import type { AudioGenerationService } from "./services/audio-generation-service.js";
 import { isCommandPermission, minimumCommandPermission, permissionAtLeast } from "./services/command-permissions.js";
 import { AdminBulkService, BulkError, revision, type BulkPayload, type BulkTarget } from "./services/admin-bulk-service.js";
 import { ModelTelemetryStore, type AnalyticsFilter } from "./services/model-telemetry.js";
@@ -93,6 +96,7 @@ interface AdminHttpServerOptions {
   imagePreviewService?: ImagePreviewAdminService;
   /** Global V3-only image library; omitted for legacy and rolling upgrades. */
   memeLibraryService?: MemeLibraryAdminService;
+  audioGenerationService?: AudioGenerationService;
   adminOperationLogService: AdminOperationLogService;
   getTransportHealthStatus?: () => Promise<TransportHealthStatus>;
   judgeMemorySemanticRelation?: (args: MemorySemanticJudgeInput) => Promise<MemorySemanticJudgeResult | null>;
@@ -811,6 +815,32 @@ export class AdminHttpServer {
       return;
     }
 
+    if (pathname === "/api/audio/settings" || pathname === "/api/audio/usage" || pathname === "/api/audio/test") {
+      if (!this.requireSuperAdmin(session,res)) return;
+      const audio = this.options.audioGenerationService;
+      if (!audio) { this.sendJson(res,{error:"audio_unavailable"},503); return; }
+      if (req.method === "GET" && pathname !== "/api/audio/test") { this.sendJson(res,pathname.endsWith("usage") ? audio.usage() : audio.settings.get()); return; }
+      if (!this.requireRecentSuperAdminReauth(session,res)) return;
+      if (pathname === "/api/audio/settings" && req.method === "PUT") {
+        const body = await readJsonBody(req);
+        if (["enabled","automaticVoiceEnabled"].some(key => body[key] !== undefined && typeof body[key] !== "boolean")) { this.sendJson(res,{error:"invalid_audio_settings"},400); return; }
+        try { this.sendJson(res,audio.settings.update({enabled:body.enabled as boolean | undefined,automaticVoiceEnabled:body.automaticVoiceEnabled as boolean | undefined,...(body.apiKey !== undefined ? {apiKey:typeof body.apiKey === "string" ? body.apiKey : requiredString(body.apiKey)} : {})},requiredString(body.expectedRevision),session.userId!)); }
+        catch (error) { if (error instanceof StateConflictError) { this.sendJson(res,{error:"configuration_conflict"},409); return; } this.sendJson(res,{error:error instanceof Error && /^[a-z_]+$/.test(error.message) ? error.message : "invalid_audio_settings"},400); }
+        return;
+      }
+      if (pathname === "/api/audio/test" && req.method === "POST") {
+        const body = await readJsonBody(req), groupId = requiredString(body.groupId);
+        if (!await this.canAccessGroup(session,groupId)) { this.sendJson(res,{error:"forbidden"},403); return; }
+        try {
+          const job = audio.enqueue({groupId,userId:session.userId!,kind:"speech",text:"你好，语音服务测试。",sourceKey:requiredString(body.requestId)});
+          void audio.tick().catch(() => undefined);
+          await this.recordOperation({session,groupId,action:"audio_test",target:job.id});
+          this.sendJson(res,{id:job.id,status:job.status},202);
+        } catch (error) { this.sendJson(res,{error:error instanceof Error && /^[a-z_]+$/.test(error.message) ? error.message : "audio_test_failed"},400); }
+        return;
+      }
+      this.sendJson(res,{error:"method_not_allowed"},405); return;
+    }
     if (pathname === "/api/system-settings/image-intent/test" && req.method === "POST") {
       if (!this.requireSuperAdmin(session, res)) return;
       const settings = await this.options.systemSettingsStore?.getInternal();
@@ -971,6 +1001,14 @@ export class AdminHttpServer {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/interactions") {
+      const groupId = url.searchParams.get("groupId") ?? "";
+      if (!groupId || !await this.canAccessGroup(session, groupId)) { this.sendJson(res, { error: "forbidden" }, 403); return; }
+      const group = await this.options.groupConfigService.getGroup(groupId);
+      if (!group || !this.options.sharedDb) { this.sendJson(res, { error: "not_found" }, 404); return; }
+      this.sendJson(res, { ...new GroupInteractionService(this.options.sharedDb, "").status(group), reasonLabels: INTERACTION_REASON_LABELS });
+      return;
+    }
     if (req.method === "GET" && pathname === "/api/participation-decisions") {
       if (!this.options.sharedDb) {
         this.sendJson(res, { error: "participation_decisions_unavailable" }, 503);
@@ -2779,6 +2817,7 @@ export class AdminHttpServer {
       return;
     }
     const task = (await this.options.scheduledReminderService.listGroupTasks(groupId, { includeDisabled: true })).find(item => item.id === taskId);
+    if (task?.kind === "personal_reminder" && (req.method === "PUT" || req.method === "DELETE")) { this.sendJson(res, { error: "personal_reminder_use_owner_command" }, 400); return; }
     if (task?.kind === "model_call" && session.role !== "super_admin") { this.sendJson(res, { error: "forbidden" }, 403); return; }
     if (req.method === "PUT") {
       const body = await readJsonBody(req);
@@ -4316,6 +4355,8 @@ function sanitizeGroupAdminConfigPatch(body: Record<string, unknown>, currentPri
     "onlineLookupEnabled",
     "visionEnabled",
     "ambientReplyEnabled",
+    "groupExperienceEnabled",
+    "personalRemindersEnabled",
     "ambientReplyCooldownSeconds",
     "pokeReplyEnabled",
     "pokeReplyProbabilityPercent",

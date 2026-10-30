@@ -361,6 +361,11 @@ export interface GroupBotConfig {
   htmlPreviewEnabled?: boolean;
   /** Natural-language image requests are enabled for configured groups by default. */
   naturalImageRequestsEnabled?: boolean;
+  /** Opt-in rollout of bounded follow-ups, manual memes and self-service memory. */
+  groupExperienceEnabled?: boolean;
+  personalRemindersEnabled?: boolean;
+  audioReplyEnabled?: boolean;
+  singingEnabled?: boolean;
   /** @deprecated Image generation is globally available and super-admin only. */
   imageGenerationEnabled?: boolean;
 }
@@ -437,7 +442,9 @@ export interface ScheduledModelCallRun {
 }
 
 export interface ScheduledReminderTask {
-  kind?: "reminder" | "model_call";
+  kind?: "reminder" | "model_call" | "personal_reminder";
+  personalResult?: "queued" | "missed" | "cancelled" | "skipped";
+  personalOutboxId?: number;
   modelId?: string;
   timezone?: "Asia/Shanghai";
   lastRun?: ScheduledModelCallRun;

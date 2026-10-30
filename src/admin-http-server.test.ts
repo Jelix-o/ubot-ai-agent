@@ -18,6 +18,7 @@ import { GroupMemoryStore } from "./services/group-memory-store.js";
 import { KnowledgeBaseStore } from "./services/knowledge-base-store.js";
 import { KnowledgeSourceBindingStore } from "./services/knowledge-source-binding-store.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
+import { AudioGenerationService } from "./services/audio-generation-service.js";
 import { ModelTelemetryStore } from "./services/model-telemetry.js";
 import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-ranking.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
@@ -342,6 +343,7 @@ async function startFixture(
   const tasks = new AdminTaskStore(path.join(dir, "tasks.json"), repository);
   const memeLibraryService = new MemeLibraryService(dir, repository);
   const settings = new SystemSettingsStore(path.join(dir, "settings.json"), [], undefined, repository);
+  const audioGenerationService = new AudioGenerationService(repository,path.join(dir,"audio-assets"),{async generate(){return {bytes:Buffer.from("ID3-fixture"),duration:2,originalDuration:2,caption:"你好，语音服务测试。"};}});
   const characterProfileService = new CharacterProfileService(repository, { bootstrapProfile: huixian });
   const htmlPreviewService = options.htmlPreviewService ?? createHtmlPreviewTestService();
   const imagePreviewService = options.imagePreviewService ?? createImagePreviewTestService();
@@ -376,6 +378,7 @@ async function startFixture(
     htmlPreviewService,
     imagePreviewService,
     memeLibraryService,
+    audioGenerationService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "ok" }; },
     ...(options.listGroupMembers ? { listGroupMembers: options.listGroupMembers } : {}),
@@ -397,12 +400,13 @@ async function startFixture(
       await new Promise<void>((resolve, reject) => rawServer.close(error => error ? reject(error) : resolve()));
     }
   }
-  t.after(() => {
+  t.after(async () => {
+    await audioGenerationService.stop();
     server.close();
     db.close();
   });
   t.after(() => rm(dir, { recursive: true, force: true }));
-  return { baseUrl, db, settings, memories, operations, tasks, htmlPreviewService, imagePreviewService, memeLibraryService };
+  return { baseUrl, db, settings, memories, operations, tasks, htmlPreviewService, imagePreviewService, memeLibraryService, repository, audioGenerationService };
 }
 
 function createStartupOnlyServer(port: number, ensureInitialized: () => Promise<void>): AdminHttpServer {
@@ -1946,6 +1950,29 @@ test("analytics endpoints restrict group administrators to authorized group usag
   assert.equal(outside.status, 403);
 });
 
+
+test("audio API keeps secrets private, enforces super-admin mutations and isolates group diagnostics", async t => {
+  const {baseUrl,repository,audioGenerationService}=await startFixture(t);
+  repository.saveCapabilityPolicy({version:1,enabledCapabilities:["conversation"],updatedAt:new Date().toISOString()});
+  const root=await login(baseUrl),headers=(auth:Auth)=>({Cookie:auth.cookie,"X-CSRF-Token":auth.csrf,"Content-Type":"application/json"});
+  const invite=await request(baseUrl,"/api/admin-accounts/invites",{method:"POST",headers:headers(root),body:JSON.stringify({role:"group_admin",groupIds:["67890"],expiresHours:1})});
+  const member=await acceptInviteAsAdmin(baseUrl,(await invite.json() as {token:string}).token,"audio-editor");
+  assert.equal((await request(baseUrl,"/api/audio/settings",{headers:headers(member)})).status,403);
+  assert.equal((await request(baseUrl,"/api/audio/usage",{headers:headers(member)})).status,403);
+  assert.equal((await request(baseUrl,"/api/interactions?groupId=67890",{headers:headers(member)})).status,200);
+  assert.equal((await request(baseUrl,"/api/interactions?groupId=100200",{headers:headers(member)})).status,403);
+  const before=await (await request(baseUrl,"/api/audio/settings",{headers:headers(root)})).json() as {revision:string;enabled:boolean};
+  assert.equal(before.enabled,false);
+  const updated=await request(baseUrl,"/api/audio/settings",{method:"PUT",headers:headers(root),body:JSON.stringify({expectedRevision:before.revision,enabled:true,apiKey:"fixture-audio-key"})});
+  assert.equal(updated.status,200);assert.doesNotMatch(await updated.text(),/fixture-audio-key/);
+  assert.equal((await request(baseUrl,"/api/audio/settings",{method:"PUT",headers:headers(root),body:JSON.stringify({expectedRevision:before.revision,enabled:false})})).status,409);
+  repository.saveGroup({...repository.getGroup("67890")!,audioReplyEnabled:true});
+  const testRequest={groupId:"67890",requestId:"probe-idempotent"};
+  for(let i=0;i<2;i++)assert.equal((await request(baseUrl,"/api/audio/test",{method:"POST",headers:headers(root),body:JSON.stringify(testRequest)})).status,202);
+  await audioGenerationService.tick();
+  assert.equal(audioGenerationService.usage().recent.length,1);
+  assert.doesNotMatch(await (await request(baseUrl,"/api/audio/usage",{headers:headers(root)})).text(),/fixture-audio-key|你好，语音服务测试/);
+});
 
 test("scheduled model-call API preserves ordinary tasks and restricts all model-call mutations to super admins", async t => {
   const { baseUrl, settings } = await startFixture(t);

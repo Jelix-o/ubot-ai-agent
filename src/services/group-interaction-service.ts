@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SharedDb, IngressMessageRow } from "../shared/sqlite.js";
 import type { GroupBotConfig } from "../types.js";
+import { InteractionDiagnostics } from "./interaction-diagnostics.js";
 
 export interface GroupPokeEvent {
   post_type: "notice";
@@ -21,6 +22,21 @@ export function isInteractionQuietHour(now: number): boolean {
 /** Durable group-level guards shared by automatic chat and transport events. */
 export class GroupInteractionService {
   constructor(private readonly db: SharedDb, private readonly botQq: string, private readonly random = Math.random) {}
+
+  status(group: GroupBotConfig, now = Date.now()) {
+    return { ambientEnabled: group.ambientReplyEnabled === true, pokeEnabled: group.pokeReplyEnabled === true,
+      quietHours: isInteractionQuietHour(now), pendingReply: this.hasPendingReply(group.groupId),
+      botQuietRemainingSeconds: Math.max(0,Math.ceil((60_000 - (now-this.lastBotActivity(group.groupId)))/1000)),
+      ambientRemainingSeconds: Math.max(0,Math.ceil(((group.ambientReplyCooldownSeconds ?? 600)*1000-(now-this.last(`ambient:${group.groupId}`)))/1000)),
+      pokeProbabilityPercent: group.pokeReplyProbabilityPercent ?? 25,
+      recent: new InteractionDiagnostics(this.db).list(group.groupId, 30, now) };
+  }
+  private diagnostic(group: GroupBotConfig, feature: "ambient" | "poke", reason: string, now: number, metrics: Record<string,number> = {}): void {
+    if (group.groupExperienceEnabled) new InteractionDiagnostics(this.db).record(group.groupId, feature, reason, metrics, now);
+  }
+  recordAmbientOutcome(group: GroupBotConfig, reason: "pending_reply" | "selected_member_priority" | "model_skipped" | "evaluation_failed" | "queued", now = Date.now()): void {
+    this.diagnostic(group, "ambient", reason, now);
+  }
 
   private last(key: string): number {
     return (this.db.db.prepare("SELECT last_at FROM interaction_cooldowns WHERE key = ?").get(key) as { last_at: number } | undefined)?.last_at ?? 0;
@@ -55,19 +71,25 @@ export class GroupInteractionService {
   }
 
   ambientCandidate(group: GroupBotConfig, now = Date.now()): IngressMessageRow[] {
-    if (!group.ambientReplyEnabled || group.enabled === false || group.botMuted || isInteractionQuietHour(now) || this.hasPendingReply(group.groupId)) return [];
-    if (now - this.lastBotActivity(group.groupId) < 60_000 || now - this.last(`ambient:${group.groupId}`) < (group.ambientReplyCooldownSeconds ?? 600) * 1000 || now - this.last(`evaluate:${group.groupId}`) < 60_000) return [];
+    const skip = (reason: string) => { this.diagnostic(group, "ambient", reason, now); return []; };
+    if (!group.ambientReplyEnabled || group.enabled === false || group.botMuted) return skip("policy_disabled");
+    if (isInteractionQuietHour(now)) return skip("quiet_hours");
+    if (this.hasPendingReply(group.groupId)) return skip("pending_reply");
+    if (now - this.lastBotActivity(group.groupId) < 60_000) return skip("recent_bot_reply");
+    if (now - this.last(`ambient:${group.groupId}`) < (group.ambientReplyCooldownSeconds ?? 600) * 1000) return skip("ambient_cooldown");
+    if (now - this.last(`evaluate:${group.groupId}`) < 60_000) return skip("evaluation_cooldown");
     const rows = this.db.db.prepare(`SELECT * FROM messages WHERE group_id=? AND msg_time>=? AND created_at>=?
       AND is_bot_msg=0 AND processable=1 ORDER BY id DESC LIMIT 20`).all(group.groupId, now - 120_000, now - 120_000) as unknown as IngressMessageRow[];
     const candidate = rows.reverse().filter(row => row.user_id !== this.botQq && !group.blacklistedUserIds?.includes(row.user_id) && !group.memoryDisabledUserIds?.includes(row.user_id)
       && row.text.trim() && !row.text.trim().startsWith("#") && !row.has_at_bot && !this.db.isRetracted(row.group_id, row.msg_id) && !this.isSourceHandled(row.group_id, row.msg_id));
-    if (candidate.length < 3 || new Set(candidate.map(row => row.user_id)).size < 2) return [];
+    if (candidate.length < 3 || new Set(candidate.map(row => row.user_id)).size < 2) return skip("insufficient_messages");
     const newest = candidate[candidate.length - 1]!;
-    if (now - newest.msg_time > 60_000 || newest.id <= this.last(`source:${group.groupId}`)) return [];
+    if (now - newest.msg_time > 60_000 || newest.id <= this.last(`source:${group.groupId}`)) return skip("stale_source");
     return this.db.withImmediateTransaction(() => {
       if (now - this.last(`evaluate:${group.groupId}`) < 60_000) return [];
       this.touch(`evaluate:${group.groupId}`, now);
       this.touch(`source:${group.groupId}`, newest.id);
+      this.diagnostic(group, "ambient", "evaluating", now, { messageCount: candidate.length, memberCount: new Set(candidate.map(row => row.user_id)).size });
       return candidate;
     });
   }
@@ -101,11 +123,12 @@ export class GroupInteractionService {
       const inserted = this.db.db.prepare("INSERT OR IGNORE INTO poke_events(event_key,created_at) VALUES(?,?)").run(key, now);
       if (!inserted.changes) return false;
       if (now - this.last(`poke-group:${groupId}`) < (group.pokeReplyGroupCooldownSeconds ?? 30) * 1000 ||
-        now - this.last(`poke-user:${groupId}:${userId}`) < (group.pokeReplyUserCooldownSeconds ?? 60) * 1000 ||
-        this.random() * 100 >= (group.pokeReplyProbabilityPercent ?? 25)) return false;
+        now - this.last(`poke-user:${groupId}:${userId}`) < (group.pokeReplyUserCooldownSeconds ?? 60) * 1000) { this.diagnostic(group, "poke", "cooldown", now); return false; }
+      if (this.random() * 100 >= (group.pokeReplyProbabilityPercent ?? 25)) { this.diagnostic(group, "poke", "probability_miss", now, { probability: group.pokeReplyProbabilityPercent ?? 25 }); return false; }
       this.touch(`poke-group:${groupId}`, now);
       this.touch(`poke-user:${groupId}:${userId}`, now);
       this.db.enqueueOutbox(groupId, null, userId, "poke");
+      this.diagnostic(group, "poke", "queued", now);
       return true;
     });
   }

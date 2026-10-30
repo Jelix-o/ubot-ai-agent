@@ -128,8 +128,13 @@ export function hasReadableReference(reference?: ReferencedMessage): boolean {
   return Boolean(reference && (reference.text.trim() || reference.images.length));
 }
 
-export function isDirectedFollowUp(text: string): boolean {
-  return /^(?:会仙[🌸，,:：\s]*|你(?:刚才|上面|之前)(?:说|问)|你(?:再|继续|解释|展开)|所以你(?:觉得|认为)|那你(?:觉得|认为|说))/u.test(text.trim());
+export function isDirectedFollowUp(text: string, aliases: readonly string[] = ["会仙"]): boolean {
+  const value = text.trim();
+  if (/^(?:你(?:刚才|上面|之前)(?:说|问)|你(?:再|继续|解释|展开)|所以你(?:觉得|认为)|那你(?:觉得|认为|说))/u.test(value)) return true;
+  return aliases.some(alias => {
+    const name = alias.trim();
+    return Boolean(name && value.startsWith(name));
+  });
 }
 
 /**

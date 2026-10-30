@@ -58,6 +58,10 @@ export type GroupConfigUpdateInput = Partial<Pick<
   | "pokeReplyGroupCooldownSeconds"
   | "htmlPreviewEnabled"
   | "naturalImageRequestsEnabled"
+  | "groupExperienceEnabled"
+  | "personalRemindersEnabled"
+  | "audioReplyEnabled"
+  | "singingEnabled"
 >>;
 
 export class GroupConfigService {
@@ -650,6 +654,10 @@ function normalizeGroupConfig(group: GroupBotConfig): GroupBotConfig {
     // Image requests remain deliberate at runtime, but their natural-language
     // entry point is available to existing groups unless disabled explicitly.
     naturalImageRequestsEnabled: group.naturalImageRequestsEnabled !== false,
+    groupExperienceEnabled: group.groupExperienceEnabled === true,
+    personalRemindersEnabled: group.personalRemindersEnabled === true,
+    audioReplyEnabled: group.audioReplyEnabled === true,
+    singingEnabled: group.singingEnabled === true,
     // Kept in the read model for old persisted records. Image generation is
     // globally available and authorization is enforced by the command.
     imageGenerationEnabled: true,
@@ -776,6 +784,9 @@ export function normalizeGroupConfigPatch(current: GroupBotConfig, input: GroupC
   }
   if ("naturalImageRequestsEnabled" in input) {
     next.naturalImageRequestsEnabled = normalizeBoolean(input.naturalImageRequestsEnabled, "invalid_group_config");
+  }
+  for (const key of ["groupExperienceEnabled", "personalRemindersEnabled", "audioReplyEnabled", "singingEnabled"] as const) {
+    if (key in input) next[key] = normalizeBoolean(input[key], "invalid_group_config");
   }
   return normalizeGroupConfig(next);
 }

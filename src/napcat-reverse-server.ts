@@ -284,6 +284,11 @@ export class NapCatReverseServer extends EventEmitter<{
     await this.callAction("group_poke", { group_id: Number(groupId), user_id: Number(userId) });
   }
 
+  async sendGroupAudio(groupId: string, audioFile: string): Promise<{ messageId?: string } | undefined> {
+    const response = await this.callAction<NapCatSendMessageResponse>("send_group_msg", { group_id: Number(groupId), message: [{ type: "record", data: { file: audioFile } }] });
+    return toMessageReceipt(response.data);
+  }
+
   async getHealthStatus(): Promise<TransportHealthStatus> {
     const connected = this.activeSocket?.readyState === WebSocket.OPEN;
     return {

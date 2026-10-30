@@ -205,7 +205,7 @@ export class ScheduledReminderStore {
     const data = await this.readData();
     const nowMs = now.getTime();
     return Object.values(data.tasks)
-      .filter((task) => task.kind !== "model_call" && task.enabled && new Date(task.nextRunAt).getTime() <= nowMs)
+      .filter((task) => (!task.kind || task.kind === "reminder") && task.enabled && new Date(task.nextRunAt).getTime() <= nowMs)
       .sort((left, right) => left.nextRunAt.localeCompare(right.nextRunAt));
   }
 

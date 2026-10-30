@@ -221,6 +221,11 @@ export class NapCatClient extends EventEmitter<{
     await this.callHttpAction("group_poke", { group_id: Number(groupId), user_id: Number(userId) });
   }
 
+  async sendGroupAudio(groupId: string, audioFile: string): Promise<{ messageId?: string } | undefined> {
+    const data = await this.callAction<NapCatSendMessageResponse>("send_group_msg", { group_id: Number(groupId), message: [{ type: "record", data: { file: audioFile } }] });
+    return toMessageReceipt(data);
+  }
+
   async getHealthStatus(): Promise<TransportHealthStatus> {
     return {
       ok: this.isSocketOpen(),

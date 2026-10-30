@@ -10,6 +10,10 @@ export type ScheduleDateRule = "all" | "workday" | "holiday" | "custom";
 export type ParticipationMode = "mentions_only" | "mentions_and_keywords" | "selected_members";
 
 export interface GroupConfig {
+  groupExperienceEnabled?: boolean;
+  personalRemindersEnabled?: boolean;
+  audioReplyEnabled?: boolean;
+  singingEnabled?: boolean;
   ambientReplyEnabled?: boolean;
   ambientReplyCooldownSeconds?: number;
   pokeReplyEnabled?: boolean;
@@ -510,7 +514,8 @@ export interface ScheduledModelCallRun {
 }
 
 export interface ScheduledReminderTask {
-  kind?: "reminder" | "model_call";
+  kind?: "reminder" | "model_call" | "personal_reminder";
+  personalResult?: "queued" | "missed" | "cancelled" | "skipped";
   modelId?: string;
   timezone?: "Asia/Shanghai";
   lastRun?: ScheduledModelCallRun;

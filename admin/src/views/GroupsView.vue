@@ -60,7 +60,7 @@ const blacklistedUserIds = computed<string[]>({
     form.blacklistedUserIds = userIds;
   },
 });
-const editableFields = ["ambientReplyEnabled", "ambientReplyCooldownSeconds", "pokeReplyEnabled", "pokeReplyProbabilityPercent", "pokeReplyUserCooldownSeconds", "pokeReplyGroupCooldownSeconds", "enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
+const editableFields = ["groupExperienceEnabled", "personalRemindersEnabled", "audioReplyEnabled", "singingEnabled", "ambientReplyEnabled", "ambientReplyCooldownSeconds", "pokeReplyEnabled", "pokeReplyProbabilityPercent", "pokeReplyUserCooldownSeconds", "pokeReplyGroupCooldownSeconds", "enabled", "replyModelMode", "replyModelSource", "participationMode", "liveChatDelaySeconds", "liveChatUserIds", "blacklistedUserIds", "botMuted", "opsAlertsEnabled", "triggerKeywords", "onlineLookupEnabled", "visionEnabled", "ambientGroupContextEnabled", "htmlPreviewEnabled", "naturalImageRequestsEnabled", "dailyReportEnabled", "dailyReportTime", "dailyReportDateRule", "dailyReportWeekdays", "dailyReportTopUserCount", "holidayCountdownEnabled", "holidayCountdownTime", "holidayCountdownDateRule", "holidayCountdownWeekdays", "scheduledRemindersEnabled"] as const;
 function configValues(): Record<string, unknown> {
   return Object.fromEntries(editableFields.filter(key => app.role === "super_admin" || !["replyModelMode", "replyModelSource"].includes(key)).map((key) => [key, key === "triggerKeywords" ? (form.triggerKeywords || []).filter((item) => item.keyword.trim()).map((item) => ({ ...item, keyword: item.keyword.trim() })) : form[key]]));
 }
@@ -69,6 +69,10 @@ const reminderBaseline = shallowRef(JSON.stringify(reminderForm));
 const reminderDirty = computed(() => JSON.stringify(reminderForm) !== reminderBaseline.value);
 useUnsavedChanges(computed(() => dirty.value || reminderDirty.value));
 const capabilities = [
+  { key: "groupExperienceEnabled", label: "群聊体验增强", detail: "开启两轮无 @ 定向追问、中文分类索图、表情轮换和本人记忆自助管理。" },
+  { key: "personalRemindersEnabled", label: "个人一次性提醒", detail: "成员可用 #提醒 设置本人提醒；每人五条，每群五十条，不影响管理员定时任务。" },
+  { key: "audioReplyEnabled", label: "语音回复", detail: "启用独立音频服务后支持点播及偶尔语音；需要超级管理员开通。" },
+  { key: "singingEnabled", label: "原创短歌", detail: "按主题生成 15–30 秒原创歌曲；需要超级管理员开通。" },
   { key: "ambientReplyEnabled", label: "读空气", detail: "只接新出现的话题；每 30 秒检查，至少三条消息、两位成员。默认关闭。" },
   { key: "pokeReplyEnabled", label: "回戳", detail: "收到群内戳一戳时概率戳回。默认关闭。" },
   { key: "onlineLookupEnabled", label: "自动查询实时资料", detail: "回答需要最新资料的问题时查询网络。" },
@@ -119,6 +123,7 @@ function defaultGroupConfig(): GroupConfig {
     holidayCountdownDateRule: "all",
     holidayCountdownWeekdays: [],
     botMuted: false,
+    groupExperienceEnabled: false, personalRemindersEnabled: false, audioReplyEnabled: false, singingEnabled: false,
     ambientReplyEnabled: false, ambientReplyCooldownSeconds: 600,
     pokeReplyEnabled: false, pokeReplyProbabilityPercent: 25, pokeReplyUserCooldownSeconds: 60, pokeReplyGroupCooldownSeconds: 30,
     scheduledRemindersEnabled: false,
@@ -247,7 +252,7 @@ async function loadReminders(groupId = app.groupId, serial = loadSerial): Promis
   remindersLoading.value = true;
   try {
     const data = await api<{ reminders: ScheduledReminderTask[] }>(`/api/groups/${encodeURIComponent(groupId)}/reminders`);
-    if (serial === loadSerial && groupId === app.groupId) reminders.value = data.reminders;
+    if (serial === loadSerial && groupId === app.groupId) reminders.value = data.reminders.filter(t => t.kind !== "personal_reminder");
   } finally {
     if (serial === loadSerial) remindersLoading.value = false;
   }
@@ -323,6 +328,7 @@ function resetReminderForm(): void {
 }
 
 function fillReminderForm(reminder: ScheduledReminderTask, mode: "edit" | "copy"): void {
+  if (reminder.kind === "personal_reminder") return;
   editingReminderId.value = mode === "edit" ? reminder.id : null;
   reminderForm.kind = reminder.kind ?? "reminder";
   reminderForm.modelId = reminder.modelId ?? defaultReplyModelId.value;
@@ -525,7 +531,7 @@ watch(() => app.groupId, () => {
           </div>
           <p class="muted">读空气免打扰：北京时间 01:00–07:00；机器人发言后 60 秒内不插话，每分钟最多判断一次。静音与停用会同时暂停读空气和回戳。</p>
           <div class="capability-list">
-            <label v-for="capability in capabilities" :key="capability.key" class="switch-line"><span><strong>{{ capability.label }}</strong><small>{{ capability.detail }}</small></span><input v-model="form[capability.key]" :disabled="readonly" type="checkbox" /></label>
+            <label v-for="capability in capabilities" :key="capability.key" class="switch-line"><span><strong>{{ capability.label }}</strong><small>{{ capability.detail }}</small></span><input v-model="form[capability.key]" :disabled="readonly || app.role !== 'super_admin' && ['audioReplyEnabled','singingEnabled'].includes(capability.key)" type="checkbox" /></label>
           </div>
           <p class="muted">日报、节日倒计时和定时提醒在「排程」中配置。</p>
         </section>

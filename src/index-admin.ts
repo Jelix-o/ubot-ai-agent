@@ -27,6 +27,7 @@ import { V3CapabilityPolicyService } from "./services/capability-policy-service.
 import { HtmlPreviewService } from "./services/html-preview-service.js";
 import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
 import { MemeLibraryService } from "./services/meme-library-service.js";
+import { AudioGenerationService } from "./services/audio-generation-service.js";
 
 /**
  * Admin process:
@@ -103,6 +104,7 @@ export async function main(): Promise<void> {
   // on the other side of a rolling upgrade cannot safely consume.
   const memeLibraryService = v3State ? new MemeLibraryService(config.dataDir, v3State) : undefined;
   await memeLibraryService?.initialize();
+  const audioGenerationService = v3State ? new AudioGenerationService(v3State,path.join(config.dataDir,"audio-assets")) : undefined;
 
   const server = new AdminHttpServer({
     host: config.adminHttpHost,
@@ -124,6 +126,7 @@ export async function main(): Promise<void> {
     htmlPreviewService,
     imagePreviewService,
     ...(memeLibraryService ? { memeLibraryService } : {}),
+    audioGenerationService,
     adminOperationLogService,
     getTransportHealthStatus: () => readClient.getHealth(),
     listGroupMembers: (groupId) => readClient.listGroupMembersStrict(groupId),
@@ -137,9 +140,10 @@ export async function main(): Promise<void> {
     port: config.adminHttpPort,
   });
 
-  const shutdown = () => {
+  const shutdown = async () => {
     logInfo("Admin shutting down...");
     server.close();
+    await audioGenerationService?.stop();
     sharedDb.close();
     process.exit(0);
   };

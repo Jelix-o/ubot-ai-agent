@@ -1,5 +1,9 @@
 import { MemeLibraryService } from "./services/meme-library-service.js";
 import { GroupInteractionService, type GroupPokeEvent } from "./services/group-interaction-service.js";
+import { AudioAssetStore } from "./services/audio-asset-store.js";
+import { AudioSettingsService } from "./services/audio-settings-service.js";
+import type { AudioJob } from "./services/audio-generation-service.js";
+import { personalReminderNotice } from "./services/personal-reminder-service.js";
 import { loadConfig } from "./config.js";
 import { parseForwardNodes, sendForwardOrFallback } from "./forward-message.js";
 import { lstat, readFile, realpath, rm } from "node:fs/promises";
@@ -21,7 +25,7 @@ import {
   restoreCanonicalMessageSegments,
   serializeCanonicalMessageSegments,
 } from "./utils/persisted-message-segments.js";
-import type { NapcatGroupMessageEvent } from "./types.js";
+import type { NapcatGroupMessageEvent, ScheduledReminderTask } from "./types.js";
 import type { MessageReceipt, MessageTransport } from "./bot.js";
 import {
   IMAGE_GENERATION_MAX_BYTES,
@@ -101,6 +105,7 @@ export async function deliverOutboxRow(
   onAckFailure?: (error: unknown) => void,
   generatedImageRoot?: string,
   memeLibrary?: Pick<MemeLibraryService, "loadImageFile" | "getAsset">,
+  audioAssets?: Pick<AudioAssetStore, "load" | "acknowledge">,
 ): Promise<string | undefined> {
   // Old workers or manual recovery can leave malformed private reply metadata
   // in a contextual outbox row. Stop it before any QQ send and leave a
@@ -118,11 +123,35 @@ export async function deliverOutboxRow(
     sharedDb.markOutboxSent(row.id);
     return undefined;
   }
-  if (row.kind === "meme_image") {
+  if (row.kind === "audio_asset") {
+    if (!audioAssets || !transport.sendGroupAudio) throw new Error("audio_transport_unavailable");
+    const saved = sharedDb.db.prepare("SELECT document_json FROM v3_state_documents WHERE document_type='audio-job' AND document_key=?").get(row.text) as {document_json:string}|undefined;
+    const job = saved ? JSON.parse(saved.document_json) as AudioJob : undefined;
+    const caption = job?.captionOutboxId ? sharedDb.db.prepare("SELECT status FROM outbox WHERE id=? AND group_id=?").get(job.captionOutboxId,row.group_id) as {status:string}|undefined : undefined;
+    if (!job || job.groupId !== row.group_id || job.status !== "queued_delivery" || !job.captionAlreadySent && caption?.status !== "sent") throw new Error("audio_caption_unconfirmed");
+    const bytes = await audioAssets.load(row.text,row.group_id);
+    receipt = await transport.sendGroupAudio(row.group_id, `base64://${bytes.toString("base64")}`);
+  } else if (row.kind === "meme_image") {
     const asset = await memeLibrary?.getAsset(row.text);
     const image = asset?.enabled ? await memeLibrary?.loadImageFile(row.text) : undefined;
     if (!image) throw new Error("meme_asset_unavailable");
     receipt = await transport.sendGroupImage(row.group_id, image);
+  } else if (["audio_caption", "audio_progress"].includes(row.kind)) {
+    const notice = JSON.parse(row.text) as { text: string; jobId: string };
+    if (typeof notice.text !== "string" || typeof notice.jobId !== "string") throw new Error("invalid_audio_notice");
+    receipt = await transport.sendGroupMessage(row.group_id, notice.text);
+  } else if (row.kind === "personal_reminder_notice") {
+    const notice = JSON.parse(row.text) as { text: string; taskId: string };
+    if (typeof notice.text !== "string" || typeof notice.taskId !== "string") throw new Error("invalid_personal_reminder_notice");
+    const saved = sharedDb.db.prepare("SELECT task_json FROM v3_scheduled_reminders WHERE id=? AND group_id=?").get(notice.taskId,row.group_id) as {task_json:string}|undefined;
+    const task = saved ? JSON.parse(saved.task_json) as ScheduledReminderTask : undefined;
+    if (!task || task.kind !== "personal_reminder" || !["queued","missed"].includes(task.personalResult ?? "")) throw new Error("personal_reminder_unavailable");
+    const current = personalReminderNotice(task, sentAtMs ?? Date.now());
+    sharedDb.withImmediateTransaction(() => {
+      if (current.missed && task.personalResult !== "missed") sharedDb.db.prepare("UPDATE v3_scheduled_reminders SET task_json=?,updated_at=? WHERE id=?").run(JSON.stringify({...task,personalResult:"missed"}),sentAtMs ?? Date.now(),task.id);
+      sharedDb.db.prepare("UPDATE outbox SET text=? WHERE id=?").run(JSON.stringify({...notice,text:current.text}),row.id);
+    });
+    receipt = await transport.sendGroupMessage(row.group_id, current.text);
   } else if (row.kind === "record" || row.kind === "airecord") {
     throw new Error("Retired voice outbox kind cannot be delivered.");
   } else if (row.kind === "forward") {
@@ -169,6 +198,7 @@ export async function deliverOutboxRow(
     throw new OutboxAcknowledgementError(platformMessageId, error);
   }
   if (generatedImagePath) await rm(generatedImagePath, { force: true }).catch(() => undefined);
+  if (row.kind === "audio_asset") await audioAssets?.acknowledge(row.text).catch(() => undefined);
   return platformMessageId;
 }
 
@@ -212,7 +242,7 @@ export function markOutboxDeliveryFailed(
   const retiredVoice = row.kind === "record" || row.kind === "airecord";
   const retryable = !(error instanceof ConversationOutboxEnvelopeError) &&
     !retiredVoice &&
-    (!["generated_image", "forward", "poke", "meme_image"].includes(row.kind) || error instanceof NapCatActionNotSentError);
+    (!["generated_image", "forward", "poke", "meme_image", "personal_reminder_notice", "audio_asset", "audio_caption", "audio_progress"].includes(row.kind) || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }
@@ -234,6 +264,7 @@ export class IngressApp {
   private readonly messageRecalls: MessageRecallService;
   private readonly memeLibrary: MemeLibraryService;
   private readonly interactions: GroupInteractionService;
+  private readonly audioAssets?: AudioAssetStore;
   private readonly v3State: ReturnType<typeof resolveV3RuntimeState>;
   private emitterInFlight?: Promise<void>;
   private stopPromise?: Promise<void>;
@@ -250,6 +281,7 @@ export class IngressApp {
     this.v3State?.retireRoastModeForExistingGroupsOnce();
     this.memeLibrary = new MemeLibraryService(options.dataDir, this.v3State);
     this.interactions = new GroupInteractionService(this.sharedDb, options.botQq);
+    if (this.v3State) this.audioAssets = new AudioAssetStore(path.join(options.dataDir,"audio-assets"), this.v3State);
     this.metrics = new Metrics(this.options.metricsDir, {
       processName: "ingress",
       flushIntervalMs: 30_000,
@@ -556,6 +588,26 @@ export class IngressApp {
     await Promise.all([...byGroup.values()].map(async groupRows => {
     for (const row of groupRows) {
       try {
+        if (row.kind === "audio_caption" || row.kind === "audio_progress") {
+          const notice = JSON.parse(row.text) as { jobId: string };
+          const job = this.v3State?.getDocument<AudioJob | null>("audio-job",notice.jobId,null);
+          const group = this.v3State?.getGroup(row.group_id);
+          const config = this.v3State && new AudioSettingsService(this.v3State).internal();
+          if (!job || job.groupId !== row.group_id || !config?.enabled || !group || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(job.userId) || (job.kind === "song" ? !group.singingEnabled : !group.audioReplyEnabled) || row.kind === "audio_progress" && job.status !== "running") throw new Error("audio_notice_disabled");
+        }
+        if (row.kind === "audio_asset") {
+          const job = this.v3State?.getDocument<AudioJob | null>("audio-job",row.text,null);
+          const group = this.v3State?.getGroup(row.group_id);
+          const config = this.v3State && new AudioSettingsService(this.v3State).internal();
+          const caption = job?.captionOutboxId ? this.sharedDb.db.prepare("SELECT status FROM outbox WHERE id=? AND group_id=?").get(job.captionOutboxId,row.group_id) as {status:string}|undefined : undefined;
+          if (!job || job.groupId !== row.group_id || job.status !== "queued_delivery" || !config?.enabled || !group || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(job.userId) || (job.kind === "song" ? !group.singingEnabled : !group.audioReplyEnabled) || !job.captionAlreadySent && caption?.status !== "sent") throw new Error("audio_delivery_disabled_or_caption_unconfirmed");
+        }
+        if (row.kind === "personal_reminder_notice") {
+          const notice = JSON.parse(row.text) as { taskId: string };
+          const task = this.v3State?.getScheduledReminder(notice.taskId);
+          const group = this.v3State?.getGroup(row.group_id);
+          if (!task || task.groupId !== row.group_id || !["queued", "missed"].includes(task.personalResult ?? "") || !group?.personalRemindersEnabled || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(task.creatorUserId)) throw new Error("personal_reminder_disabled");
+        }
         if (row.kind === "poke") {
           const group = this.v3State?.getGroup(row.group_id);
           if (!group?.pokeReplyEnabled || group.enabled === false || group.botMuted || group.blacklistedUserIds?.includes(row.text)) throw new Error("poke_policy_disabled");
@@ -570,6 +622,7 @@ export class IngressApp {
           () => this.metrics.inc("outbox_ack_backfill_failed"),
           path.join(this.options.dataDir, "generated-images"),
           this.memeLibrary,
+          this.audioAssets,
         );
         this.metrics.inc("outbox_sent");
         logInfo("Outbox message sent.", {

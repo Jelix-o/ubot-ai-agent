@@ -41,6 +41,8 @@ import { BT_ADULT_CONTENT_WARNING } from "./services/bt-search-renderer.js";
 import { NapCatActionRejectedError, NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
 import type { MemeTag, MemeLibraryUploadInput } from "./services/meme-library-service.js";
 import { GroupInteractionService } from "./services/group-interaction-service.js";
+import type { AudioGenerationService } from "./services/audio-generation-service.js";
+import { PersonalReminderService } from "./services/personal-reminder-service.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import { resolveMentionTargetsFromMembers } from "./utils/mention-resolver.js";
 import type {
@@ -8898,4 +8900,56 @@ test("image requests stay isolated across interleaved members and hold the lock 
   await app.handleGroupMessage(event(20002, "member-b"));
   gate.resolve(); await pending;
   assert.deepEqual(inputs.map(input => [input.userId, input.prompt]), [["20002", "member-b"], ["20001", "member-a"]]);
+});
+
+test("audio permission applies to renamed commands and explicit spoken conversation requests",async()=>{
+  const command:SystemCommandConfig={id:"spoken_reply",title:"语音",primary:"#朗读",aliases:["#语音"],permission:"super_admin",enabled:true,help:"",updatedAt:""};
+  const f=createApp({systemSettingsStore:new FakeSystemSettingsStore([command])});
+  Object.assign(f.groupConfigService.groups[0]!,{audioReplyEnabled:true,groupExperienceEnabled:true});
+  const queued:Array<{text:string;kind:string}>=[];
+  f.app.setAudioGenerationService({enqueue(args:{text:string;kind:string}){queued.push(args);return{id:"test"};},async tick(){}} as unknown as AudioGenerationService);
+  const mention=(text:string)=>createEvent([{type:"at",data:{qq:"12345"}},{type:"text",data:{text}}]);
+  await f.app.handleGroupMessage(createEvent("#朗读 你好"));
+  await f.app.handleGroupMessage(mention("用语音回答，今天开心吗"));
+  assert.equal(queued.length,0);
+  command.permission="member";command.enabled=false;
+  await f.app.handleGroupMessage(createEvent("#语音 你好"));
+  await f.app.handleGroupMessage(mention("用语音回答，今天开心吗"));
+  assert.equal(queued.length,0);
+  command.enabled=true;
+  await f.app.handleGroupMessage(createEvent("#朗读 今天也要好好吃饭"));
+  await f.app.handleGroupMessage(mention("用语音回答，今天开心吗"));
+  assert.equal(queued.length,2);assert.equal(queued[0]?.text,"今天也要好好吃饭");assert.equal(queued[1]?.text,"AI reply");
+});
+
+test("personal reminder commands persist once, isolate owners and keep ordinary chat outside scheduling",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"bot-personal-entry-")),db=new SharedDb(path.join(root,"state.db"));
+  t.after(async()=>{db.close();await rm(root,{recursive:true,force:true});});
+  const repo=new V3StateRepository(db,{stateEncryptionKey:"0".repeat(64)}),service=new PersonalReminderService(repo),f=createApp({systemSettingsStore:new SystemSettingsStore(path.join(root,"settings.json"))});
+  const group=f.groupConfigService.groups[0]!;group.personalRemindersEnabled=true;repo.saveGroup(group);
+  f.app.setPersonalReminderService(service);
+  await f.app.handleGroupMessage(createEvent("#提醒 10分钟后 喝水",20001,67890,901));
+  await f.app.handleGroupMessage(createEvent("#提醒 10分钟后 喝水",20001,67890,901));
+  assert.equal(service.list("67890","20001").length,1);assert.equal(f.aiService.calls.length,0);
+  const id=service.list("67890","20001")[0]!.id.slice(9,17);
+  await f.app.handleGroupMessage(createEvent("#提醒 取消 "+id,20002));
+  assert.equal(service.list("67890","20001").length,1);
+  await f.app.handleGroupMessage(createEvent("#提醒 取消 "+id,20001));
+  assert.equal(service.list("67890","20001").length,0);
+  await f.app.handleGroupMessage(createEvent("明天9点提醒我开会",20001,67890,902));
+  assert.equal(service.list("67890","20001").length,0);
+  await f.app.handleGroupMessage(createEvent([{type:"at",data:{qq:"12345"}},{type:"text",data:{text:"明天9点提醒我开会"}}],20001,67890,903));
+  assert.equal(service.list("67890","20001").length,1);assert.match(f.transport.sent.at(-1)?.text??"",/北京时间/);
+});
+
+test("experience help only advertises enabled member features and keeps diagnostics for administrators",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"bot-help-entry-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const f=createApp({systemSettingsStore:new SystemSettingsStore(path.join(root,"settings.json"))});
+  await f.app.handleGroupMessage(createEvent("#帮助"));
+  assert.doesNotMatch(f.transport.sent.at(-1)?.text??"",/#我的记忆|#提醒|#语音|#唱歌|#互动状态/);
+  Object.assign(f.groupConfigService.groups[0]!,{groupExperienceEnabled:true,personalRemindersEnabled:true,audioReplyEnabled:true,singingEnabled:true});
+  await f.app.handleGroupMessage(createEvent("#帮助"));
+  assert.match(f.transport.sent.at(-1)?.text??"",/#我的记忆/);assert.match(f.transport.sent.at(-1)?.text??"",/#提醒/);assert.match(f.transport.sent.at(-1)?.text??"",/#语音/);
+  assert.doesNotMatch(f.transport.sent.at(-1)?.text??"",/#互动状态/);
 });

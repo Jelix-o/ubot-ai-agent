@@ -18,6 +18,8 @@ import AppImagePreviewsView from "./views/ImagePreviewsView.vue";
 import AppMemeLibraryView from "./views/MemeLibraryView.vue";
 import AppAnalyticsView from "./views/AnalyticsView.vue";
 import AppBulkConfigView from "./views/BulkConfigView.vue";
+import AppInteractionsView from "./views/InteractionsView.vue";
+import AppAudioView from "./views/AudioView.vue";
 import { workspaces } from "./workspaces";
 import { allowContextChange } from "./composables/useUnsavedChanges";
 import { cancelAuthRecovery } from "./services/api";
@@ -28,6 +30,8 @@ export const routes = [
   { path: "/analytics", name: "analytics", component: AppAnalyticsView, meta: { title: "调用分析", subtitle: "查看真实模型请求、用量和上游计费" } },
   { path: "/groups/bulk", name: "group-bulk", component: AppBulkConfigView, meta: { title: "跨群配置", subtitle: "预览差异后，将选定配置复制到多个群", superOnly: true } },
   { path: "/groups", name: "groups", component: AppGroupsView, meta: { title: "群配置", subtitle: "管理群回复、权限、触发词和定时能力" } },
+  { path: "/interactions", name: "interactions", component: AppInteractionsView, meta: { title: "互动诊断", subtitle: "查看本群表情、读空气、回戳与语音的最近结果" } },
+  { path: "/audio", name: "audio", component: AppAudioView, meta: { title: "音频服务", subtitle: "配置独立音频服务，查看额度、用量和生成结果", superOnly: true } },
   { path: "/members", name: "members", component: AppMembersView, meta: { title: "成员管理", subtitle: "维护成员备注、身份标签、明确记忆和隐私退出" } },
   { path: "/memories", name: "memories", component: AppMemoriesView, meta: { title: "记忆", subtitle: "维护明确保存的记忆、归属、状态和来源" } },
   { path: "/knowledge", name: "knowledge", component: AppKnowledgeView, meta: { title: "知识库", subtitle: "管理群内 FAQ 和历史聊天提炼后的知识条目" } },

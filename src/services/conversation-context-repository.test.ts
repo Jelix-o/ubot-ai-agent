@@ -17,6 +17,30 @@ function fixture(t: test.TestContext): { db: SharedDb; repository: ConversationC
   return { db, repository: new ConversationContextRepository(db) };
 }
 
+test("directed follow-up counts two acknowledged rounds, resets on mention and isolates member/topic/group", t => {
+  const { db, repository } = fixture(t);
+  let parent: number | undefined;
+  let topicId: string | undefined;
+  let branchId: string | undefined;
+  let seq = 0;
+  const exchange = (mention: boolean, confirmed = true) => {
+    const sourceMessageId = `message-${++seq}`;
+    const sourceRowId = db.insertMessage({ groupId: "g1", userId: "u1", selfId: "bot", msgId: sourceMessageId, msgTime: 10_000 + seq, text: "你继续说", imagesJson: "[]", hasAtBot: mention, isBotMsg: false, createdAt: 10_000 + seq });
+    const route = repository.saveMessageRoute({ sourceRowId: sourceRowId!, groupId: "g1", userId: "u1", sourceMessageId, routeReason: topicId ? "same-user-follow-up" : "new-topic", content: "你继续说", createdAt: 10_000 + seq, topicId, branchId, parentTurnId: parent });
+    topicId = route.topicId; branchId = route.branchId;
+    parent = repository.appendAssistantTurn({ topicId, branchId, parentTurnId: route.turnId, content: "回答", ...(confirmed ? { platformMessageId: `bot-${seq}` } : { deliveryId: "outbox:999999" }), createdAt: 10_100 + seq }).id;
+  };
+  exchange(true);
+  assert.equal(repository.canDirectedFollowUp("g1", "u1", 11_000), true);
+  assert.equal(repository.canDirectedFollowUp("g2", "u1", 11_000), false);
+  assert.equal(repository.canDirectedFollowUp("g1", "u2", 11_000), false);
+  exchange(false); assert.equal(repository.canDirectedFollowUp("g1", "u1", 11_000), true);
+  exchange(false); assert.equal(repository.canDirectedFollowUp("g1", "u1", 11_000), false);
+  exchange(true); assert.equal(new ConversationContextRepository(db).canDirectedFollowUp("g1", "u1", 11_000), true);
+  assert.equal(repository.canDirectedFollowUp("g1", "u1", 140_000), false);
+  exchange(false, false); assert.equal(repository.canDirectedFollowUp("g1", "u1", 11_000), false);
+});
+
 test("source DB row id makes route persistence idempotent across repository instances", (t) => {
   const { db, repository } = fixture(t);
   const first = repository.saveMessageRoute({
