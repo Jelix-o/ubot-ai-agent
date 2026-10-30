@@ -8953,3 +8953,15 @@ test("experience help only advertises enabled member features and keeps diagnost
   assert.match(f.transport.sent.at(-1)?.text??"",/#我的记忆/);assert.match(f.transport.sent.at(-1)?.text??"",/#提醒/);assert.match(f.transport.sent.at(-1)?.text??"",/#语音/);
   assert.doesNotMatch(f.transport.sent.at(-1)?.text??"",/#互动状态/);
 });
+
+test("memory category help hides individually disabled and privileged mutation commands",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"bot-memory-help-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const settings=new SystemSettingsStore(path.join(root,"settings.json")),f=createApp({systemSettingsStore:settings});
+  f.groupConfigService.groups[0]!.groupExperienceEnabled=true;
+  const current=await settings.getInternal();
+  await settings.update({commands:current.commands.map(command=>command.id==="self_memory_edit"?{...command,enabled:false}:command.id==="self_memory_delete"?{...command,permission:"super_admin"}:command)});
+  await f.app.handleGroupMessage(createEvent("#帮助 我的记忆"));
+  const text=f.transport.sent.at(-1)?.text??"";
+  assert.match(text,/#我的记忆.*保存/);assert.doesNotMatch(text,/#记忆修改|#忘记|三十秒/);
+});

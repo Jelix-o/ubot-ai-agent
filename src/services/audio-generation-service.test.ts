@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -24,6 +24,23 @@ async function fixture(run: (args: { repo:V3StateRepository; db:SharedDb; root:s
   } finally { db.close(); await rm(root,{recursive:true,force:true}); }
 }
 const enable = (settings:AudioSettingsService) => settings.update({enabled:true,apiKey:"fixture-audio-credential"},settings.get().revision,"operator");
+
+test("audio cleanup removes only stale owned orphan files and retains live assets and unrelated files",async()=>fixture(async({repo,root})=>{
+  const service=new AudioGenerationService(repo,root), now=Date.now(), old=new Date(now-25*60*60*1000);
+  const live="audio-"+"a".repeat(32);
+  await service.assets.save(live,"10001",audio());
+  await utimes(path.join(root,`${live}.mp3`),old,old);
+  const stale=[`audio-${"b".repeat(32)}.mp3`,`audio-${"c".repeat(32)}.mp3.tmp`];
+  for(const name of [...stale,"unrelated.mp3"]){const file=path.join(root,name);await writeFile(file,bytes);await utimes(file,old,old);}
+  const fresh=path.join(root,`audio-${"d".repeat(32)}.mp3.tmp`);await writeFile(fresh,bytes);
+  const link=path.join(root,`audio-${"e".repeat(32)}.mp3`);
+  if(process.platform!=="win32")await symlink(path.join(root,"unrelated.mp3"),link);
+  await service.assets.cleanup(now);
+  for(const name of stale)await assert.rejects(readFile(path.join(root,name)),/ENOENT/);
+  assert.deepEqual(await service.assets.load(live,"10001"),bytes);
+  assert.deepEqual(await readFile(fresh),bytes);assert.deepEqual(await readFile(path.join(root,"unrelated.mp3")),bytes);
+  if(process.platform!=="win32")assert.deepEqual(await readFile(link),bytes);
+}));
 
 test("audio settings default off, encrypt the independent key and never expose it in reads or audit", async()=>fixture(async({repo,db,settings})=>{
   assert.equal(settings.get().enabled,false); const revision = settings.get().revision;

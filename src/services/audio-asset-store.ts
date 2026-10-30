@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { V3StateRepository } from "./v3-state-repository.js";
 import { isMp3Audio, type GeneratedAudio } from "./seed-audio-provider.js";
@@ -33,10 +33,28 @@ export class AudioAssetStore {
     await rm(this.file(id), { force: true });
   }
   async cleanup(now = Date.now()): Promise<void> {
+    const retained = new Set<string>();
     for (const doc of this.repo.listDocuments<AudioAsset>("audio-asset")) {
       if (doc.value.deliveredAt || now - doc.value.createdAt > 86_400_000) {
         await rm(this.file(doc.key), { force: true });
         if (now - doc.value.createdAt > 86_400_000) this.repo.deleteDocument("audio-asset", doc.key);
+      } else retained.add(`${doc.key}.mp3`);
+    }
+    // A crash between writing the file and saving its document can leave an orphan.
+    let entries: string[];
+    try { entries = await readdir(this.root); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const root = await realpath(this.root);
+    for (const name of entries) {
+      if (!/^audio-[a-f0-9]{32}\.mp3(?:\.tmp)?$/.test(name) || retained.has(name)) continue;
+      const file = path.join(this.root, name);
+      try {
+        const info = await lstat(file);
+        if (info.isFile() && !info.isSymbolicLink() && now - info.mtimeMs > 86_400_000 && path.dirname(await realpath(file)) === root) await rm(file, { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
   }

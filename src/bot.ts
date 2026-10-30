@@ -6739,7 +6739,7 @@ function buildFeatureListMessage(
 ): string {
   const topic = parseHelpTopic(commandText);
   const helper = createCommandHelpFormatter(commands);
-  const sections = buildHelpSections(helper, includeImageGeneration, personaName,experienceEnabled).filter(section => !section.commandId || !hiddenIds.has(section.commandId));
+  const sections = buildHelpSections(helper, includeImageGeneration, personaName,experienceEnabled, hiddenIds).filter(section => !section.commandId || !hiddenIds.has(section.commandId));
 
   if (!topic) {
     return buildHelpOverviewMessage(sections, helper, includeImageGeneration, hiddenIds, personaName);
@@ -6791,11 +6791,16 @@ type HelpSection = {
   lines: string[];
 };
 
-function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false): HelpSection[] {
+function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false, hiddenIds = new Set<string>()): HelpSection[] {
   return [
     ...(experienceEnabled ? [{title:"表情",aliases:["表情","表情包","meme"],lines:["#表情 分类 / #表情 开心 / #表情 换一张","支持中文分类和英文原名；主动索图每人十秒、每群五秒一次。","自动配图仍按既有概率和群冷却执行；只有超级管理员可用 #表情 收藏 <分类> 收图。"]}] : []),
     { commandId:"personal_reminder",title:"个人提醒",aliases:["个人提醒","一次性提醒","提醒"],lines:[`${command("personal_reminder")} 10分钟后 喝水`,`${command("personal_reminder")} 明天9点 开会`,`${command("personal_reminder")} 列表 / 取消 <编号>`,"北京时间，全天可用；只管理本人在本群的提醒，每人五条、每群五十条。"] },
-    { commandId:"self_memory",title:"我的记忆",aliases:["我的记忆","自助记忆","记忆"],lines:[`${command("self_memory")} / ${command("self_memory")} 2`,`${command("self_memory")} 保存 喜欢无糖茶`,`${command("self_memory_edit")} <编号> <新内容>`,`${command("self_memory_delete")} <编号> / 全部`,"只管理本人明确保存的记忆；全部删除需要三十秒内二次确认，管理员画像保留原权限。"] },
+    { commandId:"self_memory",title:"我的记忆",aliases:["我的记忆","自助记忆","记忆"],lines:[
+      `${command("self_memory")} / ${command("self_memory")} 2`,`${command("self_memory")} 保存 喜欢无糖茶`,
+      ...(!hiddenIds.has("self_memory_edit") ? [`${command("self_memory_edit")} <编号> <新内容>`] : []),
+      ...(!hiddenIds.has("self_memory_delete") ? [`${command("self_memory_delete")} <编号> / 全部`,"全部删除需要三十秒内二次确认。"] : []),
+      "只管理本人明确保存的记忆；管理员画像保留原权限。",
+    ] },
     { commandId:"spoken_reply",title:"语音",aliases:["语音","声音"],lines:[`${command("spoken_reply")} 今天也要好好吃饭`,"也可以 @机器人并说‘用语音回答’。字幕先于音频；复杂内容保留完整文字。"] },
     { commandId:"original_song",title:"原创短歌",aliases:["唱歌","短歌","原创短歌"],lines:[`${command("original_song")} 周五下班`,"生成 15–30 秒原创短歌；同成员五分钟、同群十分钟冷却。", "语音与短歌共用每日三十分钟额度，按北京时间换日。"] },
     { commandId:"interaction_status",title:"互动状态",aliases:["互动状态","互动","诊断"],lines:[command("interaction_status"),"查看表情未命中、读空气条件和回戳概率；只向管理员显示本群状态。"] },
