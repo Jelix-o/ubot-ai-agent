@@ -226,6 +226,7 @@ export class WorkerApp {
         if (await this.isBlacklistedMessage(message)) {
           return `${message.group_id}:blacklisted`;
         }
+        if (await this.options.botApp.isChatSummaryMessage?.(this.buildEvent(message))) return `${message.group_id}:summary:${message.user_id}`;
         if (await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message)))return `${message.group_id}:assistance:${message.user_id}`;
         if (await this.options.botApp.getBtCommand(message.text)) {
           await this.getOrRecordParticipationDecision(message);
@@ -373,6 +374,10 @@ export class WorkerApp {
       return;
     }
 
+    if (await this.options.botApp.isChatSummaryMessage?.(this.buildEvent(message))) {
+      await this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true });
+      await done(); return;
+    }
     if(await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message))){
       await this.options.botApp.handleGroupMessage(this.buildEvent(message),undefined,undefined,{naturalImageRoutingDecided:true});
       await done();return;

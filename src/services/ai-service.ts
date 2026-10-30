@@ -7,6 +7,7 @@ import { instrumentCompletions, withModelOperation } from "./model-telemetry.js"
 import OpenAI from "openai";
 
 import { classifyUpstreamFailure, type UpstreamFailureKind } from "../utils/upstream-failure.js";
+import { beijingClock } from "../utils/beijing-calendar.js";
 
 import { compilePersonaPolicy } from "../persona/persona-policy.js";
 import { normalizeReplyMaxTokens } from "../shared/reply-token-budget.js";
@@ -1041,7 +1042,7 @@ export class AiService {
     const sampleMessagesText = args.sampleMessages
       .map(
         (message, index) =>
-          `${index + 1}. [${message.timestamp.slice(11, 16)}] ${message.userName}: ${message.text}`,
+            `${index + 1}. [${beijingClock(new Date(message.timestamp))}] ${message.userName}: ${message.text}`,
       )
       .join("\n");
 

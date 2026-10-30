@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 
 import { readJsonFile, writeJsonFileAtomic } from "../utils/json-file.js";
+import { beijingDateKey } from "../utils/beijing-calendar.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
 
 export interface DailyReportMessageRecord {
@@ -191,12 +192,7 @@ function pruneStoreDays(data: DailyReportStoreFile): void {
 }
 
 function toLocalDateKey(value: string): string {
-  const date = new Date(value);
-  return [
-    date.getFullYear(),
-    `${date.getMonth() + 1}`.padStart(2, "0"),
-    `${date.getDate()}`.padStart(2, "0"),
-  ].join("-");
+  return beijingDateKey(new Date(value));
 }
 
 function normalizeOutputRecord(record: DailyReportOutputRecord): DailyReportOutputRecord {

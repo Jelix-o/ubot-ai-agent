@@ -3,6 +3,7 @@ import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 import type { ChatSummaryRequest } from "../utils/chat-summary-request.js";
 import { isScheduleDateRuleMatched } from "../utils/schedule-date-rule.js";
 import { normalizeDailyReportTopUserCount } from "../utils/daily-report-config.js";
+import { beijingClock, beijingDateKey, beijingDayStart } from "../utils/beijing-calendar.js";
 import type { AiService } from "./ai-service.js";
 import type { DailyReportMessageRecord, DailyReportOutputRecord } from "./daily-report-store.js";
 import { DailyReportStore } from "./daily-report-store.js";
@@ -132,6 +133,7 @@ export class DailyReportService {
     now?: Date;
     useAiSummary?: boolean;
     members?: readonly NapcatGroupMember[];
+    includeStatistics?: boolean;
   }): Promise<string> { return withModelOperation('summary', args.groupId, async () => {
     const now = args.now ?? new Date();
     const { dayKey, messages } = await this.loadMessagesForRequest(
@@ -141,11 +143,15 @@ export class DailyReportService {
     );
 
     if (messages.length === 0) {
-      return `${args.request.label}这段时间没有可总结的聊天记录`;
+      return [
+        ...(args.includeStatistics ? [`【本群实时总结】${beijingDateKey(now)}｜${args.request.label}`, `截至 ${beijingClock(now)}（北京时间）｜已收录 0 条消息`] : []),
+        `${args.request.label}这段时间没有可总结的聊天记录`,
+      ].join("\n");
     }
 
     const resolvedMessages = applyMemberNames(messages, buildMemberNameDirectory(args.members));
     const stats = buildChatSummaryStats(resolvedMessages, args.request);
+    const samples = pickSummarySamples(resolvedMessages);
     const aiSummary = args.useAiSummary === false
       ? null
       : await this.aiService.generateChatPeriodSummary({
@@ -158,14 +164,19 @@ export class DailyReportService {
             userName: user.userName,
             messageCount: user.messageCount,
           })),
-          sampleMessages: pickSummarySamples(resolvedMessages),
-        });
+          sampleMessages: samples,
+        }).catch(() => null);
 
-    if (aiSummary && isUsefulChatSummary(aiSummary)) {
-      return aiSummary;
-    }
-
-    return buildFallbackChatSummary(args.request, stats, resolvedMessages);
+    const summary = aiSummary && isUsefulChatSummary(aiSummary)
+      ? aiSummary
+      : buildFallbackChatSummary(args.request, stats, resolvedMessages);
+    if (!args.includeStatistics) return summary;
+    return [
+      `【本群实时总结】${beijingDateKey(now)}｜${args.request.label}`,
+      `截至 ${beijingClock(now)}（北京时间）｜已收录 ${stats.totalMessages} 条消息｜${stats.participantCount} 人参与`,
+      summary,
+      ...(resolvedMessages.length > samples.length ? [`话题根据 ${samples.length} 条均匀抽样消息整理；统计基于全部已收录消息。`] : []),
+    ].join("\n");
   }); }
 
   private async loadMessagesForRequest(
@@ -195,8 +206,7 @@ export class DailyReportService {
     }
 
     if (request.mode === "recent") {
-      const recentStart = shiftDate(now, -6);
-      recentStart.setHours(0, 0, 0, 0);
+      const recentStart = beijingDayStart(now, -6);
       const dayKeys = buildDayKeysBetween(recentStart, now);
       const batches = await Promise.all(
         dayKeys.map((dayKey) => this.store.getMessages(groupId, dayKey)),
@@ -222,7 +232,7 @@ export class DailyReportService {
       .flat()
       .filter((message) => {
         const timestamp = new Date(message.timestamp).getTime();
-        return timestamp >= start.getTime() && timestamp <= end.getTime();
+        return timestamp >= start.getTime() && timestamp <= Math.min(end.getTime(), now.getTime());
       })
       .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
 
@@ -635,23 +645,14 @@ function stripMentions(text: string): string {
   return text.replace(/[@＠][^\s，,。！？!；;、:：]+/g, " ");
 }
 
-function shiftDate(value: Date, dayOffset: number): Date {
-  const shifted = new Date(value);
-  shifted.setDate(shifted.getDate() + dayOffset);
-  return shifted;
-}
-
 function buildDayKeysBetween(start: Date, end: Date): string[] {
-  const cursor = new Date(start);
-  cursor.setHours(0, 0, 0, 0);
-
-  const limit = new Date(end);
-  limit.setHours(0, 0, 0, 0);
+  const cursor = beijingDayStart(start);
+  const limit = beijingDayStart(end);
 
   const dayKeys: string[] = [];
   while (cursor.getTime() <= limit.getTime()) {
     dayKeys.push(toLocalDateKey(cursor));
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setTime(cursor.getTime() + 86_400_000);
   }
 
   return dayKeys;
@@ -664,13 +665,8 @@ function buildAbsoluteWindow(
   const startDayOffset = request.startDayOffset ?? request.dayOffset ?? 0;
   const endDayOffset = request.endDayOffset ?? request.dayOffset ?? startDayOffset;
 
-  const startDate = shiftDate(now, startDayOffset);
-  startDate.setHours(0, 0, 0, 0);
-  startDate.setMinutes(request.startMinute, 0, 0);
-
-  const endDate = shiftDate(now, endDayOffset);
-  endDate.setHours(0, 0, 0, 0);
-  endDate.setMinutes(request.endMinute, 59, 999);
+  const startDate = new Date(beijingDayStart(now, startDayOffset).getTime() + request.startMinute * 60_000);
+  const endDate = new Date(beijingDayStart(now, endDayOffset).getTime() + request.endMinute * 60_000 + 59_999);
 
   return {
     start: startDate,
@@ -708,11 +704,7 @@ function isScheduledMinute(now: Date, scheduleMinute: number): boolean {
 }
 
 function toLocalDateKey(value: Date): string {
-  return [
-    value.getFullYear(),
-    `${value.getMonth() + 1}`.padStart(2, "0"),
-    `${value.getDate()}`.padStart(2, "0"),
-  ].join("-");
+  return beijingDateKey(value);
 }
 
 function pickBetterUserName(current: string, incoming: string, fallback: string): string {
@@ -792,7 +784,7 @@ function buildActualRangeLabel(messages: DailyReportMessageRecord[]): string {
     return "最近";
   }
 
-  return `${first.timestamp.slice(11, 16)}-${last.timestamp.slice(11, 16)}`;
+  return `${beijingClock(new Date(first.timestamp))}-${beijingClock(new Date(last.timestamp))}`;
 }
 
 function buildBroadcastHeader(now: Date): string {

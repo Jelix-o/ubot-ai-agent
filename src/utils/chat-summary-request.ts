@@ -1,3 +1,5 @@
+import { beijingClock } from "./beijing-calendar.js";
+
 export interface ChatSummaryRequest {
   label: string;
   startMinute: number;
@@ -139,7 +141,13 @@ export function parseChatSummaryRequest(
   input: string,
   now = new Date(),
 ): ChatSummaryRequest | null {
-  const normalized = normalizeInput(input);
+  let normalized = normalizeInput(input);
+  // Only short read-only report aliases default to today; work reports do not.
+  if (/^(?:(?:请|帮我|给我|麻烦)?(?:看(?:看|一下)?|查看|查(?:看|一下)?|发(?:一下|一份)?|来(?:一份|个)?|总结(?:一下)?)?\s*)?(?:(?:今天|今日|昨天|昨日)的?)?(?:本群|群聊|群里|聊天)?(?:的|实时)?(?:日报|每日总结|今日总结|群聊总结|聊天总结)[呢吧吗呀？?。！!]*$/u.test(normalized) ||
+      /^(?:请|帮我)?(?:总结|汇总|回顾)(?:一下|下)?(?:本群|群聊|群里)(?:的)?(?:聊天|消息|记录)?[吧呢？?。！!]*$/u.test(normalized)) {
+    normalized = `${/(昨天|昨日)/u.test(normalized) ? "昨天" : "今天"}群里聊天总结`;
+  }
+  if (/(?:画|绘制|生成|制作).*(?:图|画|海报)|(?:图|画|海报).*(?:画|绘制|生成|制作)/u.test(normalized)) return null;
   if (!normalized || !hasSummaryIntent(normalized)) {
     return null;
   }
@@ -175,7 +183,7 @@ export function parseChatSummaryRequest(
     return {
       label: "上面",
       startMinute: 0,
-      endMinute: now.getHours() * 60 + now.getMinutes(),
+      endMinute: clockMinute(now),
       mode: "recent",
       recentMessageCount: RECENT_WINDOW_MESSAGE_COUNT,
       dayOffset: 0,
@@ -189,6 +197,11 @@ export function parseChatSummaryRequest(
 
 function normalizeInput(value: string): string {
   return value.replace(/：/g, ":").replace(/\s+/g, " ").trim();
+}
+
+function clockMinute(now: Date): number {
+  const [hour, minute] = beijingClock(now).split(":").map(Number);
+  return hour! * 60 + minute!;
 }
 
 function hasSummaryIntent(input: string): boolean {
@@ -355,7 +368,7 @@ function parseWholeDayRequest(
     return null;
   }
 
-  if (!/(聊天|消息|群里|记录|聊了|说了|发生了)/.test(input)) {
+  if (!/(聊天|群聊|消息|群里|记录|聊了|说了|发生了)/.test(input)) {
     return null;
   }
 
@@ -431,7 +444,7 @@ function parseBoundaryTerm(
   if (now && /^(现在|这会儿|这会|到现在|到现在为止)$/.test(term)) {
     return {
       dayOffset: 0,
-      minute: now.getHours() * 60 + now.getMinutes(),
+      minute: clockMinute(now),
     };
   }
 

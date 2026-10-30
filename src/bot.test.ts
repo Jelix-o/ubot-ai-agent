@@ -5951,6 +5951,83 @@ test("builds chat summary from stored records when mentioned with time range req
   assert.equal(transport.sent[0]?.text, "上午聊天总结");
 });
 
+test("ordinary members query live summaries with a true mention or configured command while report administration stays restricted", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "summary-entry-"));
+  t.after(() => rm(root, {recursive:true,force:true}));
+  const settings = new SystemSettingsStore(path.join(root,"settings.json"));
+  const f = createApp({systemSettingsStore:settings});
+  const mention = (text:string) => createEvent([{type:"at",data:{qq:"12345"}},{type:"text",data:{text}}]);
+  await f.app.handleGroupMessage(mention("看看群聊日报"));
+  await f.app.handleGroupMessage(createEvent("#总结"));
+  assert.equal(f.dailyReportService.summaries.length,2);
+  assert.equal(f.dailyReportService.recorded.length,0);
+  assert.equal(f.dailyReportService.marked.length,0);
+  assert.equal(f.dailyReportService.delivered.length,0);
+  assert.equal(f.aiService.calls.length,0);
+  assert.deepEqual(f.conversationStore.turnsByKey,{});
+  await f.app.handleGroupMessage(createEvent("#日报 关闭"));
+  assert.notEqual(f.groupConfigService.groups[0]?.dailyReportEnabled,false);
+  assert.equal(await f.app.isChatSummaryMessage(createEvent("今天群里聊了什么")),false);
+  assert.equal(await f.app.isChatSummaryMessage(createEvent("[CQ:at,qq=12345] 今天群里聊了什么")),false);
+  assert.equal(await f.app.isChatSummaryMessage(mention("画一张今天上午聊天总结的海报")),false);
+  const commands = (await settings.getInternal()).commands;
+  await settings.update({commands:commands.map(c=>c.id==="chat_summary"?{...c,primary:"#今日话题",aliases:[],permission:"super_admin"}:c)});
+  await f.app.handleGroupMessage(mention("今天群里聊了什么"));
+  await f.app.handleGroupMessage(createEvent("#今日话题"));
+  assert.equal(f.dailyReportService.summaries.length,2);
+  await settings.update({commands:(await settings.getInternal()).commands.map(c=>c.id==="chat_summary"?{...c,permission:"member"}:c)});
+  await f.app.handleGroupMessage(createEvent("#今日话题"));
+  assert.equal(f.dailyReportService.summaries.length,3);
+  await f.app.handleGroupMessage(createEvent("#今日话题 最近半小时"));
+  assert.equal(f.dailyReportService.summaries.at(-1)?.label,"最近半小时");
+  await settings.update({commands:(await settings.getInternal()).commands.map(c=>c.id==="chat_summary"?{...c,enabled:false}:c)});
+  await f.app.handleGroupMessage(mention("看看群聊日报"));
+  assert.equal(f.dailyReportService.summaries.length,4);
+  f.groupConfigService.groups[0]!.dailyReportEnabled=false;
+  await settings.update({commands:(await settings.getInternal()).commands.map(c=>c.id==="chat_summary"?{...c,enabled:true}:c)});
+  await f.app.handleGroupMessage(mention("今天群里聊了什么"));
+  assert.match(f.transport.sent.at(-1)!.text,/日报记录已关闭/);
+  assert.equal(f.dailyReportService.summaries.length,4);
+});
+
+test("live summary coalesces concurrent group queries and rechecks switches before delivery", async t => {
+  const f=createApp(),gate=deferred(),started=deferred();
+  const original=f.dailyReportService.buildChatSummary.bind(f.dailyReportService);
+  f.dailyReportService.buildChatSummary=async args=>{started.resolve();await gate.promise;return original(args);};
+  const event=(user:number)=>createEvent([{type:"at",data:{qq:"12345"}},{type:"text",data:{text:"今天群里聊了什么"}}],user);
+  t.after(()=>{gate.resolve();return f.app.stop();});
+  const first=f.app.handleGroupMessage(event(20001));await started.promise;
+  await f.app.handleGroupMessage(event(20002));
+  assert.match(f.transport.sent.at(-1)!.text,/正在整理/);
+  f.groupConfigService.groups[0]!.dailyReportEnabled=false;
+  gate.resolve();await first;
+  assert.equal(f.transport.sent.length,1);
+  f.groupConfigService.groups[0]!.dailyReportEnabled=true;
+  await f.app.handleGroupMessage(event(20002));
+  assert.equal(f.dailyReportService.summaries.length,2);
+  assert.match(f.transport.sent.at(-1)!.text,/今天聊天总结/);
+});
+
+test("Worker handles member summary requests before image classification without conversation branches", async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),"worker-summary-")),db=new SharedDb(path.join(root,"state.db"));
+  const f=createApp({systemSettingsStore:new SystemSettingsStore(path.join(root,"settings.json")),messageTransport:new WorkerTransport(db)});
+  let classified=0;
+  const worker=new WorkerApp({dataDir:root,sharedDb:db,botApp:f.app,consumerKey:"worker:summary",isBlacklistedUser:async()=>false,imageIntentRouter:{async isConfigured(){return true;},async classify(){classified++;return{action:"generate",modelId:"test",model:"test"};}}});
+  t.after(async()=>{await worker.stop();await f.app.stop();db.close();await rm(root,{recursive:true,force:true});});
+  const text="今天群里聊了什么";
+  db.insertMessage({groupId:"67890",userId:"20001",selfId:"12345",msgId:"summary-worker",msgTime:Date.now(),text,imagesJson:"[]",canonicalSegmentsJson:JSON.stringify([{type:"at",qq:"12345"},{type:"text",text}]),hasAtBot:true,isBotMsg:false,createdAt:Date.now()});
+  worker.start();const deadline=Date.now()+4000;
+  while(!db.db.prepare("SELECT 1 FROM outbox").get()&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(f.dailyReportService.summaries.length,1);
+  assert.equal(classified,0);
+  assert.equal(f.aiService.calls.length,0);
+  assert.equal(db.db.prepare("SELECT count(*) n FROM conversation_branches").get()!.n,0);
+  const rows=db.db.prepare("SELECT kind,text FROM outbox").all();
+  assert.equal(rows.length,1);
+  assert.equal(rows[0]!.kind,"text");
+  assert.match(String(rows[0]!.text),/今天聊天总结/);
+});
+
 test("muted bot still allows chat summary and report reminder commands", async () => {
   const { app, transport, aiService, dailyReportService } = createApp({
     groupConfigService: new FakeGroupConfigService([

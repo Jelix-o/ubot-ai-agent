@@ -3,6 +3,21 @@ import test from "node:test";
 
 import { parseChatSummaryRequest } from "./chat-summary-request.js";
 
+test("live report aliases default to today without capturing work reports or creative requests", () => {
+  for (const text of ["看看群聊日报", "今天的群聊日报", "每日总结", "查看今日总结", "总结一下群聊", "总结一下今天群聊", "今天群里聊了什么"]) {
+    const result = parseChatSummaryRequest(text);
+    assert.ok(result, text);
+    assert.equal(result.startMinute, 0);
+    assert.equal(result.dayOffset, 0);
+  }
+  assert.equal(parseChatSummaryRequest("看看昨天的群聊日报")?.dayOffset, -1);
+  for (const text of ["帮我写今天的工作日报", "我写完日报了", "画一张今天上午聊天总结的海报", "总结今天这篇论文"]) {
+    assert.equal(parseChatSummaryRequest(text), null, text);
+  }
+  const now = new Date("2026-10-30T16:05:00Z");
+  assert.equal(parseChatSummaryRequest("总结上面聊天", now)?.endMinute, 5);
+});
+
 test("parses named time period summary requests", () => {
   const request = parseChatSummaryRequest("@机器人 总结上午聊天信息");
 

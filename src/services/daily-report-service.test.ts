@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 import type { GroupBotConfig } from "../types.js";
 import { SharedDb } from "../shared/sqlite.js";
@@ -11,6 +12,57 @@ import { DailyReportStore } from "./daily-report-store.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
 const TEST_STATE_KEY = "0".repeat(64);
+
+test("live summary reads fresh Beijing-day records on a UTC host and leaves scheduled reports intact", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "live-summary-utc-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = `
+    import assert from 'node:assert/strict';
+    import { DailyReportService } from ${JSON.stringify(new URL("./daily-report-service.js", import.meta.url).href)};
+    import { DailyReportStore } from ${JSON.stringify(new URL("./daily-report-store.js", import.meta.url).href)};
+    const store = new DailyReportStore(process.argv[1]);
+    let calls = 0;
+    const service = new DailyReportService(store, { async generateChatPeriodSummary(args) {
+      calls++;
+      assert.equal(args.dateLabel, '2026-04-16');
+      assert.equal(args.totalMessages, calls);
+      assert.ok(args.sampleMessages.every(m => m.text.startsWith('本日')));
+      throw new Error('upstream unavailable');
+    }});
+    const record = (text, timestamp, groupId = 'group-a') => service.recordMessage({groupId,userId:'member-a',userName:'成员甲',text,timestamp});
+    await record('昨日不应计入', '2026-04-15T15:59:59Z');
+    await record('本日接口讨论', '2026-04-15T16:00:00Z');
+    await record('未来不应计入', '2026-04-15T17:00:00Z');
+    await record('其他群不应计入', '2026-04-15T16:00:01Z', 'group-b');
+    await service.markSent('group-a', new Date('2026-04-15T12:00:00Z'), '已发送日报');
+    const request = {label:'今天',mode:'custom_range',startMinute:0,endMinute:1439,dayOffset:0};
+    const build = () => service.buildChatSummary({groupId:'group-a',request,now:new Date('2026-04-15T16:05:00Z'),includeStatistics:true});
+    const first = await build();
+    assert.match(first, /2026-04-16.*今天/);
+    assert.match(first, /截至 00:05（北京时间）.*已收录 1 条消息.*1 人参与/);
+    assert.doesNotMatch(first, /昨日不应计入|未来不应计入|其他群不应计入/);
+    await record('本日午饭讨论', '2026-04-15T16:04:00Z');
+    assert.match(await build(), /已收录 2 条消息/);
+    assert.equal(await store.getLastSentDate('group-a'), '2026-04-15');
+    assert.equal((await store.getReportOutput('group-a','2026-04-15')).renderedText, '已发送日报');
+    assert.equal(await store.getReportOutput('group-a','2026-04-16'), undefined);
+    const empty = await service.buildChatSummary({groupId:'empty',request,now:new Date('2026-04-15T16:05:00Z'),includeStatistics:true});
+    assert.match(empty, /已收录 0 条消息/);
+    assert.equal(calls,2);
+  `;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", source, path.join(root, "records.json")], { env: { ...process.env, TZ: "UTC" }, encoding: "utf8" });
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+});
+
+test("live summaries disclose topic sampling while counting every recorded message", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "live-summary-samples-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const service = new DailyReportService(new DailyReportStore(path.join(root, "records.json")), {} as never);
+  for (let i = 0; i < 40; i++) await service.recordMessage({groupId:"group-a",userId:String(i % 3),userName:"成员",text:`讨论项目 ${i}`,timestamp:new Date(Date.parse("2026-04-15T01:00:00Z")+i*60_000).toISOString()});
+  const result = await service.buildChatSummary({groupId:"group-a",request:{label:"今天",mode:"custom_range",startMinute:0,endMinute:1439},now:new Date("2026-04-15T12:00:00Z"),useAiSummary:false,includeStatistics:true});
+  assert.match(result,/已收录 40 条消息｜3 人参与/);
+  assert.match(result,/24 条均匀抽样/);
+});
 
 const baseGroupConfig: GroupBotConfig = {
   groupId: "67890",

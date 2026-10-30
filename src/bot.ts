@@ -251,6 +251,7 @@ const RUNTIME_COMMAND_SPECS = {
   blacklist: { builtinPrefix: BLACKLIST_PREFIX, builtinAliases: [] },
   conversation: { builtinPrefix: CONVERSATION_PREFIX, builtinAliases: [CLEAR_GROUP_CONTEXT_COMMAND] },
   daily_report: { builtinPrefix: DAILY_REPORT_PREFIX, builtinAliases: [] },
+  chat_summary: { builtinPrefix: "#总结", builtinAliases: ["#群聊总结"] },
   health: { builtinPrefix: HEALTH_PREFIX, builtinAliases: [SHORT_HEALTH_PREFIX] },
   help: { builtinPrefix: HELP_PREFIXES[0]!, builtinAliases: HELP_PREFIXES.slice(1) },
   holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
@@ -846,6 +847,7 @@ export class BotApplication {
     const runtimeCommands = await this.getRuntimeCommands();
     // Status reads must not interrupt a running reply or mutate continuation state.
     if(!this.isBlacklistedUser(groupConfig,userId) && await this.handleRequestStatus(groupConfig,event,commandText,this.assistanceFacts(event).hasAtBot,runtimeCommands))return;
+    if (!this.isBlacklistedUser(groupConfig, userId) && await this.handleChatSummary(groupConfig, event, runtimeCommands)) return;
     if (!this.isBlacklistedUser(groupConfig, userId) && (parsedMessage.hasAtBot || options.allowReplyWithoutMention === true || isSystemCommandText(commandText, runtimeCommands))) {
       this.automaticReplyControllers.get(groupId)?.abort();
     }
@@ -1064,26 +1066,6 @@ export class BotApplication {
       }
 
       await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
-      const chatSummaryRequest = parsedMessage.hasAtBot
-        ? parseChatSummaryRequest(parsedMessage.text, new Date())
-        : null;
-      if (chatSummaryRequest) {
-        if (!this.isCapabilityEnabled("daily_reports")) {
-          await this.rejectCapability(groupId, "daily_reports");
-          return;
-        }
-        await this.groupLock.run(groupId, async () => {
-          const tokenCostControl = await this.getTokenCostControl();
-          const summary = await this.dailyReportService.buildChatSummary({
-            groupId,
-            request: chatSummaryRequest,
-            now: new Date(),
-            useAiSummary: tokenCostControl.chatSummaryAiEnabled,
-            members: await this.safeListGroupMembers(groupId),
-          });
-          await this.sendText(groupId, summary);
-        });
-      }
       return;
     }
 
@@ -1226,31 +1208,6 @@ export class BotApplication {
       parsedMessage.text.trim().length > 0 &&
       parsedMessage.images.length === 0 &&
       (messageContext.replyContext?.images?.length ?? 0) === 0;
-    const chatSummaryRequest = parsedMessage.hasAtBot
-      ? parseChatSummaryRequest(parsedMessage.text, new Date())
-      : null;
-
-    if (chatSummaryRequest) {
-      const reportCommand = runtimeCommands.find(command => command.id === "daily_report");
-      if (reportCommand && !(await this.canUseRuntimeCommand(reportCommand, groupConfig, event))) return;
-      if (!this.isCapabilityEnabled("daily_reports")) {
-        await this.rejectCapability(groupId, "daily_reports");
-        return;
-      }
-      await this.groupLock.run(groupId, async () => {
-        const tokenCostControl = await this.getTokenCostControl();
-        const summary = await this.dailyReportService.buildChatSummary({
-          groupId,
-          request: chatSummaryRequest,
-          now: new Date(),
-          useAiSummary: tokenCostControl.chatSummaryAiEnabled,
-          members: await this.safeListGroupMembers(groupId),
-        });
-        await this.sendText(groupId, summary);
-      });
-      return;
-    }
-
     if (parsedMessage.hasAtBot) {
       const reminderRequest = this.scheduledReminderService.parseCreateRequest(parsedMessage.text);
       if (reminderRequest) {
@@ -1623,6 +1580,79 @@ export class BotApplication {
     const segments:MessageSegment[]=typeof event.message==="string"?[{type:"text",data:{text:event.message}}]:event.message.map(segment=>typeof segment==="string"?{type:"text",data:{text:segment}}:segment);
     return parseGroupMessage(segments,this.botQq);
   }
+
+  private chatSummaryInput(event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]) {
+    const text = extractCommandText(event.message);
+    const command = matchRuntimeCommand(text, commands, "chat_summary");
+    const now = new Date();
+    if (command) {
+      const suffix = command.suffix.trim();
+      return { request: parseChatSummaryRequest(suffix || "今天群聊总结", now) ??
+        (suffix ? parseChatSummaryRequest(`总结${suffix}聊天`, now) : null), now };
+    }
+    if (isSystemCommandText(text, commands) || !this.assistanceFacts(event).hasAtBot) return undefined;
+    const request = parseChatSummaryRequest(text, now);
+    return request ? { request, now } : undefined;
+  }
+
+  /** Read-only summary queries never enter the image classifier or chat context. */
+  async isChatSummaryMessage(event: NapcatGroupMessageEvent): Promise<boolean> {
+    const group = await this.groupConfigService.getGroup(String(event.group_id));
+    return Boolean(group && group.enabled !== false && !this.isBlacklistedUser(group, String(event.user_id)) &&
+      this.chatSummaryInput(event, await this.getRuntimeCommands()));
+  }
+
+  private readonly pendingChatSummaries = new Set<string>();
+
+  private async handleChatSummary(group: GroupBotConfig, event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): Promise<boolean> {
+    const input = this.chatSummaryInput(event, commands);
+    if (!input) return false;
+    const policy = commands.find(command => command.id === "chat_summary");
+    if (policy && !await this.canUseRuntimeCommand(policy, group, event)) return true;
+    if (!this.isCapabilityEnabled("daily_reports")) {
+      await this.rejectCapability(group.groupId, "daily_reports");
+      return true;
+    }
+    if (group.dailyReportEnabled === false) {
+      await this.sendText(group.groupId, "本群日报记录已关闭，暂时无法查看实时总结。请联系群管理员开启群聊日报。");
+      return true;
+    }
+    if (!input.request) {
+      await this.sendText(group.groupId, "可以说：今天群里聊了什么、总结上午聊天、总结最近半小时；也可用 #总结（默认今天）。仅查看当前群已收录的记录。");
+      return true;
+    }
+    if (this.pendingChatSummaries.has(group.groupId)) {
+      await this.sendText(group.groupId, "本群总结正在整理，请稍等这次结果。");
+      return true;
+    }
+    this.pendingChatSummaries.add(group.groupId);
+    try {
+      const settings = await this.getTokenCostControl();
+      const summary = await this.dailyReportService.buildChatSummary({
+        groupId: group.groupId, request: input.request, now: input.now,
+        useAiSummary: settings.chatSummaryAiEnabled, includeStatistics: true,
+        members: await this.safeListGroupMembers(group.groupId),
+      });
+      const current = await this.groupConfigService.getGroup(group.groupId);
+      const currentPolicy = (await this.getRuntimeCommands()).find(command => command.id === "chat_summary");
+      if (current && current.enabled !== false && current.dailyReportEnabled !== false &&
+          !this.isBlacklistedUser(current, String(event.user_id)) && this.isCapabilityEnabled("daily_reports") &&
+          (!currentPolicy || await this.canUseRuntimeCommand(currentPolicy, current, event))) {
+        await this.sendText(group.groupId, summary);
+      }
+    } catch (error) {
+      logWarn("Group chat summary query failed.", { groupId: group.groupId, error: (error as Error).name });
+      const current = await this.groupConfigService.getGroup(group.groupId);
+      if (current?.enabled !== false && current?.dailyReportEnabled !== false && current &&
+          !this.isBlacklistedUser(current, String(event.user_id))) {
+        await this.sendText(group.groupId, "这次群聊总结没整理成功，请稍后再试。");
+      }
+    } finally {
+      this.pendingChatSummaries.delete(group.groupId);
+    }
+    return true;
+  }
+
   private reminderInput(event:NapcatGroupMessageEvent,text:string,explicit:boolean) {
     const parsed=this.assistanceFacts(event),groupId=String(event.group_id),userId=String(event.user_id),messageId=String(event.message_id);
     const fallback=typeof event.time==="number"&&Number.isFinite(event.time)&&event.time>0?event.time*1000:Date.now();
@@ -3688,6 +3718,7 @@ export class BotApplication {
     const visible: SystemCommandConfig[] = [];
     const capabilityByCommand: Record<string,V3RuntimeCapability> = { conversation:"conversation",image_generation:"image_generation",html_preview:"html_preview",bt_search:"bt_search",memory:"explicit_memory",self_memory:"explicit_memory",self_memory_edit:"explicit_memory",self_memory_delete:"explicit_memory",knowledge:"knowledge",daily_report:"daily_reports",holiday_countdown:"holiday_countdown",scheduled_reminder:"scheduled_reminders",personal_reminder:"scheduled_reminders",spoken_reply:"audio_generation",original_song:"audio_generation" };
     for (const command of runtimeCommands) {
+      if (command.id === "chat_summary" && (!this.isCapabilityEnabled("daily_reports") || groupConfig.dailyReportEnabled === false)) continue;
       if (capabilityByCommand[command.id] && !this.isCapabilityEnabled(capabilityByCommand[command.id]!)) continue;
       if (command.id === "request_status" && (!groupConfig.interactionAssistanceEnabled || !groupConfig.groupExperienceEnabled)) continue;
       if (["self_memory","self_memory_edit","self_memory_delete"].includes(command.id) && !groupConfig.groupExperienceEnabled) continue;
@@ -6863,6 +6894,7 @@ type HelpSection = {
 
 function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false, hiddenIds = new Set<string>()): HelpSection[] {
   return [
+    { commandId: "chat_summary", title: "群聊总结", aliases: ["总结", "群聊总结", "实时总结"], lines: [command("chat_summary"), `${command("chat_summary")} 最近半小时 / 昨天 / 上午`, "真实 @机器人说“今天群里聊了什么”“看看群聊日报”“总结上午聊天”也可查看。", "按北京时间读取当前群已收录的记录，显示截至时刻、统计和话题；不会改变定时日报安排。"] },
     {commandId:"request_status",title:"请求进度",aliases:["进度","请求进度"],lines:[command("request_status"),"查看本人在本群的对话和图片请求；完成记录保留十分钟。","真实 @机器人问“做好了吗”也能查正在处理的请求，不会重新调用模型。"]},
     ...(experienceEnabled ? [{title:"表情",aliases:["表情","表情包","meme"],lines:["#表情 分类 / #表情 开心 / #表情 换一张","支持中文分类和英文原名；主动索图每人十秒、每群五秒一次。","自动配图仍按既有概率和群冷却执行；只有超级管理员可用 #表情 收藏 <分类> 收图。"]}] : []),
     { commandId:"personal_reminder",title:"个人提醒",aliases:["个人提醒","一次性提醒","提醒"],lines:[`${command("personal_reminder")} 10分钟后 喝水`,`${command("personal_reminder")} 明天9点 开会`,`${command("personal_reminder")} 列表 / 取消 <编号>`,"北京时间，全天可用；只管理本人在本群的提醒，每人五条、每群五十条。"] },
@@ -6979,6 +7011,7 @@ function buildHelpOverviewMessage(
     ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置图片意图判断模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
     ...show("personal_reminder",`个人提醒：${command("personal_reminder")} 10分钟后 喝水；列表 / 取消 <编号>（北京时间，全天可用）`),
     ...show("request_status",`请求进度：${command("request_status")} 查看本人当前群的处理和最近完成结果`),
+    ...show("chat_summary", `群聊总结：${command("chat_summary")} 查看截至当前的总结；也可 @机器人问“今天群里聊了什么”`),
     ...show("self_memory",`本人记忆：${command("self_memory")} 查看或保存；修改、删除需本人归属检查`),
     ...show("spoken_reply",`语音：${command("spoken_reply")} <内容>；也可 @机器人要求语音回答`),
     ...show("original_song",`短歌：${command("original_song")} <主题>，创作 15–30 秒原创歌曲`),
