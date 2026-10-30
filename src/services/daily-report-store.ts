@@ -80,7 +80,9 @@ export class DailyReportStore {
     if (this.v3State) {
       return this.v3State.getChatSummaryMessages(groupId, dayKey, excludeMessageId).map(({dayKey: _dayKey, ...record}) => record);
     }
-    return this.getMessages(groupId, dayKey);
+    const data = await this.readData();
+    return Object.values(data.days).flatMap(day => day[groupId] ?? [])
+      .filter(record => beijingDateKey(new Date(record.timestamp)) === dayKey);
   }
 
   async getReportOutput(groupId: string, dayKey: string): Promise<DailyReportOutputRecord | undefined> {
@@ -199,7 +201,8 @@ function pruneStoreDays(data: DailyReportStoreFile): void {
 }
 
 function toLocalDateKey(value: string): string {
-  return beijingDateKey(new Date(value));
+  const date = new Date(value);
+  return [date.getFullYear(), `${date.getMonth() + 1}`.padStart(2, "0"), `${date.getDate()}`.padStart(2, "0")].join("-");
 }
 
 function normalizeOutputRecord(record: DailyReportOutputRecord): DailyReportOutputRecord {

@@ -203,7 +203,7 @@ export class DailyReportService {
         .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
 
       return {
-        dayKey: toLocalDateKey(now),
+        dayKey: beijingDateKey(now),
         messages,
       };
     }
@@ -221,7 +221,7 @@ export class DailyReportService {
         .slice(-(request.recentMessageCount ?? 60));
 
       return {
-        dayKey: toLocalDateKey(now),
+        dayKey: beijingDateKey(now),
         messages,
       };
     }
@@ -240,7 +240,7 @@ export class DailyReportService {
       .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
 
     return {
-      dayKey: toLocalDateKey(end),
+      dayKey: beijingDateKey(end),
       messages,
     };
   }
@@ -654,7 +654,7 @@ function buildDayKeysBetween(start: Date, end: Date): string[] {
 
   const dayKeys: string[] = [];
   while (cursor.getTime() <= limit.getTime()) {
-    dayKeys.push(toLocalDateKey(cursor));
+    dayKeys.push(beijingDateKey(cursor));
     cursor.setTime(cursor.getTime() + 86_400_000);
   }
 
@@ -707,7 +707,7 @@ function isScheduledMinute(now: Date, scheduleMinute: number): boolean {
 }
 
 function toLocalDateKey(value: Date): string {
-  return beijingDateKey(value);
+  return [value.getFullYear(), `${value.getMonth() + 1}`.padStart(2, "0"), `${value.getDate()}`.padStart(2, "0")].join("-");
 }
 
 function pickBetterUserName(current: string, incoming: string, fallback: string): string {

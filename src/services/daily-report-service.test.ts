@@ -515,21 +515,21 @@ test("builds named-period chat summary from stored messages", async () => {
       userId: "10001",
       userName: "10001",
       text: "早会先过一下需求",
-      timestamp: "2026-04-15T09:12:00",
+      timestamp: "2026-04-15T09:12:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "10002",
       userName: "10002",
       text: "行，我补一下接口文档",
-      timestamp: "2026-04-15T10:03:00",
+      timestamp: "2026-04-15T10:03:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u3",
       userName: "阿强",
       text: "晚上去吃什么",
-      timestamp: "2026-04-15T19:30:00",
+      timestamp: "2026-04-15T19:30:00+08:00",
     });
 
     const summary = await service.buildChatSummary({
@@ -540,7 +540,7 @@ test("builds named-period chat summary from stored messages", async () => {
         endMinute: 11 * 60 + 59,
         mode: "named_period",
       },
-      now: new Date("2026-04-15T20:00:00"),
+      now: new Date("2026-04-15T20:00:00+08:00"),
       members: [
         { user_id: 10001, card: "当前群名片", nickname: "旧昵称" },
         { user_id: 10002, card: "", nickname: "当前QQ昵称" },
@@ -579,7 +579,7 @@ test("returns friendly text when requested range has no messages", async () => {
         endMinute: 17 * 60 + 59,
         mode: "named_period",
       },
-      now: new Date("2026-04-15T18:00:00"),
+      now: new Date("2026-04-15T18:00:00+08:00"),
     });
 
     assert.equal(summary, "下午这段时间没有可总结的聊天记录");
@@ -610,21 +610,21 @@ test("fallback summary still points out concrete topics when ai summary is unava
       userId: "u1",
       userName: "小王",
       text: "早会先过一下需求，下午再补接口文档",
-      timestamp: "2026-04-15T09:12:00",
+      timestamp: "2026-04-15T09:12:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u2",
       userName: "老张",
       text: "行，我顺手把回滚方案也整理一下",
-      timestamp: "2026-04-15T09:20:00",
+      timestamp: "2026-04-15T09:20:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u3",
       userName: "阿强",
       text: "接口文档晚点我来对一下字段",
-      timestamp: "2026-04-15T09:28:00",
+      timestamp: "2026-04-15T09:28:00+08:00",
     });
 
     const summary = await service.buildChatSummary({
@@ -635,7 +635,7 @@ test("fallback summary still points out concrete topics when ai summary is unava
         endMinute: 11 * 60 + 59,
         mode: "named_period",
       },
-      now: new Date("2026-04-15T12:00:00"),
+      now: new Date("2026-04-15T12:00:00+08:00"),
     });
 
     assert.match(summary, /上午聊天总结/);
@@ -679,14 +679,14 @@ test("uses previous day records when request targets yesterday", async () => {
       userId: "u1",
       userName: "小王",
       text: "昨晚在聊发布版本",
-      timestamp: "2026-04-14T21:05:00",
+      timestamp: "2026-04-14T21:05:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u2",
       userName: "老张",
       text: "今天上午聊接口联调",
-      timestamp: "2026-04-15T10:05:00",
+      timestamp: "2026-04-15T10:05:00+08:00",
     });
 
     const summary = await service.buildChatSummary({
@@ -698,7 +698,7 @@ test("uses previous day records when request targets yesterday", async () => {
         mode: "named_period",
         dayOffset: -1,
       },
-      now: new Date("2026-04-15T20:00:00"),
+      now: new Date("2026-04-15T20:00:00+08:00"),
     });
 
     assert.match(summary, /昨晚聊天总结/);
@@ -736,21 +736,21 @@ test("collects cross-day records for fixed range windows", async () => {
       userId: "u1",
       userName: "小王",
       text: "昨晚继续聊发布",
-      timestamp: "2026-04-14T22:30:00",
+      timestamp: "2026-04-14T22:30:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u2",
       userName: "老张",
       text: "今天上午聊回滚方案",
-      timestamp: "2026-04-15T10:30:00",
+      timestamp: "2026-04-15T10:30:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u3",
       userName: "阿强",
       text: "今天下午闲聊",
-      timestamp: "2026-04-15T15:10:00",
+      timestamp: "2026-04-15T15:10:00+08:00",
     });
 
     const summary = await service.buildChatSummary({
@@ -764,7 +764,7 @@ test("collects cross-day records for fixed range windows", async () => {
         startDayOffset: -1,
         endDayOffset: 0,
       },
-      now: new Date("2026-04-15T20:00:00"),
+      now: new Date("2026-04-15T20:00:00+08:00"),
     });
 
     assert.match(summary, /昨晚到今天上午聊天总结/);
@@ -802,21 +802,21 @@ test("collects cross-day records for relative summary windows", async () => {
       userId: "u1",
       userName: "小王",
       text: "昨晚收尾",
-      timestamp: "2026-04-14T23:55:00",
+      timestamp: "2026-04-14T23:55:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u2",
       userName: "老张",
       text: "今天凌晨继续",
-      timestamp: "2026-04-15T00:10:00",
+      timestamp: "2026-04-15T00:10:00+08:00",
     });
     await service.recordMessage({
       groupId: "67890",
       userId: "u3",
       userName: "阿强",
       text: "太早了先不聊",
-      timestamp: "2026-04-14T22:10:00",
+      timestamp: "2026-04-14T22:10:00+08:00",
     });
 
     const summary = await service.buildChatSummary({
@@ -829,7 +829,7 @@ test("collects cross-day records for relative summary windows", async () => {
         dayOffset: 0,
         relativeDurationMinutes: 30,
       },
-      now: new Date("2026-04-15T00:20:00"),
+      now: new Date("2026-04-15T00:20:00+08:00"),
     });
 
     assert.match(summary, /最近半小时聊天总结/);

@@ -164,7 +164,7 @@ test("parses recent two-day summary request", () => {
 test("parses range ending at now", () => {
   const request = parseChatSummaryRequest(
     "总结今天下午三点到现在的聊天",
-    new Date("2026-04-17T16:28:00"),
+    new Date("2026-04-17T16:28:00+08:00"),
   );
 
   assert.deepEqual(request, {
@@ -179,7 +179,7 @@ test("parses range ending at now", () => {
 });
 
 test("parses recent above-message summary requests", () => {
-  const request = parseChatSummaryRequest("总结一下上面聊天信息", new Date("2026-04-17T16:28:00"));
+  const request = parseChatSummaryRequest("总结一下上面聊天信息", new Date("2026-04-17T16:28:00+08:00"));
 
   assert.deepEqual(request, {
     label: "上面",
@@ -194,7 +194,7 @@ test("parses recent above-message summary requests", () => {
 });
 
 test("parses direct question about above messages without explicit summary keyword", () => {
-  const request = parseChatSummaryRequest("上面聊了些什么呢", new Date("2026-04-17T16:28:00"));
+  const request = parseChatSummaryRequest("上面聊了些什么呢", new Date("2026-04-17T16:28:00+08:00"));
 
   assert.deepEqual(request, {
     label: "上面",
