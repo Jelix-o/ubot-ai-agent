@@ -5970,6 +5970,9 @@ test("ordinary members query live summaries with a true mention or configured co
   assert.equal(await f.app.isChatSummaryMessage(createEvent("今天群里聊了什么")),false);
   assert.equal(await f.app.isChatSummaryMessage(createEvent("[CQ:at,qq=12345] 今天群里聊了什么")),false);
   assert.equal(await f.app.isChatSummaryMessage(mention("画一张今天上午聊天总结的海报")),false);
+  assert.equal(await f.app.isChatSummaryMessage(mention("分析一下今天上午的股票走势图")),false);
+  assert.equal(await f.app.isChatSummaryMessage(mention("总结今天上午的会议方案")),false);
+  assert.equal(await f.app.isChatSummaryMessage(createEvent([{type:"at",data:{qq:"12345"}},{type:"text",data:{text:"分析今天上午的群里图片"}},{type:"image",data:{url:"https://example.test/image.png"}}])),false);
   const commands = (await settings.getInternal()).commands;
   await settings.update({commands:commands.map(c=>c.id==="chat_summary"?{...c,primary:"#今日话题",aliases:[],permission:"super_admin"}:c)});
   await f.app.handleGroupMessage(mention("今天群里聊了什么"));
@@ -5986,8 +5989,9 @@ test("ordinary members query live summaries with a true mention or configured co
   f.groupConfigService.groups[0]!.dailyReportEnabled=false;
   await settings.update({commands:(await settings.getInternal()).commands.map(c=>c.id==="chat_summary"?{...c,enabled:true}:c)});
   await f.app.handleGroupMessage(mention("今天群里聊了什么"));
-  assert.match(f.transport.sent.at(-1)!.text,/日报记录已关闭/);
-  assert.equal(f.dailyReportService.summaries.length,4);
+  assert.match(f.transport.sent.at(-1)!.text,/今天聊天总结/);
+  assert.equal(f.dailyReportService.summaries.length,5);
+  assert.equal(f.groupConfigService.groups[0]!.dailyReportEnabled,false);
 });
 
 test("live summary coalesces concurrent group queries and rechecks switches before delivery", async t => {
@@ -5999,10 +6003,10 @@ test("live summary coalesces concurrent group queries and rechecks switches befo
   const first=f.app.handleGroupMessage(event(20001));await started.promise;
   await f.app.handleGroupMessage(event(20002));
   assert.match(f.transport.sent.at(-1)!.text,/正在整理/);
-  f.groupConfigService.groups[0]!.dailyReportEnabled=false;
+  f.groupConfigService.groups[0]!.enabled=false;
   gate.resolve();await first;
   assert.equal(f.transport.sent.length,1);
-  f.groupConfigService.groups[0]!.dailyReportEnabled=true;
+  f.groupConfigService.groups[0]!.enabled=true;
   await f.app.handleGroupMessage(event(20002));
   assert.equal(f.dailyReportService.summaries.length,2);
   assert.match(f.transport.sent.at(-1)!.text,/今天聊天总结/);

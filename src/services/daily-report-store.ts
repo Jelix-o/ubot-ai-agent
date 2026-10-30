@@ -76,6 +76,13 @@ export class DailyReportStore {
     return data.lastSentDateByGroup[groupId];
   }
 
+  async getSummaryMessages(groupId: string, dayKey: string, excludeMessageId?: string): Promise<DailyReportMessageRecord[]> {
+    if (this.v3State) {
+      return this.v3State.getChatSummaryMessages(groupId, dayKey, excludeMessageId).map(({dayKey: _dayKey, ...record}) => record);
+    }
+    return this.getMessages(groupId, dayKey);
+  }
+
   async getReportOutput(groupId: string, dayKey: string): Promise<DailyReportOutputRecord | undefined> {
     if (this.v3State) {
       const output = this.v3State.getDailyReportOutput(groupId, dayKey);

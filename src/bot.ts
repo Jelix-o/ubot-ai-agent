@@ -1590,7 +1590,12 @@ export class BotApplication {
       return { request: parseChatSummaryRequest(suffix || "今天群聊总结", now) ??
         (suffix ? parseChatSummaryRequest(`总结${suffix}聊天`, now) : null), now };
     }
-    if (isSystemCommandText(text, commands) || !this.assistanceFacts(event).hasAtBot) return undefined;
+    const facts = this.assistanceFacts(event);
+    if (isSystemCommandText(text, commands) || !facts.hasAtBot || facts.images.length > 0) return undefined;
+    // A time word and “分析” alone also occur in ordinary work/vision requests.
+    // Only group-chat context or a short unambiguous summary request owns this lane.
+    if (!/(?:群聊|群里|本群|聊天|消息|聊了|说了|上面|上边|前面|日报|每日总结|今日总结)/u.test(text) &&
+        !/^(?:请|帮我)?(?:总结|汇总|回顾)(?:一下|下)?(?:今天|今日|昨天|昨晚)?(?:上午|下午|中午|晚上|白天|早上)[吧呢？?。！!]*$/u.test(text)) return undefined;
     const request = parseChatSummaryRequest(text, now);
     return request ? { request, now } : undefined;
   }
@@ -1613,10 +1618,6 @@ export class BotApplication {
       await this.rejectCapability(group.groupId, "daily_reports");
       return true;
     }
-    if (group.dailyReportEnabled === false) {
-      await this.sendText(group.groupId, "本群日报记录已关闭，暂时无法查看实时总结。请联系群管理员开启群聊日报。");
-      return true;
-    }
     if (!input.request) {
       await this.sendText(group.groupId, "可以说：今天群里聊了什么、总结上午聊天、总结最近半小时；也可用 #总结（默认今天）。仅查看当前群已收录的记录。");
       return true;
@@ -1631,11 +1632,12 @@ export class BotApplication {
       const summary = await this.dailyReportService.buildChatSummary({
         groupId: group.groupId, request: input.request, now: input.now,
         useAiSummary: settings.chatSummaryAiEnabled, includeStatistics: true,
+        excludeMessageId: String(event.message_id),
         members: await this.safeListGroupMembers(group.groupId),
       });
       const current = await this.groupConfigService.getGroup(group.groupId);
       const currentPolicy = (await this.getRuntimeCommands()).find(command => command.id === "chat_summary");
-      if (current && current.enabled !== false && current.dailyReportEnabled !== false &&
+      if (current && current.enabled !== false &&
           !this.isBlacklistedUser(current, String(event.user_id)) && this.isCapabilityEnabled("daily_reports") &&
           (!currentPolicy || await this.canUseRuntimeCommand(currentPolicy, current, event))) {
         await this.sendText(group.groupId, summary);
@@ -1643,7 +1645,7 @@ export class BotApplication {
     } catch (error) {
       logWarn("Group chat summary query failed.", { groupId: group.groupId, error: (error as Error).name });
       const current = await this.groupConfigService.getGroup(group.groupId);
-      if (current?.enabled !== false && current?.dailyReportEnabled !== false && current &&
+      if (current?.enabled !== false && current &&
           !this.isBlacklistedUser(current, String(event.user_id))) {
         await this.sendText(group.groupId, "这次群聊总结没整理成功，请稍后再试。");
       }
@@ -3718,7 +3720,7 @@ export class BotApplication {
     const visible: SystemCommandConfig[] = [];
     const capabilityByCommand: Record<string,V3RuntimeCapability> = { conversation:"conversation",image_generation:"image_generation",html_preview:"html_preview",bt_search:"bt_search",memory:"explicit_memory",self_memory:"explicit_memory",self_memory_edit:"explicit_memory",self_memory_delete:"explicit_memory",knowledge:"knowledge",daily_report:"daily_reports",holiday_countdown:"holiday_countdown",scheduled_reminder:"scheduled_reminders",personal_reminder:"scheduled_reminders",spoken_reply:"audio_generation",original_song:"audio_generation" };
     for (const command of runtimeCommands) {
-      if (command.id === "chat_summary" && (!this.isCapabilityEnabled("daily_reports") || groupConfig.dailyReportEnabled === false)) continue;
+      if (command.id === "chat_summary" && !this.isCapabilityEnabled("daily_reports")) continue;
       if (capabilityByCommand[command.id] && !this.isCapabilityEnabled(capabilityByCommand[command.id]!)) continue;
       if (command.id === "request_status" && (!groupConfig.interactionAssistanceEnabled || !groupConfig.groupExperienceEnabled)) continue;
       if (["self_memory","self_memory_edit","self_memory_delete"].includes(command.id) && !groupConfig.groupExperienceEnabled) continue;

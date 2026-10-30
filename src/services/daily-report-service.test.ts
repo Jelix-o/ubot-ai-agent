@@ -13,6 +13,35 @@ import { V3StateRepository } from "./v3-state-repository.js";
 
 const TEST_STATE_KEY = "0".repeat(64);
 
+test("V3 live summaries reuse retained ingress when scheduled reports are off, excluding recalls, commands, bots and the query itself", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "live-summary-ingress-"));
+  const db = new SharedDb(path.join(root, "state.db"));
+  t.after(async()=>{db.close();await rm(root,{recursive:true,force:true});});
+  const repo = new V3StateRepository(db, {stateEncryptionKey:TEST_STATE_KEY});
+  const start = Date.parse("2026-04-15T16:00:00Z");
+  const insert=(msgId:string,text:string,extra:Record<string,unknown>={})=>db.insertMessage({groupId:"group-a",userId:"member-a",selfId:"bot",msgId,msgTime:start,text,imagesJson:"[]",hasAtBot:false,isBotMsg:false,createdAt:start,...extra});
+  insert("before", "昨日聊天", {createdAt:start-1});
+  insert("first", "接口文档已经整理好了", {senderCard:"成员甲"});
+  insert("image", "", {imagesJson:'[{"url":"https://example.test/image"}]',userId:"member-b"});
+  insert("command", "#模型 状态");
+  insert("bot", "机器人自身", {isBotMsg:true});
+  insert("blocked", "禁止处理", {processable:false,dropReason:"disabled_group"});
+  insert("recall", "被撤回的秘密");db.markRetracted("group-a","recall",start+1);
+  insert("query", "今天群里聊了什么");
+  insert("other", "其他群秘密", {groupId:"group-b"});
+  insert("future", "未来消息", {createdAt:start+600_000});
+  const service=new DailyReportService(new DailyReportStore("unused",repo),{} as never);
+  const input={groupId:"group-a",request:{label:"今天",mode:"custom_range" as const,startMinute:0,endMinute:1439},now:new Date(start+300_000),useAiSummary:false,includeStatistics:true,excludeMessageId:"query"};
+  const summary=await service.buildChatSummary(input);
+  assert.match(summary,/已收录 2 条消息｜2 人参与/);
+  assert.match(summary,/接口文档/);
+  assert.doesNotMatch(summary,/昨日聊天|机器人自身|禁止处理|被撤回的秘密|今天群里聊了什么|其他群秘密|未来消息/);
+  insert("latest","部署安排已经确认",{createdAt:start+100_000});
+  assert.match(await service.buildChatSummary(input),/已收录 3 条消息/);
+  assert.equal(await repo.getDailyReportLastSent("group-a"),undefined);
+  assert.equal(db.db.prepare("SELECT count(*) n FROM v3_daily_report_messages").get()!.n,0);
+});
+
 test("live summary reads fresh Beijing-day records on a UTC host and leaves scheduled reports intact", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "live-summary-utc-"));
   t.after(() => rm(root, { recursive: true, force: true }));

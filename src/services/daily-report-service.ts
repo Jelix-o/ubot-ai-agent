@@ -134,12 +134,14 @@ export class DailyReportService {
     useAiSummary?: boolean;
     members?: readonly NapcatGroupMember[];
     includeStatistics?: boolean;
+    excludeMessageId?: string;
   }): Promise<string> { return withModelOperation('summary', args.groupId, async () => {
     const now = args.now ?? new Date();
     const { dayKey, messages } = await this.loadMessagesForRequest(
       args.groupId,
       args.request,
       now,
+      args.excludeMessageId,
     );
 
     if (messages.length === 0) {
@@ -183,13 +185,14 @@ export class DailyReportService {
     groupId: string,
     request: ChatSummaryRequest,
     now: Date,
+    excludeMessageId?: string,
   ): Promise<{ dayKey: string; messages: DailyReportMessageRecord[] }> {
     if (request.mode === "relative_window") {
       const durationMinutes = request.relativeDurationMinutes ?? 30;
       const start = new Date(now.getTime() - durationMinutes * 60 * 1000);
       const dayKeys = buildDayKeysBetween(start, now);
       const batches = await Promise.all(
-        dayKeys.map((dayKey) => this.store.getMessages(groupId, dayKey)),
+        dayKeys.map((dayKey) => this.store.getSummaryMessages(groupId, dayKey, excludeMessageId)),
       );
       const messages = batches
         .flat()
@@ -209,7 +212,7 @@ export class DailyReportService {
       const recentStart = beijingDayStart(now, -6);
       const dayKeys = buildDayKeysBetween(recentStart, now);
       const batches = await Promise.all(
-        dayKeys.map((dayKey) => this.store.getMessages(groupId, dayKey)),
+        dayKeys.map((dayKey) => this.store.getSummaryMessages(groupId, dayKey, excludeMessageId)),
       );
       const messages = batches
         .flat()
@@ -226,7 +229,7 @@ export class DailyReportService {
     const { start, end } = buildAbsoluteWindow(request, now);
     const dayKeys = buildDayKeysBetween(start, end);
     const batches = await Promise.all(
-      dayKeys.map((dayKey) => this.store.getMessages(groupId, dayKey)),
+      dayKeys.map((dayKey) => this.store.getSummaryMessages(groupId, dayKey, excludeMessageId)),
     );
     const messages = batches
       .flat()

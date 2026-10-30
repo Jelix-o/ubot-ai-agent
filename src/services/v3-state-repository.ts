@@ -1061,6 +1061,38 @@ export class V3StateRepository {
     }));
   }
 
+  /** Reuse retained ingress records even when automatic daily delivery is off. */
+  getChatSummaryMessages(groupId: string, dayKey: string, excludeMessageId?: string): V3DailyReportMessage[] {
+    const start = Date.parse(`${dayKey}T00:00:00+08:00`);
+    if (!Number.isFinite(start)) return [];
+    const rows = this.sharedDb.db.prepare(
+      `SELECT user_id, sender_card, sender_nickname, text, images_json, created_at
+         FROM messages m
+        WHERE group_id = ? AND created_at >= ? AND created_at < ?
+          AND is_bot_msg = 0 AND user_id <> self_id
+          AND (processable = 1 OR drop_reason = 'rate_limited')
+          AND (? IS NULL OR msg_id <> ?)
+          AND ltrim(text) NOT LIKE '#%'
+          AND NOT (lower(trim(text)) = '/bt' OR lower(ltrim(text)) LIKE '/bt %')
+          AND NOT EXISTS (SELECT 1 FROM participation_decisions p WHERE p.source_row_id = m.id AND p.action = 'admin_command')
+          AND NOT EXISTS (SELECT 1 FROM retracted r WHERE r.msg_key = m.group_id || ':' || m.msg_id)
+        ORDER BY created_at, id`,
+    ).all(groupId, start, start + 86_400_000, excludeMessageId ?? null, excludeMessageId ?? null) as unknown as Array<{
+      user_id: string; sender_card: string | null; sender_nickname: string | null; text: string; images_json: string; created_at: number;
+    }>;
+    return rows.flatMap(row => {
+      let text = row.text.trim();
+      if (!text) {
+        try {
+          const images: unknown = JSON.parse(row.images_json);
+          if (Array.isArray(images) && images.length > 0) text = "[图片消息]";
+        } catch { /* Empty malformed input has nothing to summarize. */ }
+      }
+      return text ? [{ groupId, dayKey, userId: row.user_id, userName: row.sender_card?.trim() || row.sender_nickname?.trim() || row.user_id,
+        text: text.slice(0, 300), timestamp: new Date(row.created_at).toISOString() }] : [];
+    });
+  }
+
   getDailyReportLastSent(groupId: string): string | undefined {
     const row = this.sharedDb.db.prepare("SELECT last_sent_day FROM v3_daily_report_runs WHERE group_id = ?").get(groupId) as { last_sent_day: string } | undefined;
     return row?.last_sent_day;
