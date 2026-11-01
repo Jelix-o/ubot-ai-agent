@@ -526,6 +526,27 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await desktop.locator(".conditions").getByText("已关闭",{exact:true}).first().waitFor();
     await assertNoHorizontalOverflow(desktop,"desktop interaction diagnostics");
     await desktop.screenshot({path:path.join(screenshotDir,"interaction-diagnostics-desktop.png"),fullPage:true});
+    await desktop.goto(baseUrl + "/commands", { waitUntil: "networkidle" });
+    await desktop.locator(".table-row").filter({ hasText: "今日发言榜" }).click();
+    const rankingEditor = desktop.locator(".command-editor");
+    if (await rankingEditor.getByLabel("主命令", { exact: true }).inputValue() !== "#排行" ||
+        await rankingEditor.getByLabel("使用权限", { exact: false }).inputValue() !== "member") throw new Error("Ranking command defaults are incorrect.");
+    await rankingEditor.getByLabel("使用权限", { exact: false }).selectOption("group_admin");
+    const savedRanking = desktop.waitForResponse(response => response.url().endsWith("/api/commands") && response.request().method() === "PUT" && response.ok());
+    await rankingEditor.getByRole("button", { name: "保存", exact: true }).click(); await savedRanking;
+    await desktop.reload({ waitUntil: "networkidle" });
+    await desktop.locator(".table-row").filter({ hasText: "今日发言榜" }).click();
+    if (await rankingEditor.getByLabel("使用权限", { exact: false }).inputValue() !== "group_admin") throw new Error("Ranking command permission did not persist.");
+    await rankingEditor.getByLabel("使用权限", { exact: false }).selectOption("member");
+    const restoredRanking = desktop.waitForResponse(response => response.url().endsWith("/api/commands") && response.request().method() === "PUT" && response.ok());
+    await rankingEditor.getByRole("button", { name: "保存", exact: true }).click(); await restoredRanking;
+    await assertNoHorizontalOverflow(desktop, "desktop ranking command");
+    await desktop.screenshot({ path: path.join(screenshotDir, "ranking-command-desktop.png"), fullPage: true });
+    await desktop.setViewportSize({ width: 390, height: 844 });
+    await assertNoHorizontalOverflow(desktop, "mobile ranking command");
+    await desktop.screenshot({ path: path.join(screenshotDir, "ranking-command-mobile.png"), fullPage: true });
+    await desktop.setViewportSize({ width: 1440, height: 1000 });
+
     await desktop.goto(baseUrl + "/audio",{waitUntil:"networkidle"});
     await desktop.getByRole("heading",{name:"音频服务",exact:true}).waitFor();
     if(await desktop.getByRole("checkbox",{name:"启用音频服务",exact:true}).isChecked()) throw new Error("Audio must stay disabled without a credential.");

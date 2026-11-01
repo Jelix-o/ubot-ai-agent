@@ -69,10 +69,15 @@ test("Seed audio requests use the separate X-Api-Key once and validate bounded M
 });
 test("audio reserves the maximum before calling, persists one request and publishes caption before an asset reference",async()=>fixture(async({repo,db,root,settings})=>{
   enable(settings);let calls=0;
-  const service:AudioGenerationService=new AudioGenerationService(repo,root,{async generate():Promise<GeneratedAudio>{calls++;assert.equal(service.usage().reservedSeconds,120);return audio();}},()=>baseNow);
+  let entered!:()=>void, release!:()=>void;
+  const started=new Promise<void>(resolve=>{entered=resolve;}), blocked=new Promise<void>(resolve=>{release=resolve;});
+  const service:AudioGenerationService=new AudioGenerationService(repo,root,{async generate():Promise<GeneratedAudio>{calls++;assert.equal(service.usage().reservedSeconds,120);entered();await blocked;return audio();}},()=>baseNow);
   const args={groupId:"10001",userId:"20001",kind:"speech" as const,text:"你好",sourceKey:"source-1"};
   const job=service.enqueue(args);assert.equal(service.enqueue(args).id,job.id);
-  await Promise.all([service.tick(),new AudioGenerationService(repo,root,{async generate(){throw new Error("must not run");}},()=>baseNow).tick()]);
+  // Let the intended provider claim first; filesystem cleanup order is not a lock.
+  const first=service.tick();await started;
+  await new AudioGenerationService(repo,root,{async generate(){throw new Error("must not run");}},()=>baseNow).tick();
+  release();await first;
   assert.equal(calls,1);assert.equal(service.usage().chargedSeconds,2);assert.equal(service.usage().reservedSeconds,0);
   const rows=db.db.prepare("SELECT * FROM outbox ORDER BY id").all() as unknown as OutboxRow[];
   assert.deepEqual(rows.map(r=>r.kind),["audio_caption","audio_asset"]);assert.equal(rows[1]!.text,job.id);assert.doesNotMatch(JSON.stringify(rows),/base64|ID3/);

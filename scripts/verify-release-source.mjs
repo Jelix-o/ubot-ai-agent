@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -48,6 +49,9 @@ const requiredPaths = [
   "dist/services/private-enterprise-ranking.js",
   "assets/huixian-profile.json",
   "assets/meme-pack-index.json",
+  "assets/fonts/NotoSansCJKsc-Regular.otf",
+  "assets/fonts/OFL.txt",
+  "assets/fonts/SOURCE.json",
   "assets/private-enterprises-2026.json",
   "assets/private-enterprises-2026-audit.json",
   "assets/private-enterprises-2026-review.md",
@@ -97,6 +101,9 @@ const approvedStaticFiles = new Set([
   "install-deps.cmd",
   "assets/huixian-profile.json",
   "assets/meme-pack-index.json",
+  "assets/fonts/NotoSansCJKsc-Regular.otf",
+  "assets/fonts/OFL.txt",
+  "assets/fonts/SOURCE.json",
   "assets/private-enterprises-2026.json",
   "assets/private-enterprises-2026-audit.json",
   "assets/private-enterprises-2026-review.md",
@@ -188,9 +195,29 @@ if (unexpected.length || forbidden.length || missing.length || leakedFiles.lengt
 }
 
 await checkDocumentation(root);
+await validateRankingFont();
 await validatePrivateEnterpriseRankingAssets();
 
 process.stdout.write(`${JSON.stringify({ root, version, requiredPaths }, null, 2)}\n`);
+
+async function validateRankingFont() {
+  const fontRoot = path.join(root, "assets/fonts");
+  const source = JSON.parse(await readFile(path.join(fontRoot, "SOURCE.json"), "utf8"));
+  if (source.source !== "https://github.com/notofonts/noto-cjk/tree/Sans2.004" ||
+      source.licenseSource !== "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE" ||
+      !Array.isArray(source.files) || source.files.length !== 2) throw new Error("Invalid ranking font source manifest");
+  const expected = new Map([
+    ["NotoSansCJKsc-Regular.otf", "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"],
+    ["OFL.txt", "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"],
+  ]);
+  for (const entry of source.files) {
+    if (!expected.has(entry.name) || entry.sha256 !== expected.get(entry.name)) throw new Error("Unexpected ranking font manifest entry");
+    const bytes = await readFile(path.join(fontRoot, entry.name));
+    if (bytes.length !== entry.bytes || createHash("sha256").update(bytes).digest("hex") !== entry.sha256) throw new Error("Ranking font integrity check failed");
+    expected.delete(entry.name);
+  }
+  if (expected.size) throw new Error("Ranking font manifest is incomplete");
+}
 
 async function validatePrivateEnterpriseRankingAssets() {
   const moduleUrl = pathToFileURL(path.join(root, "dist/services/private-enterprise-ranking.js"));

@@ -6,6 +6,7 @@ import type { AudioJob } from "./services/audio-generation-service.js";
 import { personalReminderNotice } from "./services/personal-reminder-service.js";
 import { validateReminderControl } from "./services/reminder-interaction-service.js";
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { loadConfig } from "./config.js";
 import { parseForwardNodes, sendForwardOrFallback } from "./forward-message.js";
@@ -109,6 +110,7 @@ export async function deliverOutboxRow(
   generatedImageRoot?: string,
   memeLibrary?: Pick<MemeLibraryService, "loadImageFile" | "getAsset">,
   audioAssets?: Pick<AudioAssetStore, "load" | "acknowledge">,
+  rankingAssets?: Pick<ChatRankingService, "textFor" | "imageFor">,
 ): Promise<string | undefined> {
   // Old workers or manual recovery can leave malformed private reply metadata
   // in a contextual outbox row. Stop it before any QQ send and leave a
@@ -126,7 +128,14 @@ export async function deliverOutboxRow(
     sharedDb.markOutboxSent(row.id);
     return undefined;
   }
-  if (row.kind === "request_progress") {
+  if (row.kind === "chat_ranking_text") {
+    if (!rankingAssets) throw new Error("chat_ranking_unavailable");
+    receipt = await transport.sendGroupMessage(row.group_id, rankingAssets.textFor(row, sentAtMs ?? Date.now()));
+  } else if (row.kind === "chat_ranking_image") {
+    if (!rankingAssets) throw new Error("chat_ranking_unavailable");
+    const image = await rankingAssets.imageFor(row, sentAtMs ?? Date.now());
+    receipt = await transport.sendGroupImage(row.group_id, `base64://${image.toString("base64")}`);
+  } else if (row.kind === "request_progress") {
     const text=new RequestFeedbackService(new V3StateRepository(sharedDb)).validate(row,sentAtMs??Date.now());
     receipt=await transport.sendGroupMessage(row.group_id,text,row.reply_to?{replyToMessageId:row.reply_to}:undefined);
   } else if(row.kind === "reminder_control") {
@@ -243,7 +252,7 @@ function isMalformedConversationOutboxRow(row: OutboxRow, sharedDb: SharedDb): b
 export type OutboxFailureDisposition = "retryable" | "terminal";
 
 function obsoleteAssistanceNotice(row: Pick<OutboxRow,"kind">,error:unknown):boolean {
-  return error instanceof Error && (row.kind==="request_progress" && /^request_progress_(?:expired|unavailable|finished)$/u.test(error.message) || row.kind==="reminder_control" && /^(?:reminder_question_expired|reminder_control_disabled)$/u.test(error.message));
+  return error instanceof Error && (row.kind==="request_progress" && /^request_progress_(?:expired|unavailable|finished)$/u.test(error.message) || row.kind==="reminder_control" && /^(?:reminder_question_expired|reminder_control_disabled)$/u.test(error.message) || row.kind.startsWith("chat_ranking_") && /^chat_ranking_/u.test(error.message));
 }
 
 export function markOutboxDeliveryFailed(
@@ -252,6 +261,7 @@ export function markOutboxDeliveryFailed(
   error: unknown,
 ): OutboxFailureDisposition {
   if(obsoleteAssistanceNotice(row,error)){
+    if (row.kind.startsWith("chat_ranking_")) sharedDb.db.prepare("UPDATE outbox SET status='cancelled',retry_after=NULL,updated_at=? WHERE batch_id=(SELECT batch_id FROM outbox WHERE id=?) AND kind IN ('chat_ranking_text','chat_ranking_image') AND status IN ('pending','preparing','sending','failed')").run(Date.now(), row.id);
     sharedDb.db.prepare("UPDATE outbox SET status='cancelled',retry_after=NULL,updated_at=? WHERE id=? AND status<>'sent'").run(Date.now(),row.id);
     return "terminal";
   }
@@ -259,7 +269,7 @@ export function markOutboxDeliveryFailed(
   const retryable = !(error instanceof ConversationOutboxEnvelopeError) &&
     row.kind !== "request_progress" &&
     !retiredVoice &&
-    (!["generated_image", "forward", "poke", "meme_image", "personal_reminder_notice", "reminder_control", "audio_asset", "audio_caption", "audio_progress"].includes(row.kind) || error instanceof NapCatActionNotSentError);
+    (!["generated_image", "forward", "poke", "meme_image", "personal_reminder_notice", "reminder_control", "audio_asset", "audio_caption", "audio_progress", "chat_ranking_text", "chat_ranking_image"].includes(row.kind) || error instanceof NapCatActionNotSentError);
   sharedDb.markOutboxFailed(row.id, retryable ? 2_000 : null);
   return retryable ? "retryable" : "terminal";
 }
@@ -281,6 +291,7 @@ export class IngressApp {
   private readonly messageRecalls: MessageRecallService;
   private readonly memeLibrary: MemeLibraryService;
   private readonly interactions: GroupInteractionService;
+  private readonly rankingAssets: ChatRankingService;
   private readonly audioAssets?: AudioAssetStore;
   private readonly v3State: ReturnType<typeof resolveV3RuntimeState>;
   private emitterInFlight?: Promise<void>;
@@ -298,6 +309,7 @@ export class IngressApp {
     this.v3State?.retireRoastModeForExistingGroupsOnce();
     this.memeLibrary = new MemeLibraryService(options.dataDir, this.v3State);
     this.interactions = new GroupInteractionService(this.sharedDb, options.botQq);
+    this.rankingAssets = new ChatRankingService({ getSummaryMessages: async () => [] }, path.join(options.dataDir, "group-statistics"), this.v3State);
     if (this.v3State) this.audioAssets = new AudioAssetStore(path.join(options.dataDir,"audio-assets"), this.v3State);
     this.metrics = new Metrics(this.options.metricsDir, {
       processName: "ingress",
@@ -640,6 +652,7 @@ export class IngressApp {
           path.join(this.options.dataDir, "generated-images"),
           this.memeLibrary,
           this.audioAssets,
+          this.rankingAssets,
         );
         this.metrics.inc("outbox_sent");
         logInfo("Outbox message sent.", {
@@ -652,7 +665,7 @@ export class IngressApp {
       } catch (error) {
         if(obsoleteAssistanceNotice(row,error)){
           markOutboxDeliveryFailed(this.sharedDb,row,error);
-          this.metrics.inc("assistance_notice_discarded");
+          this.metrics.inc(row.kind.startsWith("chat_ranking_") ? "chat_ranking_notice_discarded" : "assistance_notice_discarded");
           continue;
         }
         if (!(error instanceof OutboxAcknowledgementError)) {

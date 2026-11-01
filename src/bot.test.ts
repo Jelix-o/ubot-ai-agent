@@ -6032,6 +6032,45 @@ test("Worker handles member summary requests before image classification without
   assert.match(String(rows[0]!.text),/今天聊天总结/);
 });
 
+test("member ranking requests use the local configurable entry without AI, history or report changes", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ranking-entry-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const settings = new SystemSettingsStore(path.join(root, "settings.json")), f = createApp({ systemSettingsStore: settings });
+  let called = 0;
+  f.app.setChatRankingService({ isRolloutEnabled: () => true, cleanup: async () => {}, async send(input, transport) { called++; await transport.sendGroupMessage(input.group.groupId, "今日排行"); } });
+  const mention = (text: string) => createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }]);
+  for (const text of ["今天群聊排行榜", "今天谁聊得最多"]) {
+    assert.equal(await f.app.isChatRankingMessage(mention(text)), true);
+    await f.app.handleGroupMessage(mention(text));
+  }
+  await f.app.handleGroupMessage(createEvent("#排行")); assert.equal(called, 3);
+  for (const event of [createEvent("今天群聊排行榜"), createEvent("[CQ:at,qq=12345] 今天群聊排行榜"), mention("画一张今天群聊排行榜海报"), mention("企业排行榜"), mention("昨天群聊排行榜")]) assert.equal(await f.app.isChatRankingMessage(event), false);
+  await settings.update({ commands: (await settings.getInternal()).commands.map(c => c.id === "chat_ranking" ? { ...c, primary: "#今日榜", aliases: [], permission: "super_admin" } : c) });
+  await f.app.handleGroupMessage(mention("今天谁聊得最多")); await f.app.handleGroupMessage(createEvent("#今日榜")); assert.equal(called, 3);
+  await settings.update({ commands: (await settings.getInternal()).commands.map(c => c.id === "chat_ranking" ? { ...c, permission: "member" } : c) });
+  f.groupConfigService.groups[0]!.dailyReportEnabled = false;
+  await f.app.handleGroupMessage(createEvent("#今日榜")); assert.equal(called, 4);
+  await settings.update({ commands: (await settings.getInternal()).commands.map(c => c.id === "chat_ranking" ? { ...c, enabled: false } : c) });
+  await f.app.handleGroupMessage(mention("今天谁聊得最多")); assert.equal(called, 4);
+  assert.equal(f.aiService.calls.length, 0); assert.deepEqual(f.conversationStore.turnsByKey, {});
+  assert.equal(f.dailyReportService.recorded.length, 0); assert.equal(f.dailyReportService.marked.length, 0);
+});
+
+test("Worker routes member ranking ahead of image classification and conversation branches", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "worker-ranking-")), db = new SharedDb(path.join(root, "state.db"));
+  const f = createApp({ systemSettingsStore: new SystemSettingsStore(path.join(root, "settings.json")), messageTransport: new WorkerTransport(db) });
+  let classified = 0, generated = 0;
+  f.app.setChatRankingService({ isRolloutEnabled: () => true, cleanup: async () => {}, async send(input, transport) { generated++; await transport.sendGroupMessage(input.group.groupId, "今日排行"); await transport.sendGroupImage(input.group.groupId, "statistics.png"); } });
+  const worker = new WorkerApp({ dataDir: root, sharedDb: db, botApp: f.app, consumerKey: "worker:ranking", isBlacklistedUser: async () => false, imageIntentRouter: { async isConfigured() { return true; }, async classify() { classified++; return { action: "generate", modelId: "test", model: "test" }; } } });
+  t.after(async () => { await worker.stop(); await f.app.stop(); db.close(); await rm(root, { recursive: true, force: true }); });
+  const text = "今天群聊排行榜";
+  db.insertMessage({ groupId: "67890", userId: "20001", selfId: "12345", msgId: "ranking-worker", msgTime: Date.now(), text, imagesJson: "[]", canonicalSegmentsJson: JSON.stringify([{ type: "at", qq: "12345" }, { type: "text", text }]), hasAtBot: true, isBotMsg: false, createdAt: Date.now() });
+  worker.start(); const deadline = Date.now() + 4000;
+  while (Number(db.db.prepare("SELECT count(*) n FROM outbox").get()!.n) < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(generated, 1); assert.equal(classified, 0); assert.equal(f.aiService.calls.length, 0);
+  assert.equal(db.db.prepare("SELECT count(*) n FROM conversation_branches").get()!.n, 0);
+  assert.deepEqual(db.db.prepare("SELECT kind FROM outbox ORDER BY id").all().map(row => row.kind), ["text", "image"]);
+});
+
 test("muted bot still allows chat summary and report reminder commands", async () => {
   const { app, transport, aiService, dailyReportService } = createApp({
     groupConfigService: new FakeGroupConfigService([

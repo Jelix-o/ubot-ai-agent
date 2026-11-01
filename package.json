@@ -1,6 +1,6 @@
 {
   "name": "ubot",
-  "version": "4.3.2",
+  "version": "4.3.3",
   "private": true,
   "type": "module",
   "engines": {
@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
+    "@resvg/resvg-js": "2.6.2",
     "dotenv": "^16.4.5",
     "openai": "^4.104.0",
     "pinia": "^3.0.4",

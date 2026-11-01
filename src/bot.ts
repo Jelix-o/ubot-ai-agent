@@ -170,6 +170,8 @@ import type {
   TokenCostControlSettings,
 } from "./types.js";
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
+import { isNaturalChatRankingRequest } from "./utils/chat-ranking-request.js";
+import type { ChatRankingService } from "./services/chat-ranking-service.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import { formatReplyMessages } from "./utils/reply-format.js";
 import {
@@ -252,6 +254,7 @@ const RUNTIME_COMMAND_SPECS = {
   conversation: { builtinPrefix: CONVERSATION_PREFIX, builtinAliases: [CLEAR_GROUP_CONTEXT_COMMAND] },
   daily_report: { builtinPrefix: DAILY_REPORT_PREFIX, builtinAliases: [] },
   chat_summary: { builtinPrefix: "#总结", builtinAliases: ["#群聊总结"] },
+  chat_ranking: { builtinPrefix: "#排行", builtinAliases: ["#发言榜", "#排行榜"] },
   health: { builtinPrefix: HEALTH_PREFIX, builtinAliases: [SHORT_HEALTH_PREFIX] },
   help: { builtinPrefix: HELP_PREFIXES[0]!, builtinAliases: HELP_PREFIXES.slice(1) },
   holiday_countdown: { builtinPrefix: HOLIDAY_COUNTDOWN_PREFIX, builtinAliases: [] },
@@ -537,6 +540,8 @@ interface OpsAlertRuntimeState {
 import type { ScheduledModelCallService } from "./services/scheduled-model-call-service.js";
 
 export class BotApplication {
+  private chatRankingService?: Pick<ChatRankingService, "send" | "cleanup" | "isRolloutEnabled">;
+  setChatRankingService(service: Pick<ChatRankingService, "send" | "cleanup" | "isRolloutEnabled">): void { this.chatRankingService = service; }
   private scheduledModelCallService?: Pick<ScheduledModelCallService, "tick">;
   setScheduledModelCallService(service: Pick<ScheduledModelCallService, "tick">): void { this.scheduledModelCallService = service; }
   private readonly participationService: GroupParticipationService;
@@ -635,6 +640,7 @@ export class BotApplication {
         { id: "audio-generation", intervalMs: 10_000, run: async () => { void this.audioGenerationService?.tick().catch(() => logError("Audio queue tick failed.")); } },
         { id: "ops-alert", intervalMs: BOT_MAINTENANCE_INTERVALS.opsAlert, run: () => this.runOpsAlertTick() },
         { id: "daily-report-cleanup", intervalMs: BOT_MAINTENANCE_INTERVALS.dailyReportCleanup, run: () => this.runDailyReportCleanupTick() },
+        { id: "chat-ranking-cleanup", intervalMs: 3_600_000, run: () => this.chatRankingService?.cleanup() ?? Promise.resolve() },
         { id: "html-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runHtmlPreviewCleanupTick() },
         { id: "image-generation-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runImageGenerationCleanupTick() },
         { id: "image-preview-cleanup", intervalMs: 60 * 60 * 1_000, run: () => this.runImagePreviewCleanupTick() },
@@ -847,6 +853,7 @@ export class BotApplication {
     const runtimeCommands = await this.getRuntimeCommands();
     // Status reads must not interrupt a running reply or mutate continuation state.
     if(!this.isBlacklistedUser(groupConfig,userId) && await this.handleRequestStatus(groupConfig,event,commandText,this.assistanceFacts(event).hasAtBot,runtimeCommands))return;
+    if (!this.isBlacklistedUser(groupConfig, userId) && await this.handleChatRanking(groupConfig, event, runtimeCommands)) return;
     if (!this.isBlacklistedUser(groupConfig, userId) && await this.handleChatSummary(groupConfig, event, runtimeCommands)) return;
     if (!this.isBlacklistedUser(groupConfig, userId) && (parsedMessage.hasAtBot || options.allowReplyWithoutMention === true || isSystemCommandText(commandText, runtimeCommands))) {
       this.automaticReplyControllers.get(groupId)?.abort();
@@ -1579,6 +1586,48 @@ export class BotApplication {
   private assistanceFacts(event:NapcatGroupMessageEvent) {
     const segments:MessageSegment[]=typeof event.message==="string"?[{type:"text",data:{text:event.message}}]:event.message.map(segment=>typeof segment==="string"?{type:"text",data:{text:segment}}:segment);
     return parseGroupMessage(segments,this.botQq);
+  }
+
+  private chatRankingInput(event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): { valid: boolean } | undefined {
+    const text = extractCommandText(event.message), command = matchRuntimeCommand(text, commands, "chat_ranking");
+    if (command) return { valid: !command.suffix.trim() || /^(?:今天|今日)$/u.test(command.suffix.trim()) };
+    if (isSystemCommandText(text, commands) || !this.assistanceFacts(event).hasAtBot) return undefined;
+    return isNaturalChatRankingRequest(text) ? { valid: true } : undefined;
+  }
+
+  async isChatRankingMessage(event: NapcatGroupMessageEvent): Promise<boolean> {
+    const group = await this.groupConfigService.getGroup(String(event.group_id));
+    return Boolean(group && group.enabled !== false && !this.isBlacklistedUser(group, String(event.user_id)) &&
+      this.chatRankingInput(event, await this.getRuntimeCommands()));
+  }
+
+  private readonly pendingChatRankings = new Set<string>();
+  private async handleChatRanking(group: GroupBotConfig, event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): Promise<boolean> {
+    const input = this.chatRankingInput(event, commands);
+    if (!input) return false;
+    const policy = commands.find(command => command.id === "chat_ranking");
+    if (policy && !await this.canUseRuntimeCommand(policy, group, event)) return true;
+    if (!this.isCapabilityEnabled("daily_reports")) { await this.rejectCapability(group.groupId, "daily_reports"); return true; }
+    if (!input.valid) { await this.sendText(group.groupId, "可发送 #排行 查看今天的发言榜和话题图；也可 @我说“今天群聊排行榜”。"); return true; }
+    const service = this.chatRankingService;
+    if (!service || !service.isRolloutEnabled(group.groupId)) { await this.sendText(group.groupId, "本群暂未开启聊天排行。"); return true; }
+    if (this.pendingChatRankings.has(group.groupId)) { await this.sendText(group.groupId, "本群排行榜正在整理，请稍等这次结果。"); return true; }
+    this.pendingChatRankings.add(group.groupId);
+    const now = new Date();
+    try {
+      const members = await this.safeListGroupMembers(group.groupId);
+      const current = await this.groupConfigService.getGroup(group.groupId);
+      const currentPolicy = (await this.getRuntimeCommands()).find(command => command.id === "chat_ranking");
+      if (current && current.enabled !== false && !this.isBlacklistedUser(current, String(event.user_id)) &&
+          this.isCapabilityEnabled("daily_reports") && (!currentPolicy || await this.canUseRuntimeCommand(currentPolicy, current, event))) {
+        await service.send({ group: current, userId: String(event.user_id), sourceMessageId: String(event.message_id), members, now }, this.transport);
+      }
+    } catch (error) {
+      logWarn("Group chat ranking query failed.", { error: (error as Error).name });
+      const current = await this.groupConfigService.getGroup(group.groupId);
+      if (current && current.enabled !== false && !this.isBlacklistedUser(current, String(event.user_id))) await this.sendText(group.groupId, "这次排行榜没整理成功，请稍后再试。");
+    } finally { this.pendingChatRankings.delete(group.groupId); }
+    return true;
   }
 
   private chatSummaryInput(event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]) {
@@ -3720,7 +3769,7 @@ export class BotApplication {
     const visible: SystemCommandConfig[] = [];
     const capabilityByCommand: Record<string,V3RuntimeCapability> = { conversation:"conversation",image_generation:"image_generation",html_preview:"html_preview",bt_search:"bt_search",memory:"explicit_memory",self_memory:"explicit_memory",self_memory_edit:"explicit_memory",self_memory_delete:"explicit_memory",knowledge:"knowledge",daily_report:"daily_reports",holiday_countdown:"holiday_countdown",scheduled_reminder:"scheduled_reminders",personal_reminder:"scheduled_reminders",spoken_reply:"audio_generation",original_song:"audio_generation" };
     for (const command of runtimeCommands) {
-      if (command.id === "chat_summary" && !this.isCapabilityEnabled("daily_reports")) continue;
+      if (["chat_summary", "chat_ranking"].includes(command.id) && !this.isCapabilityEnabled("daily_reports")) continue;
       if (capabilityByCommand[command.id] && !this.isCapabilityEnabled(capabilityByCommand[command.id]!)) continue;
       if (command.id === "request_status" && (!groupConfig.interactionAssistanceEnabled || !groupConfig.groupExperienceEnabled)) continue;
       if (["self_memory","self_memory_edit","self_memory_delete"].includes(command.id) && !groupConfig.groupExperienceEnabled) continue;
@@ -6897,6 +6946,7 @@ type HelpSection = {
 function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false, hiddenIds = new Set<string>()): HelpSection[] {
   return [
     { commandId: "chat_summary", title: "群聊总结", aliases: ["总结", "群聊总结", "实时总结"], lines: [command("chat_summary"), `${command("chat_summary")} 最近半小时 / 昨天 / 上午`, "真实 @机器人说“今天群里聊了什么”“看看群聊日报”“总结上午聊天”也可查看。", "按北京时间读取当前群已收录的记录，显示截至时刻、统计和话题；不会改变定时日报安排。"] },
+    { commandId: "chat_ranking", title: "今日发言榜", aliases: ["排行", "排行榜", "发言榜"], lines: [command("chat_ranking"), "真实 @机器人说“今天群聊排行榜”“今天谁聊得最多”也可查看。", "先发送文字榜单，再发送发言榜与话题图；话题为最多 60 条均匀样本的本地分类，不消耗模型额度。"] },
     {commandId:"request_status",title:"请求进度",aliases:["进度","请求进度"],lines:[command("request_status"),"查看本人在本群的对话和图片请求；完成记录保留十分钟。","真实 @机器人问“做好了吗”也能查正在处理的请求，不会重新调用模型。"]},
     ...(experienceEnabled ? [{title:"表情",aliases:["表情","表情包","meme"],lines:["#表情 分类 / #表情 开心 / #表情 换一张","支持中文分类和英文原名；主动索图每人十秒、每群五秒一次。","自动配图仍按既有概率和群冷却执行；只有超级管理员可用 #表情 收藏 <分类> 收图。"]}] : []),
     { commandId:"personal_reminder",title:"个人提醒",aliases:["个人提醒","一次性提醒","提醒"],lines:[`${command("personal_reminder")} 10分钟后 喝水`,`${command("personal_reminder")} 明天9点 开会`,`${command("personal_reminder")} 列表 / 取消 <编号>`,"北京时间，全天可用；只管理本人在本群的提醒，每人五条、每群五十条。"] },
@@ -7014,6 +7064,7 @@ function buildHelpOverviewMessage(
     ...show("personal_reminder",`个人提醒：${command("personal_reminder")} 10分钟后 喝水；列表 / 取消 <编号>（北京时间，全天可用）`),
     ...show("request_status",`请求进度：${command("request_status")} 查看本人当前群的处理和最近完成结果`),
     ...show("chat_summary", `群聊总结：${command("chat_summary")} 查看截至当前的总结；也可 @机器人问“今天群里聊了什么”`),
+    ...show("chat_ranking", `今日排行：${command("chat_ranking")} 获取文字榜和话题统计图片；也可 @机器人问“今天谁聊得最多”`),
     ...show("self_memory",`本人记忆：${command("self_memory")} 查看或保存；修改、删除需本人归属检查`),
     ...show("spoken_reply",`语音：${command("spoken_reply")} <内容>；也可 @机器人要求语音回答`),
     ...show("original_song",`短歌：${command("original_song")} <主题>，创作 15–30 秒原创歌曲`),

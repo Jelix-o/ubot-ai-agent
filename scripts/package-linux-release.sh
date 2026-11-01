@@ -107,6 +107,7 @@ for release_path in \
   deploy/systemd/ubot-cloudflare-allowlist.service.template \
   deploy/systemd/ubot-cloudflare-allowlist.timer.template \
   assets/huixian-profile.json assets/meme-pack-index.json \
+  assets/fonts/NotoSansCJKsc-Regular.otf assets/fonts/OFL.txt assets/fonts/SOURCE.json \
   assets/private-enterprises-2026.json \
   assets/private-enterprises-2026-audit.json \
   assets/private-enterprises-2026-review.md \

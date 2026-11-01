@@ -679,6 +679,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "live_chat", title: "实时对话", primary: "#实时对话", permission: "group_admin", help: "管理主动接话名单和倒计时" },
     { id: "daily_report", title: "日报", primary: "#日报", permission: "group_admin", help: "管理群聊日报" },
     { id: "chat_summary", title: "群聊总结", primary: "#总结", aliases: ["#群聊总结"], permission: "member", help: "查看当前群截至此刻的聊天总结；也可真实 @机器人说“今天群里聊了什么”" },
+    { id: "chat_ranking", title: "今日发言榜", primary: "#排行", aliases: ["#发言榜", "#排行榜"], permission: "member", help: "查看当前群今日文字发言榜及话题统计图片；不调用模型" },
     { id: "holiday_countdown", title: "节假日", primary: "#节假日", permission: "group_admin", help: "管理节假日倒计时" },
     { id: "scheduled_reminder", title: "定时任务", primary: "#定时任务", permission: "group_admin", help: "管理群定时任务" },
     { id: "status", title: "状态", primary: "#状态", permission: "group_admin", help: "查看机器人运行状态" },

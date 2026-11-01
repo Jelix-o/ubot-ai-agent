@@ -17,6 +17,7 @@ import { ConversationContextRouter } from "./services/conversation-context-route
 import { AtmosphereSummarizer } from "./services/atmosphere-summarizer.js";
 import { DailyReportService } from "./services/daily-report-service.js";
 import { DailyReportStore } from "./services/daily-report-store.js";
+import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { GroupConfigService } from "./services/group-config-service.js";
 import { GroupConfigSqliteShadowRepository } from "./services/group-config-sqlite-shadow-repository.js";
 import { GroupLock } from "./services/group-lock.js";
@@ -196,6 +197,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     new QqAvatarReferenceService(),
   );
 
+  app.setChatRankingService(new ChatRankingService(new DailyReportStore(config.dailyReportStorePath, v3State), path.join(config.dataDir, "group-statistics")));
   const adminHttpServer = config.adminHttpEnabled
     ? createAdminHttpServer(
         config,

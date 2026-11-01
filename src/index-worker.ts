@@ -1,4 +1,5 @@
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
 import { imageIntentText, restoreImageIntentTarget } from "./services/image-intent-text.js";
@@ -226,6 +227,7 @@ export class WorkerApp {
         if (await this.isBlacklistedMessage(message)) {
           return `${message.group_id}:blacklisted`;
         }
+        if (await this.options.botApp.isChatRankingMessage?.(this.buildEvent(message))) return `${message.group_id}:ranking:${message.user_id}`;
         if (await this.options.botApp.isChatSummaryMessage?.(this.buildEvent(message))) return `${message.group_id}:summary:${message.user_id}`;
         if (await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message)))return `${message.group_id}:assistance:${message.user_id}`;
         if (await this.options.botApp.getBtCommand(message.text)) {
@@ -374,6 +376,10 @@ export class WorkerApp {
       return;
     }
 
+    if (await this.options.botApp.isChatRankingMessage?.(this.buildEvent(message))) {
+      await this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true });
+      await done(); return;
+    }
     if (await this.options.botApp.isChatSummaryMessage?.(this.buildEvent(message))) {
       await this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true });
       await done(); return;
@@ -1391,6 +1397,9 @@ async function buildBotApp(
   if (v3State) botApp.setSelfMemoryService(new SelfMemoryService(v3State));
   if (v3State) botApp.setPersonalReminderService(new PersonalReminderService(v3State));
   if (v3State) botApp.setAudioGenerationService(new AudioGenerationService(v3State, path.join(dataDir,"audio-assets")));
+  const chatRanking = new ChatRankingService(new DailyReportStore(config.dailyReportStorePath, v3State), path.join(dataDir, "group-statistics"), v3State);
+  await chatRanking.cleanup();
+  botApp.setChatRankingService(chatRanking);
   return { botApp, groupConfigService, imageIntentRouter };
 }
 
