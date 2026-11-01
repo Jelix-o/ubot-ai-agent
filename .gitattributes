@@ -1,3 +1,2 @@
-* text=auto
-*.sh text eol=lf
-*.mjs text eol=lf
+# Font resources and license are pinned by byte count and SHA-256 on both hosts.
+assets/fonts/* -text
