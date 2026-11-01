@@ -1,6 +1,6 @@
 import type { OutboxRow } from "../shared/sqlite.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
-type Stage = "queued" | "processing" | "awaiting_delivery" | "completed" | "failed" | "unknown";
+type Stage = "queued" | "processing" | "awaiting_delivery" | "completed" | "failed" | "unknown" | "stopped";
 interface TrackedRequest {
     sourceRowId: number;
     groupId: string;
@@ -10,6 +10,7 @@ interface TrackedRequest {
     progressOutboxId?: number;
     failed?: boolean;
     finishedAt?: number;
+    stoppedAt?: number;
 }
 export interface RequestStatus {
     sourceRowId: number;
@@ -19,8 +20,8 @@ export interface RequestStatus {
     updatedAt: number;
 }
 const TYPE = "request-feedback";
-const TERMINAL = new Set<Stage>(["completed", "failed", "unknown"]);
-const LABELS: Record<Stage, string> = { queued: "排队中", processing: "处理中", awaiting_delivery: "等待发送", completed: "已完成", failed: "未完成", unknown: "结果未确认" };
+const TERMINAL = new Set<Stage>(["completed", "failed", "unknown", "stopped"]);
+const LABELS: Record<Stage, string> = { queued: "排队中", processing: "处理中", awaiting_delivery: "等待发送", completed: "已完成", failed: "未完成", unknown: "结果未确认", stopped: "已停止后续回复" };
 export class RequestFeedbackService {
     constructor(private readonly repo: V3StateRepository) { }
     private allowed(item: TrackedRequest): boolean {
@@ -51,6 +52,7 @@ export class RequestFeedbackService {
         } | undefined;
         if (!source || db.isRetracted(item.groupId, source.msg_id))
             return;
+        if (item.stoppedAt) return { sourceRowId: item.sourceRowId, kind: item.kind, stage: "stopped", updatedAt: item.stoppedAt, elapsedSeconds: Math.max(0, Math.floor((item.stoppedAt - item.createdAt) / 1000)) };
         let stage: Stage = "queued", updatedAt = item.finishedAt ?? item.createdAt;
         if (item.kind === "image") {
             const image = db.db.prepare("SELECT status,updated_at FROM image_requests WHERE source_row_id=? AND group_id=? AND creator_user_id=?").get(item.sourceRowId, item.groupId, item.userId) as {
@@ -104,6 +106,38 @@ export class RequestFeedbackService {
             .sort((a, b) => Number(TERMINAL.has(a.stage)) - Number(TERMINAL.has(b.stage)) || b.sourceRowId - a.sourceRowId).slice(0, 10);
     }
     hasActive(groupId: string, userId: string): boolean { return this.list(groupId, userId).some(r => !TERMINAL.has(r.stage)); }
+    /** Stop only the owner's latest ordinary reply, before this real command arrived.
+     * The existing supersession fences abort work and reject later bubbles. An
+     * already claimed send is deliberately reported as potentially delivered. */
+    stopConversation(groupId: string, userId: string, commandMessageId: string, now = Date.now()): string {
+        return this.repo.runAtomically(() => {
+            const source = this.repo.sharedDb.db.prepare("SELECT id FROM messages WHERE group_id=? AND user_id=? AND msg_id=? AND is_bot_msg=0 AND processable=1")
+                .get(groupId, userId, commandMessageId) as { id: number } | undefined;
+            if (!source || this.repo.sharedDb.isRetracted(groupId, commandMessageId) || !this.allowed({ groupId, userId, sourceRowId: source.id, kind: "conversation", createdAt: now })) return "本群暂时无法停止回复。";
+            const key = JSON.stringify([groupId, userId, commandMessageId]);
+            const previous = this.repo.getDocument<{ text: string } | null>("request-stop", key, null);
+            if (previous) return previous.text;
+            const active = this.list(groupId, userId, now).find(r => r.kind === "conversation" && !TERMINAL.has(r.stage) && r.sourceRowId < source.id);
+            let text = "你在本群没有可停止的普通对话。图片、音频和提醒请使用各自入口查看或管理。";
+            if (active) {
+                const task = this.repo.sharedDb.db.prepare("SELECT branch_id,source_turn_id FROM conversation_reply_tasks WHERE source_row_id=? AND group_id=? AND user_id=? AND status<>'superseded'")
+                    .get(active.sourceRowId, groupId, userId) as { branch_id: string; source_turn_id: number } | undefined;
+                if (task) {
+                    const committed = this.repo.sharedDb.db.prepare("SELECT 1 FROM outbox WHERE group_id=? AND branch_id=? AND source_turn_id=? AND (status IN ('sent','sending','outcome_unknown') OR (status='failed' AND retry_after IS NULL)) LIMIT 1")
+                        .get(groupId, task.branch_id, task.source_turn_id);
+                    this.repo.sharedDb.db.prepare("UPDATE conversation_reply_tasks SET status='superseded',updated_at=? WHERE source_row_id=?").run(now, active.sourceRowId);
+                    this.repo.sharedDb.db.prepare("UPDATE outbox SET status='cancelled',retry_after=NULL,updated_at=? WHERE group_id=? AND branch_id=? AND source_turn_id=? AND (status IN ('preparing','pending') OR (status='failed' AND retry_after IS NOT NULL))")
+                        .run(now, groupId, task.branch_id, task.source_turn_id);
+                    const item = this.repo.getDocument<TrackedRequest>(TYPE, String(active.sourceRowId), {} as TrackedRequest);
+                    if (item.progressOutboxId) this.repo.sharedDb.db.prepare("UPDATE outbox SET status='cancelled',retry_after=NULL,updated_at=? WHERE id=? AND status='pending'").run(now, item.progressOutboxId);
+                    this.repo.saveDocument(TYPE, String(active.sourceRowId), { ...item, stoppedAt: now, finishedAt: now }, now);
+                    text = committed ? "已停止后续回复；已经发出或进入发送的消息无法撤回，仍可能送达。" : "已停止你最近一条普通对话的后续回复。";
+                }
+            }
+            this.repo.saveDocument("request-stop", key, { text, createdAt: now }, now);
+            return text;
+        });
+    }
     describe(groupId: string, userId: string, now = Date.now()): string {
         const list = this.list(groupId, userId, now);
         return list.length ? "你在本群的请求进度：\n" + list.map(r => `${r.kind === "image" ? "图片" : "对话"}｜${LABELS[r.stage]}｜${TERMINAL.has(r.stage) ? "用时" : "已等"} ${r.elapsedSeconds} 秒`).join("\n") + "\n已完成结果只展示最近十分钟；不会重新执行请求。" : "你在本群没有进行中的请求或最近十分钟的完成记录。";
@@ -115,6 +149,7 @@ export class RequestFeedbackService {
     }
     tick(now = Date.now()): void {
         this.repo.runAtomically(() => {
+            for (const doc of this.repo.listDocuments<{ createdAt: number }>("request-stop")) if (now - doc.value.createdAt > 7 * 86400000) this.repo.deleteDocument("request-stop", doc.key);
             for (const doc of this.repo.listDocuments<TrackedRequest>(TYPE)) {
                 const item = doc.value;
                 if (now - item.createdAt > 86400000) {

@@ -26,6 +26,34 @@ function fixture(t: test.TestContext) {
     const ack = (row: OutboxRow, id = "qq-" + row.id) => { db.ackOutboxDelivery(row.id, id, base); return id; };
     return { root, db, repo, base, controls, last, ack };
 }
+
+test("stop fences late replies, preserves claimed sends and isolates owners, groups and replays", t => {
+    const f = fixture(t), contexts = new ConversationContextRepository(f.db), feedback = new RequestFeedbackService(f.repo);
+    const insert = (msgId: string, userId="20001", groupId="10001") => f.db.insertMessage({ groupId,userId,selfId:"99999",msgId,msgTime:f.base,text:"请求",imagesJson:"[]",hasAtBot:true,isBotMsg:false,createdAt:f.base });
+    const begin = (msgId: string) => {
+        const source = insert(msgId), route = contexts.saveMessageRoute({sourceRowId:source,groupId:"10001",userId:"20001",sourceMessageId:msgId,content:"整理",createdAt:f.base,routeReason:"new-topic"});
+        contexts.orchestration.registerTask(route,"10001","20001","new");feedback.track(source,"conversation");
+        return {source,route};
+    };
+    const first=begin("first");feedback.tick(f.base+8000);
+    const queued=f.db.enqueueOutbox("10001",null,"结果","text",{topicId:first.route.topicId,branchId:first.route.branchId,sourceTurnId:first.route.turnId,turnId:1});
+    insert("wrong-owner","20002");assert.match(feedback.stopConversation("10001","20002","wrong-owner"),/没有可停止/);
+    insert("wrong-group","20001","10002");feedback.stopConversation("10002","20001","wrong-group");
+    assert.equal(contexts.orchestration.isTaskCurrent(first.source),true);
+    assert.match(feedback.stopConversation("10001","20001","forged"),/无法停止/);
+    insert("stop");const stopped=feedback.stopConversation("10001","20001","stop");assert.match(stopped,/已停止/);
+    assert.equal(contexts.orchestration.isTaskCurrent(first.source),false);
+    assert.equal(f.db.db.prepare("SELECT status FROM outbox WHERE id=?").get(queued)!.status,"cancelled");
+    assert.equal(feedback.list("10001","20001")[0]?.stage,"stopped");assert.equal(feedback.hasActive("10001","20001"),false);
+    const next=begin("next");assert.equal(new RequestFeedbackService(f.repo).stopConversation("10001","20001","stop"),stopped);
+    assert.equal(contexts.orchestration.isTaskCurrent(next.source),true);
+    const claimed=f.db.enqueueOutbox("10001",null,"进入发送","text",{topicId:next.route.topicId,branchId:next.route.branchId,sourceTurnId:next.route.turnId,turnId:2});
+    f.db.db.prepare("UPDATE outbox SET status='sending' WHERE id=?").run(claimed);
+    insert("stop-next");assert.match(feedback.stopConversation("10001","20001","stop-next"),/仍可能送达/);
+    assert.equal(f.db.db.prepare("SELECT status FROM outbox WHERE id=?").get(claimed)!.status,"sending");
+    const last=begin("disabled");insert("stop-disabled");f.repo.saveGroup({...f.repo.getGroup("10001")!,interactionAssistanceEnabled:false});
+    assert.match(feedback.stopConversation("10001","20001","stop-disabled"),/无法停止/);assert.equal(contexts.orchestration.isTaskCurrent(last.source),true);
+});
 test("Chinese reminder times preserve content and partial fields, including across Beijing midnight", () => {
     const now = Date.parse("2026-10-30T03:00:00Z");
     for (const [text, minutes] of [["十分钟后 喝三杯水", 10], ["半小时后 喝水", 30], ["一个半小时后 喝水", 90]] as const) {

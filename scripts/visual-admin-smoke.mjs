@@ -527,7 +527,7 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await assertNoHorizontalOverflow(desktop,"desktop interaction diagnostics");
     await desktop.screenshot({path:path.join(screenshotDir,"interaction-diagnostics-desktop.png"),fullPage:true});
     await desktop.goto(baseUrl + "/commands", { waitUntil: "networkidle" });
-    await desktop.locator(".table-row").filter({ hasText: "今日发言榜" }).click();
+    await desktop.locator(".table-row").filter({ hasText: "#排行" }).click();
     const rankingEditor = desktop.locator(".command-editor");
     if (await rankingEditor.getByLabel("主命令", { exact: true }).inputValue() !== "#排行" ||
         await rankingEditor.getByLabel("使用权限", { exact: false }).inputValue() !== "member") throw new Error("Ranking command defaults are incorrect.");
@@ -535,7 +535,7 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     const savedRanking = desktop.waitForResponse(response => response.url().endsWith("/api/commands") && response.request().method() === "PUT" && response.ok());
     await rankingEditor.getByRole("button", { name: "保存", exact: true }).click(); await savedRanking;
     await desktop.reload({ waitUntil: "networkidle" });
-    await desktop.locator(".table-row").filter({ hasText: "今日发言榜" }).click();
+    await desktop.locator(".table-row").filter({ hasText: "#排行" }).click();
     if (await rankingEditor.getByLabel("使用权限", { exact: false }).inputValue() !== "group_admin") throw new Error("Ranking command permission did not persist.");
     await rankingEditor.getByLabel("使用权限", { exact: false }).selectOption("member");
     const restoredRanking = desktop.waitForResponse(response => response.url().endsWith("/api/commands") && response.request().method() === "PUT" && response.ok());
@@ -546,6 +546,24 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await assertNoHorizontalOverflow(desktop, "mobile ranking command");
     await desktop.screenshot({ path: path.join(screenshotDir, "ranking-command-mobile.png"), fullPage: true });
     await desktop.setViewportSize({ width: 1440, height: 1000 });
+
+    for (const primary of ["#我的", "#停止回复"]) {
+      await desktop.locator(".table-row").filter({ has: desktop.getByText(primary, { exact: true }) }).click();
+      if (await rankingEditor.getByLabel("主命令", { exact: true }).inputValue() !== primary ||
+          await rankingEditor.getByLabel("使用权限", { exact: false }).inputValue() !== "member") throw new Error("Personal command defaults are incorrect.");
+      await rankingEditor.getByLabel("使用权限", { exact: false }).selectOption("group_admin");
+      const saved = desktop.waitForResponse(response => response.url().endsWith("/api/commands") && response.request().method() === "PUT" && response.ok());
+      await rankingEditor.getByRole("button", { name: "保存", exact: true }).click(); await saved;
+      await desktop.reload({ waitUntil: "networkidle" });
+      await desktop.locator(".table-row").filter({ has: desktop.getByText(primary, { exact: true }) }).click();
+      if (await rankingEditor.getByLabel("使用权限", { exact: false }).inputValue() !== "group_admin") throw new Error("Personal command permission did not persist.");
+      await rankingEditor.getByLabel("使用权限", { exact: false }).selectOption("member");
+      const restored = desktop.waitForResponse(response => response.url().endsWith("/api/commands") && response.request().method() === "PUT" && response.ok());
+      await rankingEditor.getByRole("button", { name: "保存", exact: true }).click(); await restored;
+      await desktop.setViewportSize({ width: 390, height: 844 });
+      await assertNoHorizontalOverflow(desktop, "mobile personal command");
+      await desktop.setViewportSize({ width: 1440, height: 1000 });
+    }
 
     await desktop.goto(baseUrl + "/audio",{waitUntil:"networkidle"});
     await desktop.getByRole("heading",{name:"音频服务",exact:true}).waitFor();

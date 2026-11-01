@@ -1,7 +1,8 @@
 import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
-import { beijingClock, beijingDateKey, beijingDayStart } from "../utils/beijing-calendar.js";
+import { beijingClock, beijingDateKey } from "../utils/beijing-calendar.js";
 import { normalizeDailyReportTopUserCount } from "../utils/daily-report-config.js";
 import type { DailyReportMessageRecord } from "./daily-report-store.js";
+import { chatRankingRange, type ChatRankingPeriod } from "../utils/chat-ranking-request.js";
 
 export interface ChatRankingEntry {
   rank: number;
@@ -20,6 +21,10 @@ export interface ChatRankingSnapshot {
   self: { rank?: number; messageCount: number };
   sampleSize: number;
   topics: Array<{ name: string; count: number }>;
+  periodLabel?: string;
+  rangeStart?: string;
+  rangeEnd?: string;
+  hourlyActivity?: Array<{ label: string; count: number }>;
 }
 
 // Distinct rule matches determine one primary topic. This fixed order breaks
@@ -55,10 +60,11 @@ export function buildChatRankingSnapshot(args: {
   userId: string;
   now: Date;
   members?: readonly NapcatGroupMember[];
+  period?: ChatRankingPeriod;
 }): ChatRankingSnapshot {
-  const start = beijingDayStart(args.now).getTime(), end = args.now.getTime();
+  const { start, end, label } = chatRankingRange(args.period ?? "today", args.now);
   const messages = args.messages.filter(m => m.groupId === args.group.groupId && m.text.trim() &&
-    Date.parse(m.timestamp) >= start && Date.parse(m.timestamp) <= end)
+    Date.parse(m.timestamp) >= start && Date.parse(m.timestamp) < end)
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   const names = new Map<string, string>();
   // Keep the scheduled report's explicit identity and nickname resolution.
@@ -93,18 +99,24 @@ export function buildChatRankingSnapshot(args: {
   const topics = rankedTopics.slice(0, 6).map(([name, count]) => ({ name, count }));
   const others = (topicCounts.get("其他") ?? 0) + rankedTopics.slice(6).reduce((sum, [, count]) => sum + count, 0);
   if (others) topics.push({ name: "其他", count: others });
-  return { groupId: args.group.groupId, dayKey: beijingDateKey(args.now), asOf: args.now.toISOString(), topCount,
+  const firstHour = Math.floor(start / 3600000) * 3600000;
+  const hourlyActivity = Array.from({ length: Math.min(24, Math.floor((end - 1 - firstHour) / 3600000) + 1) }, (_, i) => ({ label: beijingClock(new Date(firstHour + i * 3600000)), count: 0 }));
+  for (const message of messages) hourlyActivity[Math.floor((Date.parse(message.timestamp) - firstHour) / 3600000)]!.count++;
+  return { groupId: args.group.groupId, dayKey: beijingDateKey(new Date(start)), asOf: args.now.toISOString(), topCount,
+    periodLabel: label, rangeStart: new Date(start).toISOString(), rangeEnd: new Date(end - 1).toISOString(), hourlyActivity,
     totalMessages: messages.length, participantCount: all.length, entries: all.slice(0, topCount),
     self: self ? { rank: self.rank, messageCount: self.messageCount } : { messageCount: 0 }, sampleSize, topics };
 }
 
 export function chatRankingText(snapshot: ChatRankingSnapshot): string {
-  return [`【本群今日发言榜】${snapshot.dayKey}`, `截至 ${beijingClock(new Date(snapshot.asOf))}（北京时间）`,
-    `今日消息 ${snapshot.totalMessages} 条`, `活跃人数 ${snapshot.participantCount} 人`, `发言 TOP${snapshot.topCount}`,
+  const label = snapshot.periodLabel ?? "今日";
+  return [`【本群${label}发言榜】${snapshot.dayKey}`, `${label === "今日" ? "截至" : "查询于 " + beijingDateKey(new Date(snapshot.asOf))} ${beijingClock(new Date(snapshot.asOf))}（北京时间）`,
+    ...(snapshot.rangeStart && snapshot.rangeEnd ? [`统计范围：${beijingDateKey(new Date(snapshot.rangeStart))} ${beijingClock(new Date(snapshot.rangeStart))}—${beijingDateKey(new Date(snapshot.rangeEnd))} ${beijingClock(new Date(snapshot.rangeEnd))}`] : []),
+    `${label}消息 ${snapshot.totalMessages} 条`, `活跃人数 ${snapshot.participantCount} 人`, `发言 TOP${snapshot.topCount}`,
     ...(snapshot.entries.length ? snapshot.entries.map(entry => {
       const name = entry.userName.trim(), label = name && name !== entry.userId ? `${name}（${entry.userId}）` : entry.userId;
       return `${entry.rank}. ${label} ${entry.messageCount} 条`;
-    }) : ["今天暂无可统计的聊天记录"]),
-    snapshot.self.rank ? `你今日发言 ${snapshot.self.messageCount} 条，排名第 ${snapshot.self.rank}。` : "你今天暂无已收录发言（本次查询不计入）。",
+    }) : ["该时段暂无可统计的聊天记录"]),
+    snapshot.self.rank ? `你${label}发言 ${snapshot.self.messageCount} 条，排名第 ${snapshot.self.rank}。` : "你在该时段暂无已收录发言（本次查询不计入）。",
   ].join("\n");
 }

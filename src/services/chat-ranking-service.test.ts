@@ -13,6 +13,17 @@ import { SystemSettingsStore } from "./system-settings-store.js";
 import { V3StateRepository } from "./v3-state-repository.js";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6B9sAAAAASUVORK5CYII=", "base64");
+test("recent-hour service reads both Beijing days without including the query or future records", async t => {
+  const f = await fixture(t), now = new Date(), midnight = new Date(now); midnight.setUTCHours(16,15,0,0);
+  t.mock.method(Date,"now",()=>midnight.getTime());
+  const times=[midnight.getTime()-3600001,midnight.getTime()-3600000,midnight.getTime(),midnight.getTime()+1];
+  times.forEach((time,i)=>f.insert("range-"+i,"GPT",{msgTime:time,createdAt:time}));
+  // Both Beijing days are necessary even for a single rolling hour.
+  const days: string[]=[];
+  const service=new ChatRankingService({async getSummaryMessages(groupId,day){days.push(day);return times.map(time=>({groupId,userId:"20001",userName:"成员甲",timestamp:new Date(time).toISOString(),text:"GPT"})).filter(m=>new Date(Date.parse(m.timestamp)+8*3600000).toISOString().slice(0,10)===day);}},f.root,undefined,async snapshot=>{assert.equal(snapshot.totalMessages,2);return PNG;});
+  await service.send({...f.input,now:midnight,period:"recent_hour"},f.transport);
+  assert.equal(new Set(days).size,2);assert.equal(f.sent.length,2);assert.match(f.sent[0]!,/最近一小时消息 2 条/);
+});
 async function fixture(t: test.TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "ubot-chat-ranking-")), db = new SharedDb(path.join(dir, "state.db"));
   t.after(async () => { db.close(); await rm(dir, { recursive: true, force: true }); });

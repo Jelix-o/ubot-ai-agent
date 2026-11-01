@@ -6043,7 +6043,7 @@ test("member ranking requests use the local configurable entry without AI, histo
     await f.app.handleGroupMessage(mention(text));
   }
   await f.app.handleGroupMessage(createEvent("#排行")); assert.equal(called, 3);
-  for (const event of [createEvent("今天群聊排行榜"), createEvent("[CQ:at,qq=12345] 今天群聊排行榜"), mention("画一张今天群聊排行榜海报"), mention("企业排行榜"), mention("昨天群聊排行榜")]) assert.equal(await f.app.isChatRankingMessage(event), false);
+  for (const event of [createEvent("今天群聊排行榜"), createEvent("[CQ:at,qq=12345] 今天群聊排行榜"), mention("画一张今天群聊排行榜海报"), mention("企业排行榜"), mention("前天群聊排行榜")]) assert.equal(await f.app.isChatRankingMessage(event), false);
   await settings.update({ commands: (await settings.getInternal()).commands.map(c => c.id === "chat_ranking" ? { ...c, primary: "#今日榜", aliases: [], permission: "super_admin" } : c) });
   await f.app.handleGroupMessage(mention("今天谁聊得最多")); await f.app.handleGroupMessage(createEvent("#今日榜")); assert.equal(called, 3);
   await settings.update({ commands: (await settings.getInternal()).commands.map(c => c.id === "chat_ranking" ? { ...c, permission: "member" } : c) });
@@ -9125,6 +9125,40 @@ test("assistance entry points bypass image classification, retain reminders and 
   worker.start();const deadline=Date.now()+4000;while(handled.size<3&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
   assert.equal(handled.size,3);assert.equal(classified,0);assert.equal(f.aiService.calls.length,0);
   assert.equal(await f.app.isInteractionAssistanceMessage(mention("画一个开心表情包",823)),false);
+});
+
+test("my panel respects component permissions and keeps longer memory commands intact",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"bot-panel-")),db=new SharedDb(path.join(root,"state.db"));
+  const repo=new V3StateRepository(db,{stateEncryptionKey:"0".repeat(64)}),settings=new SystemSettingsStore(path.join(root,"settings.json")),f=createApp({systemSettingsStore:settings});
+  t.after(async()=>{await f.app.stop();db.close();await rm(root,{recursive:true,force:true});});
+  const group=f.groupConfigService.groups[0]!;Object.assign(group,{enabled:true,interactionAssistanceEnabled:true,groupExperienceEnabled:true,personalRemindersEnabled:true});repo.saveGroup(group);
+  const personal=new PersonalReminderService(repo);f.app.setPersonalReminderService(personal);f.app.setInteractionAssistance(new ReminderInteractionService(repo),new RequestFeedbackService(repo));
+  personal.create("67890","20001",new Date(Date.now()+3600000).toISOString(),"本人提醒");personal.create("67890","20002",new Date(Date.now()+3600000).toISOString(),"他人内容");
+  assert.equal(await f.app.isInteractionAssistanceMessage(createEvent("#我的")),true);
+  assert.equal(await f.app.isInteractionAssistanceMessage(createEvent("#我的记忆")),false);
+  await f.app.handleGroupMessage(createEvent("#我的"));let text=f.transport.sent.at(-1)?.text??"";
+  assert.match(text,/我的面板/);assert.match(text,/本人提醒/);assert.doesNotMatch(text,/他人内容/);
+  await settings.update({commands:(await settings.getInternal()).commands.map(c=>c.id==="personal_reminder"?{...c,permission:"super_admin"}:c.id==="personal_status"?{...c,primary:"#个人面板"}:c)});
+  await f.app.handleGroupMessage(createEvent("#个人面板"));text=f.transport.sent.at(-1)?.text??"";assert.doesNotMatch(text,/本人提醒/);assert.match(text,/请求/);
+  group.interactionAssistanceEnabled=false;await f.app.handleGroupMessage(createEvent("#个人面板"));assert.match(f.transport.sent.at(-1)?.text??"",/暂未开启/);
+  assert.equal(f.aiService.calls.length,0);
+});
+
+test("stop runs during a blocked model and prevents its late result without another AI call",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"worker-stop-")),db=new SharedDb(path.join(root,"state.db"));
+  const repo=new V3StateRepository(db,{stateEncryptionKey:"0".repeat(64)}),gate=deferred(),started=deferred();
+  const ai=new FakeAiService(async()=>{started.resolve();await gate.promise;return{text:"不应再发送的结果",model:"test",skillId:"assistant"};});
+  const f=createApp({systemSettingsStore:new SystemSettingsStore(path.join(root,"settings.json")),messageTransport:new WorkerTransport(db),aiService:ai,conversationContextRepository:new ConversationContextRepository(db) as never});
+  const group=f.groupConfigService.groups[0]!;Object.assign(group,{enabled:true,interactionAssistanceEnabled:true,groupExperienceEnabled:true});repo.saveGroup(group);
+  const worker=new WorkerApp({dataDir:root,sharedDb:db,botApp:f.app,consumerKey:"worker:stop",isBlacklistedUser:async()=>false});
+  t.after(async()=>{gate.resolve();await worker.stop();await f.app.stop();db.close();await rm(root,{recursive:true,force:true});});
+  const insert=(msgId:string,text:string)=>db.insertMessage({groupId:"67890",userId:"20001",selfId:"12345",msgId,msgTime:Date.now(),text,imagesJson:"[]",canonicalSegmentsJson:JSON.stringify([{type:"at",qq:"12345"},{type:"text",text}]),hasAtBot:true,isBotMsg:false,createdAt:Date.now()});
+  const source=insert("91001","帮我整理一下");worker.start();await started.promise;insert("91002","#停止回复");
+  const deadline=Date.now()+4000;while(new ConversationContextRepository(db).orchestration.isTaskCurrent(source)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(new ConversationContextRepository(db).orchestration.isTaskCurrent(source),false);
+  gate.resolve();await worker.stop();
+  assert.equal(ai.calls.length,1);assert.equal(db.db.prepare("SELECT count(*) n FROM outbox WHERE text LIKE '%不应再发送%' AND status<>'cancelled'").get()!.n,0);
+  assert.ok(db.db.prepare("SELECT 1 FROM outbox WHERE text LIKE '%已停止%'").get());
 });
 
 test("Worker registers ordinary requests before waiting and progress queries run while the model is busy",async t=>{

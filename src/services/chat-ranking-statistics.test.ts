@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import type { GroupBotConfig } from "../types.js";
 import { buildChatRankingSnapshot, chatRankingText, classifyChatTopic } from "./chat-ranking-statistics.js";
 import { chatRankingSvg, rankingImageLabel, renderChatRanking } from "./chat-ranking-renderer.js";
-import { isNaturalChatRankingRequest } from "../utils/chat-ranking-request.js";
+import { isNaturalChatRankingRequest, naturalChatRankingPeriod, parseChatRankingPeriod } from "../utils/chat-ranking-request.js";
 
 const now = new Date("2026-10-31T03:00:00Z");
 const group: GroupBotConfig = { groupId: "group-a", currentSkillId: "huixian", allowedSkillIds: ["huixian"], switcherUserIds: [], liveChatUserIds: [], liveChatDelayMinutes: 5, dailyReportTopUserCount: 3 };
@@ -73,5 +73,20 @@ test("UTC hosts still count the Beijing day on both sides of midnight", () => {
 
 test("only clear group speech ranking language uses the local lane", () => {
   for (const text of ["今天群聊排行榜", "看看今日发言榜", "今天谁聊得最多", "看看群聊排行榜", "今日群里谁发言最多"]) assert.equal(isNaturalChatRankingRequest(text), true, text);
-  for (const text of ["股票排行榜", "企业排行榜", "游戏段位排行", "画一张今天群聊排行榜海报", "昨天群聊排行榜", "总结今天群聊", "谁是首富"]) assert.equal(isNaturalChatRankingRequest(text), false, text);
+  for (const text of ["股票排行榜", "企业排行榜", "游戏段位排行", "画一张今天群聊排行榜海报", "前天群聊排行榜", "总结今天群聊", "谁是首富"]) assert.equal(isNaturalChatRankingRequest(text), false, text);
+});
+
+test("historical and cross-midnight hour rankings use precise Beijing bounds and full-record activity", () => {
+  assert.equal(naturalChatRankingPeriod("昨天群聊排行榜"), "yesterday");
+  assert.equal(naturalChatRankingPeriod("最近一小时群聊排行榜"), "recent_hour");
+  assert.equal(naturalChatRankingPeriod("最近两小时群聊排行榜"), undefined);
+  assert.equal(parseChatRankingPeriod("上周"), undefined);
+  const midnight = new Date("2026-10-31T16:15:00Z");
+  const records = [message("early", "工作", "2026-10-30T16:00:00Z"), message("out", "工作", "2026-10-31T15:14:59.999Z"), message("a", "GPT", "2026-10-31T15:15:00Z"), message("a", "GPT", "2026-10-31T15:59:59.999Z"), message("b", "代码", "2026-10-31T16:00:00Z"), message("b", "代码", "2026-10-31T16:15:00Z"), message("future", "代码", "2026-10-31T16:15:00.001Z")];
+  const hour = buildChatRankingSnapshot({ group, messages: records, userId: "a", now: midnight, period: "recent_hour" });
+  assert.equal(hour.totalMessages, 4); assert.deepEqual(hour.hourlyActivity, [{ label:"23:00",count:2 },{ label:"00:00",count:2 }]);
+  const day = buildChatRankingSnapshot({ group, messages: records, userId: "a", now: midnight, period: "yesterday" });
+  assert.equal(day.totalMessages, 4); assert.equal(day.dayKey, "2026-10-31");
+  assert.equal(day.hourlyActivity?.length,24); assert.equal(day.hourlyActivity?.reduce((n,h)=>n+h.count,0),4);
+  assert.match(chatRankingText(day),/昨日消息 4 条/); assert.match(chatRankingSvg(day),/每小时活跃度/);
 });

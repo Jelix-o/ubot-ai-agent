@@ -6,6 +6,7 @@ import { logWarn } from "../logger.js";
 import type { OutboxRow } from "../shared/sqlite.js";
 import type { GroupBotConfig, NapcatGroupMember } from "../types.js";
 import { beijingDateKey } from "../utils/beijing-calendar.js";
+import { chatRankingRange, type ChatRankingPeriod } from "../utils/chat-ranking-request.js";
 import { normalizeCommandPermission, permissionAtLeast } from "./command-permissions.js";
 import { V3CapabilityPolicyService } from "./capability-policy-service.js";
 import type { DailyReportStore } from "./daily-report-store.js";
@@ -36,6 +37,7 @@ export interface ChatRankingInput {
   sourceMessageId: string;
   members?: readonly NapcatGroupMember[];
   now?: Date;
+  period?: ChatRankingPeriod;
 }
 
 export class ChatRankingService {
@@ -72,9 +74,11 @@ export class ChatRankingService {
     let doc = this.repo?.getDocument<RankingDocument | null>(CHAT_RANKING_DOCUMENT, id, null);
     if (doc?.textOutboxId) return;
     if (!doc) {
-      const messages = await this.store.getSummaryMessages(input.group.groupId, beijingDateKey(now), input.sourceMessageId);
+      const range = chatRankingRange(input.period ?? "today", now);
+      const days = [...new Set([beijingDateKey(new Date(range.start)), beijingDateKey(new Date(range.end - 1))])];
+      const messages = (await Promise.all(days.map(day => this.store.getSummaryMessages(input.group.groupId, day, input.sourceMessageId)))).flat();
       const initial: RankingDocument = { id, groupId: input.group.groupId, userId: input.userId, sourceMessageId: input.sourceMessageId,
-        createdAt: now.getTime(), snapshot: buildChatRankingSnapshot({ group: input.group, messages, userId: input.userId, members: input.members, now }) };
+        createdAt: now.getTime(), snapshot: buildChatRankingSnapshot({ group: input.group, messages, userId: input.userId, members: input.members, now, period: input.period }) };
       if (!this.allowed(initial)) return;
       doc = this.repo ? this.repo.updateDocument<RankingDocument | null>(CHAT_RANKING_DOCUMENT, id, null, current => current ?? initial, now.getTime()) : initial;
     }

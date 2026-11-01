@@ -170,7 +170,7 @@ import type {
   TokenCostControlSettings,
 } from "./types.js";
 import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
-import { isNaturalChatRankingRequest } from "./utils/chat-ranking-request.js";
+import { naturalChatRankingPeriod, parseChatRankingPeriod, type ChatRankingPeriod } from "./utils/chat-ranking-request.js";
 import type { ChatRankingService } from "./services/chat-ranking-service.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import { formatReplyMessages } from "./utils/reply-format.js";
@@ -268,6 +268,8 @@ const RUNTIME_COMMAND_SPECS = {
   self_memory_delete: { builtinPrefix: "#忘记", builtinAliases: [] },
   personal_reminder: { builtinPrefix: "#提醒", builtinAliases: [] },
   request_status: { builtinPrefix: "#进度", builtinAliases: [] },
+  personal_status: { builtinPrefix: "#我的", builtinAliases: [] },
+  request_stop: { builtinPrefix: "#停止回复", builtinAliases: [] },
   interaction_status: { builtinPrefix: "#互动状态", builtinAliases: [] },
   spoken_reply: { builtinPrefix: "#语音", builtinAliases: [] },
   original_song: { builtinPrefix: "#唱歌", builtinAliases: [] },
@@ -852,6 +854,7 @@ export class BotApplication {
     const commandText = extractCommandText(event.message);
     const runtimeCommands = await this.getRuntimeCommands();
     // Status reads must not interrupt a running reply or mutate continuation state.
+    if (!this.isBlacklistedUser(groupConfig,userId) && await this.handlePersonalStatus(groupConfig,event,commandText,runtimeCommands)) return;
     if(!this.isBlacklistedUser(groupConfig,userId) && await this.handleRequestStatus(groupConfig,event,commandText,this.assistanceFacts(event).hasAtBot,runtimeCommands))return;
     if (!this.isBlacklistedUser(groupConfig, userId) && await this.handleChatRanking(groupConfig, event, runtimeCommands)) return;
     if (!this.isBlacklistedUser(groupConfig, userId) && await this.handleChatSummary(groupConfig, event, runtimeCommands)) return;
@@ -1588,11 +1591,12 @@ export class BotApplication {
     return parseGroupMessage(segments,this.botQq);
   }
 
-  private chatRankingInput(event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): { valid: boolean } | undefined {
+  private chatRankingInput(event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): { period?: ChatRankingPeriod } | undefined {
     const text = extractCommandText(event.message), command = matchRuntimeCommand(text, commands, "chat_ranking");
-    if (command) return { valid: !command.suffix.trim() || /^(?:今天|今日)$/u.test(command.suffix.trim()) };
+    if (command) return { period: parseChatRankingPeriod(command.suffix) };
     if (isSystemCommandText(text, commands) || !this.assistanceFacts(event).hasAtBot) return undefined;
-    return isNaturalChatRankingRequest(text) ? { valid: true } : undefined;
+    const period = naturalChatRankingPeriod(text);
+    return period ? { period } : undefined;
   }
 
   async isChatRankingMessage(event: NapcatGroupMessageEvent): Promise<boolean> {
@@ -1608,7 +1612,7 @@ export class BotApplication {
     const policy = commands.find(command => command.id === "chat_ranking");
     if (policy && !await this.canUseRuntimeCommand(policy, group, event)) return true;
     if (!this.isCapabilityEnabled("daily_reports")) { await this.rejectCapability(group.groupId, "daily_reports"); return true; }
-    if (!input.valid) { await this.sendText(group.groupId, "可发送 #排行 查看今天的发言榜和话题图；也可 @我说“今天群聊排行榜”。"); return true; }
+    if (!input.period) { await this.sendText(group.groupId, "可发送 #排行、#排行 昨天、#排行 最近一小时；也可 @我说“昨天群聊排行榜”。"); return true; }
     const service = this.chatRankingService;
     if (!service || !service.isRolloutEnabled(group.groupId)) { await this.sendText(group.groupId, "本群暂未开启聊天排行。"); return true; }
     if (this.pendingChatRankings.has(group.groupId)) { await this.sendText(group.groupId, "本群排行榜正在整理，请稍等这次结果。"); return true; }
@@ -1620,7 +1624,7 @@ export class BotApplication {
       const currentPolicy = (await this.getRuntimeCommands()).find(command => command.id === "chat_ranking");
       if (current && current.enabled !== false && !this.isBlacklistedUser(current, String(event.user_id)) &&
           this.isCapabilityEnabled("daily_reports") && (!currentPolicy || await this.canUseRuntimeCommand(currentPolicy, current, event))) {
-        await service.send({ group: current, userId: String(event.user_id), sourceMessageId: String(event.message_id), members, now }, this.transport);
+        await service.send({ group: current, userId: String(event.user_id), sourceMessageId: String(event.message_id), members, now, period: input.period }, this.transport);
       }
     } catch (error) {
       logWarn("Group chat ranking query failed.", { error: (error as Error).name });
@@ -1714,6 +1718,8 @@ export class BotApplication {
     const group=await this.groupConfigService.getGroup(String(event.group_id));
     if(!group?.interactionAssistanceEnabled || group.enabled===false || group.botMuted || this.isBlacklistedUser(group,String(event.user_id)))return false;
     const text=extractCommandText(event.message),parsed=this.assistanceFacts(event),commands=await this.getRuntimeCommands();
+    const panel = matchRuntimeCommand(text,commands,"personal_status");
+    if (panel && (!panel.suffix || text.startsWith(panel.matchedPrefix + " ")) || matchRuntimeCommand(text,commands,"request_stop") || matchRuntimeCommand(text,commands,"request_status")) return true;
     if(naturalMemeSelector(text,parsed.hasAtBot)!==undefined)return true;
     if(group.groupExperienceEnabled && parsed.hasAtBot && /^(?:做好了吗|处理到哪了|进度[呢吗]?)[？?。！!]*$/u.test(text) && this.requestFeedbackService?.hasActive(group.groupId,String(event.user_id)))return true;
     const match=matchRuntimeCommand(text,commands,"personal_reminder");
@@ -1733,6 +1739,37 @@ export class BotApplication {
     if(group.botMuted || !policy?.enabled || !await this.canUseRuntimeCommand(policy,group,event))return true;
     if(group.interactionAssistanceEnabled && group.groupExperienceEnabled && this.requestFeedbackService)this.requestFeedbackService.enqueueQuery(group.groupId,String(event.user_id));
     else await this.sendText(group.groupId,"本群暂未开启交互辅助进度查询。");
+    return true;
+  }
+
+  private async handlePersonalStatus(group: GroupBotConfig, event: NapcatGroupMessageEvent, text: string, commands: SystemCommandConfig[]): Promise<boolean> {
+    const panel = matchRuntimeCommand(text,commands,"personal_status"), stop = matchRuntimeCommand(text,commands,"request_stop");
+    if (panel?.suffix && !text.startsWith(panel.matchedPrefix + " ") && !stop) return false;
+    if (!panel && !stop) return false;
+    const policy = commands.find(c => c.id === (stop ? "request_stop" : "personal_status"));
+    if (group.botMuted || !policy?.enabled || !await this.canUseRuntimeCommand(policy,group,event)) return true;
+    if (!group.interactionAssistanceEnabled || !group.groupExperienceEnabled || !this.requestFeedbackService) {
+      await this.sendText(group.groupId,"本群暂未开启交互辅助。"); return true;
+    }
+    if ((stop ?? panel)!.suffix.trim()) {
+      await this.sendText(group.groupId,`直接发送 ${policy.primary}，只查看或操作本人在当前群的任务。`); return true;
+    }
+    const userId = String(event.user_id);
+    if (stop) {
+      await this.sendText(group.groupId,this.requestFeedbackService.stopConversation(group.groupId,userId,String(event.message_id)));
+      return true;
+    }
+    const lines = ["【我的面板】仅本人 · 当前群"];
+    const progressPolicy = commands.find(c => c.id === "request_status");
+    if (progressPolicy?.enabled && await this.canUseRuntimeCommand(progressPolicy,group,event)) lines.push(this.requestFeedbackService.describe(group.groupId,userId));
+    const reminderPolicy = commands.find(c => c.id === "personal_reminder");
+    if (group.personalRemindersEnabled && this.personalReminderService && this.isCapabilityEnabled("scheduled_reminders") && reminderPolicy?.enabled && await this.canUseRuntimeCommand(reminderPolicy,group,event)) {
+      const tasks = this.personalReminderService.list(group.groupId,userId);
+      lines.push(tasks.length ? `待办提醒 ${tasks.length} / 5（北京时间）：\n` + tasks.map(t => `${t.id.slice(9,17)}｜${beijingTime(t.nextRunAt)}｜${t.topic}`).join("\n") + `\n管理：${reminderPolicy.primary} 取消 <编号>` : `暂无待办提醒。例：${reminderPolicy.primary} 10分钟后 喝水`);
+    }
+    const stopPolicy = commands.find(c => c.id === "request_stop");
+    if (stopPolicy?.enabled && await this.canUseRuntimeCommand(stopPolicy,group,event)) lines.push(`${stopPolicy.primary}：停止本人最近一条普通对话。`);
+    await this.sendText(group.groupId,lines.join("\n\n"));
     return true;
   }
 
@@ -3771,7 +3808,7 @@ export class BotApplication {
     for (const command of runtimeCommands) {
       if (["chat_summary", "chat_ranking"].includes(command.id) && !this.isCapabilityEnabled("daily_reports")) continue;
       if (capabilityByCommand[command.id] && !this.isCapabilityEnabled(capabilityByCommand[command.id]!)) continue;
-      if (command.id === "request_status" && (!groupConfig.interactionAssistanceEnabled || !groupConfig.groupExperienceEnabled)) continue;
+      if (["request_status","personal_status","request_stop"].includes(command.id) && (!groupConfig.interactionAssistanceEnabled || !groupConfig.groupExperienceEnabled)) continue;
       if (["self_memory","self_memory_edit","self_memory_delete"].includes(command.id) && !groupConfig.groupExperienceEnabled) continue;
       if (command.id === "personal_reminder" && !groupConfig.personalRemindersEnabled || command.id === "spoken_reply" && !groupConfig.audioReplyEnabled || command.id === "original_song" && !groupConfig.singingEnabled) continue;
       if (command.id === "model" && command.enabled || await this.canUseRuntimeCommand(command, groupConfig, event)) visible.push(command);
@@ -6945,8 +6982,10 @@ type HelpSection = {
 
 function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration: boolean, personaName: string, experienceEnabled = false, hiddenIds = new Set<string>()): HelpSection[] {
   return [
+    { commandId: "personal_status", title: "我的面板", aliases: ["我的", "面板"], lines: [command("personal_status"), "汇总本人在当前群的请求进度和待办提醒，不调用模型。"] },
+    { commandId: "request_stop", title: "停止回复", aliases: ["停止回复"], lines: [command("request_stop"), "停止本人最近一条普通对话的后续回复；已经进入发送的消息仍可能送达。", "图片、音频和提醒使用各自入口管理。"] },
     { commandId: "chat_summary", title: "群聊总结", aliases: ["总结", "群聊总结", "实时总结"], lines: [command("chat_summary"), `${command("chat_summary")} 最近半小时 / 昨天 / 上午`, "真实 @机器人说“今天群里聊了什么”“看看群聊日报”“总结上午聊天”也可查看。", "按北京时间读取当前群已收录的记录，显示截至时刻、统计和话题；不会改变定时日报安排。"] },
-    { commandId: "chat_ranking", title: "今日发言榜", aliases: ["排行", "排行榜", "发言榜"], lines: [command("chat_ranking"), "真实 @机器人说“今天群聊排行榜”“今天谁聊得最多”也可查看。", "先发送文字榜单，再发送发言榜与话题图；话题为最多 60 条均匀样本的本地分类，不消耗模型额度。"] },
+    { commandId: "chat_ranking", title: "发言榜", aliases: ["排行", "排行榜", "发言榜"], lines: [command("chat_ranking"), `${command("chat_ranking")} 昨天 / 最近一小时`, "真实 @机器人说“今天群聊排行榜”“昨天谁聊得最多”也可查看。", "先发送文字榜单，再发送发言榜、话题图和每小时活跃图；话题为最多 60 条均匀样本的本地分类，不消耗模型额度。"] },
     {commandId:"request_status",title:"请求进度",aliases:["进度","请求进度"],lines:[command("request_status"),"查看本人在本群的对话和图片请求；完成记录保留十分钟。","真实 @机器人问“做好了吗”也能查正在处理的请求，不会重新调用模型。"]},
     ...(experienceEnabled ? [{title:"表情",aliases:["表情","表情包","meme"],lines:["#表情 分类 / #表情 开心 / #表情 换一张","支持中文分类和英文原名；主动索图每人十秒、每群五秒一次。","自动配图仍按既有概率和群冷却执行；只有超级管理员可用 #表情 收藏 <分类> 收图。"]}] : []),
     { commandId:"personal_reminder",title:"个人提醒",aliases:["个人提醒","一次性提醒","提醒"],lines:[`${command("personal_reminder")} 10分钟后 喝水`,`${command("personal_reminder")} 明天9点 开会`,`${command("personal_reminder")} 列表 / 取消 <编号>`,"北京时间，全天可用；只管理本人在本群的提醒，每人五条、每群五十条。"] },
@@ -7058,6 +7097,8 @@ function buildHelpOverviewMessage(
 ): string {
   const show = (id: RuntimeCommandId, text: string): string[] => hiddenIds.has(id) ? [] : [text];
   const features = [
+    ...show("personal_status", `我的面板：${command("personal_status")} 汇总本人在本群的进度和待办提醒`),
+    ...show("request_stop", `停止回复：${command("request_stop")} 停止本人最近一条普通对话的后续回复`),
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
     ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置图片意图判断模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
