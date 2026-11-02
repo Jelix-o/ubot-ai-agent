@@ -85,6 +85,18 @@ test("lookup ellipsis is resolved before tools see it and explicit ambiguity sta
   assert.match(ambiguous.clarification!, /游戏.*钓鱼/);
 });
 
+test("object recognition questions use image rules without swallowing ordinary text questions", async () => {
+  for (const text of ["这个是什么车", "这是什么型号", "这辆车是什么牌子？", "请问，这是什么啊？", "那个是啥东西"]) {
+    assert.equal(isMediaReference(text), true, text);
+    const result = await new ContextResolver(async () => { throw new Error("resolver timeout"); })
+      .resolve({ userId: "a", text, hasImages: false, messages: [], candidates: [] });
+    assert.equal(result.intent, "image", text);
+  }
+  for (const text of ["这个错误是什么原因", "这个命令是什么意思", "这个协议是什么", "什么是汽车", "今天吃什么", "这个方案怎么样"]) {
+    assert.equal(isMediaReference(text), false, text);
+  }
+});
+
 test("unavailable semantic selection keeps the bounded shared discussion, including bot replies", async () => {
   const input = { userId: "a", text: "常工与中正比如何", hasImages: false, messages, candidates };
   const fallback = await new ContextResolver(async () => "malformed").resolve(input);

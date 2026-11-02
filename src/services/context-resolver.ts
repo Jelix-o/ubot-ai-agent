@@ -99,6 +99,7 @@ export class ContextResolver {
 }
 
 const EXPLICIT_MEDIA_REFERENCE = /(?:看图|读图|图(?:片)?(?:里|上|中)|这(?:张|个)图|刚(?:才)?(?:发|那).*图|战绩图|截图|图片呢)/u;
+const DEICTIC_OBJECT_REFERENCE = /^(?:这|那)(?:个|辆|台|款|部|只|件)?(?:车|设备|东西)?(?:是)?(?:什么|啥|哪(?:种|款|个))(?:车|型号|牌子|品牌|东西)?$/u;
 
 function normalizeReferenceQuestion(text: string): string {
   return text.normalize("NFKC").trim().replace(/[？?。！!]+$/u, "").replace(/(?:吗|嘛|呢)$/u, "").trim();
@@ -120,7 +121,9 @@ export function isDeicticImageReference(text: string): boolean {
  */
 export function isMediaReference(text: string, options: { includeDeictic?: boolean } = {}): boolean {
   const value = normalizeReferenceQuestion(text);
-  return EXPLICIT_MEDIA_REFERENCE.test(value) || isExplicitImagePersonQuestion(value) ||
+  const objectQuestion = value.replace(/^(?:(?:请问|请|麻烦你|帮我|看看|看下|看一下)[，,：:\s]*)+/u, "")
+    .replace(/(?:啊|呀)$/u, "").replace(/\s+/gu, "");
+  return EXPLICIT_MEDIA_REFERENCE.test(value) || DEICTIC_OBJECT_REFERENCE.test(objectQuestion) || isExplicitImagePersonQuestion(value) ||
     (options.includeDeictic === true && isDeicticImagePersonQuestion(value));
 }
 

@@ -126,6 +126,20 @@ test("state follows causal ancestors, never sibling branches, another group or a
   assert.equal(store.readState(f.repository.getCausalTurns(unrelated.branchId)).revision, 0);
 });
 
+test("recent media skips invalid rows before limiting candidates and keeps the exact receipt-time boundary", t => {
+  const f = fixture(t);
+  f.add("", "boundary", { image: true, now: 1_000 });
+  for (let index = 0; index < 10; index++) {
+    const invalid = f.add("", `invalid-${index}`, { image: true, now: 2_000 + index });
+    if (index % 2) f.db.markRetracted("g", invalid.sourceMessageId, 3_000);
+    else f.db.db.prepare("UPDATE messages SET images_json = ? WHERE id = ?").run("broken", invalid.sourceRowId);
+  }
+  f.add("", "future-receipt", { image: true, now: 122_000 });
+  const question = f.add("这个是什么车", "question", { now: 121_000 });
+  assert.deepEqual(f.repository.orchestration.recentMedia("g", "a", question.sourceRowId, 121_000).map(item => item.sourceMessageId), ["boundary"]);
+  assert.deepEqual(f.repository.orchestration.recentMedia("g", "a", question.sourceRowId, 121_001), []);
+});
+
 test("shared-discussion conditions and quoted image observations survive recovery with group and author validation", t => {
   const f = fixture(t);
   const original = f.add("本人只在游戏时这样", "personal", { userId: "b", image: true });

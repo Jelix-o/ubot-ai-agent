@@ -190,13 +190,18 @@ export class ConversationOrchestrationRepository {
       LEFT JOIN conversation_message_routes r ON r.source_row_id = m.id
       WHERE m.group_id = ? AND m.user_id = ? AND m.id < ? AND m.created_at >= ? AND m.created_at <= ?
         AND m.is_bot_msg = 0 AND (m.processable = 1 OR m.drop_reason = 'rate_limited') AND m.images_json <> '[]'
-      ORDER BY m.id DESC LIMIT 8`).all(groupId, userId, beforeSourceRowId, now - 120_000, now) as Array<{
-        id: number; msg_id: string; user_id: string; images_json: string; branch_id: string | null;
-      }>;
-    return rows.filter(row => !this.sharedDb.isRetracted(groupId, row.msg_id)).flatMap(row => {
+      ORDER BY m.id DESC`).iterate(groupId, userId, beforeSourceRowId, now - 120_000, now);
+    const candidates: MediaCandidate[] = [];
+    for (const entry of rows) {
+      const row = entry as unknown as { id: number; msg_id: string; user_id: string; images_json: string; branch_id: string | null };
+      if (this.sharedDb.isRetracted(groupId, row.msg_id)) continue;
       const images = parseImages(row.images_json);
-      return images.length ? [{ sourceRowId: row.id, sourceMessageId: row.msg_id, userId: row.user_id, images, ...(row.branch_id ? { branchId: row.branch_id } : {}) }] : [];
-    });
+      if (images.length) candidates.push({ sourceRowId: row.id, sourceMessageId: row.msg_id, userId: row.user_id, images, ...(row.branch_id ? { branchId: row.branch_id } : {}) });
+      // Bound valid candidates, so recalled or corrupt rows cannot hide the
+      // latest usable message just beyond the old raw-row limit.
+      if (candidates.length >= 8) break;
+    }
+    return candidates;
   }
 
   mediaByIds(groupId: string, ids: string[], beforeSourceRowId: number, excludedUserIds: string[] = []): MediaCandidate[] {

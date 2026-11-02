@@ -12,7 +12,8 @@ import { WorkerApp } from "./index-worker.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
-import { AiService } from "./services/ai-service.js";
+import { AiService, buildChatMessages } from "./services/ai-service.js";
+import { ImagePipeline } from "./services/image-pipeline.js";
 import { ConversationContextRepository } from "./services/conversation-context-repository.js";
 import { ConversationContextRouter } from "./services/conversation-context-router.js";
 import { RecentGroupEvidenceService } from "./services/recent-group-evidence-service.js";
@@ -1381,6 +1382,7 @@ interface TestBotOptions {
   groupMemoryStore?: ConstructorParameters<typeof BotApplication>[14];
   dailyReportRecords?: Array<{ groupId: string; userId: string; text: string }>;
   btSearchService?: BtSearchRuntime;
+  imagePipeline?: ConstructorParameters<typeof BotApplication>[27];
 }
 
 function createBot(
@@ -1462,7 +1464,7 @@ function createBot(
     undefined,
     undefined,
     undefined,
-    undefined,
+    options.imagePipeline,
     undefined,
     false,
     repository,
@@ -1495,25 +1497,27 @@ class ConversationReplayAi extends CapturingAiService {
   }
 }
 
-function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"]) {
+function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"], imagePipeline?: TestBotOptions["imagePipeline"]) {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "huixian-replay-"));
   const db = openSharedDb(dataDir), repository = new ConversationContextRepository(db);
   const transport = gated ? new GatedWorkerTransport(db) : new WorkerTransport(db);
   const ai = new ConversationReplayAi();
-  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides }, groupMemoryStore });
+  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides }, groupMemoryStore, imagePipeline });
   let time = Date.now() - 90_000, messageId = 40_000;
   t.after(async () => { await bot.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
-  const add = (text: string, userId = USER_ID, options: { image?: boolean; imageUrl?: string; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
+  const add = (text: string, userId = USER_ID, options: { image?: boolean; imageUrl?: string; images?: MessageImageInput[]; groupId?: string; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
     time += options.elapsed ?? 1_000;
     const id = ++messageId;
-    const images = options.image ? [{ url: options.imageUrl ?? "https://example.test/score.png" }] : [];
-    const sourceRowId = db.insertMessage({ groupId: GROUP_ID, userId, selfId: BOT_QQ, msgId: String(id), msgTime: time, createdAt: time, text,
+    const images = options.images ?? (options.image ? [{ url: options.imageUrl ?? "https://example.test/score.png" }] : []);
+    const groupId = options.groupId ?? GROUP_ID;
+    const sourceRowId = db.insertMessage({ groupId, userId, selfId: BOT_QQ, msgId: String(id), msgTime: time, createdAt: time, text,
       imagesJson: JSON.stringify(images), hasAtBot: !options.passive, isBotMsg: false,
       ...(options.excludedDrop ? { processable: false, dropReason: "rate_limited" } : {}),
     });
     const event = inboundEvent({ messageId: id, userId, text, eventTimeSeconds: Math.floor(time / 1_000), hasAtBot: !options.passive, replyToMessageId: options.replyToMessageId });
-    if (options.image) (event.message as any[]).push({ type: "image", data: images[0] });
-    const input = { sourceRowId, groupId: GROUP_ID, userId, sourceMessageId: String(id), text, hasImages: options.image, nowMs: time, replyToMessageId: options.replyToMessageId };
+    event.group_id = Number(groupId);
+    for (const image of images) (event.message as any[]).push({ type: "image", data: image });
+    const input = { sourceRowId, groupId, userId, sourceMessageId: String(id), text, hasImages: images.length > 0, nowMs: time, replyToMessageId: options.replyToMessageId };
     return { input, event, id: String(id) };
   };
   const ask = async (...args: Parameters<typeof add>) => {
@@ -1915,6 +1919,174 @@ test("replay: image followed 15 seconds later by look-at-the-image cancels the o
   assert.equal(rows.some(row => /没.*图|补发/.test(row.text)), false);
 });
 
+const REPLAY_IMAGE_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=";
+
+test("replay: a car question 17 seconds after a passive picture sends actual image content to the model", async t => {
+  const localized: MessageImageInput[] = [];
+  const pipeline = new ImagePipeline({ localizeDataUrl: async image => {
+    localized.push(image);
+    return REPLAY_IMAGE_DATA_URL;
+  } });
+  const f = conversationReplay(t, {}, false, undefined, pipeline);
+  const image = f.add("", USER_ID, { images: [{ file: "car.image" }], passive: true });
+  f.ai.resolve = data => ({ intent: "image", relation: "new", resolvedInput: data.text, selectedMessageIds: [image.id] });
+  const question = await f.ask("这个是什么车", USER_ID, { elapsed: 17_000 });
+
+  const resolution = f.repository.orchestration.getResolution(question.input.sourceRowId)!;
+  assert.deepEqual(resolution.mediaSourceMessageIds, [image.id]);
+  assert.ok(resolution.selectedMessageIds.includes(image.id));
+  assert.deepEqual(localized, [{ file: "car.image" }]);
+  assert.equal(f.ai.calls.length, 1);
+  const call = f.ai.calls[0]!;
+  assert.equal(call.images?.[0]?.url, REPLAY_IMAGE_DATA_URL);
+  assert.deepEqual(buildChatMessages(assistantSkill, call.history, call.userInput, call.images).at(-1)?.content, [
+    { type: "text", text: "这个是什么车" },
+    { type: "image_url", image_url: { url: REPLAY_IMAGE_DATA_URL } },
+  ]);
+  assert.equal(identityOutbox(f).at(-1)?.reply_to, question.id);
+});
+
+test("replay: semantic image intent and resolver failures both recover the latest own picture", async t => {
+  for (const semantic of [true, false]) await t.test(semantic ? "semantic selection" : "resolver timeout", async t => {
+    const f = conversationReplay(t);
+    const image = f.add("", USER_ID, { image: true, passive: true });
+    f.ai.resolve = data => {
+      if (!semantic) throw new Error("resolver timeout");
+      return { intent: "image", relation: "new", resolvedInput: data.text, selectedMessageIds: [image.id], needsMoreContext: true, clarification: "请补充图片" };
+    };
+    const question = await f.ask(semantic ? "帮忙辨认一下上面那个" : "这个是什么车", USER_ID, { elapsed: 17_000 });
+    const resolution = f.repository.orchestration.getResolution(question.input.sourceRowId)!;
+    assert.deepEqual(resolution.mediaSourceMessageIds, [image.id]);
+    assert.equal(resolution.needsMoreContext, false);
+    assert.equal(resolution.clarification, undefined);
+    assert.equal(f.ai.calls[0]?.images?.length, 1);
+    assert.deepEqual(f.identity().replyPlan?.mediaSourceMessageIds, [image.id]);
+  });
+});
+
+test("replay: recent pictures stay scoped to author, group, receipt window and privacy", async t => {
+  for (const scenario of ["other author", "other group", "expired", "retracted", "privacy excluded", "blacklisted"]) {
+    await t.test(scenario, async t => {
+      const f = conversationReplay(t, scenario === "privacy excluded" ? { memoryDisabledUserIds: [USER_ID] }
+        : scenario === "blacklisted" ? { blacklistedUserIds: [USER_ID] } : {});
+      const image = f.add("", scenario === "other author" ? "20002" : USER_ID, {
+        image: true, passive: true, ...(scenario === "other group" ? { groupId: "67891" } : {}),
+      });
+      if (scenario === "retracted") f.db.markRetracted(GROUP_ID, image.id, image.input.nowMs);
+      const question = await f.ask("这个是什么车", USER_ID, { elapsed: scenario === "expired" ? 120_001 : 17_000 });
+      assert.deepEqual(f.repository.orchestration.getResolution(question.input.sourceRowId)?.mediaSourceMessageIds ?? [], []);
+      assert.equal(f.ai.calls.some(call => call.images?.length), false);
+    });
+  }
+});
+
+test("replay: unrelated traffic does not displace the last own image message or its multiple attachments", async t => {
+  const f = conversationReplay(t);
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/old.png", passive: true });
+  const images = [{ url: "https://example.test/front.png" }, { url: "https://example.test/rear.png" }];
+  const latest = f.add("", USER_ID, { images, passive: true });
+  f.add("我也发张图", "20002", { image: true, imageUrl: "https://example.test/other.png", passive: true });
+  f.add("另一个群", USER_ID, { image: true, groupId: "67891", passive: true });
+  f.add("路过", "20003", { passive: true });
+  await f.ask("这个是什么车", USER_ID, { elapsed: 17_000 });
+  assert.deepEqual(f.ai.calls[0]?.images, images);
+  assert.deepEqual(f.identity().replyPlan?.mediaSourceMessageIds, [latest.id]);
+});
+
+test("replay: retracted or malformed latest images leave the newest valid same-author message", async t => {
+  const f = conversationReplay(t);
+  const valid = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/valid.png", passive: true });
+  const retracted = f.add("", USER_ID, { image: true, passive: true });
+  f.db.markRetracted(GROUP_ID, retracted.id, retracted.input.nowMs);
+  const malformed = f.add("", USER_ID, { passive: true });
+  f.db.db.prepare("UPDATE messages SET images_json = ? WHERE id = ?").run("invalid json", malformed.input.sourceRowId);
+  await f.ask("这个是什么车");
+  assert.deepEqual(f.identity().replyPlan?.mediaSourceMessageIds, [valid.id]);
+  assert.deepEqual(f.ai.calls[0]?.images?.map(image => image.url), ["https://example.test/valid.png"]);
+});
+
+test("replay: attached and explicitly quoted pictures take priority over proximity", async t => {
+  for (const source of ["attached", "quoted", "quoted text"]) await t.test(source, async t => {
+    const f = conversationReplay(t);
+    const quoted = f.add("原文", "20002", { image: source === "quoted", imageUrl: "https://example.test/quoted-car.png", passive: true });
+    const recent = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/recent-car.png", passive: true });
+    const question = await f.ask("这个是什么车", USER_ID, source === "attached"
+      ? { image: true, imageUrl: "https://example.test/attached-car.png" }
+      : { replyToMessageId: quoted.id });
+    assert.deepEqual(f.ai.calls[0]?.images?.map(image => image.url) ?? [], source === "quoted text" ? []
+      : [source === "attached" ? "https://example.test/attached-car.png" : "https://example.test/quoted-car.png"]);
+    assert.equal(f.repository.orchestration.getResolution(question.input.sourceRowId)?.mediaSourceMessageIds.includes(recent.id), false);
+  });
+});
+
+test("replay: vision-disabled groups and ordinary text questions never materialize a recent picture", async t => {
+  for (const visionEnabled of [false, true]) await t.test(visionEnabled ? "ordinary question" : "vision disabled", async t => {
+    let materializations = 0;
+    const pipeline = new ImagePipeline({ localizeDataUrl: async () => { materializations++; return REPLAY_IMAGE_DATA_URL; } });
+    const f = conversationReplay(t, { visionEnabled }, false, undefined, pipeline);
+    f.add("", USER_ID, { images: [{ file: "car.image" }], passive: true });
+    await f.ask(visionEnabled ? "今天吃什么" : "这个是什么车");
+    assert.equal(materializations, 0);
+    if (visionEnabled) assert.deepEqual(f.ai.calls[0]?.images, []);
+    else {
+      assert.equal(f.ai.calls.length, 0);
+      assert.match(identityOutbox(f).at(-1)?.text ?? "", /未开启图片理解/);
+    }
+  });
+});
+
+test("replay: an unavailable associated image asks for a resend without silently switching to an older photo", async t => {
+  const attempted: MessageImageInput[] = [];
+  const pipeline = new ImagePipeline({ localizeDataUrl: async image => { attempted.push(image); return undefined; } });
+  const f = conversationReplay(t, {}, false, undefined, pipeline);
+  f.add("", USER_ID, { images: [{ url: REPLAY_IMAGE_DATA_URL }], passive: true });
+  const image = f.add("", USER_ID, { images: [{ file: "unavailable.image" }], passive: true });
+  const question = await f.ask("这个是什么车");
+  assert.deepEqual(f.repository.orchestration.getResolution(question.input.sourceRowId)?.mediaSourceMessageIds, [image.id]);
+  assert.deepEqual(attempted, [{ file: "unavailable.image" }]);
+  assert.equal(f.ai.calls.length, 0);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /重新发送原图/);
+});
+
+test("replay: saved image associations survive a new database connection and bot instance without rerouting", async t => {
+  const f = conversationReplay(t);
+  const image = f.add("", USER_ID, { images: [{ url: REPLAY_IMAGE_DATA_URL }], passive: true });
+  const question = f.add("这个是什么车", USER_ID, { elapsed: 17_000 });
+  const original = await f.bot.prepareConversationRoute(question.input);
+  const resolution = f.repository.orchestration.getResolution(question.input.sourceRowId);
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/later.png", passive: true });
+  const recoveredDb = openSharedDb(f.dataDir);
+  const recoveredRepository = new ConversationContextRepository(recoveredDb);
+  const recoveredAi = new ConversationReplayAi();
+  recoveredAi.resolve = () => { throw new Error("must reuse persisted plan"); };
+  const recoveredBot = createBot(f.transport, recoveredRepository, recoveredAi, new RecentGroupEvidenceService(recoveredDb), { groupConfigOverrides: { visionEnabled: true } });
+  try {
+    const reused = await recoveredBot.prepareConversationRoute(question.input);
+    assert.deepEqual(reused, original);
+    assert.deepEqual(recoveredRepository.orchestration.getResolution(question.input.sourceRowId), resolution);
+    await recoveredBot.handleGroupMessage(question.event, undefined, reused);
+    assert.equal(recoveredAi.resolutions.length, 0);
+    assert.deepEqual(recoveredAi.calls[0]?.images?.map(image => image.url), [REPLAY_IMAGE_DATA_URL]);
+    assert.deepEqual((recoveredAi.calls[0]?.identityContext as AiIdentityContext).replyPlan?.mediaSourceMessageIds, [image.id]);
+  } finally {
+    await recoveredBot.stop();
+    recoveredDb.close();
+  }
+});
+
+test("replay: an image retracted after planning cannot reach vision or trigger a different association", async t => {
+  const f = conversationReplay(t);
+  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/older.png", passive: true });
+  const latest = f.add("", USER_ID, { image: true, passive: true });
+  const question = f.add("这个是什么车");
+  const route = await f.bot.prepareConversationRoute(question.input);
+  f.db.markRetracted(GROUP_ID, latest.id, question.input.nowMs + 1);
+  await f.bot.handleGroupMessage(question.event, undefined, route);
+  assert.equal(f.ai.calls.length, 0);
+  assert.deepEqual(f.repository.orchestration.getResolution(question.input.sourceRowId)?.mediaSourceMessageIds, [latest.id]);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /引用.*重发/);
+});
+
 test("replay: a deictic who-question after one recent image carries that image to vision instead of querying identities", async t => {
   const f = conversationReplay(t, { manualIdentities: [{ userIds: ["20002"], names: ["这"] }] });
   let directoryReads = 0;
@@ -2016,20 +2188,22 @@ test("replay: a picture-person question does not expose the quoted image author'
   assert.equal(identity.memberProfiles?.some(item => item.userId === authorId) ?? false, false);
 });
 
-test("replay: ambiguous recent images clarify the pictured object without calling vision or the identity directory", async t => {
+test("replay: consecutive image messages use the newest picture without querying the identity directory", async t => {
   const f = conversationReplay(t, { manualIdentities: [{ userIds: ["20002"], names: ["这"] }] });
   let directoryReads = 0;
   f.transport.listGroupMembers = async () => { directoryReads++; return []; };
   f.add("", USER_ID, { image: true, imageUrl: "https://example.test/one.png", passive: true });
-  f.add("", USER_ID, { image: true, imageUrl: "https://example.test/two.png", passive: true });
+  const latest = f.add("", USER_ID, { image: true, imageUrl: "https://example.test/two.png", passive: true });
 
   const question = await f.ask("图中这个是谁", USER_ID, { elapsed: 37_000 });
 
   assert.equal(directoryReads, 0);
-  assert.equal(f.ai.calls.length, 0);
+  assert.equal(f.ai.calls.length, 1);
+  assert.deepEqual(f.ai.calls[0]?.images?.map(image => image.url), ["https://example.test/two.png"]);
+  assert.deepEqual(f.identity().replyPlan?.mediaSourceMessageIds, [latest.id]);
   const row = identityOutbox(f).at(-1);
   assert.equal(row?.reply_to, question.id);
-  assert.match(row?.text ?? "", /哪张图.*引用/);
+  assert.doesNotMatch(row?.text ?? "", /哪张图.*引用/);
 });
 
 test("replay: an explicit picture-person question without an image asks for the picture instead of querying identities", async t => {

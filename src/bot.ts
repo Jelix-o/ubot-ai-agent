@@ -245,7 +245,6 @@ const MSG_OPS_ALERT_NO_PERMISSION = "你没有管理运维告警的权限";
 const MSG_MEMBER_PROFILE_UNAVAILABLE = "当前没有可用于回答这位群友相关问题的已保存资料。";
 const MSG_QUOTED_MESSAGE_UNAVAILABLE = "这条引用我没读到，重新引用一下那条消息？";
 const MSG_UNAUTHORIZED_CYBER_REFUSAL = "这类入侵或破解行为不能帮。想学安全可以聊账号安全、防护方案，或在有授权的靶场里练习。";
-const MSG_IMAGE_SELECTION_REQUIRED = "你说的是哪张图？引用一下那条图片消息";
 const MSG_REPLY_ENVELOPE_INVALID = "刚才那条没生成完整，别理它，重新问一句？";
 
 const RUNTIME_COMMAND_SPECS = {
@@ -1408,12 +1407,6 @@ export class BotApplication {
     }
     const explicitImagePersonQuestion = isExplicitImagePersonQuestion(input.text);
     const deicticImagePersonQuestion = isDeicticImagePersonQuestion(input.text);
-    // Only an explicit visual phrase can recover a prior image by proximity.
-    // A bare "他是谁" still needs an image on this message or its quote; an
-    // unrelated recent photo must not steal an ordinary member lookup.
-    const recentImageCandidates = explicitImagePersonQuestion && !input.replyToMessageId && !excluded.includes(input.userId)
-      ? store.recentMedia(input.groupId, input.userId, input.sourceRowId, now)
-      : [];
     // Identity questions are normally deterministic lookups. A visually
     // deictic question needs its image anchor first: otherwise "这是哪位" can
     // be reduced to the fake member name "这" before vision sees the image.
@@ -1498,20 +1491,28 @@ export class BotApplication {
     const mediaReference = isMediaReference(input.text, {
       includeDeictic: deicticImagePersonQuestion && (Boolean(input.hasImages) || Boolean(input.replyToMessageId)),
     });
-    if (!input.hasImages && mediaReference && !excluded.includes(input.userId)) {
-      const media = input.replyToMessageId
+    if (!input.hasImages && (mediaReference || resolution.intent === "image") && !excluded.includes(input.userId)) {
+      // A semantic image selection must also carry real media, not just the
+      // transcript's [图片消息] placeholder. Unquoted requests use the newest
+      // valid same-author image message in the receipt-time window.
+      const media = (input.replyToMessageId
         ? store.mediaByIds(input.groupId, [input.replyToMessageId], input.sourceRowId, excluded)
-        : recentImageCandidates.length ? recentImageCandidates : store.recentMedia(input.groupId, input.userId, input.sourceRowId, now);
-      if (media.length === 1) {
-        resolution.mediaSourceMessageIds = [media[0].sourceMessageId];
+        : store.recentMedia(input.groupId, input.userId, input.sourceRowId, now))[0];
+      if (media) {
+        resolution.mediaSourceMessageIds = [media.sourceMessageId];
+        resolution.selectedMessageIds = [...new Set([media.sourceMessageId, ...resolution.selectedMessageIds])].slice(0, 24);
         resolution.intent = "image";
         resolution.relation = "supplement";
+        resolution.needsMoreContext = false;
         resolution.clarification = undefined;
-        if (!input.replyToMessageId && media[0].branchId) resolution.topicCandidateId = media[0].branchId;
-      } else if (media.length > 1) {
-        resolution.intent = "image";
-        resolution.relation = "supplement";
-        resolution.clarification = MSG_IMAGE_SELECTION_REQUIRED;
+        if (!input.replyToMessageId) {
+          resolution.topicCandidateId = media.branchId;
+          resolution.anchor = {
+            kind: media.branchId ? "explicit_follow_up" : "none",
+            messageIds: [media.sourceMessageId],
+            ...(media.branchId ? { topicCandidateId: media.branchId } : {}),
+          };
+        }
       }
     }
     if (bareOpinionRequest && !hasReadableReference(reference) && resolution.selectedMessageIds.length === 0 && !resolution.clarification) {
@@ -4167,8 +4168,7 @@ export class BotApplication {
       images = uniqueConversationImages([...images, ...merged.images, ...media.flatMap(item => item.images)]);
     }
     const hasResolvedImage = images.length > 0 || (messageContext.replyContext?.images?.length ?? 0) > 0;
-    if (isExplicitImagePersonQuestion(normalizedUserInput) && !hasResolvedImage &&
-      contextResolution?.clarification !== MSG_IMAGE_SELECTION_REQUIRED) {
+    if (!hasResolvedImage && (isExplicitImagePersonQuestion(normalizedUserInput) || contextResolution?.mediaSourceMessageIds.length)) {
       const missingImageText = "我没看到你指的图，引用那条图片消息或重发一下。";
       const receipt = await this.sendTextWithContext(groupConfig.groupId, missingImageText, conversationRoute);
       await this.persistAssistantContext(conversationRoute, missingImageText, receipt ? [receipt] : []);
