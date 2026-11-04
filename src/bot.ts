@@ -4831,11 +4831,15 @@ export class BotApplication {
     const resolvedImages = visionEnabled
       ? await this.resolveImagesWithPipeline(groupConfig, allImages)
       : [];
-    if (visionEnabled && allImages.length > 0 && resolvedImages.length === 0) {
+    // An anchored evaluation needs the complete selected evidence: a readable
+    // reaction image cannot stand in for an original that failed to download.
+    const incompleteFollowUpImages = contextResolution?.opinionAnchorRowId !== undefined && resolvedImages.length < allImages.length;
+    if (visionEnabled && allImages.length > 0 && (resolvedImages.length === 0 || incompleteFollowUpImages)) {
       const error = new ImageInputUnavailableError();
       logWarn("Skipped AI reply because attached images could not be materialized.", {
         groupId: groupConfig.groupId,
         imageCount: allImages.length,
+        resolvedImageCount: resolvedImages.length,
         tier: "image_unavailable",
       });
       const failureText = messageForAiFailure(error, "image_input");

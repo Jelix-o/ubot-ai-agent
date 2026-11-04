@@ -1621,6 +1621,24 @@ test("unified replay: an explicit opinion follow-up survives chat/new and reache
   assert.equal(f.ai.calls.length, 1, "a later bare @ must not revive explicit follow-up evidence");
 });
 
+test("unified replay: an unreadable anchored original cannot be replaced by a readable reaction image", async t => {
+  const localized: string[] = [];
+  const f = conversationReplay(t, {}, false, undefined, new ImagePipeline({ localizeDataUrl: async image => {
+    localized.push(image.file!);
+    if (image.file === "original.image") throw new Error("original unavailable");
+    return REPLAY_IMAGE_DATA_URL;
+  } }));
+  f.add("", USER_ID, { images: [{ file: "original.image" }], passive: true });
+  f.add("这件事应该先确认事实，再判断责任", USER_ID, { passive: true });
+  f.add("", USER_ID, { images: [{ file: "reaction.image" }], passive: true });
+  const request = f.add("我上面说的对吗");
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new" }));
+  await u.run(request);
+  assert.deepEqual(localized, ["original.image", "reaction.image"]);
+  assert.equal(f.ai.calls.length, 0, "partial image evidence must not support an opinion evaluation");
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /没读到|读不到|重发|重新/);
+});
+
 test("unified replay: a text-only explicit follow-up is direct evidence when ambient context is disabled", async t => {
   const f = conversationReplay(t, { ambientGroupContextEnabled: false });
   const opinion = f.add("先看完整事实，再评价这件事", USER_ID, { passive: true });

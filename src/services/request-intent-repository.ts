@@ -54,7 +54,7 @@ export class RequestIntentRepository {
     } catch (error) { this.shared.db.exec("ROLLBACK TO request_intent_complete; RELEASE request_intent_complete"); throw error; }
   }
   fail(sourceRowId: number, token: string, now = Date.now()): void {
-    this.shared.db.prepare("UPDATE request_intent_routes SET status='unavailable',error_code='unavailable',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE source_row_id=? AND status='classifying' AND lease_token=? AND lease_expires_at>?").run(now, sourceRowId, token);
+    this.shared.db.prepare("UPDATE request_intent_routes SET status='unavailable',error_code='unavailable',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE source_row_id=? AND status='classifying' AND lease_token=? AND lease_expires_at>?").run(now, sourceRowId, token, now);
   }
   /** A non-idempotent adapter may be entered once. A crash after dispatch is not permission to repeat it. */
   beginExecution(sourceRowId: number): "started" | "settled" | "unknown" {

@@ -136,6 +136,30 @@ test("request leases, evidence consumption and recovery prevent a second implici
   assert.ok(pending.state === "claimed" && !repo.complete(next, pending.token, decision, 33001));
 });
 
+test("failed request classification settles only the matching live lease", t => {
+  const db = new SharedDb(":memory:");
+  t.after(() => db.close());
+  const add = (msgId: string) => db.insertMessage({ groupId: "10001", userId: "20001", selfId: "99999", msgId, msgTime: 1000, createdAt: 1000, text: "test", imagesJson: "[]", hasAtBot: false, isBotMsg: false });
+  const repo = new RequestIntentRepository(db);
+  const source = add("failed-classification");
+  const claim = repo.claim(source, 1000);
+  assert.equal(claim.state, "claimed");
+  if (claim.state !== "claimed") return;
+  repo.fail(source, "wrong-token", 1001);
+  assert.equal(repo.get(source)?.status, "classifying");
+  repo.fail(source, claim.token, 1002);
+  assert.deepEqual(repo.get(source), { status: "unavailable", result: undefined, errorCode: "unavailable" });
+  assert.equal(repo.claim(source, 1003).state, "resolved");
+  const expired = add("expired-classification");
+  const expiredClaim = repo.claim(expired, 1000);
+  assert.equal(expiredClaim.state, "claimed");
+  if (expiredClaim.state !== "claimed") return;
+  repo.fail(expired, expiredClaim.token, 31000);
+  assert.equal(repo.get(expired)?.status, "classifying", "expired owners cannot settle a lease");
+  assert.equal(repo.claim(expired, 31000).state, "resolved");
+  assert.equal(repo.get(expired)?.errorCode, "result_unknown");
+});
+
 test("persisted v4.5.1 single-image results gain the media array without a migration", t => {
   const root = mkdtempSync(path.join(os.tmpdir(), "request-legacy-media-"));
   const db = new SharedDb(path.join(root, "state.db"));
