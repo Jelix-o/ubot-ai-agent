@@ -2,7 +2,7 @@ import { validateImageIntentDetails, type ImageIntentDetails } from "./image-int
 import { parseMemeReply } from "./meme-reply-protocol.js";
 import { cleanReplyHistory } from "./reply-artifacts.js";
 import { normalizeImageIntentRouting } from "./image-intent-settings.js";
-import { REQUEST_UNDERSTANDING_INSTRUCTION, requestUnderstandingToolDefinition, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingInput } from "./request-understanding.js";
+import { REQUEST_UNDERSTANDING_INSTRUCTION, requestUnderstandingToolDefinition, retainImplicitVisualContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingInput } from "./request-understanding.js";
 import type { ImageIntentRoutingSettings } from "../types.js";
 import { instrumentCompletions, withModelOperation } from "./model-telemetry.js";
 import OpenAI from "openai";
@@ -473,7 +473,7 @@ export class AiService {
       const message = completion.choices[0]?.message;
       const calls = message?.tool_calls;
       if (completion.choices[0]?.finish_reason === "length" || message?.content || calls?.length !== 1 || calls[0]?.type !== "function" || calls[0].function.name !== "route_request") throw new Error("request_intent_invalid_response");
-      return { ...validateRequestUnderstanding(JSON.parse(calls[0].function.arguments), input), modelId: this.model, model: completion.model ?? this.model };
+      return retainImplicitVisualContext({ ...validateRequestUnderstanding(JSON.parse(calls[0].function.arguments), input), modelId: this.model, model: completion.model ?? this.model }, input);
     } finally { cleanup(); }
   }
 

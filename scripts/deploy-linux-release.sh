@@ -201,6 +201,7 @@ existing_cutover_before_deploy=0
 cutover_may_have_started=0
 rollback_armed=0
 napcat_restart_attempted=0
+napcat_config_changed=0
 maintenance_writer_quiesced=0
 cloudflare_updater_quiesced=0
 cloudflare_updater_masked=0
@@ -2008,6 +2009,9 @@ fi
 network_args+=(--html-preview-root "$PREVIEW_ROOT")
 "$NODE_BIN" "$STAGING_DIR/scripts/configure-v3-network.mjs" "${network_args[@]}"
 verify_updated_network_env
+if ! cmp --silent "$BACKUP_DIR/napcat-config.before.json" "$NAPCAT_CONFIG_STAGING"; then
+  napcat_config_changed=1
+fi
 install_napcat_config_atomically
 
 # The one-time migration runs under the administrative deployer so it can
@@ -2059,10 +2063,12 @@ verify_service_restart_counts_stable
 
 # NapCat reads OneBot configuration at process startup (or through its WebUI
 # setter); a host-side atomic JSON replacement is not a configuration reload.
-# Keep the old reverse connection alive until all V3 processes are healthy,
-# then restart the known production container so it loads the approved URL.
-napcat_restart_attempted=1
-restart_napcat_container
+# Keep an unchanged NapCat session alive; its existing client reconnects to
+# Ingress. Reload changed configuration only after the new listeners are ready.
+if [[ "$napcat_config_changed" -eq 1 ]]; then
+  napcat_restart_attempted=1
+  restart_napcat_container
+fi
 wait_for_ingress_read_api_health
 wait_for_admin_auth_boundary
 verify_service_restart_counts_stable

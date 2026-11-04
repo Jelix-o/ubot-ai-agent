@@ -1,6 +1,6 @@
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
 import { RequestIntentRepository } from "./services/request-intent-repository.js";
-import { clearLocalImageAction, imageDetailsFromUnderstanding, isNonExecutingRequest, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
+import { clearLocalImageAction, imageDetailsFromUnderstanding, isNonExecutingRequest, retainImplicitVisualContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
 import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
@@ -747,6 +747,7 @@ export class WorkerApp {
     } else {
       result = { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
     }
+    result = retainImplicitVisualContext(result, input);
     // A new independent question cannot inherit old text merely because it was offered.
     // Spoken answers retain the existing answer-then-audio chain; reading the request aloud is not an answer.
     if (result.action === "speech" && /(?:用|发|以)语音(?:回答|回复|说)/u.test(message.text)) result.action = "chat";

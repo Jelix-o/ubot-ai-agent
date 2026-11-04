@@ -40,6 +40,18 @@ test("understanding rejects invented sources, prompts, commands and pending cont
   ]) assert.throws(() => validateRequestUnderstanding(bad, input), /request_intent_invalid/);
 });
 
+test("a judge focusing on emotion cannot discard the unanswered image behind an empty mention", async () => {
+  const service = new AiService("https://example.invalid/v1", "test-key", "judge", { async create() {
+    return { model: "judge", choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ type: "function", function: { name: "route_request", arguments: JSON.stringify({ action: "chat", relation: "follow_up", sourceRowIds: [2, 3], missingFields: [] }) } }] } }] };
+  } } as never, { providerCapabilities: { toolCalling: true } });
+  const result = await service.classifyRequest({ ...input, sanitizedText: "[BOT_MENTION]" });
+  assert.equal(result.action, "vision");
+  assert.equal(result.mediaSourceRowId, 1);
+  assert.ok([1, 2, 3].every(id => result.sourceRowIds.includes(id)));
+  const independent = await service.classifyRequest({ ...input, sanitizedText: "今天星期几" });
+  assert.equal(independent.action, "chat");
+});
+
 test("local outage fallback accepts concrete creation and excludes questions, negation and reported instructions", () => {
   for (const text of ["用电影反派的口吻做个图，台词：出场靠实力。", "帮我生成一张蓝鲸图片", "画一只戴帽子的猫"]) assert.equal(clearLocalImageAction(text), "generate", text);
   for (const text of ["不要生成图片", "你支持生图吗", "如何生成图片", "他说让我做个图", "不想聊了", "这个图怎么样", "帮我看看怎么做图"]) assert.equal(clearLocalImageAction(text), undefined, text);

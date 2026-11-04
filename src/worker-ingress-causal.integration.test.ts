@@ -1576,7 +1576,7 @@ test("unified replay: an image, emotion text and bare @ reach vision together wi
   const feeling = f.add("今天有点累，不太想说话", USER_ID, { passive: true });
   f.add("其他成员插话", "20002", { image: true, passive: true });
   const mention = f.add("");
-  const u = unifiedReplay(t, f, () => ({ action: "vision", relation: "follow_up", sourceRowIds: [image.input.sourceRowId, feeling.input.sourceRowId, mention.input.sourceRowId], mediaSourceRowId: image.input.sourceRowId }));
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "follow_up", sourceRowIds: [feeling.input.sourceRowId, mention.input.sourceRowId] }));
   await u.run(mention);
   assert.equal(u.inputs.length, 1);
   assert.equal(f.ai.resolutions.length, 0);

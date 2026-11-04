@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -358,6 +360,23 @@ test("V3 deployer safely updates a root-owned NapCat JSON through a validated st
   const v3Start = deployer.lastIndexOf("sudo systemctl start ubot.target");
   const napcatRestart = deployer.lastIndexOf("restart_napcat_container");
   assert.ok(v3Start >= 0 && napcatRestart > v3Start, "NapCat restarts only after V3 is started");
+});
+
+test("unchanged NapCat configuration preserves the session; changed configuration restarts once", t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "napcat-restart-guard-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const compare = deployer.match(/if ! cmp --silent[^\n]+\n[\s\S]*?\nfi/u)?.[0];
+  const restart = deployer.match(/if \[\[ "\$napcat_config_changed" -eq 1 \]\]; then[\s\S]*?\nfi/u)?.[0];
+  assert.ok(compare && restart);
+  writeFileSync(path.join(root, "napcat-config.before.json"), '{"url":"same"}');
+  for (const changed of [false, true]) {
+    writeFileSync(path.join(root, "staged.json"), JSON.stringify({ url: changed ? "new" : "same" }));
+    const script: string = ['set -euo pipefail', 'BACKUP_DIR="$1"', 'NAPCAT_CONFIG_STAGING="$BACKUP_DIR/staged.json"', 'napcat_config_changed=0', compare,
+      'restart_napcat_container() { printf "restart\\n"; }', restart, 'printf "changed=%s\\n" "$napcat_config_changed"'].join("\n");
+    const result = spawnSync(process.execPath, ["scripts/run-bash.cjs", "-c", script, "napcat-guard", root.replace(/\\/gu, "/")], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), changed ? "restart\nchanged=1" : "changed=0");
+  }
 });
 
 test("V3 infrastructure keeps process ownership and network exposure narrow", () => {

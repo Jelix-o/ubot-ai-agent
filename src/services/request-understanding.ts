@@ -46,6 +46,16 @@ export function requestExecutionText(excerpt: string | undefined, sourceText: st
   return excerpt && !/\[(?:URL|BOT_MENTION|(?:NUMBER|MEMBER_MENTION)_[^\]]+)\]/u.test(excerpt) ? excerpt : sourceText.trim();
 }
 
+/** Empty real mentions keep an unanswered picture even if the judge focuses on its caption. */
+export function retainImplicitVisualContext(result: RequestUnderstanding, input: RequestUnderstandingInput): RequestUnderstanding {
+  if (result.action !== "chat" || !input.facts.hasTrustedBotMention || input.facts.hasTrustedReply || input.facts.attachmentCount || input.sanitizedText.replace(/\[BOT_MENTION\]/gu, "").trim()) return result;
+  const image = input.candidates.filter(item => item.attachmentCount > 0).sort((a, b) => b.id - a.id)[0];
+  if (!image) return result;
+  const caption = input.candidates.filter(item => item.id > image.id && item.text.trim() && !item.attachmentCount).sort((a, b) => b.id - a.id)[0];
+  return { ...result, action: "vision", relation: "follow_up", mediaSourceRowId: image.id, missingFields: [],
+    sourceRowIds: [...new Set([image.id, input.sourceRowId, ...(caption ? [caption.id] : []), ...result.sourceRowIds])].slice(0, 12) };
+}
+
 export function isNonExecutingRequest(text: string): boolean {
   const clean = text.replace(/\[BOT_MENTION\]/gu, "").trim();
   return /^(?:(?:不要|别|不用|无需)(?:给我|帮我)?(?:画|绘制|生成|做图|改图|提醒|朗读|唱|搜索|联网)|取消|怎么|如何|教程|他说|她说|他让我|她让我)/u.test(clean) ||
