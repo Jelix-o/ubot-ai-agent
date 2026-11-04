@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { AiHealthStatus, AiReply, SkillDefinition, SystemModelConfig } from "../types.js";
-import { ImageIntentClassificationError } from "./ai-service.js";
+import { AiService as OpenAiService, ImageIntentClassificationError } from "./ai-service.js";
 import { ConfiguredAiService, ConfiguredModelUnavailableError, type RuntimeAiService } from "./configured-ai-service.js";
 import { ImageIntentRouterError, type ImageIntentRouterInput } from "./image-intent-router-plugin.js";
 import { SystemSettingsStore } from "./system-settings-store.js";
@@ -394,6 +394,32 @@ test("request intent uses DS then GPT with independent small budgets and never c
   await store.update({ imageIntentRouting: { ...settings.imageIntentRouting!, enabled: false } });
   await assert.rejects(service.classifyRequest(input), /disabled/);
   assert.equal(attempts.length, 2);
+});
+
+test("request intent falls back when a valid-looking answer omits an ambiguous opinion anchor", async t => {
+  const store = await createSettingsStore(t);
+  await store.update({ models: ["ds", "gpt"].map(id => ({ ...model({ id, model: id }), capabilities: { toolCalling: true } })) });
+  await store.ensureRequestIntentDefaults();
+  const attempts: string[] = [];
+  const fallback = new FakeRuntimeAiService(makeHealth("chat", "https://fallback.example/v1"));
+  const service = new ConfiguredAiService(fallback, store, "image_intent", (configured, _policy, routing) => new OpenAiService(
+    configured.baseUrl, "test-key", configured.model, { async create() {
+      attempts.push(configured.id);
+      const decision = configured.id === "ds"
+        ? { action: "chat", relation: "new", sourceRowIds: [5], missingFields: [] }
+        : { action: "chat", relation: "follow_up", sourceRowIds: [3, 5], opinionAnchorRowId: 3, missingFields: [] };
+      return { model: configured.model, choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{ type: "function", function: { name: "route_request", arguments: JSON.stringify(decision) } }] } }] };
+    } } as never, { imageIntentRouting: routing, providerCapabilities: { toolCalling: true } },
+  ));
+  const result = await service.classifyRequest({
+    sourceRowId: 5, sanitizedText: "我上面说的对吗",
+    candidates: [{ id: 1, text: "第一个观点", attachmentCount: 0 }, { id: 3, text: "第二个观点", attachmentCount: 0 }],
+    facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+  });
+  assert.deepEqual(attempts, ["ds", "gpt"]);
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.opinionAnchorRowId, 3);
+  assert.equal(result.action, "chat");
 });
 
 test("startup keeps an explicit judge selection and a disabled router", async t => {

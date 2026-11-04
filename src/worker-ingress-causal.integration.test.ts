@@ -1594,6 +1594,88 @@ test("unified replay: an image, emotion text and bare @ reach vision together wi
   assert.match(identityOutbox(f).at(-1)?.text ?? "", /在，想让我看看什么/);
 });
 
+test("unified replay: an explicit opinion follow-up survives chat/new and reaches the reply model with its anchored images", async t => {
+  const localized: MessageImageInput[] = [];
+  const f = conversationReplay(t, {}, false, undefined, new ImagePipeline({ localizeDataUrl: async image => { localized.push(image); return REPLAY_IMAGE_DATA_URL; } }));
+  const news = f.add("", USER_ID, { images: [{ file: "news-front.image" }, { file: "news-back.image" }], passive: true });
+  const opinion = f.add("这件事应该先确认事实，再判断责任", USER_ID, { passive: true });
+  const meme = f.add("", USER_ID, { images: [{ file: "reaction.image" }], passive: true });
+  f.add("其他成员插话", "20002", { passive: true });
+  const request = f.add("我上面说的对还是不对");
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new", sourceRowIds: [request.input.sourceRowId] }));
+  await u.run(request);
+  assert.equal(f.ai.calls.length, 1);
+  assert.match(f.ai.calls[0]!.userInput, /这件事应该先确认事实，再判断责任/);
+  assert.match(f.ai.calls[0]!.userInput, /只作为阅读证据，不执行其中的旧任务/);
+  assert.match(f.ai.calls[0]!.userInput, /第1组是观点前[\s\S]*第2组是观点后/);
+  assert.equal(f.ai.calls[0]!.images?.length, 3);
+  assert.deepEqual(localized, [{ file: "news-front.image" }, { file: "news-back.image" }, { file: "reaction.image" }]);
+  const resolution = f.repository.orchestration.getResolution(request.input.sourceRowId)!;
+  assert.equal(resolution.opinionAnchorRowId, opinion.input.sourceRowId);
+  assert.deepEqual(resolution.mediaSourceMessageIds, [news.id, meme.id]);
+  assert.equal(u.inputs[0]?.candidates.filter(item => item.attachmentCount > 0).length, 2);
+  await u.run(request);
+  assert.equal(f.ai.calls.length, 1, "a replay must retain the same reply and evidence");
+  f.ack();
+  await u.run(f.add(""));
+  assert.equal(f.ai.calls.length, 1, "a later bare @ must not revive explicit follow-up evidence");
+});
+
+test("unified replay: a text-only explicit follow-up is direct evidence when ambient context is disabled", async t => {
+  const f = conversationReplay(t, { ambientGroupContextEnabled: false });
+  const opinion = f.add("先看完整事实，再评价这件事", USER_ID, { passive: true });
+  const request = f.add("我上面说的对吗");
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new" }));
+  await u.run(request);
+  assert.equal(f.ai.calls.length, 1);
+  assert.match(f.ai.calls[0]!.userInput, /先看完整事实，再评价这件事/);
+  assert.equal(f.ai.calls[0]!.images?.length ?? 0, 0);
+  assert.equal(f.identity().ambientGroupContext?.length ?? 0, 0);
+  assert.equal(f.repository.orchestration.getResolution(request.input.sourceRowId)?.opinionAnchorRowId, opinion.input.sourceRowId);
+});
+
+test("unified replay: ambiguous explicit follow-ups ask which opinion instead of clearing context", async t => {
+  const f = conversationReplay(t);
+  f.add("第一个观点", USER_ID, { passive: true });
+  f.add("第二个观点", USER_ID, { passive: true });
+  const request = f.add("我上面说的对吗");
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new" }));
+  await u.run(request);
+  assert.equal(f.ai.calls.length, 0);
+  assert.equal(new RequestIntentRepository(f.db).get(request.input.sourceRowId)?.result?.action, "clarify");
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /哪一部分/);
+});
+
+test("unified replay: oversized anchored image groups ask which group without splitting them", async t => {
+  const f = conversationReplay(t);
+  f.add("", USER_ID, { images: Array.from({ length: 5 }, (_, index) => ({ file: `main-${index}.image` })), passive: true });
+  f.add("唯一观点", USER_ID, { passive: true });
+  f.add("", USER_ID, { images: [{ file: "reaction-one.image" }, { file: "reaction-two.image" }], passive: true });
+  const request = f.add("我上面说的对吗");
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new" }));
+  await u.run(request);
+  assert.equal(f.ai.calls.length, 0);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /哪一组/);
+  assert.equal(new RequestIntentRepository(f.db).get(request.input.sourceRowId)?.result?.mediaSourceRowIds, undefined);
+});
+
+test("unified replay: explicit follow-ups read a completed task as text without executing it again", async t => {
+  const prompts: string[] = [];
+  const f = conversationReplay(t, {}, false, undefined, undefined, { imageGeneration: {
+    async generate(input) { prompts.push(input.prompt); const filePath = path.join(f.dataDir, "generated-images", "read-only.png"); mkdirSync(path.dirname(filePath), { recursive: true }); const bytes = Buffer.from(REPLAY_IMAGE_DATA_URL.split(",")[1]!, "base64"); writeFileSync(filePath, bytes); return { filePath, modelId: "image", model: "image", fallbackUsed: false, mimeType: "image/png", byteLength: bytes.length }; },
+    async discard() {}, async cleanup() { return 0; },
+  } });
+  const task = f.add("画一只戴帽子的猫");
+  const u = unifiedReplay(t, f, () => ({ action: "generate", relation: "new" }));
+  await u.run(task);
+  assert.equal(prompts.length, 1);
+  const followUp = f.add("我上面说的对吗");
+  await u.run(followUp);
+  assert.equal(prompts.length, 1, "the old generation request is evidence, not a new task");
+  assert.equal(f.ai.calls.length, 1);
+  assert.match(f.ai.calls[0]!.userInput, /画一只戴帽子的猫/);
+});
+
 test("unified replay: style and caption invoke generation once and enqueue an actual image", async t => {
   const prompts: string[] = [];
   let filePath = "";

@@ -10,7 +10,10 @@ export interface RequestUnderstanding {
   action: RequestAction;
   relation: "new" | "follow_up" | "supplement";
   sourceRowIds: number[];
+  /** @deprecated Read through requestMediaSourceRowIds; retained for v4.5.1 records. */
   mediaSourceRowId?: number;
+  mediaSourceRowIds?: number[];
+  opinionAnchorRowId?: number;
   missingFields: RequestMissingField[];
   input?: string;
   time?: string;
@@ -46,14 +49,75 @@ export function requestExecutionText(excerpt: string | undefined, sourceText: st
   return excerpt && !/\[(?:URL|BOT_MENTION|(?:NUMBER|MEMBER_MENTION)_[^\]]+)\]/u.test(excerpt) ? excerpt : sourceText.trim();
 }
 
+export function requestMediaSourceRowIds(result: Pick<RequestUnderstanding, "mediaSourceRowId" | "mediaSourceRowIds">): number[] {
+  return [...new Set([
+    ...(Array.isArray(result.mediaSourceRowIds) ? result.mediaSourceRowIds : []),
+    ...(Number.isSafeInteger(result.mediaSourceRowId) ? [result.mediaSourceRowId!] : []),
+  ])];
+}
+
+function withMediaSourceRowIds<T extends Pick<RequestUnderstanding, "mediaSourceRowId" | "mediaSourceRowIds">>(result: T, ids: number[]): T {
+  const normalized = { ...result };
+  if (ids.length) {
+    normalized.mediaSourceRowIds = [...ids];
+    normalized.mediaSourceRowId = ids[0];
+  } else {
+    delete normalized.mediaSourceRowIds;
+    delete normalized.mediaSourceRowId;
+  }
+  return normalized;
+}
+
+/** Explicit evaluation of one's own earlier words is different from a bare opinion prompt. */
+export function isExplicitSelfFollowUp(text: string): boolean {
+  const clean = text.replace(/\[BOT_MENTION\]/gu, "").trim();
+  const ownReference = /(?:我|俺)(?:刚才|刚刚|刚|上面|上边|前面|前边|之前)(?:说|讲|发|提)?(?:的|过)?/u.test(clean);
+  const discussionReference = /(?:刚才|上面|上边|前面|前边)(?:那段|那句|那条|那个)?(?:话|观点|说法|结论|内容)/u.test(clean) ||
+    /(?:这个|那个|这段|这句|这条)(?:观点|话|说法|结论)/u.test(clean);
+  const evaluation = /对|错|道理|怎么看|如何|怎么样|评价|意思|什么|是否|是不是|同意|靠谱|继续|解释|说说/u.test(clean);
+  return (ownReference || discussionReference) && evaluation;
+}
+
+export function opinionContextCandidates(input: RequestUnderstandingInput): RequestContextCandidate[] {
+  return input.candidates.filter(candidate => candidate.id < input.sourceRowId && candidate.text.trim() && !candidate.attachmentCount && !candidate.quoted);
+}
+
 /** Empty real mentions keep an unanswered picture even if the judge focuses on its caption. */
 export function retainImplicitVisualContext(result: RequestUnderstanding, input: RequestUnderstandingInput): RequestUnderstanding {
   if (result.action !== "chat" || !input.facts.hasTrustedBotMention || input.facts.hasTrustedReply || input.facts.attachmentCount || input.sanitizedText.replace(/\[BOT_MENTION\]/gu, "").trim()) return result;
   const image = input.candidates.filter(item => item.attachmentCount > 0).sort((a, b) => b.id - a.id)[0];
   if (!image) return result;
   const caption = input.candidates.filter(item => item.id > image.id && item.text.trim() && !item.attachmentCount).sort((a, b) => b.id - a.id)[0];
-  return { ...result, action: "vision", relation: "follow_up", mediaSourceRowId: image.id, missingFields: [],
-    sourceRowIds: [...new Set([image.id, input.sourceRowId, ...(caption ? [caption.id] : []), ...result.sourceRowIds])].slice(0, 12) };
+  return withMediaSourceRowIds({ ...result, action: "vision", relation: "follow_up", missingFields: [],
+    sourceRowIds: [...new Set([image.id, input.sourceRowId, ...(caption ? [caption.id] : []), ...result.sourceRowIds])].slice(0, 12) }, [image.id]);
+}
+
+/**
+ * A valid action classification must not erase an explicit reading anchor. One
+ * candidate is deterministic; ambiguous candidates require a model-selected id.
+ */
+export function retainExplicitFollowUpContext(result: RequestUnderstanding, input: RequestUnderstandingInput): RequestUnderstanding {
+  if (!isExplicitSelfFollowUp(input.sanitizedText) || input.facts.hasTrustedReply || input.facts.attachmentCount) return result;
+  const opinions = opinionContextCandidates(input);
+  if (!opinions.length) return result;
+  const anchor = opinions.length === 1 ? opinions[0]!.id : result.opinionAnchorRowId;
+  if (!anchor || !opinions.some(candidate => candidate.id === anchor)) throw new Error("request_intent_invalid_opinion_anchor");
+  const images = input.candidates.filter(candidate => candidate.id < input.sourceRowId && candidate.attachmentCount > 0);
+  const before = images.filter(candidate => candidate.id < anchor).sort((a, b) => b.id - a.id)[0];
+  const after = images.filter(candidate => candidate.id > anchor).sort((a, b) => a.id - b.id)[0];
+  const selectedImages = [...(before ? [before] : []), ...(after && after.id !== before?.id ? [after] : [])];
+  const mediaIds = selectedImages.map(candidate => candidate.id);
+  const attachmentCount = selectedImages.reduce((sum, candidate) => sum + candidate.attachmentCount, 0);
+  const sourceRowIds = [...new Set([anchor, ...mediaIds, ...result.sourceRowIds, input.sourceRowId])].slice(0, 12);
+  if (attachmentCount > 6) return withMediaSourceRowIds({ ...result, action: "clarify", relation: "follow_up", opinionAnchorRowId: anchor,
+    sourceRowIds: [anchor, input.sourceRowId], missingFields: [] }, []);
+  const action = result.action === "web_lookup" ? result.action : mediaIds.length ? "vision" : "chat";
+  return withMediaSourceRowIds({ ...result, action, relation: "follow_up", opinionAnchorRowId: anchor,
+    sourceRowIds, ...(action !== result.action ? { missingFields: [] } : {}) }, mediaIds);
+}
+
+export function retainRequestContext(result: RequestUnderstanding, input: RequestUnderstandingInput): RequestUnderstanding {
+  return retainExplicitFollowUpContext(retainImplicitVisualContext(result, input), input);
 }
 
 export function isNonExecutingRequest(text: string): boolean {
@@ -71,7 +135,9 @@ export const REQUEST_UNDERSTANDING_INSTRUCTION = [
   "能力询问、教程、评价、否定、仅转述别人的要求都选 chat，不创建任务。‘不想聊了’等情绪表达是聊天内容，不是停止任务或生图指令。",
   "当前请求优先。引用是明确锚点；独立问题不续接无关旧图。没有明确引用时，自动图片只选本人最近两分钟最后一条有效图。",
   "只@时，结合 candidates 中本人尚未得到回应的前文；图片后发一句心情再@，选 vision 并同时选图片和那句话。有相关文字无图片可选 chat。没有前文则 chat，不发明任务。",
-  "sourceRowIds 只能使用给出的当前消息或候选 id，最多12条。mediaSourceRowId 只能选带图片的候选。选中的文字和图片要能共同解释当前请求。",
+  "‘我上面说的对吗’等明确自指追问必须选 opinionAnchorRowId；动作可以是 chat，但 relation 不能因此丢弃前文。多个观点候选时必须选其中一个，不得编造或遗漏锚点。",
+  "围绕观点选图时使用 mediaSourceRowIds：观点前最近图片优先，必要时加入观点后最近一条，最多两条消息。资讯图和表情图都保留来源顺序，不能仅因后一张是表情就丢掉主图。",
+  "sourceRowIds 只能使用给出的当前消息或候选 id，最多12条。mediaSourceRowId 是旧版单图字段；新输出优先 mediaSourceRowIds，且只能选带图片的候选。选中的文字和图片要能共同解释当前请求。",
   "relation=new|follow_up|supplement。pendingRequest 是待补充请求；只有明确补充该请求才 continuesPending=true。新的独立要求不继承，否定和取消不执行。",
   "缺少必要信息仍选择明确动作，在 missingFields 填缺项，程序只追问缺项。已有具体画面不要要求画风、比例等可选参数。提醒缺时间填time、缺内容填content；查找缺对象填query；改图缺图填reference。",
   "input、time、content、avatarTarget 必须逐字摘录当前消息或选中候选中的片段，不撰写提示词，不编造日期、身份、URL或执行参数。头像目标不要包含‘的头像’，提及占位符完整复制。period仅用于发言排行。",
@@ -89,6 +155,8 @@ export function requestUnderstandingToolDefinition() {
         relation: { type: "string", enum: ["new", "follow_up", "supplement"] },
         sourceRowIds: { type: "array", items: { type: "integer" }, maxItems: 12 },
         mediaSourceRowId: { type: "integer" },
+        mediaSourceRowIds: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 2 },
+        opinionAnchorRowId: { type: "integer" },
         missingFields: { type: "array", items: { type: "string", enum: REQUEST_MISSING_FIELDS }, maxItems: 7 },
         input: { type: "string", maxLength: 1000 }, time: { type: "string", maxLength: 100 },
         content: { type: "string", maxLength: 1000 }, avatarTarget: { type: "string", maxLength: 200 },
@@ -102,12 +170,14 @@ export function requestUnderstandingToolDefinition() {
 export function validateRequestUnderstanding(value: unknown, input: RequestUnderstandingInput): Omit<RequestUnderstanding, "modelId" | "model"> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request_intent_invalid_response");
   const item = value as Record<string, unknown>;
-  const allowed = new Set(["action", "relation", "sourceRowIds", "mediaSourceRowId", "missingFields", "input", "time", "content", "avatarTarget", "period", "continuesPending"]);
+  const allowed = new Set(["action", "relation", "sourceRowIds", "mediaSourceRowId", "mediaSourceRowIds", "opinionAnchorRowId", "missingFields", "input", "time", "content", "avatarTarget", "period", "continuesPending"]);
   if (Object.keys(item).some(key => !allowed.has(key)) || !REQUEST_ACTIONS.includes(item.action as RequestAction) ||
       !["new", "follow_up", "supplement"].includes(String(item.relation)) ||
       !Array.isArray(item.sourceRowIds) || item.sourceRowIds.length > 12 ||
       !Array.isArray(item.missingFields) || item.missingFields.length > 7 ||
-      item.missingFields.some(field => !REQUEST_MISSING_FIELDS.includes(field as RequestMissingField))) throw new Error("request_intent_invalid_response");
+      item.missingFields.some(field => !REQUEST_MISSING_FIELDS.includes(field as RequestMissingField)) ||
+      (item.mediaSourceRowIds !== undefined && (!Array.isArray(item.mediaSourceRowIds) || item.mediaSourceRowIds.length > 2)) ||
+      (item.mediaSourceRowId !== undefined && !Number.isSafeInteger(item.mediaSourceRowId))) throw new Error("request_intent_invalid_response");
   const sources = new Map(input.candidates.map(candidate => [candidate.id, candidate]));
   sources.set(input.sourceRowId, { id: input.sourceRowId, text: input.sanitizedText, attachmentCount: input.facts.attachmentCount });
   if (item.sourceRowIds.some(id => !Number.isSafeInteger(id) || !sources.has(id as number))) throw new Error("request_intent_invalid_evidence");
@@ -117,11 +187,17 @@ export function validateRequestUnderstanding(value: unknown, input: RequestUnder
     const excerpt = item[key];
     if (excerpt !== undefined && (typeof excerpt !== "string" || !excerpt.trim() || excerpt.length > max || !texts.some(text => text.includes(excerpt)))) throw new Error("request_intent_invalid_excerpt");
   }
-  if (item.mediaSourceRowId !== undefined && (!Number.isSafeInteger(item.mediaSourceRowId) || !selected.includes(item.mediaSourceRowId as number) || !sources.get(item.mediaSourceRowId as number)?.attachmentCount)) throw new Error("request_intent_invalid_media");
+  const mediaIds = requestMediaSourceRowIds(item as Pick<RequestUnderstanding, "mediaSourceRowId" | "mediaSourceRowIds">);
+  if (mediaIds.length > 2 || mediaIds.some(id => !selected.includes(id) || !sources.get(id)?.attachmentCount) ||
+      mediaIds.reduce((sum, id) => sum + (sources.get(id)?.attachmentCount ?? 0), 0) > 6) throw new Error("request_intent_invalid_media");
+  if (item.opinionAnchorRowId !== undefined) {
+    const anchor = sources.get(item.opinionAnchorRowId as number);
+    if (!Number.isSafeInteger(item.opinionAnchorRowId) || !selected.includes(item.opinionAnchorRowId as number) || !anchor?.text.trim() || anchor.attachmentCount) throw new Error("request_intent_invalid_opinion_anchor");
+  }
   if (item.period !== undefined && !["today", "yesterday", "recent_hour"].includes(String(item.period))) throw new Error("request_intent_invalid_response");
   if (item.continuesPending !== undefined && typeof item.continuesPending !== "boolean") throw new Error("request_intent_invalid_response");
   if (item.continuesPending === true && !input.pendingRequest) throw new Error("request_intent_invalid_continuation");
-  return { ...item, sourceRowIds: selected, missingFields: [...new Set(item.missingFields)] } as unknown as Omit<RequestUnderstanding, "modelId" | "model">;
+  return withMediaSourceRowIds({ ...item, sourceRowIds: selected, missingFields: [...new Set(item.missingFields)] } as unknown as Omit<RequestUnderstanding, "modelId" | "model">, mediaIds);
 }
 
 export function imageDetailsFromUnderstanding(result: RequestUnderstanding): ImageIntentDetails {

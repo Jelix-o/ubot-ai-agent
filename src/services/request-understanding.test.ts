@@ -6,7 +6,7 @@ import test from "node:test";
 import { AiService } from "./ai-service.js";
 import { SharedDb, type IngressMessageRow } from "../shared/sqlite.js";
 import { RequestIntentRepository } from "./request-intent-repository.js";
-import { clearLocalImageAction, requestExecutionText, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingInput } from "./request-understanding.js";
+import { clearLocalImageAction, isExplicitSelfFollowUp, requestExecutionText, requestMediaSourceRowIds, retainRequestContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingInput } from "./request-understanding.js";
 
 const input: RequestUnderstandingInput = { sourceRowId: 3, sanitizedText: "[BOT_MENTION] 用电影反派的口吻做个图，台词：出场靠实力。", candidates: [{ id: 1, text: "", attachmentCount: 2 }, { id: 2, text: "不想聊了", attachmentCount: 0 }], facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 } };
 
@@ -52,6 +52,47 @@ test("a judge focusing on emotion cannot discard the unanswered image behind an 
   assert.equal(independent.action, "chat");
 });
 
+test("an explicit self follow-up survives chat/new and keeps image groups around its opinion", () => {
+  const followUpInput: RequestUnderstandingInput = {
+    sourceRowId: 5, sanitizedText: "[BOT_MENTION] 我上面说的对还是不对",
+    candidates: [{ id: 1, text: "", attachmentCount: 2 }, { id: 2, text: "这件事应该先确认事实", attachmentCount: 0 }, { id: 4, text: "", attachmentCount: 1 }],
+    facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+  };
+  const result = retainRequestContext({ action: "chat", relation: "new", sourceRowIds: [5], missingFields: [], modelId: "judge", model: "judge" }, followUpInput);
+  assert.equal(result.action, "vision");
+  assert.equal(result.relation, "follow_up");
+  assert.equal(result.opinionAnchorRowId, 2);
+  assert.deepEqual(requestMediaSourceRowIds(result), [1, 4]);
+  assert.ok([1, 2, 4, 5].every(id => result.sourceRowIds.includes(id)));
+  assert.equal(isExplicitSelfFollowUp("今天天气怎么样"), false);
+  assert.equal(isExplicitSelfFollowUp("用我上面那句话做个图"), false);
+});
+
+test("ambiguous opinions require a selected anchor and oversized image groups clarify without splitting", () => {
+  const ambiguous: RequestUnderstandingInput = {
+    sourceRowId: 5, sanitizedText: "我上面说的对吗",
+    candidates: [{ id: 1, text: "第一个观点", attachmentCount: 0 }, { id: 3, text: "第二个观点", attachmentCount: 0 }],
+    facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+  };
+  assert.throws(() => retainRequestContext({ action: "chat", relation: "new", sourceRowIds: [5], missingFields: [], modelId: "judge", model: "judge" }, ambiguous), /invalid_opinion_anchor/);
+  const selected = retainRequestContext({ action: "chat", relation: "follow_up", sourceRowIds: [3, 5], opinionAnchorRowId: 3, missingFields: [], modelId: "judge", model: "judge" }, ambiguous);
+  assert.equal(selected.opinionAnchorRowId, 3);
+  assert.equal(selected.action, "chat");
+  const oversized = retainRequestContext({ action: "chat", relation: "new", sourceRowIds: [4], missingFields: [], modelId: "judge", model: "judge" }, {
+    sourceRowId: 4, sanitizedText: "我上面说的对吗",
+    candidates: [{ id: 1, text: "", attachmentCount: 5 }, { id: 2, text: "唯一观点", attachmentCount: 0 }, { id: 3, text: "", attachmentCount: 2 }],
+    facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 },
+  });
+  assert.equal(oversized.action, "clarify");
+  assert.deepEqual(requestMediaSourceRowIds(oversized), []);
+});
+
+test("legacy single-image decisions normalize to the media array", () => {
+  const valid = { action: "vision", relation: "follow_up", sourceRowIds: [1, 2, 3], mediaSourceRowId: 1, missingFields: [] };
+  assert.deepEqual(validateRequestUnderstanding(valid, input).mediaSourceRowIds, [1]);
+});
+
+
 test("local outage fallback accepts concrete creation and excludes questions, negation and reported instructions", () => {
   for (const text of ["用电影反派的口吻做个图，台词：出场靠实力。", "帮我生成一张蓝鲸图片", "画一只戴帽子的猫"]) assert.equal(clearLocalImageAction(text), "generate", text);
   for (const text of ["不要生成图片", "你支持生图吗", "如何生成图片", "他说让我做个图", "不想聊了", "这个图怎么样", "帮我看看怎么做图"]) assert.equal(clearLocalImageAction(text), undefined, text);
@@ -74,6 +115,7 @@ test("request leases, evidence consumption and recovery prevent a second implici
   const row = db.db.prepare("SELECT * FROM messages WHERE id=?").get(request) as unknown as IngressMessageRow;
   let repo = new RequestIntentRepository(db);
   assert.deepEqual(repo.candidates(row).map(item => item.id), [source]);
+  assert.deepEqual(repo.followUpCandidates(row).map(item => item.id), [source], "read-only history keeps the same author, group and time boundaries");
   assert.ok(!repo.candidates(row).some(item => [other, cross, expired].includes(item.id)));
   const claim = repo.claim(request, 1000); assert.equal(claim.state, "claimed");
   assert.equal(repo.claim(request, 1001).state, "busy");
@@ -84,11 +126,27 @@ test("request leases, evidence consumption and recovery prevent a second implici
   assert.equal(repo.claim(request, 2000).state, "resolved");
   assert.deepEqual(repo.get(request)?.result, decision);
   const next = add("", "20001", "10001", 120002);
-  assert.deepEqual(repo.candidates(db.db.prepare("SELECT * FROM messages WHERE id=?").get(next) as unknown as IngressMessageRow), []);
+  const nextRow = db.db.prepare("SELECT * FROM messages WHERE id=?").get(next) as unknown as IngressMessageRow;
+  assert.deepEqual(repo.candidates(nextRow), []);
+  const readOnlyIds = repo.followUpCandidates(nextRow).map(item => item.id);
+  assert.ok(readOnlyIds.includes(source) && readOnlyIds.includes(request), "explicit follow-ups may reread answered and completed evidence");
   const pending = repo.claim(next, 3000); assert.equal(pending.state, "claimed");
   assert.equal(repo.claim(next, 33000).state, "resolved");
   assert.equal(repo.get(next)?.errorCode, "result_unknown");
   assert.ok(pending.state === "claimed" && !repo.complete(next, pending.token, decision, 33001));
+});
+
+test("persisted v4.5.1 single-image results gain the media array without a migration", t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "request-legacy-media-"));
+  const db = new SharedDb(path.join(root, "state.db"));
+  t.after(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
+  const image = db.insertMessage({ groupId: "10001", userId: "20001", selfId: "99999", msgId: "legacy-image", msgTime: 1000, createdAt: 1000, text: "", imagesJson: JSON.stringify([{ file: "legacy.image" }]), hasAtBot: false, isBotMsg: false });
+  const request = db.insertMessage({ groupId: "10001", userId: "20001", selfId: "99999", msgId: "legacy-request", msgTime: 1001, createdAt: 1001, text: "看看这个", imagesJson: "[]", hasAtBot: true, isBotMsg: false });
+  const legacy: RequestUnderstanding = { action: "vision", relation: "follow_up", sourceRowIds: [image, request], mediaSourceRowId: image, missingFields: [], modelId: "judge", model: "judge" };
+  db.db.prepare("INSERT INTO request_intent_routes(source_row_id,status,result_json,created_at,updated_at) VALUES(?,'classified',?,?,?)").run(request, JSON.stringify(legacy), 1001, 1001);
+  const restored = new RequestIntentRepository(db).get(request)?.result;
+  assert.equal(restored?.mediaSourceRowId, image);
+  assert.deepEqual(restored?.mediaSourceRowIds, [image]);
 });
 
 test("competing empty mentions reserve evidence once and an interrupted adapter cannot run twice", t => {

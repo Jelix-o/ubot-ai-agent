@@ -1,6 +1,6 @@
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
 import { RequestIntentRepository } from "./services/request-intent-repository.js";
-import { clearLocalImageAction, imageDetailsFromUnderstanding, isNonExecutingRequest, retainImplicitVisualContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
+import { clearLocalImageAction, imageDetailsFromUnderstanding, isExplicitSelfFollowUp, isNonExecutingRequest, opinionContextCandidates, requestMediaSourceRowIds, retainRequestContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
 import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
@@ -684,7 +684,11 @@ export class WorkerApp {
     if (claim.state === "busy") throw new ImageIntentRoutePendingError();
     const policy = await this.options.botApp.requestUnderstandingPolicy(this.buildEvent(message));
     const pending = this.requestIntents.pending(message.group_id, message.user_id, message.created_at);
-    const rows = policy.includeRecent ? this.requestIntents.candidates(message) : [];
+    const parsed = parseGroupMessage(this.buildEvent(message).message, this.options.botApp.getBotQq());
+    const explicitSelfFollowUp = isExplicitSelfFollowUp(message.text);
+    const rows = policy.includeRecent
+      ? explicitSelfFollowUp ? this.requestIntents.followUpCandidates(message) : this.requestIntents.candidates(message)
+      : [];
     if (saved?.result) for (const id of saved.result.sourceRowIds) {
       if (id === message.id || rows.some(row => row.id === id)) continue;
       const row = this.sharedDb.db.prepare("SELECT * FROM messages WHERE id=? AND group_id=? AND id<?").get(id, message.group_id, message.id) as unknown as IngressMessageRow | undefined;
@@ -695,7 +699,6 @@ export class WorkerApp {
       const row = this.sharedDb.db.prepare("SELECT * FROM messages WHERE id=? AND group_id=? AND user_id=? AND id<?").get(id, message.group_id, message.user_id, message.id) as unknown as IngressMessageRow | undefined;
       if (row && !this.sharedDb.isRetracted(row.group_id, row.msg_id)) rows.push(row);
     }
-    const parsed = parseGroupMessage(this.buildEvent(message).message, this.options.botApp.getBotQq());
     if (parsed.replyMessageId && policy.includeRecent) {
       const quoted = this.sharedDb.db.prepare("SELECT * FROM messages WHERE group_id=? AND msg_id=? AND id<?").get(message.group_id, parsed.replyMessageId, message.id) as unknown as IngressMessageRow | undefined;
       if (quoted && !policy.excludedUserIds.includes(quoted.user_id) && !this.sharedDb.isRetracted(quoted.group_id, quoted.msg_id) && !rows.some(row => row.id === quoted.id)) rows.push(quoted);
@@ -747,25 +750,36 @@ export class WorkerApp {
     } else {
       result = { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
     }
-    result = retainImplicitVisualContext(result, input);
+    const explicitOpinions = explicitSelfFollowUp ? opinionContextCandidates(input) : [];
+    if (explicitSelfFollowUp && !parsed.replyMessageId && !input.facts.attachmentCount && explicitOpinions.length !== 1 && !result.opinionAnchorRowId) {
+      result = { action: "clarify", relation: "follow_up", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host" };
+    } else {
+      result = retainRequestContext(result, input);
+    }
     // A new independent question cannot inherit old text merely because it was offered.
     // Spoken answers retain the existing answer-then-audio chain; reading the request aloud is not an answer.
     if (result.action === "speech" && /(?:用|发|以)语音(?:回答|回复|说)/u.test(message.text)) result.action = "chat";
-    if (result.relation === "new" && !result.continuesPending && message.text.trim() && !parsed.replyMessageId) {
+    if (result.relation === "new" && !result.continuesPending && !result.opinionAnchorRowId && message.text.trim() && !parsed.replyMessageId) {
       result.sourceRowIds = [message.id];
       for (const key of ["input", "time", "content", "avatarTarget"] as const) if (result[key] && !input.sanitizedText.includes(result[key]!)) delete result[key];
       delete result.mediaSourceRowId;
+      delete result.mediaSourceRowIds;
     }
-    if (["vision", "edit"].includes(result.action) && !parsed.replyMessageId && !input.facts.attachmentCount) {
+    if (["vision", "edit"].includes(result.action) && !result.opinionAnchorRowId && !parsed.replyMessageId && !input.facts.attachmentCount) {
       const latest = [...offered].filter(row => row.user_id === message.user_id && row.created_at >= message.created_at - 120000 && parseImages(row.images_json).length && !this.sharedDb.isRetracted(row.group_id, row.msg_id)).sort((a, b) => b.id - a.id)[0];
       result.sourceRowIds = result.sourceRowIds.filter(id => id === message.id || !offered.find(row => row.id === id && parseImages(row.images_json).length));
-      if (latest) { result.mediaSourceRowId = latest.id; result.sourceRowIds = [...new Set([latest.id, ...result.sourceRowIds])].slice(0, 12); }
-      else if (result.action === "edit") result.missingFields = [...new Set([...result.missingFields, "reference" as const])];
+      if (latest) {
+        result.mediaSourceRowId = latest.id;
+        result.mediaSourceRowIds = [latest.id];
+        result.sourceRowIds = [...new Set([latest.id, ...result.sourceRowIds])].slice(0, 12);
+      } else if (result.action === "edit") result.missingFields = [...new Set([...result.missingFields, "reference" as const])];
     }
     if (claim.state === "claimed") {
       if (!this.requestIntents.complete(message.id, claim.token, result)) throw new ImageIntentRoutePendingError();
     }
-    logInfo("Request understood.", { sourceRowId: message.id, action: result.action, modelId: result.modelId, fallbackUsed: result.fallbackUsed === true, unavailable: result.unavailable === true, evidenceCount: result.sourceRowIds.length });
+    logInfo("Request understood.", { sourceRowId: message.id, action: result.action, modelId: result.modelId, fallbackUsed: result.fallbackUsed === true, unavailable: result.unavailable === true,
+      candidateRowIds: offered.map(row => row.id), selectedRowIds: result.sourceRowIds, opinionAnchorRowId: result.opinionAnchorRowId,
+      mediaSourceRowIds: requestMediaSourceRowIds(result), evidenceCount: result.sourceRowIds.length });
     this.metrics.inc(`request_intent_${result.action}`);
     return this.requestIntents.get(message.id)?.result ?? result;
   }

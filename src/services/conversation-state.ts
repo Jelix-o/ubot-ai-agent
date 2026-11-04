@@ -29,6 +29,7 @@ export interface ContextResolution {
   topicCandidateId?: string;
   selectedMessageIds: string[];
   mediaSourceMessageIds: string[];
+  opinionAnchorRowId?: number;
   needsMoreContext: boolean;
   clarification?: string;
   source: "rules" | "model";
