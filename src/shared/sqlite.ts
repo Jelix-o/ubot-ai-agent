@@ -1423,6 +1423,35 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     name: "add-natural-image-followups",
     apply: addNaturalImageFollowups,
   },
+  {
+    version: 32,
+    name: "add-request-understanding",
+    apply: db => {
+      const columns = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+      if (!columns.some(column => column.name === "request_source_row_id")) db.exec("ALTER TABLE outbox ADD COLUMN request_source_row_id INTEGER REFERENCES messages(id) ON DELETE SET NULL");
+      db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_outbox_request_source ON outbox(request_source_row_id);
+      CREATE TABLE IF NOT EXISTS request_intent_routes (
+        source_row_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK(status IN ('classifying','classified','unavailable')),
+        lease_token TEXT, lease_expires_at INTEGER, result_json TEXT, error_code TEXT,
+        execution_status TEXT NOT NULL DEFAULT 'pending' CHECK(execution_status IN ('pending','running','completed','failed','unknown')),
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS request_intent_evidence (
+        source_row_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        evidence_row_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        PRIMARY KEY(source_row_id,evidence_row_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_request_intent_evidence ON request_intent_evidence(evidence_row_id);
+      CREATE TABLE IF NOT EXISTS request_intent_pending (
+        group_id TEXT NOT NULL,user_id TEXT NOT NULL,
+        source_row_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        expires_at INTEGER NOT NULL,PRIMARY KEY(group_id,user_id)
+      );
+    `);
+    },
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;

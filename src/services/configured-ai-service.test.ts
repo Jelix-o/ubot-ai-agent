@@ -359,10 +359,69 @@ test("image intent may bind an existing reply model with independent request set
     return fake;
   });
   assert.equal(await service.isImageIntentConfigured(), true);
-  assert.deepEqual(received, { enabled: true, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 });
+  assert.deepEqual(received, { enabled: true, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128, fallbackModelIds: ["gpt"], totalTimeoutMs: 8000 });
   assert.equal((await store.get()).selectedModelIds.image_intent, "ds");
   await store.update({ imageIntentRouting: { enabled: false, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 } });
   assert.equal(await service.isImageIntentConfigured(), false);
+});
+
+test("request intent uses DS then GPT with independent small budgets and never changes reply settings", async t => {
+  const store = await createSettingsStore(t);
+  await store.update({ models: ["ds", "gpt"].map(id => ({ ...model({ id, model: id }), capabilities: { toolCalling: true }, maxCompletionTokens: 8192 })), selectedModelIds: { reply: "gpt" } });
+  await store.ensureRequestIntentDefaults();
+  const settings = await store.get();
+  assert.equal(settings.selectedModelIds.image_intent, "ds");
+  assert.deepEqual(settings.imageIntentRouting?.fallbackModelIds, ["gpt"]);
+  const attempts: string[] = [];
+  const fallback = new FakeRuntimeAiService(makeHealth("fallback", "https://fallback.example/v1"));
+  const service = new ConfiguredAiService(fallback, store, "image_intent", (configured, _policy, routing) => Object.assign(new FakeRuntimeAiService(makeHealth(configured.model, configured.baseUrl)), {
+    async classifyRequest(input: import("./request-understanding.js").RequestUnderstandingInput, signal?: AbortSignal) {
+      attempts.push(configured.id);
+      assert.equal(configured.maxCompletionTokens, 8192);
+      assert.equal(routing?.timeoutMs, 4000);
+      assert.equal(routing?.maxCompletionTokens, 512);
+      assert.ok(signal);
+      assert.equal(routing?.requestProfile, configured.id === "ds" ? "deepseek" : "openai");
+      if (configured.id === "ds") throw new Error("request_intent_invalid_response");
+      return { action: "generate" as const, relation: "new" as const, sourceRowIds: [input.sourceRowId], missingFields: [], modelId: configured.id, model: configured.model };
+    },
+  }));
+  const input = { sourceRowId: 1, candidates: [], sanitizedText: "画一只猫", facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 } };
+  assert.equal(await service.isRequestIntentConfigured(), true);
+  assert.equal((await service.classifyRequest(input)).fallbackUsed, true);
+  assert.deepEqual(attempts, ["ds", "gpt"]);
+  assert.equal((await store.get()).selectedModelIds.reply, "gpt");
+  await store.update({ imageIntentRouting: { ...settings.imageIntentRouting!, enabled: false } });
+  await assert.rejects(service.classifyRequest(input), /disabled/);
+  assert.equal(attempts.length, 2);
+});
+
+test("startup keeps an explicit judge selection and a disabled router", async t => {
+  const store = await createSettingsStore(t);
+  await store.update({ models: [{ ...model({ id: "custom", model: "custom" }), capabilities: { toolCalling: true } }], selectedModelIds: { image_intent: "custom" }, imageIntentRouting: { enabled: true, requestProfile: "openai", timeoutMs: 3000, maxCompletionTokens: 256, fallbackModelIds: [], totalTimeoutMs: 6000 } });
+  const before = await store.get();
+  await store.ensureRequestIntentDefaults();
+  assert.deepEqual(await store.get(), before);
+  await store.update({ selectedModelIds: {}, imageIntentRouting: { ...before.imageIntentRouting!, enabled: false } });
+  await store.ensureRequestIntentDefaults();
+  assert.equal((await store.get()).selectedModelIds.image_intent, undefined);
+});
+
+test("request judge exhaustion and caller cancellation never fall through to the chat model", async t => {
+  const store = await createSettingsStore(t);
+  await store.update({ models: ["ds", "gpt"].map(id => ({ ...model({ id, model: id }), capabilities: { toolCalling: true } })), selectedModelIds: { reply: "gpt" } });
+  await store.ensureRequestIntentDefaults();
+  const calls: string[] = [];
+  const fallback = new FakeRuntimeAiService(makeHealth("chat", "https://fallback.example/v1"));
+  const service = new ConfiguredAiService(fallback, store, "image_intent", configured => Object.assign(new FakeRuntimeAiService(makeHealth(configured.model, configured.baseUrl)), {
+    async classifyRequest() { calls.push(configured.id); throw new Error("judge-unavailable"); },
+  }));
+  const input = { sourceRowId: 1, candidates: [], sanitizedText: "帮我查一下", facts: { hasTrustedBotMention: true, hasTrustedReply: false, replyIsGeneratedImage: false, attachmentCount: 0 } };
+  await assert.rejects(service.classifyRequest(input), /judge-unavailable/);
+  assert.deepEqual(calls, ["ds", "gpt"]);
+  const controller = new AbortController(); controller.abort(new Error("caller-cancelled"));
+  await assert.rejects(service.classifyRequest(input, controller.signal), /caller-cancelled/);
+  assert.equal(calls.length, 2);
 });
 
 async function createSettingsStore(t: test.TestContext): Promise<SystemSettingsStore> {

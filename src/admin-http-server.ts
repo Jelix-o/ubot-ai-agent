@@ -850,6 +850,7 @@ export class AdminHttpServer {
         this.sendJson(res, { error: "image_intent_model_not_approved" }, 400); return;
       }
       const status = await probeImageIntentModel(model, settings?.imageIntentRouting);
+      await this.recordModelHealth({ ...status, id: model.id, purpose: "image_intent", name: model.name, shortName: model.shortName, selected: true }, "manual");
       this.sendJson(res, { ...status, detail: redactSensitiveText(status.detail) });
       return;
     }
@@ -901,6 +902,7 @@ export class AdminHttpServer {
       if (!this.requireSuperAdmin(session, res)) return;
       this.sendJson(res, {
         models: this.options.modelHealthHistoryStore ? await this.options.modelHealthHistoryStore.list() : [],
+        requestIntent: this.options.sharedDb ? this.requestIntentStatus() : undefined,
       });
       return;
     }
@@ -3273,6 +3275,20 @@ export class AdminHttpServer {
       shortName: model.shortName,
       selected: settings.selectedModelIds?.[model.purpose] === model.id,
     };
+  }
+
+  private requestIntentStatus() {
+    const db = this.options.sharedDb!.db;
+    const row = db.prepare("SELECT status,error_code,result_json,execution_status,updated_at FROM request_intent_routes ORDER BY updated_at DESC LIMIT 1").get() as { status: string; error_code: string | null; result_json: string | null; execution_status: string; updated_at: number } | undefined;
+    let latest;
+    try {
+      const result = row?.result_json ? JSON.parse(row.result_json) : {};
+      latest = row ? { status: row.status, errorCode: row.error_code, unavailable: result.unavailable === true, fallbackUsed: result.fallbackUsed === true, executionStatus: row.execution_status, updatedAt: row.updated_at } : undefined;
+    } catch { latest = { status: "unavailable", errorCode: "invalid_response", unavailable: true }; }
+    const health = db.prepare("SELECT document_json FROM v3_state_documents WHERE document_type='request-intent-readiness' AND document_key='current'").get() as { document_json: string } | undefined;
+    let readiness;
+    try { readiness = health ? JSON.parse(health.document_json) : undefined; } catch { /* No usable startup result. */ }
+    return { latest, readiness };
   }
 
   private async recordModelHealth(

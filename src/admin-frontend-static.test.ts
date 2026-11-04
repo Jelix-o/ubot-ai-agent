@@ -42,12 +42,12 @@ test("admin exposes a dedicated tool-capable image intent model configuration", 
 
   assert.match(api, /image_intent/);
   assert.match(api, /toolCalling\?: boolean/);
-  assert.match(settings, /图片意图判断/);
+  assert.match(settings, /请求判别/);
   assert.match(settings, /支持原生工具调用/);
   assert.match(settings, /isUsableImageIntentModel/);
-  assert.match(health, /图片意图判断模型/);
-  assert.match(health, /图片意图工具调用/);
-  assert.match(analytics, /image_intent:"图片意图判断"/);
+  assert.match(health, /请求判别模型/);
+  assert.match(health, /请求判别工具调用/);
+  assert.match(analytics, /image_intent:"请求判别"/);
 });
 
 test("admin exposes a dedicated Huixian persona editor instead of a skills marketplace", async () => {

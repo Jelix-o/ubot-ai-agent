@@ -3,6 +3,7 @@ import { ReplyModelRouter } from "./reply-model-router.js";
 import { logWarn } from "../logger.js";
 import type { ImageIntentRoutingSettings, SystemModelConfig, SystemModelPurpose } from "../types.js";
 import { normalizeImageIntentRouting } from "./image-intent-settings.js";
+import type { RequestUnderstanding, RequestUnderstandingInput } from "./request-understanding.js";
 import {
   AiService as OpenAiService,
   ImageIntentClassificationError,
@@ -31,7 +32,7 @@ export type RuntimeAiService = Pick<
   | "generateBroadcastQuip"
   | "generateScheduledReminderText"
   | "generateChatPeriodSummary"
-> & Partial<Pick<AiService, "resolveConversationContext" | "classifyImageIntent">>;
+> & Partial<Pick<AiService, "resolveConversationContext" | "classifyImageIntent" | "classifyRequest">>;
 
 type RuntimeAiFactory = (model: Pick<
   SystemModelConfig,
@@ -154,6 +155,46 @@ export class ConfiguredAiService implements RuntimeAiService, ImageIntentClassif
       }
       throw new ImageIntentRouterError("unavailable", { cause: error, ...modelMetadata });
     }
+  }
+
+  async isRequestIntentConfigured(): Promise<boolean> {
+    const settings = await this.systemSettingsStore.getInternal();
+    const routing = normalizeImageIntentRouting(settings.imageIntentRouting);
+    return routing.enabled && [settings.selectedModelIds.image_intent, ...(routing.fallbackModelIds ?? [])]
+      .some(id => settings.models.some(model => model.id === id && isUsableImageIntentModel(model)));
+  }
+
+  async classifyRequest(input: RequestUnderstandingInput, signal?: AbortSignal): Promise<RequestUnderstanding> {
+    const settings = await this.systemSettingsStore.getInternal();
+    const routing = normalizeImageIntentRouting(settings.imageIntentRouting);
+    if (!routing.enabled) throw new ConfiguredModelUnavailableError("image_intent_disabled");
+    const ids = [...new Set([settings.selectedModelIds.image_intent, ...(routing.fallbackModelIds ?? [])].filter((id): id is string => Boolean(id)))];
+    const deadline = Date.now() + Math.min(8000, routing.totalTimeoutMs ?? 8000);
+    let last: unknown = new ConfiguredModelUnavailableError("image_intent");
+    let attempt = 0;
+    for (const id of ids) {
+      signal?.throwIfAborted();
+      const model = settings.models.find(item => item.id === id && isUsableImageIntentModel(item));
+      const remaining = deadline - Date.now();
+      if (!model || remaining <= 0 || attempt >= 2) continue;
+      attempt++;
+      try {
+        const attemptBudget = Math.min(4000, routing.timeoutMs, remaining);
+        const attemptSignal = AbortSignal.any([AbortSignal.timeout(attemptBudget), ...(signal ? [signal] : [])]);
+        this.requireProviderChat("openai");
+        const service = this.factory(model, this.capabilityPolicy?.getProviderCapabilityOverrides("openai"), {
+          ...routing, timeoutMs: Math.min(4000, routing.timeoutMs, remaining), maxCompletionTokens: 512,
+          requestProfile: id === settings.selectedModelIds.image_intent ? routing.requestProfile : "openai",
+        });
+        if (!service.classifyRequest) throw new ConfiguredModelUnavailableError(id);
+        const result = await withModelOperation("request_intent", undefined, () => service.classifyRequest!(input, attemptSignal), id);
+        return { ...result, modelId: id, fallbackUsed: id !== settings.selectedModelIds.image_intent };
+      } catch (error) {
+        signal?.throwIfAborted(); last = error;
+        logWarn("Request intent model failed.", { modelId: id, attempt, errorCode: "request_intent_unavailable" });
+      }
+    }
+    throw last;
   }
 
   async resolveConversationContext(args: Parameters<AiService["resolveConversationContext"]>[0]): Promise<string> {

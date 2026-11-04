@@ -1360,7 +1360,7 @@ test("BT adult cards receive a 90-second auto-recall policy and one in-card warn
   assert.equal(transport.sent.length, 2);
 });
 
-test("BT sends one delayed progress message and cancels the timer on completion or cancellation", async t => {
+test("BT delegates progress to the durable request tracker and emits no private timer notices", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let complete!: () => void;
   let started = false;
@@ -1377,10 +1377,10 @@ test("BT sends one delayed progress message and cancels the timer on completion 
   assert.equal(transport.sent.length, 0);
   t.mock.timers.tick(2);
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.sent.length, 0);
   complete(); await pending;
   t.mock.timers.tick(10_000);
-  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.sent.length, 0);
   assert.equal(transport.forwards.length, 1);
 
   started = false;
@@ -1389,7 +1389,7 @@ test("BT sends one delayed progress message and cancels the timer on completion 
   while (!started) await new Promise<void>(resolve => setImmediate(resolve));
   controller.abort(); t.mock.timers.tick(6_000);
   complete(); await cancelled;
-  assert.equal(transport.sent.length, 1);
+  assert.equal(transport.sent.length, 0);
   assert.equal(transport.forwards.length, 1);
 });
 
@@ -1863,7 +1863,7 @@ test("#画图 queues the generated file without invoking conversational AI", asy
   assert.deepEqual(prompts, ["海边灯塔"]);
   assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
   assert.equal(aiService.calls.length, 0);
-  assert.deepEqual(transport.sent.map((item) => item.text), ["正在生成图片，请稍候…"]);
+  assert.deepEqual(transport.sent.map((item) => item.text), []);
 });
 
 test("a Worker-owned image command persists one request, forwards its upstream key, and never resubmits a replay", async (t) => {
@@ -2367,7 +2367,7 @@ test("a private image archive failure does not block QQ delivery or log the prom
 
   assert.equal(archiveCalls, 1);
   assert.deepEqual(transport.generatedImages, [{ groupId: "67890", imagePath: "D:\\managed\\generated.png" }]);
-  assert.deepEqual(transport.sent.map((message) => message.text), ["正在生成图片，请稍候…"]);
+  assert.deepEqual(transport.sent.map((message) => message.text), []);
   assert.match(warnings.join("\n"), /Private generated-image archive failed/);
   assert.doesNotMatch(warnings.join("\n"), /只应发送到模型的私密提示词/);
 });
@@ -2422,7 +2422,7 @@ test("#画图 explains missing prompts and ignores the retired per-group switch"
   assert.match(enabled.transport.sent[0]?.text ?? "", /想生成什么画面/);
   await enabled.app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 海边灯塔" } }]));
   assert.equal(calls, 1);
-  assert.equal(enabled.transport.sent[1]?.text, "正在生成图片，请稍候…");
+  assert.equal(enabled.transport.sent.length, 1);
   assert.equal(enabled.transport.generatedImages.length, 1);
 });
 
@@ -2467,12 +2467,12 @@ test("V3 image generation is available to members and administrators by default"
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 普通成员" } }], 20003));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#生图 群管理员" } }], 20002));
   assert.equal(calls, 2);
-  assert.equal(transport.sent.length, 2);
+  assert.equal(transport.sent.length, 0);
   assert.equal(transport.generatedImages.length, 2);
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#画图 超级管理员" } }], 20001));
   assert.equal(calls, 3);
-  assert.deepEqual(transport.sent.map((item) => item.text), Array(3).fill("正在生成图片，请稍候…"));
+  assert.deepEqual(transport.sent.map((item) => item.text), []);
   assert.equal(transport.generatedImages.length, 3);
 });
 
@@ -2537,7 +2537,6 @@ test("image failures distinguish moderation from temporary outages and log diagn
     t.after(() => app.stop());
     await app.handleGroupMessage(createEvent("#生图 private prompt"));
     assert.deepEqual(transport.sent.map(message => message.text), [
-      "正在生成图片，请稍候…",
       code === "content_blocked" ? "本次图片未通过上游内容审核，请调整描述后重试" : "图片生成失败，请稍后再试",
     ]);
     assert.equal(transport.generatedImages.length, 0);
@@ -9170,7 +9169,7 @@ test("Worker registers ordinary requests before waiting and progress queries run
   const worker=new WorkerApp({dataDir:root,sharedDb:db,botApp:f.app,consumerKey:"worker:feedback",isBlacklistedUser:async()=>false});
   t.after(async()=>{gate.resolve();await worker.stop();await f.app.stop();db.close();await rm(root,{recursive:true,force:true});});
   const insert=(msgId:string,text:string,createdAt=Date.now())=>db.insertMessage({groupId:"67890",userId:"20001",selfId:"12345",msgId,msgTime:createdAt,text,imagesJson:"[]",canonicalSegmentsJson:JSON.stringify([{type:"at",qq:"12345"},{type:"text",text}]),hasAtBot:true,isBotMsg:false,createdAt});
-  const source=insert("slow-worker","帮我整理一下",Date.now()-9000);worker.start();await started.promise;
+  const source=insert("slow-worker","帮我整理一下",Date.now()-31000);worker.start();await started.promise;
   const feedback=new RequestFeedbackService(repo);assert.equal(feedback.list("67890","20001")[0]?.stage,"processing");
   feedback.tick();feedback.tick();assert.equal(db.db.prepare("SELECT count(*) n FROM outbox WHERE kind='request_progress'").get()!.n,1);
   insert("query-worker","做好了吗");const deadline=Date.now()+4000;

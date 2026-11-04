@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { BotApplication, type MessageReceipt, type MessageTransport } from "./bot.js";
-import { IngressApp, normalizeIngressMessageTime } from "./index-ingress.js";
+import { IngressApp, normalizeIngressMessageTime, deliverOutboxRow } from "./index-ingress.js";
 import { WorkerApp } from "./index-worker.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
+import { serializeCanonicalMessageSegments } from "./utils/persisted-message-segments.js";
+import { ImageRequestRepository } from "./services/image-request-repository.js";
+import { ImagePreviewArchiveService } from "./services/image-preview-archive-service.js";
+import { RequestIntentRepository } from "./services/request-intent-repository.js";
+import type { RequestUnderstandingRouter, RequestUnderstandingInput, RequestUnderstanding } from "./services/request-understanding.js";
 import { GroupLock } from "./services/group-lock.js";
 import { LiveChatService } from "./services/live-chat-service.js";
 import { AiService, buildChatMessages } from "./services/ai-service.js";
@@ -1383,6 +1388,9 @@ interface TestBotOptions {
   dailyReportRecords?: Array<{ groupId: string; userId: string; text: string }>;
   btSearchService?: BtSearchRuntime;
   imagePipeline?: ConstructorParameters<typeof BotApplication>[27];
+  imageGeneration?: ConstructorParameters<typeof BotApplication>[38];
+  imageLedger?: ConstructorParameters<typeof BotApplication>[44];
+  imageArchive?: ConstructorParameters<typeof BotApplication>[42];
 }
 
 function createBot(
@@ -1474,8 +1482,9 @@ function createBot(
     undefined,
     undefined,
     recentGroupEvidenceService,
-    undefined, undefined, undefined, undefined,
+    undefined, options.imageGeneration, undefined, undefined,
     options.btSearchService,
+    options.imageArchive, undefined, options.imageLedger,
   );
 }
 
@@ -1497,12 +1506,13 @@ class ConversationReplayAi extends CapturingAiService {
   }
 }
 
-function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"], imagePipeline?: TestBotOptions["imagePipeline"]) {
+function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"], imagePipeline?: TestBotOptions["imagePipeline"], extra: Pick<TestBotOptions, "imageGeneration" | "imageLedger"> = {}) {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "huixian-replay-"));
   const db = openSharedDb(dataDir), repository = new ConversationContextRepository(db);
   const transport = gated ? new GatedWorkerTransport(db) : new WorkerTransport(db);
   const ai = new ConversationReplayAi();
-  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { groupConfigOverrides: { visionEnabled: true, ...overrides }, groupMemoryStore, imagePipeline });
+  const bot = createBot(transport, repository, ai, new RecentGroupEvidenceService(db), { ...extra, groupConfigOverrides: { visionEnabled: true, ...overrides }, groupMemoryStore, imagePipeline, imageLedger: extra.imageGeneration ? new ImageRequestRepository(db) : extra.imageLedger,
+    imageArchive: extra.imageGeneration ? new ImagePreviewArchiveService({ sharedDb: db, rootDir: path.join(dataDir, "archive"), stagedRoot: path.join(dataDir, "generated-images") }) : undefined });
   let time = Date.now() - 90_000, messageId = 40_000;
   t.after(async () => { await bot.stop(); db.close(); rmSync(dataDir, { recursive: true, force: true }); });
   const add = (text: string, userId = USER_ID, options: { image?: boolean; imageUrl?: string; images?: MessageImageInput[]; groupId?: string; passive?: boolean; elapsed?: number; replyToMessageId?: string; excludedDrop?: boolean } = {}) => {
@@ -1533,6 +1543,183 @@ function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConf
   const identity = (index = ai.calls.length - 1) => ai.calls[index]?.identityContext as AiIdentityContext;
   return { dataDir, db, repository, transport, ai, bot, add, ask, ack, identity };
 }
+
+function unifiedReplay(t: test.TestContext, f: ReturnType<typeof conversationReplay>, decide: (input: RequestUnderstandingInput) => Partial<RequestUnderstanding> | Promise<Partial<RequestUnderstanding>>) {
+  const inputs: RequestUnderstandingInput[] = [];
+  const router: RequestUnderstandingRouter = {
+    async isConfigured() { return true; },
+    async classify(input) {
+      inputs.push(input);
+      return { action: "chat", relation: "new", sourceRowIds: [input.sourceRowId], missingFields: [], modelId: "judge", model: "judge", ...await decide(input) };
+    },
+  };
+  const worker = new WorkerApp({ dataDir: f.dataDir, sharedDb: f.db, botApp: f.bot, consumerKey: "unified-replay", requestUnderstandingRouter: router, isBlacklistedUser: async () => false });
+  const paused = worker.stop();
+  t.after(async () => { await worker.stop(); });
+  const run = async (message: ReturnType<typeof f.add>) => {
+    await paused;
+    f.db.db.prepare("UPDATE messages SET canonical_segments_json=?,reply_to=? WHERE id=?").run(serializeCanonicalMessageSegments(message.event.message) ?? null, message.input.replyToMessageId ?? null, message.input.sourceRowId);
+    const row = f.db.db.prepare("SELECT * FROM messages WHERE id=?").get(message.input.sourceRowId);
+    let completed = false;
+    const done = async () => { completed = true; };
+    const dispatch = async (key: string): Promise<void> => (worker as any).handleMessage(row, done, dispatch, key);
+    await dispatch("intent");
+    assert.ok(completed);
+  };
+  return { worker, inputs, run };
+}
+
+test("unified replay: an image, emotion text and bare @ reach vision together without a second resolver", async t => {
+  const localized: MessageImageInput[] = [];
+  const f = conversationReplay(t, {}, false, undefined, new ImagePipeline({ localizeDataUrl: async image => { localized.push(image); return REPLAY_IMAGE_DATA_URL; } }));
+  const image = f.add("", USER_ID, { images: [{ file: "mood-one.image" }, { file: "mood-two.image" }], passive: true });
+  const feeling = f.add("今天有点累，不太想说话", USER_ID, { passive: true });
+  f.add("其他成员插话", "20002", { image: true, passive: true });
+  const mention = f.add("");
+  const u = unifiedReplay(t, f, () => ({ action: "vision", relation: "follow_up", sourceRowIds: [image.input.sourceRowId, feeling.input.sourceRowId, mention.input.sourceRowId], mediaSourceRowId: image.input.sourceRowId }));
+  await u.run(mention);
+  assert.equal(u.inputs.length, 1);
+  assert.equal(f.ai.resolutions.length, 0);
+  assert.equal(f.ai.calls.length, 1);
+  assert.equal(f.ai.calls[0]!.images?.length, 2);
+  assert.match(f.ai.calls[0]!.userInput, /今天有点累/);
+  assert.deepEqual(localized, [{ file: "mood-one.image" }, { file: "mood-two.image" }]);
+  assert.deepEqual(f.repository.orchestration.getResolution(mention.input.sourceRowId)?.mediaSourceMessageIds, [image.id]);
+  await u.run(mention);
+  assert.equal(f.ai.calls.length, 1);
+  assert.equal(u.inputs.length, 1);
+  const again = f.add("");
+  await u.run(again);
+  assert.equal(f.ai.calls.length, 1, "a second bare @ must not revive answered evidence");
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /在，想让我看看什么/);
+});
+
+test("unified replay: style and caption invoke generation once and enqueue an actual image", async t => {
+  const prompts: string[] = [];
+  let filePath = "";
+  const f = conversationReplay(t, {}, false, undefined, undefined, { imageGeneration: {
+    async generate(input) { prompts.push(input.prompt); filePath = path.join(f.dataDir, "generated-images", "test.png"); mkdirSync(path.dirname(filePath)); const bytes = Buffer.from(REPLAY_IMAGE_DATA_URL.split(",")[1]!, "base64"); writeFileSync(filePath, bytes); return { filePath, modelId: "image", model: "image", fallbackUsed: false, mimeType: "image/png", byteLength: bytes.length }; },
+    async discard() {}, async cleanup() { return 0; },
+  } });
+  const request = f.add("用电影反派的口吻做个图，台词：登场要靠实力。黑西装，霓虹雨夜。");
+  const u = unifiedReplay(t, f, () => ({ action: "generate" }));
+  await u.run(request);
+  await u.run(request);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!, /登场要靠实力/);
+  assert.match(prompts[0]!, /霓虹雨夜/);
+  assert.equal(f.ai.calls.length, 0);
+  const outbox = f.db.db.prepare("SELECT * FROM outbox").all() as Array<{ kind: string; text: string; request_source_row_id: number }>;
+  assert.equal(outbox.filter(row => row.kind === "generated_image").length, 1);
+  assert.equal(outbox.find(row => row.kind === "generated_image")?.text, filePath);
+  assert.ok(outbox.every(row => !/正在生成|#生图/u.test(row.text)));
+  assert.equal(f.db.db.prepare("SELECT status FROM image_requests WHERE source_row_id=?").get(request.input.sourceRowId)?.status, "queued");
+  let delivered = 0;
+  const queued = f.db.claimOutbox(1)[0]!;
+  await deliverOutboxRow(f.db, { async sendGroupImage(_groupId: string, bytes: string) { delivered++; assert.match(bytes, /^base64:\/\//); return { platformMessageId: "generated-receipt" }; } } as unknown as MessageTransport, queued, undefined, undefined, path.dirname(filePath));
+  assert.equal(delivered, 1);
+  assert.equal(f.db.db.prepare("SELECT status FROM image_requests WHERE source_row_id=?").get(request.input.sourceRowId)?.status, "delivered");
+  await u.run(request);
+  assert.equal(prompts.length, 1);
+});
+
+test("unified replay: a new visual question can reuse a discussed image while empty mentions cannot", async t => {
+  const f = conversationReplay(t, {}, false, undefined, new ImagePipeline({ localizeDataUrl: async () => REPLAY_IMAGE_DATA_URL }));
+  const image = f.add("", USER_ID, { images: [{ file: "discussed.image" }], passive: true });
+  const u = unifiedReplay(t, f, input => ({ action: "vision", relation: "follow_up", sourceRowIds: [image.input.sourceRowId, input.sourceRowId], mediaSourceRowId: image.input.sourceRowId }));
+  await u.run(f.add("这个是什么车"));
+  f.ack();
+  await u.run(f.add("这是什么型号"));
+  assert.equal(f.ai.calls.length, 2);
+  assert.equal(f.ai.calls.at(-1)?.images?.length, 1);
+  assert.ok(u.inputs.at(-1)?.candidates.some(item => item.id === image.input.sourceRowId));
+  f.ack();
+  await u.run(f.add(""));
+  assert.equal(f.ai.calls.length, 2);
+});
+
+test("unified replay: a missing image instruction is continued without another @ and can be cancelled", async t => {
+  const prompts: string[] = [];
+  const f = conversationReplay(t, {}, false, undefined, undefined, { imageGeneration: {
+    async generate(input) { prompts.push(input.prompt); const filePath = path.join(f.dataDir, "generated-images", "continued.png"); mkdirSync(path.dirname(filePath), { recursive: true }); const bytes = Buffer.from(REPLAY_IMAGE_DATA_URL.split(",")[1]!, "base64"); writeFileSync(filePath, bytes); return { filePath, modelId: "image", model: "image", fallbackUsed: false, mimeType: "image/png", byteLength: bytes.length }; },
+    async discard() {}, async cleanup() { return 0; },
+  } });
+  const first = f.add("帮我做个图");
+  const u = unifiedReplay(t, f, input => input.pendingRequest ? { action: "generate", relation: "supplement", sourceRowIds: [...input.pendingRequest.sourceRowIds, input.sourceRowId], continuesPending: true } : { action: "generate", missingFields: ["instruction"] });
+  await u.run(first);
+  assert.equal(prompts.length, 0);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /什么画面/);
+  const supplement = f.add("戴围巾的小熊", USER_ID, { passive: true });
+  await u.run(supplement);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!, /戴围巾的小熊/);
+  assert.equal(new RequestIntentRepository(f.db).pending(GROUP_ID, USER_ID, supplement.input.nowMs), undefined);
+  const next = f.add("帮我做个图");
+  await u.run(next);
+  const cancel = f.add("取消", USER_ID, { passive: true });
+  await u.run(cancel);
+  assert.equal(prompts.length, 1);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /取消/);
+  assert.equal(new RequestIntentRepository(f.db).pending(GROUP_ID, USER_ID, cancel.input.nowMs), undefined);
+});
+
+test("unified replay: classifier outage executes only a locally complete image request", async t => {
+  for (const text of ["怎么生成图片", "不要生成图片", "他说想做个图", "帮我查一下那个", "画一只猫"]) await t.test(text, async t => {
+    const f = conversationReplay(t);
+    const request = f.add(text);
+    const u = unifiedReplay(t, f, () => { throw new Error("timeout"); });
+    await u.run(request);
+    const result = new RequestIntentRepository(f.db).get(request.input.sourceRowId)!.result!;
+    assert.equal(result.unavailable === true, ["帮我查一下那个", "画一只猫"].includes(text));
+    assert.equal(result.action, text === "画一只猫" ? "generate" : text === "帮我查一下那个" ? "clarify" : "chat");
+    assert.equal(f.db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE kind='generated_image'").get()?.n, 0);
+  });
+});
+
+test("unified replay: no-context @ is local, and uncertain task replay cannot execute twice", async t => {
+  const f = conversationReplay(t);
+  const u = unifiedReplay(t, f, () => ({ action: "bt_search", missingFields: ["query"] }));
+  const empty = f.add("");
+  await u.run(empty);
+  assert.equal(u.inputs.length, 0);
+  assert.match(identityOutbox(f).at(-1)?.text ?? "", /在，想让我看看什么/);
+  const request = f.add("帮我搜索一个资源");
+  await u.run(request);
+  const count = identityOutbox(f).length;
+  await u.run(request);
+  assert.equal(identityOutbox(f).length, count);
+  assert.equal(u.inputs.length, 1);
+});
+
+test("unified replay: independent text does not inherit an offered image", async t => {
+  const f = conversationReplay(t);
+  f.add("", USER_ID, { image: true, passive: true });
+  const request = f.add("今天应该早点睡");
+  const u = unifiedReplay(t, f, () => ({ action: "chat" }));
+  await u.run(request);
+  assert.equal(f.ai.calls[0]?.images?.length ?? 0, 0);
+  assert.deepEqual(f.repository.orchestration.getResolution(request.input.sourceRowId)?.mediaSourceMessageIds, []);
+});
+
+test("unified replay: current attachments and explicit quotes take priority; disabled vision never sees an image", async t => {
+  for (const scenario of ["attachment", "quote", "disabled", "download failure", "recalled after planning"]) await t.test(scenario, async t => {
+    const localized: MessageImageInput[] = [];
+    const f = conversationReplay(t, { visionEnabled: scenario !== "disabled" }, false, undefined, new ImagePipeline({ localizeDataUrl: async image => { localized.push(image); if (scenario === "download failure") throw new Error("download failed"); return REPLAY_IMAGE_DATA_URL; } }));
+    const older = f.add("", USER_ID, { images: [{ file: "older.image" }], passive: true });
+    const newer = f.add("", USER_ID, { images: [{ file: "newer.image" }], passive: true });
+    const request = f.add("看看这个", USER_ID, scenario === "attachment" ? { images: [{ file: "current.image" }] } : scenario === "quote" ? { replyToMessageId: older.id } : {});
+    const u = unifiedReplay(t, f, () => ({ action: "vision", relation: "follow_up", sourceRowIds: [older.input.sourceRowId, newer.input.sourceRowId, request.input.sourceRowId], mediaSourceRowId: older.input.sourceRowId }));
+    if (scenario === "recalled after planning") {
+      await (u.worker as any).understandRequest(f.db.db.prepare("SELECT * FROM messages WHERE id=?").get(request.input.sourceRowId));
+      f.db.markRetracted(GROUP_ID, newer.id, Date.now());
+    }
+    await u.run(request);
+    if (["disabled", "download failure", "recalled after planning"].includes(scenario)) {
+      assert.equal(f.ai.calls.length, 0);
+      assert.match(identityOutbox(f).at(-1)?.text ?? "", /未开启|读不到|重新|重发|没读到|发送/);
+    } else assert.deepEqual(localized.map(image => image.file), [scenario === "attachment" ? "current.image" : "older.image"]);
+  });
+});
 
 test("uncertain image routes preserve delivered conversation context and replay without classifying or replying again", async t => {
   const f = conversationReplay(t);

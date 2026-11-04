@@ -33,7 +33,7 @@ const modelHealthById = shallowRef<Record<string, ModelHealthStatus>>({});
 const modelRowKeys = new WeakMap<SystemModelConfig, string>();
 let modelRowKeySeed = 0;
 const settings = reactive<SystemSettings>({
-  imageIntentRouting: { enabled: true, requestProfile: "deepseek", timeoutMs: 5000, maxCompletionTokens: 128 },
+  imageIntentRouting: { enabled: true, requestProfile: "deepseek", timeoutMs: 4000, maxCompletionTokens: 512, totalTimeoutMs: 8000, fallbackModelIds: ["gpt"] },
   replyRouting: { fallbackEnabled: true, fallbackModelIds: [], chatAttemptTimeoutMs: 45000, chatTotalTimeoutMs: 120000, htmlAttemptTimeoutMs: 600000, htmlTotalTimeoutMs: 1200000 },
   onlineLookupEnabled: false,
   tokenCostControl: {
@@ -67,7 +67,7 @@ function rememberSettings(next: SystemSettings & { revision: string }): void {
 const modelPurposeOptions: Array<{ value: SystemModelPurpose; label: string; detail: string }> = [
   { value: "reply", label: "对话回复", detail: "普通群聊回复、实时对话和群内 #模型 切换列表" },
   { value: "image", label: "图片生成", detail: "#画图 使用；主模型失败时按列表顺序切换备用" },
-  { value: "image_intent", label: "图片意图判断", detail: "仅判断真实 @机器人 或回复其已投递图片的请求；只选择动作，必须支持原生工具调用" },
+  { value: "image_intent", label: "请求判别", detail: "理解自然语言需求及前文，选择已有能力并直接执行；支持独立主备模型" },
   { value: "summary", label: "总结", detail: "已有总结模型配置" },
   { value: "knowledge", label: "知识", detail: "已有知识模型配置" },
   { value: "custom", label: "自定义", detail: "已有自定义模型配置" },
@@ -81,7 +81,7 @@ const modelPurposeDefaultNames: Record<SystemModelPurpose, string> = {
   summary: "Summary Model",
   knowledge: "Knowledge Model",
   image: "Image Model",
-  image_intent: "Image Intent Router",
+  image_intent: "Request Intent Router",
   custom: "Custom Model",
 };
 
@@ -214,8 +214,9 @@ async function load(): Promise<void> {
     ]);
     rememberSettings(next);
     allGroups.value = groupData.groups;
-    const history = await api<{ models: ModelHealthStatus[] }>("/api/model-health-history");
+    const history = await api<{ models: ModelHealthStatus[]; requestIntent?: typeof requestIntentStatus.value }>("/api/model-health-history");
     applyModelStatuses(history.models);
+    requestIntentStatus.value = history.requestIntent;
   } catch (error) {
     loadError.value = (error as Error).message || "系统设置加载失败";
     app.showToast(loadError.value, "error");
@@ -370,7 +371,7 @@ function canMoveImageModel(model: SystemModelConfig, direction: -1 | 1): boolean
 
 function selectModel(model: SystemModelConfig): void {
   if (!canSelectAsDefault(model)) {
-    app.showToast("图片意图判断模型必须启用、配置 API Key，并开启原生工具调用。", "error");
+    app.showToast("请求判别模型必须启用、配置 API Key，并开启原生工具调用。", "error");
     return;
   }
   settings.selectedModelIds[model.purpose] = model.id;
@@ -464,6 +465,7 @@ const intentRouting = computed(() => settings.imageIntentRouting!);
 const intentModels = computed(() => settings.models.filter(model => ["reply", "image_intent"].includes(model.purpose)));
 const intentProbeResult = shallowRef("");
 const intentProbing = shallowRef(false);
+const requestIntentStatus = shallowRef<{ latest?: { unavailable?: boolean; fallbackUsed?: boolean; executionStatus?: string; errorCode?: string }; readiness?: { models: Array<{ modelId: string; ok: boolean; detail: string }> } }>();
 async function testImageIntent(): Promise<void> {
   if (dirty.value) { app.showToast("请先保存配置，再检测。", "error"); return; }
   intentProbing.value = true;
@@ -545,16 +547,23 @@ onMounted(() => {
         <div class="routing-preview" aria-live="polite"><span class="routing-preview-label">统一默认调用顺序</span><ol v-if="replyRoutePreview.length"><li v-for="id in replyRoutePreview" :key="id"><code>{{ id }}</code></li></ol><span v-else>暂无可用模型</span><small>{{ routing.fallbackEnabled ? '已去重；实际调用还会按能力与策略筛选。' : '自动降级已关闭，仅尝试主模型。' }}</small></div>
       </section>
       <section v-if="activePurpose === 'image_intent'" class="reply-routing-panel">
-        <div class="section-intro"><h2>图片意图判断</h2><p>复用现有模型连接和密钥，独立于对话降级链。明确的图片需求直接执行，缺信息时自然追问。</p></div>
-        <label class="policy-toggle"><span>启用图片意图判断</span><input v-model="intentRouting.enabled" type="checkbox" /></label>
+        <div class="section-intro"><h2>请求判别</h2><p>复用现有模型连接和密钥，独立于对话降级链。明确的图片需求直接执行，缺信息时自然追问。</p></div>
+        <label class="policy-toggle"><span>启用请求判别</span><input v-model="intentRouting.enabled" type="checkbox" /></label>
         <div class="routing-grid">
           <label class="routing-field">判断模型<select v-model="settings.selectedModelIds.image_intent" class="select"><option value="">未配置</option><option v-for="model in intentModels" :key="model.id" :value="model.id" :disabled="!isUsableImageIntentModel(model)">{{ model.name }} · {{ model.id }}{{ isUsableImageIntentModel(model) ? '' : '（需启用、密钥和工具调用）' }}</option></select></label>
           <label class="routing-field">请求模式<select v-model="intentRouting.requestProfile" class="select"><option value="deepseek">DeepSeek（关闭思考）</option><option value="openai">OpenAI 兼容</option></select></label>
-          <label class="routing-field">超时（毫秒）<input v-model.number="intentRouting.timeoutMs" class="input" type="number" min="1000" max="30000" /></label>
+          <label class="routing-field">单次超时（毫秒）<input v-model.number="intentRouting.timeoutMs" class="input" type="number" min="1000" max="4000" /></label>
+          <label class="routing-field">总超时（毫秒）<input v-model.number="intentRouting.totalTimeoutMs" class="input" type="number" min="1000" max="8000" /></label>
+          <label class="routing-field">备用判断模型<select v-model="intentRouting.fallbackModelIds" class="select" multiple><option v-for="model in intentModels" :key="model.id" :value="model.id" :disabled="!isUsableImageIntentModel(model) || model.id === settings.selectedModelIds.image_intent">{{ model.name }} · {{ model.id }}</option></select></label>
           <label class="routing-field">输出上限（token）<input v-model.number="intentRouting.maxCompletionTokens" class="input" type="number" min="64" max="512" /></label>
         </div>
         <button class="ghost-btn" type="button" :disabled="intentProbing || !settings.selectedModelIds.image_intent" @click="testImageIntent">{{ intentProbing ? '检测中…' : '检测原生工具调用' }}</button>
         <p v-if="intentProbeResult" role="status">{{ intentProbeResult }}</p>
+        <p v-if="intentRouting.enabled && !settings.selectedModelIds.image_intent" role="alert">请求判别未接通：请选择可用的判断模型。自然语言任务不会仅因开关开启而执行。</p>
+        <p v-for="health in requestIntentStatus?.readiness?.models" :key="health.modelId" :role="health.ok ? undefined : 'alert'">{{ health.modelId }}：{{ health.detail }}</p>
+        <p v-if="requestIntentStatus?.latest?.unavailable" role="alert">最近一次判别不可用（{{ requestIntentStatus.latest.errorCode || '超时或上游失败' }}），已按保守规则处理。</p>
+        <p v-if="requestIntentStatus?.latest?.fallbackUsed">最近一次已切换到备用判别模型。</p>
+        <p v-if="['failed','unknown'].includes(requestIntentStatus?.latest?.executionStatus || '')" role="alert">最近一次任务执行失败或结果未确认，系统不会自动重复执行。</p>
       </section>
       <div class="model-connections-heading"><div class="section-intro"><h2>模型连接</h2><p>维护连接、密钥与启用状态。</p></div><button class="btn" type="button" @click="addModel">＋ 新增模型</button></div>
       <div class="model-toolbar"><span class="routing-note">{{ activePurposeMeta.label }} · {{ activePurposeModels.length }} 个模型</span><div class="model-filters"><form @submit.prevent="setModelQuery"><input v-model="modelQuery" class="input" aria-label="搜索模型" placeholder="搜索名称、标识或模型名…" @change="setModelQuery" /></form><select v-model="modelStatus" class="select" aria-label="模型启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select><button class="ghost-btn" type="button" :disabled="testingAllModels" @click="testAllModels">{{ testingAllModels ? '检测中…' : '检测全部' }}</button></div></div>

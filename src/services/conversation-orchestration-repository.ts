@@ -75,6 +75,13 @@ export class ConversationOrchestrationRepository {
     return this.getResolution(sourceRowId);
   }
 
+  sourceEvidence(groupId: string, rowIds: number[], beforeSourceRowId: number, excludedUserIds: string[] = []): Array<{ msg_id: string; text: string; user_id: string }> {
+    return rowIds.filter(id => id < beforeSourceRowId).flatMap(id => {
+      const row = this.sharedDb.db.prepare("SELECT msg_id,text,user_id FROM messages WHERE id=? AND group_id=? AND is_bot_msg=0").get(id, groupId) as { msg_id: string; text: string; user_id: string } | undefined;
+      return row && !excludedUserIds.includes(row.user_id) && !this.sharedDb.isRetracted(groupId, row.msg_id) ? [row] : [];
+    });
+  }
+
   listCandidates(groupId: string, beforeSourceRowId: number, now: number, excludedUserIds: string[] = []): ConversationTopicCandidate[] {
     const branches = this.sharedDb.db.prepare(`SELECT b.branch_id, b.topic_id, b.owner_user_id, t.title, b.updated_at
       FROM conversation_branches b JOIN conversation_topics t ON t.topic_id = b.topic_id

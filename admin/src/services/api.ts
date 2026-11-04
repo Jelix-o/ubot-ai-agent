@@ -410,7 +410,7 @@ export interface ReplyRoutingSettings {
 }
 
 export interface SystemSettings {
-  imageIntentRouting?: { enabled: boolean; requestProfile: "openai" | "deepseek"; timeoutMs: number; maxCompletionTokens: number };
+  imageIntentRouting?: { enabled: boolean; requestProfile: "openai" | "deepseek"; timeoutMs: number; maxCompletionTokens: number; fallbackModelIds?: string[]; totalTimeoutMs?: number };
   replyRouting?: ReplyRoutingSettings;
   onlineLookupEnabled: boolean;
   tokenCostControl: {

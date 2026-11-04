@@ -120,6 +120,17 @@ export class SystemSettingsStore {
     return cloneSettings(await this.readData());
   }
 
+  /** Explicit startup migration only: never select a model during a GET/read. */
+  async ensureRequestIntentDefaults(): Promise<void> {
+    const settings = await this.getInternal();
+    if (!settings.imageIntentRouting?.enabled || settings.selectedModelIds.image_intent) return;
+    const primary = ["ds", "gpt"].map(id => settings.models.find(model => model.id === id)).find(isApprovedImageIntentModel);
+    if (!primary) return;
+    await this.update({ selectedModelIds: { ...settings.selectedModelIds, image_intent: primary.id },
+      imageIntentRouting: { ...normalizeImageIntentRouting(settings.imageIntentRouting), timeoutMs: 4000, totalTimeoutMs: 8000, maxCompletionTokens: 512,
+        requestProfile: primary.id === "ds" ? "deepseek" : "openai", fallbackModelIds: primary.id === "ds" ? ["gpt"] : ["ds"] } });
+  }
+
   invalidateCache(): void {
     this.cachedData = undefined;
     this.cachedFileVersion = undefined;
@@ -672,7 +683,7 @@ function defaultCommands(now: string): SystemCommandConfig[] {
     { id: "bt_search", title: "BT 资源搜索", primary: "#bt", aliases: ["/bt"], permission: "member", help: "搜索动漫、影视和成人资源，返回磁力与种子链接；支持 --fast、--full 和来源筛选" },
     { id: "conversation", title: "对话", primary: "#对话", aliases: ["#clear"], permission: "member", help: "清空或管理当前群对话上下文" },
     { id: "html_preview", title: "网页预览", primary: "#网页", aliases: ["#html"], permission: "member", help: "生成可在线预览的静态网页" },
-    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图", "#改图"], permission: "member", help: "根据文字生成图片；配置图片意图判断模型后，真实 @会仙 的自然图片需求或回复会仙已投递生成图的改图也可触发；附图或引用图片后直接说明怎么改，头像也可说“用我的头像做个太空人”，最多 4 张参考图" },
+    { id: "image_generation", title: "图片生成", primary: "#画图", aliases: ["#生图", "#改图"], permission: "member", help: "根据文字生成图片；配置请求判别模型后，真实 @会仙 的自然图片需求或回复会仙已投递生成图的改图也可触发；附图或引用图片后直接说明怎么改，头像也可说“用我的头像做个太空人”，最多 4 张参考图" },
     { id: "help", title: "帮助", primary: "#功能", aliases: ["#帮助", "#命令"], permission: "member", help: "查看机器人可用功能和指令帮助" },
     { id: "model", title: "模型", primary: "#模型", permission: "super_admin", help: "查看模型状态；超级管理员可切换模型或恢复跟随统一默认" },
     { id: "mute", title: "静默模式", primary: "#闭嘴", aliases: ["#说话"], permission: "group_admin", help: "让机器人进入或退出静默模式" },

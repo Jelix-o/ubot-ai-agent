@@ -1,6 +1,7 @@
 import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
 import { naturalMemeSelector } from "./services/meme-request-intent.js";
+import { requestExecutionText, type RequestUnderstanding } from "./services/request-understanding.js";
 import type { NaturalImageIntentDetails } from "./services/natural-image-request.js";
 import { GroupInteractionService, isInteractionQuietHour } from "./services/group-interaction-service.js";
 import { parseMemeReply, memeReplyInstruction, allowsEntertainmentMeme } from "./services/meme-reply-protocol.js";
@@ -379,6 +380,7 @@ export interface ForwardAutoRecallOptions {
 }
 
 export interface MessageTransport {
+  runWithRequestContext?<T>(sourceRowId: number, task: () => Promise<T>): Promise<T>;
   sendGroupAudio?(groupId: string, audioFile: string): Promise<void | MessageReceipt>;
   sendGroupMessageBatch?(groupId: string, texts: string[]): Promise<MessageReceipt[]>;
   sendMemeGroupImage?(groupId: string, assetId: string, afterDeliveryId?: string): Promise<void | MessageReceipt>;
@@ -492,6 +494,7 @@ export interface ConversationRuntimeStore {
 }
 
 interface HandleGroupMessageOptions {
+  requestUnderstanding?: RequestUnderstanding;
   /**
    * Granted only by the worker after its receipt-table check has established
    * that the incoming reply quotes one of this bot's own group messages.
@@ -716,7 +719,7 @@ export class BotApplication {
    */
   async getNaturalImageRequest(
     event: NapcatGroupMessageEvent,
-    facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean },
+    facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean; hasPendingAuthorization?: boolean },
   ): Promise<NaturalImageRequest | undefined> {
     const groupId = String(event.group_id);
     const groupConfig = await this.groupConfigService.getGroup(groupId);
@@ -739,6 +742,7 @@ export class BotApplication {
       message: parsed,
       promptText: extractNaturalImagePromptText(event.message, this.botQq),
       hasTrustedBotMention: facts.hasTrustedBotMention,
+      hasPendingAuthorization: facts.hasPendingAuthorization,
       hasTrustedReply,
       replyIsGeneratedImage,
       isExplicitCommand: isSystemCommandText(commandText, runtimeCommands),
@@ -752,7 +756,7 @@ export class BotApplication {
    */
   async getNaturalImageRequestForIntent(
     event: NapcatGroupMessageEvent,
-    facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean },
+    facts: { hasTrustedBotMention: boolean; hasTrustedReply?: boolean; replyIsGeneratedImage?: boolean; hasPendingAuthorization?: boolean },
     action: NaturalImageIntentAction,
     details?: NaturalImageIntentDetails,
   ): Promise<NaturalImageRequest | undefined> {
@@ -774,6 +778,7 @@ export class BotApplication {
       message: parsed,
       promptText: extractNaturalImagePromptText(event.message, this.botQq),
       hasTrustedBotMention: facts.hasTrustedBotMention,
+      hasPendingAuthorization: facts.hasPendingAuthorization,
       hasTrustedReply,
       replyIsGeneratedImage,
       isExplicitCommand: isSystemCommandText(commandText, runtimeCommands),
@@ -792,6 +797,86 @@ export class BotApplication {
         this.isBlacklistedUser(group, String(event.user_id)) || !this.isCapabilityEnabled("image_generation")) return false;
     const command = (await this.getRuntimeCommands()).find(item => item.id === "image_generation");
     return !command || this.canUseRuntimeCommand(command, group, event);
+  }
+
+  async requestUnderstandingPolicy(event: NapcatGroupMessageEvent): Promise<{ allowed: boolean; includeRecent: boolean; excludedUserIds: string[] }> {
+    const group = await this.groupConfigService.getGroup(String(event.group_id));
+    const excludedUserIds = [...(group?.blacklistedUserIds ?? []), ...(group?.memoryDisabledUserIds ?? [])];
+    return { allowed: Boolean(group && group.enabled !== false && !group.botMuted && !this.isBlacklistedUser(group, String(event.user_id))),
+      includeRecent: Boolean(group && !excludedUserIds.includes(String(event.user_id))), excludedUserIds };
+  }
+
+  async isLocallyRoutableRequest(event: NapcatGroupMessageEvent): Promise<boolean> {
+    const text = parseGroupMessage(event.message, this.botQq).text;
+    if (parseExplicitMemoryRequest(text)) return true;
+    const group = await this.groupConfigService.getGroup(String(event.group_id));
+    return !isDeicticImagePersonQuestion(text) && (isMemberIdentityQuerySyntax(text) || Boolean(group && isSavedIdentityComparisonSyntax(text, group)));
+  }
+
+  runWithRequestContext<T>(sourceRowId: number, task: () => Promise<T>): Promise<T> {
+    return this.transport.runWithRequestContext ? this.transport.runWithRequestContext(sourceRowId, task) : task();
+  }
+
+  async replyToUnderstoodRequest(event: NapcatGroupMessageEvent, text: string): Promise<void> {
+    if ((await this.requestUnderstandingPolicy(event)).allowed) await this.sendText(String(event.group_id), text);
+  }
+
+  async understoodConversationUnavailable(event: NapcatGroupMessageEvent, action: RequestUnderstanding["action"]): Promise<string | undefined> {
+    const group = await this.groupConfigService.getGroup(String(event.group_id));
+    if (action === "vision" && (!this.isCapabilityEnabled("conversation") || group?.visionEnabled === false)) return "本群暂未开启图片理解，这次没有查看图片。";
+    if (action === "web_lookup" && (!this.isCapabilityEnabled("realtime_lookup") || !this.realtimeLookupService || group?.onlineLookupEnabled !== true || (await this.systemSettingsStore?.getInternal())?.onlineLookupEnabled !== true)) return "联网查询当前未开启或未配置，这次没有进行联网检索。";
+    return undefined;
+  }
+
+  /** Typed capability dispatch; no model-written command is ever executed. */
+  async handleUnderstoodAction(event: NapcatGroupMessageEvent, understanding: RequestUnderstanding, sourceText: string, signal?: AbortSignal): Promise<"waiting" | void> {
+    const group = await this.groupConfigService.getGroup(String(event.group_id));
+    if (!group || !(await this.requestUnderstandingPolicy(event)).allowed) return;
+    const commands = await this.getRuntimeCommands();
+    const commandId = ({ bt_search: "bt_search", knowledge_lookup: "knowledge", html_preview: "html_preview", reminder: "personal_reminder", chat_summary: "chat_summary", chat_ranking: "chat_ranking", speech: "spoken_reply", song: "original_song", request_status: "request_status" } as Partial<Record<RequestUnderstanding["action"], RuntimeCommandId>>)[understanding.action];
+    if (commandId) {
+      const policy = commands.find(command => command.id === commandId);
+      if (!policy?.enabled) { await this.sendText(group.groupId, "这项能力当前未开启。"); return; }
+      if (!await this.canUseRuntimeCommand(policy, group, event)) return;
+    }
+    const input = requestExecutionText(understanding.input, sourceText);
+    const ask = (text: string) => this.sendText(group.groupId, text);
+    if (understanding.action !== "reminder" && understanding.missingFields.length) {
+      const prompts = { target: "要用谁的头像？", reference: "把要修改或查看的图片发一下？", instruction: "想生成什么画面，或具体修改哪里？", time: "哪一天、几点提醒？", content: "到时要提醒你什么？", query: "想查什么内容？", period: "想看今天、昨天，还是最近一小时？" };
+      await ask(prompts[understanding.missingFields[0]!]); return "waiting";
+    }
+    switch (understanding.action) {
+      case "clarify": await ask(understanding.unavailable ? "请求判别暂时不可用，这次没有执行任务。请补充要做的具体事情，或稍后再试。" : "你想让我处理刚才哪一部分？可以直接说要看的图或要做的事。"); return understanding.unavailable ? undefined : "waiting";
+      case "request_status":
+        if (group.interactionAssistanceEnabled && group.groupExperienceEnabled && this.requestFeedbackService) this.requestFeedbackService.enqueueQuery(group.groupId, String(event.user_id));
+        else await ask("本群暂未开启请求进度查询。");
+        return;
+      case "html_preview": await this.handleHtmlPreviewRequest(group, event, { request: input, source: "natural" }, signal); return;
+      case "bt_search":
+        await this.handleBtSearchCommand(group, { primary: BT_COMMAND_PRIMARY, suffix: input, enabled: true }, signal, input); return;
+      case "knowledge_lookup":
+        if (!this.isCapabilityEnabled("knowledge")) { await this.rejectCapability(group.groupId, "knowledge"); return; }
+        await this.handleSelectedKnowledgeCommand(group, event, classifyPrivateEnterpriseRankingRequest(input) === "explicit" ? "private_enterprise_ranking" : "group_faq", input); return;
+      case "reminder": {
+        if (!group.interactionAssistanceEnabled || !group.personalRemindersEnabled || !this.isCapabilityEnabled("scheduled_reminders") || !this.reminderInteractionService) { await ask("本群暂未开启个人提醒。"); return; }
+        const text = understanding.time || understanding.content ? requestExecutionText([understanding.time, understanding.content].filter(Boolean).join(" "), sourceText) : input;
+        this.reminderInteractionService.handle({ ...this.reminderInput(event, text, understanding.continuesPending !== true), hasAtBot: true }); return understanding.missingFields.length ? "waiting" : undefined;
+      }
+      case "speech": case "song":
+        try {
+          if (!this.audioGenerationService || !this.isCapabilityEnabled("audio_generation")) throw new Error("audio_disabled");
+          this.audioGenerationService.enqueue({ groupId: group.groupId, userId: String(event.user_id), kind: understanding.action === "song" ? "song" : "speech", text: input, sourceKey: String(event.message_id) });
+          void this.audioGenerationService.tick().catch(() => logError("Audio request failed."));
+        } catch (error) { await ask(audioRequestError(error)); }
+        return;
+      case "chat_summary": {
+        const now = new Date();
+        await this.handleChatSummary(group, event, commands, { request: parseChatSummaryRequest(input, now) ?? parseChatSummaryRequest(`总结${input}聊天`, now), now }); return;
+      }
+      case "chat_ranking":
+        if (/前天|本周|这周|上周|本月/u.test(sourceText)) { await ask("目前可以查看今天、昨天或最近一小时的发言排行，想看哪个时段？"); return; }
+        await this.handleChatRanking(group, event, commands, { period: /昨天|昨日/u.test(sourceText) ? "yesterday" : /小时/u.test(sourceText) ? "recent_hour" : "today" }); return;
+    }
   }
 
   /**
@@ -1383,7 +1468,7 @@ export class BotApplication {
   }
 
   /** Resolve context before selecting a serial queue; retries reuse the stored decision. */
-  async prepareConversationRoute(input: ConversationRouteInput, signal?: AbortSignal): Promise<ConversationRoute | undefined> {
+  async prepareConversationRoute(input: ConversationRouteInput, signal?: AbortSignal, understanding?: RequestUnderstanding): Promise<ConversationRoute | undefined> {
     const repository = this.conversationContextRepository;
     if (!repository || !this.conversationContextRouter) return undefined;
     const existing = repository.getRouteBySourceRowId(input.sourceRowId);
@@ -1440,7 +1525,7 @@ export class BotApplication {
       candidates,
       messages,
     });
-    const needsSemanticContext = !/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(input.text.trim()) &&
+    const needsSemanticContext = !understanding && !/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(input.text.trim()) &&
       !bareOpinionRequest &&
       (!input.replyToMessageId || hasReadableReference(reference)) &&
       (candidates.length > 0 || Boolean(reference) || /(?:上面|刚才|这个|那个|所以|看图|展开|继续)/u.test(input.text));
@@ -1469,6 +1554,19 @@ export class BotApplication {
       signal?.throwIfAborted();
       logWarn("Context resolution fell back to bounded rules.", { groupId: input.groupId, sourceRowId: input.sourceRowId, error: summarizeAiError(error) });
     }
+    if (understanding) {
+      const evidence = store.sourceEvidence(input.groupId, understanding.sourceRowIds, input.sourceRowId, excluded);
+      resolution = {
+        intent: understanding.action === "vision" ? "image" : understanding.action === "web_lookup" ? "lookup" : "chat",
+        relation: understanding.relation,
+        resolvedInput: input.text.trim() || evidence.map(item => item.text).filter(Boolean).join("\n") || "请结合我刚发的图片回应",
+        selectedMessageIds: evidence.map(item => item.msg_id), mediaSourceMessageIds: [], needsMoreContext: false,
+        source: understanding.modelId === "host" ? "rules" : "model",
+        lookupRequired: understanding.action === "web_lookup",
+        ...(understanding.action === "web_lookup" ? { lookupQuery: requestExecutionText(understanding.input, [input.text, ...evidence.map(item => item.text)].filter(Boolean).join("\n")) } : {}),
+        anchor: { kind: "none", messageIds: evidence.map(item => item.msg_id) },
+      };
+    }
     if (input.replyToMessageId && !hasReadableReference(reference)) {
       resolution = {
         ...resolution,
@@ -1495,8 +1593,11 @@ export class BotApplication {
       // A semantic image selection must also carry real media, not just the
       // transcript's [图片消息] placeholder. Unquoted requests use the newest
       // valid same-author image message in the receipt-time window.
+      const chosen = understanding?.mediaSourceRowId
+        ? store.sourceEvidence(input.groupId, [understanding.mediaSourceRowId], input.sourceRowId, excluded)[0] : undefined;
       const media = (input.replyToMessageId
         ? store.mediaByIds(input.groupId, [input.replyToMessageId], input.sourceRowId, excluded)
+        : understanding ? store.mediaByIds(input.groupId, chosen ? [chosen.msg_id] : [], input.sourceRowId, excluded)
         : store.recentMedia(input.groupId, input.userId, input.sourceRowId, now))[0];
       if (media) {
         resolution.mediaSourceMessageIds = [media.sourceMessageId];
@@ -1607,8 +1708,8 @@ export class BotApplication {
   }
 
   private readonly pendingChatRankings = new Set<string>();
-  private async handleChatRanking(group: GroupBotConfig, event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): Promise<boolean> {
-    const input = this.chatRankingInput(event, commands);
+  private async handleChatRanking(group: GroupBotConfig, event: NapcatGroupMessageEvent, commands: SystemCommandConfig[], override?: { period?: ChatRankingPeriod }): Promise<boolean> {
+    const input = override ?? this.chatRankingInput(event, commands);
     if (!input) return false;
     const policy = commands.find(command => command.id === "chat_ranking");
     if (policy && !await this.canUseRuntimeCommand(policy, group, event)) return true;
@@ -1663,8 +1764,8 @@ export class BotApplication {
 
   private readonly pendingChatSummaries = new Set<string>();
 
-  private async handleChatSummary(group: GroupBotConfig, event: NapcatGroupMessageEvent, commands: SystemCommandConfig[]): Promise<boolean> {
-    const input = this.chatSummaryInput(event, commands);
+  private async handleChatSummary(group: GroupBotConfig, event: NapcatGroupMessageEvent, commands: SystemCommandConfig[], override?: NonNullable<ReturnType<BotApplication["chatSummaryInput"]>>): Promise<boolean> {
+    const input = override ?? this.chatSummaryInput(event, commands);
     if (!input) return false;
     const policy = commands.find(command => command.id === "chat_summary");
     if (policy && !await this.canUseRuntimeCommand(policy, group, event)) return true;
@@ -2309,7 +2410,7 @@ export class BotApplication {
     }
   }
 
-  private async handleBtSearchCommand(groupConfig: GroupBotConfig, command: BtCommandMatch, signal?: AbortSignal): Promise<void> {
+  private async handleBtSearchCommand(groupConfig: GroupBotConfig, command: BtCommandMatch, signal?: AbortSignal, naturalQuery?: string): Promise<void> {
     const groupId = groupConfig.groupId;
     // Every segment is excluded from later conversation evidence.
     const send = (message: string, compactHeader = false) => this.sendText(groupId, `【BT 搜索】${compactHeader ? " " : "\n"}${message}`);
@@ -2317,31 +2418,13 @@ export class BotApplication {
       await send("BT 搜索功能未启用");
       return;
     }
-    let progressTimer: NodeJS.Timeout | undefined;
-    let progressSend: Promise<void> | undefined;
-    let finished = false;
-    const finishProgress = async () => {
-      finished = true;
-      clearTimeout(progressTimer);
-      await progressSend;
-    };
     try {
-      const request = parseBtSearchRequest(command.suffix);
+      const request = naturalQuery ? { query: naturalQuery, fast: false, full: false, json: false, debug: false, noCache: false, noDeep: false, sources: [], timeoutMs: 30000, limit: 5 } : parseBtSearchRequest(command.suffix);
       if (!request) { await send(escapeBtText(btHelp(command.primary, /(?:^|\s)(?:--help|-h)(?:\s|$)/u.test(command.suffix))), true); return; }
       if (!this.btSearchService) { await send("BT 搜索暂不可用，请稍后再试"); return; }
       const result = await this.btSearchService.search(request, {
         signal,
-        onStarted: async () => {
-          progressTimer = setTimeout(() => {
-            if (finished || signal?.aborted) return;
-            progressSend = send(request.fast ? "正在快速搜索 BT 资源…" : "正在搜索 BT 资源，完整搜索最多约 3 分钟…")
-              .then(() => undefined)
-              .catch(() => { logWarn("BT progress message could not be sent.", { groupId }); });
-          }, 5_000);
-          progressTimer.unref();
-        },
       });
-      await finishProgress();
       if (signal?.aborted) return;
       if (result.items.length || request.json || request.full || request.debug) {
         const autoRecall: ForwardAutoRecallOptions | undefined = result.resolvedType === "adult" && result.items.length > 0
@@ -2366,7 +2449,6 @@ export class BotApplication {
       }
       logInfo("BT search completed.", { groupId, type: result.resolvedType, resultCount: result.items.length, durationMs: result.durationMs, fromCache: result.fromCache });
     } catch (error) {
-      await finishProgress();
       if (signal?.aborted || (error instanceof BtSearchError && error.code === "cancelled")) return;
       // A dispatched card may already exist. Do not append an error bubble or resend it.
       if (error instanceof NapCatActionOutcomeUnknownError) {
@@ -2381,8 +2463,6 @@ export class BotApplication {
         error instanceof BtSearchError && error.code === "timeout" ? "BT 搜索超时，请换个来源或加 --fast 后重试" : "BT 搜索失败，请稍后再试";
       logWarn("BT search failed.", { groupId, errorCode: error instanceof BtSearchError ? error.code : "unknown" });
       await send(message);
-    } finally {
-      await finishProgress();
     }
   }
 
@@ -2529,9 +2609,6 @@ export class BotApplication {
         referenceImages,
         size: parsed.size,
         signal,
-        onStarted: async () => {
-          await this.sendText(groupId, "正在生成图片，请稍候…");
-        },
       });
       stagedFile = generated.filePath;
       if (ledgerRequestId) {
@@ -4303,7 +4380,7 @@ export class BotApplication {
     const configuredSkill = await this.resolveSkill(groupConfig);
     const skill = {
       ...configuredSkill,
-      systemPrompt: `${configuredSkill.systemPrompt}\n本轮仅执行对话，没有执行生图或改图。不要声称图片已经生成、正在生成或即将发送。若用户请求图片但未执行，请说明尚未生成，可使用 #生图 或附图后 #改图。`,
+      systemPrompt: `${configuredSkill.systemPrompt}\n本轮仅执行对话，没有执行生图或改图。不要声称图片已经生成、正在生成或即将发送。若用户明确请求图片但未执行，应如实说明本次没有执行及已知原因；不要让用户改用命令，不要把图片任务擅自改成提示词教程。`,
     };
     const explicitEvaluationTargetUserIds = collectEvaluationTargetUserIds(
       messageContext.interactionTargets,
@@ -7024,7 +7101,7 @@ function buildHelpSections(command: CommandHelpFormatter, includeImageGeneration
         `2. ${command("image_generation", { alias: "#生图" })} <提示词>`,
         "作用：根据文字提示生成一张图片，使用权限由后台指令设置控制",
         "编辑：@我并附图或回复图片，直接说怎么改；头像也可以说“用我的头像做个太空人”。#改图 仍可使用，最多 4 张参考图。",
-        `自然语言：真实 @${personaName} 后直接说明图片需求；明确需求会直接执行，缺信息时会追问。回复机器人已投递生成图可连续改图。需配置图片意图判断模型。`,
+        `自然语言：真实 @${personaName} 后直接说明图片需求；明确需求会直接执行，缺信息时会追问。回复机器人已投递生成图可连续改图。需配置请求判别模型。`,
         `限制：提示词最多 ${IMAGE_GENERATION_MAX_PROMPT_CHARS} 字；文生图冷却 60 秒，图生图与改图冷却 15 秒`,
       ],
     }] : []),
@@ -7101,7 +7178,7 @@ function buildHelpOverviewMessage(
     ...show("request_stop", `停止回复：${command("request_stop")} 停止本人最近一条普通对话的后续回复`),
     ...show("conversation", "对话：群里 @机器人 可触发当前 skill 对话，支持图片理解"),
     ...show("bt_search", `资源搜索：${command("bt_search", { includeAliases: true }).join(" / ")} <关键词> [anime|movie|adult]（所有成员，无需 @）`),
-    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置图片意图判断模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
+    ...(includeImageGeneration ? [`画图：${command("image_generation")} <提示词>；附图或引用图片后可直接说明修改要求；配置请求判别模型后，真实 @${personaName} 可自然说明图片需求，缺信息时会追问`] : []),
     ...show("personal_reminder",`个人提醒：${command("personal_reminder")} 10分钟后 喝水；列表 / 取消 <编号>（北京时间，全天可用）`),
     ...show("request_status",`请求进度：${command("request_status")} 查看本人当前群的处理和最近完成结果`),
     ...show("chat_summary", `群聊总结：${command("chat_summary")} 查看截至当前的总结；也可 @机器人问“今天群里聊了什么”`),

@@ -1,4 +1,6 @@
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
+import { RequestIntentRepository } from "./services/request-intent-repository.js";
+import { clearLocalImageAction, imageDetailsFromUnderstanding, isNonExecutingRequest, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
 import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
@@ -8,7 +10,7 @@ import type { IngressMessageRow } from "./shared/sqlite.js";
 import type { ImageIntentRoute } from "./services/image-intent-router-plugin.js";
 import type { NaturalImageIntentDetails } from "./services/natural-image-request.js";
 import { GroupInteractionService } from "./services/group-interaction-service.js";
-import { ModelTelemetryStore, setModelTelemetryStore } from "./services/model-telemetry.js";
+import { ModelTelemetryStore, setModelTelemetryStore, withModelOperation } from "./services/model-telemetry.js";
 import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
@@ -53,6 +55,9 @@ import { loadPrivateEnterpriseRanking } from "./services/private-enterprise-rank
 import { GroupTranscriptService } from "./services/group-transcript-service.js";
 import { RealtimeLookupService } from "./services/realtime-lookup-service.js";
 import { SystemSettingsStore } from "./services/system-settings-store.js";
+import { ModelHealthHistoryStore } from "./services/model-health-history-store.js";
+import { probeImageIntentModel } from "./services/model-probe-service.js";
+import { normalizeImageIntentRouting } from "./services/image-intent-settings.js";
 import { SystemSettingsSqliteShadowRepository } from "./services/system-settings-sqlite-shadow-repository.js";
 import { ImagePipeline } from "./services/image-pipeline.js";
 import { CharacterProfileService } from "./services/character-profile-service.js";
@@ -88,6 +93,7 @@ import type { AiReply, NapcatGroupMessageEvent } from "./types.js";
 interface NaturalImageRouteBase {
   event: NapcatGroupMessageEvent;
   hasTrustedBotMention: boolean;
+  hasPendingAuthorization?: boolean;
   hasTrustedReply: boolean;
   replyIsGeneratedImage: boolean;
 }
@@ -132,12 +138,14 @@ export class WorkerApp {
   private readonly stopArtifactObservation: () => void;
   private readonly inflight: InflightManager;
   private readonly semaphore = new LlmSemaphore(8, 2_000);
+  private readonly requestIntentSemaphore = new LlmSemaphore(4, 2000);
   private readonly contextRepository: ConversationContextRepository;
   private readonly contextRouter: ConversationContextRouter;
   private readonly atmosphere: AtmosphereSummarizer;
   private readonly imageRequests: ImageRequestRepository;
   private readonly imageIntentRoutes: ImageIntentRouteRepository;
   private readonly imagePendingRequests: ImagePendingRequestRepository;
+  private readonly requestIntents: RequestIntentRepository;
   private readonly runner: ConsumerRunner;
   private maxQueueDepthSeen = 0;
   readonly llmGate: (task: () => Promise<AiReply>, signal?: AbortSignal) => Promise<AiReply>;
@@ -152,6 +160,7 @@ export class WorkerApp {
       isBlacklistedUser: (groupId: string, userId: string) => Promise<boolean>;
       stateEncryptionKey?: string;
       imageIntentRouter?: ImageIntentRouter;
+      requestUnderstandingRouter?: RequestUnderstandingRouter;
       /** Internal test/operations override; production uses the repository default. */
       imageIntentRouteLeaseMs?: number;
     },
@@ -168,6 +177,7 @@ export class WorkerApp {
     this.imageRequests = new ImageRequestRepository(this.sharedDb);
     this.imageIntentRoutes = new ImageIntentRouteRepository(this.sharedDb);
     this.imagePendingRequests = new ImagePendingRequestRepository(this.sharedDb);
+    this.requestIntents = new RequestIntentRepository(this.sharedDb);
     const v3State = resolveV3RuntimeState(this.sharedDb, this.options.stateEncryptionKey);
     v3State?.retireRoastModeForExistingGroupsOnce();
     const assistanceState=v3State??new V3StateRepository(this.sharedDb);
@@ -231,6 +241,7 @@ export class WorkerApp {
         if (await this.options.botApp.isChatSummaryMessage?.(this.buildEvent(message))) return `${message.group_id}:summary:${message.user_id}`;
         if (await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message)))return `${message.group_id}:assistance:${message.user_id}`;
         if (await this.options.botApp.getBtCommand(message.text)) {
+          this.requestFeedback.track(message.id, "task");
           await this.getOrRecordParticipationDecision(message);
           // Each request reaches the bounded global search queue immediately.
           return `${message.group_id}:bt-search:${message.id}`;
@@ -241,7 +252,12 @@ export class WorkerApp {
           Boolean(message.has_at_bot),
         );
         if (previewRequest) {
+          this.requestFeedback.track(message.id, "task");
           return `${message.group_id}:html-preview`;
+        }
+        if (await this.canUnderstandRequest(message as IngressMessageRow)) {
+          this.requestFeedback.track(message.id, "task");
+          return `${message.group_id}:request-intent:${message.user_id}`;
         }
         // Queue selection must stay local and bounded. A candidate gets an
         // intent lane first; its remote classifier call happens only once the
@@ -276,6 +292,7 @@ export class WorkerApp {
         // 等指令全部被当成自由发言跳过，指令不生效）。
         const isCommand = await this.options.botApp.isSystemCommand(message.text);
         if (isCommand) {
+          this.requestFeedback.track(message.id, "task");
           const decision = await this.getOrRecordParticipationDecision(message);
           this.metrics.inc(`participation_decision_${decision.action}`);
           // Commands mutate pointers/configuration and must not create a
@@ -306,6 +323,10 @@ export class WorkerApp {
       batchSize: 50,
       maxConcurrentKeys: 8,
     });
+  }
+
+  private runWithRequestContext<T>(sourceRowId: number, task: () => Promise<T>): Promise<T> {
+    return this.options.botApp.runWithRequestContext?.(sourceRowId, task) ?? task();
   }
 
   private async trackAssistedRequest(message:Parameters<WorkerApp["buildEvent"]>[0]&{id:number},kind:"conversation"|"image"):Promise<void> {
@@ -377,11 +398,15 @@ export class WorkerApp {
     }
 
     if (await this.options.botApp.isChatRankingMessage?.(this.buildEvent(message))) {
-      await this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true });
+      this.requestFeedback.track(message.id, "task"); this.requestFeedback.start(message.id);
+      await this.runWithRequestContext(message.id, () => this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true }));
+      this.requestFeedback.finish(message.id);
       await done(); return;
     }
     if (await this.options.botApp.isChatSummaryMessage?.(this.buildEvent(message))) {
-      await this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true });
+      this.requestFeedback.track(message.id, "task"); this.requestFeedback.start(message.id);
+      await this.runWithRequestContext(message.id, () => this.options.botApp.handleGroupMessage(this.buildEvent(message), undefined, undefined, { naturalImageRoutingDecided: true }));
+      this.requestFeedback.finish(message.id);
       await done(); return;
     }
     if(await this.options.botApp.isInteractionAssistanceMessage?.(this.buildEvent(message))){
@@ -397,6 +422,10 @@ export class WorkerApp {
       Boolean(message.has_at_bot),
     );
     const isPreview = Boolean(previewRequest);
+    if (!isPreview && await this.canUnderstandRequest(message as IngressMessageRow)) {
+      await this.handleUnderstoodRequest(message as IngressMessageRow, done, handoff, currentKey);
+      return;
+    }
     if (await this.isImageGenerationCommand(message.text)) {
       this.imageIntentRoutes.runAtomically(() => this.imagePendingRequests.settle({
         sourceRowId: message.id,
@@ -503,8 +532,9 @@ export class WorkerApp {
       // image or preview work in InflightManager: its conversation-oriented
       // cancel and merge rules would violate image publication semantics.
       const taskStartedAt = Date.now();
+      if (isPreview) this.requestFeedback.start(message.id);
       try {
-        await this.options.botApp.handleGroupMessage(
+        await this.runWithRequestContext(message.id, () => this.options.botApp.handleGroupMessage(
           naturalImageRoute?.kind === "image" || naturalImageRoute?.kind === "clarification"
             ? naturalImageRoute.event
             : this.buildEvent(message),
@@ -522,7 +552,7 @@ export class WorkerApp {
             : isImageCommand
               ? { imageRequestSourceRowId: message.id }
             : undefined,
-        );
+        ));
         if (isNaturalRequest) this.metrics.inc("natural_image_request_handled");
         this.metrics.inc("tasks_completed");
         this.metrics.observeLatency("end_to_end_reply", Date.now() - taskStartedAt);
@@ -543,6 +573,7 @@ export class WorkerApp {
         this.metrics.inc("tasks_failed");
         throw error;
       } finally {
+        if (isPreview) this.requestFeedback.finish(message.id);
         if (isImageRequest) {
           this.requestFeedback.finish(message.id);
           this.recordImageRequestMetrics({
@@ -566,6 +597,7 @@ export class WorkerApp {
     }
 
     const taskStartedAt = Date.now();
+    if (!route) this.requestFeedback.start(message.id);
     const task = this.inflight.begin(key);
     if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "running");
     this.metrics.inc("tasks_started");
@@ -582,7 +614,7 @@ export class WorkerApp {
       cancelPoll.unref();
 
       try {
-        await this.options.botApp.handleGroupMessage(event, controller.signal, route, {
+        await this.runWithRequestContext(message.id, () => this.options.botApp.handleGroupMessage(event, controller.signal, route, {
           // The route alone is not authorization: the policy reason proves
           // this was a same-group reply to an acknowledged bot message.
           allowReplyWithoutMention: participation?.reason === "explicit_reply" ||
@@ -591,7 +623,7 @@ export class WorkerApp {
           // this message. Do not let BotApplication's legacy regex parser
           // reinterpret it as an image request on the way to the chat path.
           ...(naturalImageRoute?.kind === "chat" ? { naturalImageRoutingDecided: true } : {}),
-        });
+        }));
         if (naturalImageRoute?.kind === "chat" && this.imageIntentRoutes.getBySourceRow(message.id)?.action === "clarification") {
           this.metrics.inc("image_intent_router_clarification_to_chat");
         }
@@ -632,6 +664,216 @@ export class WorkerApp {
    * platform segment. Continuous edits are separately authorized by a live
    * generated-image receipt in the same group.
    */
+  private async canUnderstandRequest(message: IngressMessageRow): Promise<boolean> {
+    if (!this.options.requestUnderstandingRouter || message.text.trimStart().startsWith("#") || await this.options.botApp.isSystemCommand(message.text)) return false;
+    if (this.options.requestUnderstandingRouter.isEnabled && !await this.options.requestUnderstandingRouter.isEnabled()) return false;
+    if (await this.options.botApp.isLocallyRoutableRequest?.(this.buildEvent(message))) return false;
+    // Old durable decisions remain authoritative across the upgrade.
+    if (this.imageIntentRoutes.getBySourceRow(message.id) && !this.requestIntents.get(message.id)) return false;
+    const segments = restoreCanonicalMessageSegments(message.canonical_segments_json);
+    const realAt = segments?.some(segment => typeof segment !== "string" && segment.type === "at" && String(segment.data?.qq) === this.options.botApp.getBotQq());
+    const reply = segments?.some(segment => typeof segment !== "string" && segment.type === "reply" && String(segment.data?.id) === message.reply_to);
+    if (!realAt && !(reply && this.sharedDb.isKnownBotMessage(message.group_id, message.reply_to)) && !this.requestIntents.pending(message.group_id, message.user_id, message.created_at)) return false;
+    if (/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(message.text.trim())) return false;
+    return (await this.options.botApp.requestUnderstandingPolicy(this.buildEvent(message))).allowed;
+  }
+
+  private async understandRequest(message: IngressMessageRow): Promise<RequestUnderstanding | undefined> {
+    const saved = this.requestIntents.get(message.id);
+    const claim = saved?.result ? { state: "resolved" as const } : this.requestIntents.claim(message.id);
+    if (claim.state === "busy") throw new ImageIntentRoutePendingError();
+    const policy = await this.options.botApp.requestUnderstandingPolicy(this.buildEvent(message));
+    const pending = this.requestIntents.pending(message.group_id, message.user_id, message.created_at);
+    const rows = policy.includeRecent ? this.requestIntents.candidates(message) : [];
+    if (saved?.result) for (const id of saved.result.sourceRowIds) {
+      if (id === message.id || rows.some(row => row.id === id)) continue;
+      const row = this.sharedDb.db.prepare("SELECT * FROM messages WHERE id=? AND group_id=? AND id<?").get(id, message.group_id, message.id) as unknown as IngressMessageRow | undefined;
+      if (row) rows.push(row);
+    }
+    if (pending && policy.includeRecent) for (const id of pending.result.sourceRowIds) {
+      if (rows.some(row => row.id === id) || id === message.id) continue;
+      const row = this.sharedDb.db.prepare("SELECT * FROM messages WHERE id=? AND group_id=? AND user_id=? AND id<?").get(id, message.group_id, message.user_id, message.id) as unknown as IngressMessageRow | undefined;
+      if (row && !this.sharedDb.isRetracted(row.group_id, row.msg_id)) rows.push(row);
+    }
+    const parsed = parseGroupMessage(this.buildEvent(message).message, this.options.botApp.getBotQq());
+    if (parsed.replyMessageId && policy.includeRecent) {
+      const quoted = this.sharedDb.db.prepare("SELECT * FROM messages WHERE group_id=? AND msg_id=? AND id<?").get(message.group_id, parsed.replyMessageId, message.id) as unknown as IngressMessageRow | undefined;
+      if (quoted && !policy.excludedUserIds.includes(quoted.user_id) && !this.sharedDb.isRetracted(quoted.group_id, quoted.msg_id) && !rows.some(row => row.id === quoted.id)) rows.push(quoted);
+    }
+    const sourceText = (row: IngressMessageRow) => imageIntentText(this.buildEvent(row).message, this.options.botApp.getBotQq(), row.id).text;
+    // A fresh visual question can refer to an already discussed picture. Empty @
+    // recovery alone is limited to unanswered evidence, so it cannot repeat a task.
+    if (!saved?.result && message.text.trim() && policy.includeRecent && !policy.excludedUserIds.includes(message.user_id) && !parsed.replyMessageId && !parseImages(message.images_json).length) {
+      const latest = this.contextRepository.orchestration.recentMedia(message.group_id, message.user_id, message.id, message.created_at)[0];
+      if (latest && !rows.some(row => row.id === latest.sourceRowId)) {
+        const row = this.sharedDb.db.prepare("SELECT * FROM messages WHERE id=?").get(latest.sourceRowId) as unknown as IngressMessageRow;
+        rows.push(row);
+      }
+    }
+    const offered = saved?.result ? rows.filter(row => saved.result!.sourceRowIds.includes(row.id)) : rows.slice(-12);
+    const input: RequestUnderstandingInput = {
+      sourceRowId: message.id, sanitizedText: sourceText(message),
+      facts: { hasTrustedBotMention: parsed.hasAtBot, hasTrustedReply: Boolean(parsed.replyMessageId), replyIsGeneratedImage: this.isAvailableGeneratedImageReply(message.group_id, parsed.replyMessageId), attachmentCount: parseImages(message.images_json).length },
+      candidates: offered.map(row => ({ id: row.id, text: sourceText(row).slice(0, 500), attachmentCount: parseImages(row.images_json).length, ...(row.msg_id === parsed.replyMessageId ? { quoted: true } : {}) })),
+      ...(pending || saved?.result?.continuesPending ? { pendingRequest: { action: (pending?.result ?? saved!.result!).action, missingFields: (pending?.result ?? saved!.result!).missingFields, sourceRowIds: (pending?.result ?? saved!.result!).sourceRowIds } } : {}),
+    };
+    if (saved?.result) {
+      const { modelId, model, fallbackUsed, unavailable, ...decision } = saved.result;
+      try { return { ...validateRequestUnderstanding(decision, input), modelId, model, fallbackUsed, unavailable }; }
+      catch { return { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true }; }
+    }
+    let result: RequestUnderstanding;
+    if (!message.text.trim() && !input.facts.attachmentCount && !input.candidates.length) {
+      result = { action: "chat", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host" };
+    } else if (/^(?:取消|算了|不用了|不要了)[。！!]?$/u.test(message.text.trim()) && pending) {
+      result = { action: "chat", relation: "supplement", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", input: message.text.trim(), continuesPending: true };
+    } else if (isNonExecutingRequest(message.text)) {
+      result = { action: "chat", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host" };
+    } else if (claim.state === "claimed") {
+      try {
+        const budget = AbortSignal.timeout(8000);
+        const release = await this.requestIntentSemaphore.acquire(budget);
+        try { result = await this.options.requestUnderstandingRouter!.classify(input, budget); }
+        finally { release(); }
+        const { modelId, model, fallbackUsed, unavailable, ...decision } = result;
+        result = { ...validateRequestUnderstanding(decision, input), modelId, model, ...(fallbackUsed ? { fallbackUsed } : {}) };
+        if (!modelId || !model) throw new Error("request_intent_invalid_model");
+      } catch {
+        const nonTask = /怎么|如何|教程|不要|不用|取消|他说|她说|说过|支持|会不会/u.test(message.text);
+        const action = clearLocalImageAction(message.text) ?? (!message.text.trim() && rows.some(row => parseImages(row.images_json).length) ? "vision" : !nonTask && /提醒|搜索|查一下|查找|做个|生成|改图|朗读|唱首|总结|排行/u.test(message.text) ? "clarify" : "chat");
+        result = { action, relation: message.text.trim() ? "new" : "follow_up", sourceRowIds: message.text.trim() ? [message.id] : [...rows.slice(-11).map(row => row.id), message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
+        this.metrics.inc("request_intent_unavailable");
+      }
+    } else {
+      result = { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
+    }
+    // A new independent question cannot inherit old text merely because it was offered.
+    // Spoken answers retain the existing answer-then-audio chain; reading the request aloud is not an answer.
+    if (result.action === "speech" && /(?:用|发|以)语音(?:回答|回复|说)/u.test(message.text)) result.action = "chat";
+    if (result.relation === "new" && !result.continuesPending && message.text.trim() && !parsed.replyMessageId) {
+      result.sourceRowIds = [message.id];
+      for (const key of ["input", "time", "content", "avatarTarget"] as const) if (result[key] && !input.sanitizedText.includes(result[key]!)) delete result[key];
+      delete result.mediaSourceRowId;
+    }
+    if (["vision", "edit"].includes(result.action) && !parsed.replyMessageId && !input.facts.attachmentCount) {
+      const latest = [...offered].filter(row => row.user_id === message.user_id && row.created_at >= message.created_at - 120000 && parseImages(row.images_json).length && !this.sharedDb.isRetracted(row.group_id, row.msg_id)).sort((a, b) => b.id - a.id)[0];
+      result.sourceRowIds = result.sourceRowIds.filter(id => id === message.id || !offered.find(row => row.id === id && parseImages(row.images_json).length));
+      if (latest) { result.mediaSourceRowId = latest.id; result.sourceRowIds = [...new Set([latest.id, ...result.sourceRowIds])].slice(0, 12); }
+      else if (result.action === "edit") result.missingFields = [...new Set([...result.missingFields, "reference" as const])];
+    }
+    if (claim.state === "claimed") {
+      if (!this.requestIntents.complete(message.id, claim.token, result)) throw new ImageIntentRoutePendingError();
+    }
+    logInfo("Request understood.", { sourceRowId: message.id, action: result.action, modelId: result.modelId, fallbackUsed: result.fallbackUsed === true, unavailable: result.unavailable === true, evidenceCount: result.sourceRowIds.length });
+    this.metrics.inc(`request_intent_${result.action}`);
+    return this.requestIntents.get(message.id)?.result ?? result;
+  }
+
+  private async handleUnderstoodRequest(message: IngressMessageRow, done: () => Promise<void>, handoff: (key: string) => Promise<void>, currentKey: string): Promise<void> {
+    const understanding = await this.understandRequest(message);
+    if (!understanding) throw new ImageIntentRoutePendingError();
+    const imageAction = ["generate", "edit", "avatar_edit"].includes(understanding.action);
+    const conversation = ["chat", "vision", "web_lookup"].includes(understanding.action);
+    this.requestFeedback.track(message.id, imageAction ? "image" : conversation ? "conversation" : "task");
+    const route = conversation ? this.contextRepository.getRouteBySourceRowId(message.id) ?? await this.options.botApp.prepareConversationRoute({
+      sourceRowId: message.id, groupId: message.group_id, userId: message.user_id, sourceMessageId: message.msg_id,
+      replyToMessageId: message.reply_to ?? undefined, text: message.text, hasImages: parseImages(message.images_json).length > 0, nowMs: message.created_at,
+    }, undefined, understanding) : undefined;
+    const key = conversation && route ? `${message.group_id}:${route.branchId}` : `${message.group_id}:${imageAction ? "image" : `request-${understanding.action}`}:${message.user_id}`;
+    if (currentKey !== key) { await handoff(key); return; }
+    const evidence = understanding.sourceRowIds.filter(id => id !== message.id).map(id => this.sharedDb.db.prepare("SELECT * FROM messages WHERE id=? AND group_id=? AND id<?").get(id, message.group_id, message.id) as unknown as IngressMessageRow | undefined);
+    const policy = await this.options.botApp.requestUnderstandingPolicy(this.buildEvent(message));
+    if (evidence.some(row => !row || policy.excludedUserIds.includes(row.user_id) || this.sharedDb.isRetracted(row.group_id, row.msg_id))) {
+      this.requestFeedback.fail(message.id);
+      await this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), "刚才那条内容现在读不到了，重新发一下图片或引用对应消息？"); await done(); return;
+    }
+    const sourceText = [...evidence.filter(row => row?.user_id === message.user_id).map(row => row!.text), message.text].filter(Boolean).join("\n");
+    if (route && this.contextRepository.hasAssistantReplyForTurn(route.branchId, route.turnId)) { await done(); return; }
+    const conversationUnavailable = conversation ? await this.options.botApp.understoodConversationUnavailable(this.buildEvent(message), understanding.action) : undefined;
+    if (conversationUnavailable) {
+      if (this.requestIntents.beginExecution(message.id) === "started") {
+        await this.runWithRequestContext(message.id, () => this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), conversationUnavailable));
+        this.requestIntents.finishExecution(message.id, true);
+      }
+      this.requestFeedback.fail(message.id); await done(); return;
+    }
+    if (!policy.allowed) { await done(); return; }
+    const cancellation = understanding.modelId === "host" && /^(?:取消|算了|不用了|不要了)[。！!]?$/u.test(message.text.trim()) && this.requestIntents.pending(message.group_id, message.user_id, message.created_at);
+    const fenced = !imageAction && !conversation || Boolean(cancellation) || (!message.text.trim() && !sourceText.trim() && understanding.action === "chat");
+    if (fenced) {
+      const execution = this.requestIntents.beginExecution(message.id);
+      if (execution !== "started") {
+        if (execution === "unknown") this.requestFeedback.fail(message.id);
+        else this.requestFeedback.finish(message.id);
+        if (execution === "unknown") await this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), "上次请求的执行结果尚未确认，为避免重复操作没有再次执行。可以先查看进度。");
+        await done(); return;
+      }
+    }
+    if (route && !this.contextRepository.orchestration.isTaskCurrent(message.id)) { await done(); return; }
+    const controller = new AbortController();
+    const inflight = this.inflight.begin(key);
+    const cancelPoll = setInterval(() => {
+      if (this.sharedDb.getInflight(key)?.cancel_requested || (route && !this.contextRepository.orchestration.isTaskCurrent(message.id))) controller.abort();
+    }, 100);
+    cancelPoll.unref();
+    let waiting = understanding.missingFields.length > 0 || understanding.action === "clarify" && !understanding.unavailable;
+    try {
+      await this.runWithRequestContext(message.id, async () => {
+      if (cancellation) {
+        const previous = cancellation.result;
+        if (["generate", "edit", "avatar_edit"].includes(previous.action)) {
+          const natural = await this.getNaturalImageRoute(message, { understanding });
+          if (natural?.kind === "clarification") await this.options.botApp.handleGroupMessage(natural.event, controller.signal, undefined, { naturalImageRequest: natural.request, naturalImageRoutingDecided: true });
+          else await this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), "已取消待补充的请求。");
+        } else if (previous.action === "reminder") await this.options.botApp.handleUnderstoodAction(this.buildEvent(message), { ...understanding, action: "reminder", continuesPending: true }, message.text, controller.signal);
+        else await this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), "已取消待补充的请求。");
+        waiting = false;
+      } else if (imageAction) {
+        const natural = await this.getNaturalImageRoute(message, { understanding });
+        if (!natural || natural.kind === "chat") {
+          await this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), "图片能力当前不可用或未开启，这次没有生成图片。");
+        } else if (natural.kind === "pending") throw new ImageIntentRoutePendingError();
+        else {
+          waiting = natural.kind === "clarification" && natural.request.reason !== "request_cancelled";
+          if (!waiting) await this.trackAssistedRequest(message, "image");
+          await this.options.botApp.handleGroupMessage(natural.event, controller.signal, undefined, { imageRequestSourceRowId: message.id, naturalImageRequest: natural.request, naturalImageRoutingDecided: true, hasTrustedBotMention: natural.hasTrustedBotMention, hasTrustedReply: natural.hasTrustedReply, replyIsGeneratedImage: natural.replyIsGeneratedImage });
+        }
+      } else if (conversation) {
+        if (!message.text.trim() && !parseImages(message.images_json).length && !sourceText.trim() && understanding.action !== "vision") {
+          await this.options.botApp.replyToUnderstoodRequest(this.buildEvent(message), "在，想让我看看什么？");
+        } else {
+          await this.trackAssistedRequest(message, "conversation");
+          if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "running");
+          const event = this.buildEvent(message);
+          const effective = !message.text.trim() ? { ...event, message: [...(Array.isArray(event.message) ? event.message : []), { type: "text" as const, data: { text: `请结合我刚发的内容回应：\n${sourceText || "[图片消息]"}` } }] } : event;
+          await this.options.botApp.handleGroupMessage(effective, controller.signal, route, { naturalImageRoutingDecided: true, allowReplyWithoutMention: true, requestUnderstanding: understanding });
+          if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "awaiting_delivery");
+        }
+      } else {
+        this.requestFeedback.track(message.id, "task");
+        this.requestFeedback.start(message.id);
+        waiting = await this.options.botApp.handleUnderstoodAction(this.buildEvent(message), understanding, sourceText, controller.signal) === "waiting";
+      }
+      });
+      const previousPending = this.requestIntents.pending(message.group_id, message.user_id, message.created_at);
+      if (previousPending && previousPending.sourceRowId !== message.id) this.requestFeedback.settleWaiting(previousPending.sourceRowId);
+      this.requestIntents.settle(message.group_id, message.user_id, message.id, waiting, message.created_at);
+      if (!waiting) this.requestIntents.consume(message.id, understanding.sourceRowIds);
+      this.requestFeedback.finish(message.id);
+      if (waiting) this.requestFeedback.wait(message.id);
+      if (fenced) this.requestIntents.finishExecution(message.id);
+      await done();
+    } catch (error) {
+      this.requestFeedback.fail(message.id);
+      if (fenced) this.requestIntents.finishExecution(message.id, true);
+      if (route) this.contextRepository.orchestration.setTaskStatus(message.id, "failed");
+      throw error;
+    } finally {
+      clearInterval(cancelPoll);
+      this.inflight.end(key, inflight.taskId);
+    }
+  }
+
   private async getNaturalImageRoute(message: {
     id: number;
     group_id: string;
@@ -647,12 +889,12 @@ export class WorkerApp {
     verified_mention_user_ids_json?: string;
     canonical_segments_json?: string | null;
     has_at_bot?: number;
-  }, options: { classify?: boolean } = {}): Promise<NaturalImageRoute | undefined> {
-    if (!message.text.trim() && parseImages(message.images_json).length === 0) return undefined;
+  }, options: { classify?: boolean; understanding?: RequestUnderstanding } = {}): Promise<NaturalImageRoute | undefined> {
+    if (!options.understanding && !message.text.trim() && parseImages(message.images_json).length === 0) return undefined;
     // Explicit #生图 / #改图 retain their established command path. They
     // must never spend an intent-classification request or inherit a model
     // choice from this optional natural-language plugin.
-    if (await this.isImageGenerationCommand(message.text) || await this.options.botApp.isSystemCommand(message.text)) {
+    if (await this.isImageGenerationCommand(message.text) || await this.options.botApp.isSystemCommand(message.text) || await this.options.botApp.isLocallyRoutableRequest?.(this.buildEvent(message))) {
       return undefined;
     }
 
@@ -677,7 +919,8 @@ export class WorkerApp {
       message.group_id,
       message.reply_to,
     );
-    if (!hasTrustedBotMention && !replyIsGeneratedImage) return undefined;
+    const hasPendingAuthorization = Boolean(options.understanding?.continuesPending && this.requestIntents.pending(message.group_id, message.user_id, (message as IngressMessageRow).created_at) && this.imagePendingRequests.get(message.id));
+    if (!hasTrustedBotMention && !replyIsGeneratedImage && !hasPendingAuthorization) return undefined;
 
     const routingEnabled = this.options.botApp.isNaturalImageRoutingEnabled
       ? await this.options.botApp.isNaturalImageRoutingEnabled(message.group_id)
@@ -687,6 +930,7 @@ export class WorkerApp {
     const base: NaturalImageRouteBase = {
       event,
       hasTrustedBotMention,
+      hasPendingAuthorization,
       hasTrustedReply,
       replyIsGeneratedImage,
     };
@@ -695,7 +939,7 @@ export class WorkerApp {
       return { ...base, kind: "chat" };
     }
     const router = this.options.imageIntentRouter;
-    if (!router) {
+    if (!router && !options.understanding) {
       // Natural requests only enter through the intent model. The legacy
       // parser remains available for explicit image commands inside BotApp.
       return { ...base, kind: "chat" };
@@ -710,7 +954,7 @@ export class WorkerApp {
     // A missing or disabled router is a terminal, per-message ordinary-chat
     // decision. Persisting it stops key selection and retries from repeatedly
     // probing settings or falling back to the legacy keyword parser.
-    if (!persisted && !await router.isConfigured()) {
+    if (!persisted && !options.understanding && !await router!.isConfigured()) {
       const unavailable = this.imageIntentRoutes.recordUnavailable({
         sourceRowId: message.id,
         errorCode: "model_not_configured",
@@ -743,14 +987,17 @@ export class WorkerApp {
       return { ...base, kind: "pending" };
     }
 
-    const pending = hasTrustedBotMention ? this.imagePendingRequests.get(message.id) : undefined;
+    const pending = hasTrustedBotMention || hasPendingAuthorization ? this.imagePendingRequests.get(message.id) : undefined;
     const previous = pending ? this.imageIntentRoutes.getBySourceRow(pending.latestSourceRowId) : undefined;
     const previousSources = previous?.materialization?.sourceRowIds ?? (pending ? [pending.latestSourceRowId] : []);
     const pendingEvents = previousSources.map(id => this.imageSourceEvent(id, base)).filter(event => event !== undefined);
     const cancelled = Boolean(pending && /^(?:取消|算了|不用了|不要了|停止|取消生图|取消改图|取消图片请求)[。！!]?$/u.test(
       parseGroupMessage(event.message, this.options.botApp.getBotQq()).text.trim()));
     try {
-      const classified: ImageIntentRoute = cancelled ? { action: "chat", modelId: "host", model: "host" } : await this.backgroundLlmGate(async () => {
+      const classified: ImageIntentRoute = cancelled ? { action: "chat", modelId: "host", model: "host" } : options.understanding ? {
+        action: options.understanding.action as ImageIntentRoute["action"], ...imageDetailsFromUnderstanding(options.understanding),
+        modelId: options.understanding.modelId, model: options.understanding.model,
+      } : await this.backgroundLlmGate(async () => {
         // Claim ownership once more after the semaphore wait.  This closes the
         // crash/replay window where another worker can terminalize an expired
         // route before this worker actually reaches the upstream model.
@@ -762,7 +1009,7 @@ export class WorkerApp {
             : { leaseMs: this.options.imageIntentRouteLeaseMs }),
         });
         if (!ownsLease) throw new ImageIntentRouteLeaseLostError();
-        return router.classify({
+        return router!.classify({
           sanitizedText: imageIntentText(canonicalSegments, this.options.botApp.getBotQq(), message.id).text,
           ...(pending && previous?.action && pendingEvents.length === previousSources.length ? { pending: {
             action: previous.action,
@@ -782,7 +1029,8 @@ export class WorkerApp {
       // A continuation without a live request must not turn a short fragment into a new image request.
       const staleContinuation = classified.continuesPending === true && !continuation;
       const materialization: ImageIntentMaterialization = {
-        sourceRowIds: continuation ? [...previousSources.slice(0, 1), ...previousSources.slice(1).slice(-6), message.id] : [message.id],
+        sourceRowIds: continuation ? [...previousSources.slice(0, 1), ...previousSources.slice(1).slice(-6), message.id] :
+          options.understanding ? [...new Set([...options.understanding.sourceRowIds.filter(id => id !== message.id && this.imageSourceEvent(id, base)), message.id])].sort((a, b) => a - b).slice(-8) : [message.id],
         missingFields: classified.missingFields ?? [],
         ...(continuation ? { pendingSourceRowId: continuation.sourceRowId, target: previous?.materialization?.target } : {}),
       };
@@ -1225,6 +1473,7 @@ async function buildBotApp(
   botApp: BotApplication;
   groupConfigService: GroupConfigService;
   imageIntentRouter: ImageIntentRouter;
+  requestUnderstandingRouter: RequestUnderstandingRouter;
 }> {
   const dataDir = config.dataDir;
   setModelTelemetryStore(new ModelTelemetryStore(sharedDb));
@@ -1247,6 +1496,7 @@ async function buildBotApp(
     v3State,
   );
   await systemSettingsStore.syncShadowFromAuthoritative();
+  await systemSettingsStore.ensureRequestIntentDefaults();
   const runtimeReplyAiService = new ConfiguredAiService(
     replyAiService,
     systemSettingsStore,
@@ -1268,6 +1518,24 @@ async function buildBotApp(
     true,
   );
   const imageIntentRouter = new ImageIntentRouterPlugin(imageIntentAiService);
+  const requestUnderstandingRouter: RequestUnderstandingRouter = {
+    isEnabled: async () => (await systemSettingsStore.getInternal()).imageIntentRouting?.enabled !== false,
+    isConfigured: () => imageIntentAiService.isRequestIntentConfigured(),
+    classify: (input, signal) => imageIntentAiService.classifyRequest(input, signal),
+  };
+  const intentSettings = await systemSettingsStore.getInternal();
+  const intentRouting = normalizeImageIntentRouting(intentSettings.imageIntentRouting);
+  const healthHistory = new ModelHealthHistoryStore(config.modelHealthHistoryPath, v3State);
+  const readiness = intentRouting.enabled ? await Promise.all([...new Set([intentSettings.selectedModelIds.image_intent, ...(intentRouting.fallbackModelIds ?? [])])].filter((id): id is string => Boolean(id)).slice(0, 2).map(async id => {
+    const model = intentSettings.models.find(item => item.id === id && item.enabled && item.hasApiKey && item.capabilities?.toolCalling && item.apiProtocol !== "anthropic");
+    if (!model || capabilityPolicy?.isProviderFeatureEnabled("openai", "chat") === false) return { modelId: id, ok: false, detail: "缺少可用的工具调用模型配置或提供方已关闭" };
+    const status = await withModelOperation("probe", undefined, () => probeImageIntentModel(model, { ...intentRouting, timeoutMs: Math.min(4000, intentRouting.timeoutMs), requestProfile: id === intentSettings.selectedModelIds.image_intent ? intentRouting.requestProfile : "openai" }), id);
+    const detail = status.ok ? "请求判别原生工具调用正常" : `请求判别检测失败：${status.failureKind ?? "unavailable"}`;
+    await healthHistory.record({ ...status, detail, id, purpose: "image_intent", name: model.name, shortName: model.shortName, selected: id === intentSettings.selectedModelIds.image_intent, source: "runtime" });
+    return { modelId: id, ok: status.ok, detail, latencyMs: status.latencyMs };
+  })) : [];
+  v3State?.saveDocument("request-intent-readiness", "current", { enabled: intentRouting.enabled, checkedAt: Date.now(), models: readiness });
+  logInfo("Request understanding readiness.", { configured: await requestUnderstandingRouter.isConfigured(), models: readiness });
   const htmlPreviewFallbackAiService = new ConfiguredAiService(
     replyAiService,
     systemSettingsStore,
@@ -1400,7 +1668,7 @@ async function buildBotApp(
   const chatRanking = new ChatRankingService(new DailyReportStore(config.dailyReportStorePath, v3State), path.join(dataDir, "group-statistics"), v3State);
   await chatRanking.cleanup();
   botApp.setChatRankingService(chatRanking);
-  return { botApp, groupConfigService, imageIntentRouter };
+  return { botApp, groupConfigService, imageIntentRouter, requestUnderstandingRouter };
 }
 
 function parseVerifiedMentionUserIds(value: string | undefined): string[] {
@@ -1465,6 +1733,7 @@ export async function main(): Promise<void> {
         },
         stateEncryptionKey: config.stateEncryptionKey,
         imageIntentRouter: builtBot.imageIntentRouter,
+        requestUnderstandingRouter: builtBot.requestUnderstandingRouter,
       },
     );
     // Wire the semaphore+breaker gate into the bot's LLM call path.

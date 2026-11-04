@@ -35,6 +35,7 @@ import type {
  */
 export class WorkerTransport implements MessageTransport {
   private readonly routeStorage = new AsyncLocalStorage<ConversationRoute>();
+  private readonly requestStorage = new AsyncLocalStorage<number>();
   private readonly batchStorage = new AsyncLocalStorage<{ batchId: string; delayBeforeMs: number }>();
   private conversationRoute?: ConversationRoute;
 
@@ -46,6 +47,17 @@ export class WorkerTransport implements MessageTransport {
   /** Sets the route used by the next outbox send in the current worker task. */
   setConversationContext(route?: ConversationRoute): void {
     this.conversationRoute = route;
+  }
+
+  runWithRequestContext<T>(sourceRowId: number, task: () => Promise<T>): Promise<T> {
+    return this.requestStorage.run(sourceRowId, task);
+  }
+
+  private enqueueOutbox(...args: Parameters<SharedDb["enqueueOutbox"]>): number {
+    const id = this.db.enqueueOutbox(...args);
+    const source = this.requestStorage.getStore();
+    if (source !== undefined) this.db.db.prepare("UPDATE outbox SET request_source_row_id=? WHERE id=?").run(source, id);
+    return id;
   }
 
   /** Keeps route metadata scoped to one async send chain under worker concurrency. */
@@ -87,7 +99,7 @@ export class WorkerTransport implements MessageTransport {
     if (route && hasUnsafeReplyArtifacts(text, input?.text)) {
       throw new ConversationReplyEnvelopeError();
     }
-    const id = this.db.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext(), undefined, undefined, undefined, this.batchStorage.getStore());
+    const id = this.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext(), undefined, undefined, undefined, this.batchStorage.getStore());
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };
   }
@@ -112,13 +124,13 @@ export class WorkerTransport implements MessageTransport {
   async sendMemeGroupImage(groupId: string, assetId: string, afterDeliveryId?: string): Promise<MessageReceipt> {
     const previous = afterDeliveryId ? this.db.db.prepare("SELECT batch_id FROM outbox WHERE delivery_id=? AND group_id=?")
       .get(afterDeliveryId, groupId) as { batch_id: string | null } | undefined : undefined;
-    const id = this.db.enqueueOutbox(groupId, null, assetId, "meme_image", undefined, undefined, undefined, undefined,
+    const id = this.enqueueOutbox(groupId, null, assetId, "meme_image", undefined, undefined, undefined, undefined,
       previous?.batch_id ? { batchId: previous.batch_id, delayBeforeMs: 0 } : undefined);
     return { deliveryId: `outbox:${id}` };
   }
 
   async sendGroupForwardMessage(groupId: string, nodes: ForwardMessageNode[], options?: ForwardAutoRecallOptions): Promise<MessageReceipt> {
-    const id = this.db.enqueueOutbox(
+    const id = this.enqueueOutbox(
       groupId,
       null,
       BT_FORWARD_FALLBACK_TEXT,
@@ -132,7 +144,7 @@ export class WorkerTransport implements MessageTransport {
   }
 
   async sendGroupImage(groupId: string, imageFile: string): Promise<MessageReceipt | undefined> {
-    const id = this.db.enqueueOutbox(groupId, null, imageFile, "image", this.outboxContext());
+    const id = this.enqueueOutbox(groupId, null, imageFile, "image", this.outboxContext());
     logInfo("Worker enqueued image to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };
   }
@@ -157,7 +169,7 @@ export class WorkerTransport implements MessageTransport {
       });
       return { deliveryId: `outbox:${outbox.outboxId}` };
     }
-    const id = this.db.enqueueOutbox(groupId, null, imagePath, "generated_image", this.outboxContext(), undefined, undefined, options?.imagePreviewId);
+    const id = this.enqueueOutbox(groupId, null, imagePath, "generated_image", this.outboxContext(), undefined, undefined, options?.imagePreviewId);
     logInfo("Worker enqueued generated image to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };
   }

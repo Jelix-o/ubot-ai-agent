@@ -114,7 +114,8 @@ export async function probeImageIntentModel(
       imageIntentRouting,
       providerCapabilities: { toolCalling: true },
     });
-    const result = await service.classifyImageIntent({
+    const result = await service.classifyRequest({
+      sourceRowId: 1, candidates: [],
       sanitizedText: "生成一张蓝色圆形图标",
       facts: {
         hasTrustedBotMention: true,
@@ -123,9 +124,10 @@ export async function probeImageIntentModel(
         attachmentCount: 0,
       },
     });
+    if (result.action !== "generate") throw new ImageIntentClassificationError("invalid_response");
     return {
       ok: true,
-      detail: "图片意图判断模型连接正常，已完成一次原生工具调用检测。",
+      detail: "请求判别模型连接正常，已完成一次原生工具调用检测。",
       model: result.model || model.model,
       baseUrl: model.baseUrl,
       checkedAt: new Date().toISOString(),
@@ -135,12 +137,12 @@ export async function probeImageIntentModel(
     };
   } catch (error) {
     const details = getAiProviderFailureDetails(error);
-    const invalidToolResult = error instanceof ImageIntentClassificationError && error.code === "invalid_response";
+    const invalidToolResult = error instanceof ImageIntentClassificationError && error.code === "invalid_response" || error instanceof Error && error.message.startsWith("request_intent_invalid");
     return {
       ok: false,
       detail: invalidToolResult
-        ? "图片意图判断模型未返回有效的原生工具调用结果。"
-        : `图片意图工具调用失败：${imageIntentProbeErrorMessage(error)}`,
+        ? "请求判别模型未返回有效的原生工具调用结果。"
+        : `请求判别工具调用失败：${imageIntentProbeErrorMessage(error)}`,
       model: model.model,
       baseUrl: model.baseUrl,
       checkedAt: new Date().toISOString(),

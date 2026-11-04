@@ -564,6 +564,9 @@ export interface ImageIntentRoutingSettings {
   requestProfile: "openai" | "deepseek";
   timeoutMs: number;
   maxCompletionTokens: number;
+  /** Shared request-understanding budget; legacy image-only clients may omit these. */
+  fallbackModelIds?: string[];
+  totalTimeoutMs?: number;
 }
 
 export interface SystemSettings {

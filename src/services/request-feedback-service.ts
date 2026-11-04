@@ -1,16 +1,19 @@
 import type { OutboxRow } from "../shared/sqlite.js";
 import type { V3StateRepository } from "./v3-state-repository.js";
-type Stage = "queued" | "processing" | "awaiting_delivery" | "completed" | "failed" | "unknown" | "stopped";
+type Stage = "queued" | "processing" | "waiting_user" | "awaiting_delivery" | "completed" | "failed" | "unknown" | "stopped";
 interface TrackedRequest {
     sourceRowId: number;
     groupId: string;
     userId: string;
-    kind: "conversation" | "image";
+    kind: "conversation" | "image" | "task";
+    startedAt?: number;
     createdAt: number;
     progressOutboxId?: number;
     failed?: boolean;
     finishedAt?: number;
     stoppedAt?: number;
+    waitingUntil?: number;
+    settledAt?: number;
 }
 export interface RequestStatus {
     sourceRowId: number;
@@ -21,7 +24,7 @@ export interface RequestStatus {
 }
 const TYPE = "request-feedback";
 const TERMINAL = new Set<Stage>(["completed", "failed", "unknown", "stopped"]);
-const LABELS: Record<Stage, string> = { queued: "排队中", processing: "处理中", awaiting_delivery: "等待发送", completed: "已完成", failed: "未完成", unknown: "结果未确认", stopped: "已停止后续回复" };
+const LABELS: Record<Stage, string> = { queued: "排队中", processing: "处理中", waiting_user: "等待你补充", awaiting_delivery: "等待发送", completed: "已完成", failed: "未完成", unknown: "结果未确认", stopped: "已停止后续回复" };
 export class RequestFeedbackService {
     constructor(private readonly repo: V3StateRepository) { }
     private allowed(item: TrackedRequest): boolean {
@@ -39,12 +42,18 @@ export class RequestFeedbackService {
         const item: TrackedRequest = { sourceRowId, groupId: message.group_id, userId: message.user_id, kind, createdAt: message.created_at };
         if (!this.allowed(item))
             return;
-        this.repo.updateDocument<TrackedRequest>(TYPE, String(sourceRowId), item, current => current, now);
+        this.repo.updateDocument<TrackedRequest>(TYPE, String(sourceRowId), item, current => ({ ...current, kind }), now);
     }
     fail(sourceRowId: number): void { const item = this.repo.getDocument<TrackedRequest | null>(TYPE, String(sourceRowId), null); if (item)
         this.repo.saveDocument(TYPE, String(sourceRowId), { ...item, failed: true, finishedAt: Date.now() }); }
     finish(sourceRowId: number): void { const item = this.repo.getDocument<TrackedRequest | null>(TYPE, String(sourceRowId), null); if (item)
         this.repo.saveDocument(TYPE, String(sourceRowId), { ...item, finishedAt: Date.now() }); }
+    start(sourceRowId: number): void { const item = this.repo.getDocument<TrackedRequest | null>(TYPE, String(sourceRowId), null); if (item)
+        this.repo.saveDocument(TYPE, String(sourceRowId), { ...item, startedAt: Date.now() }); }
+    wait(sourceRowId: number, now = Date.now()): void { const item = this.repo.getDocument<TrackedRequest | null>(TYPE, String(sourceRowId), null); if (item)
+        this.repo.saveDocument(TYPE, String(sourceRowId), { ...item, waitingUntil: now + 120000 }); }
+    settleWaiting(sourceRowId: number): void { const item = this.repo.getDocument<TrackedRequest | null>(TYPE, String(sourceRowId), null); if (item?.waitingUntil)
+        this.repo.saveDocument(TYPE, String(sourceRowId), { ...item, settledAt: Date.now() }); }
     private snapshot(item: TrackedRequest, now: number): RequestStatus | undefined {
         const db = this.repo.sharedDb;
         const source = db.db.prepare("SELECT msg_id FROM messages WHERE id=? AND group_id=? AND user_id=?").get(item.sourceRowId, item.groupId, item.userId) as {
@@ -52,6 +61,8 @@ export class RequestFeedbackService {
         } | undefined;
         if (!source || db.isRetracted(item.groupId, source.msg_id))
             return;
+        if (item.settledAt || item.waitingUntil && now >= item.waitingUntil) return;
+        if (item.waitingUntil) return { sourceRowId: item.sourceRowId, kind: item.kind, stage: "waiting_user", updatedAt: item.finishedAt ?? item.createdAt, elapsedSeconds: Math.max(0, Math.floor((now - item.createdAt) / 1000)) };
         if (item.stoppedAt) return { sourceRowId: item.sourceRowId, kind: item.kind, stage: "stopped", updatedAt: item.stoppedAt, elapsedSeconds: Math.max(0, Math.floor((item.stoppedAt - item.createdAt) / 1000)) };
         let stage: Stage = "queued", updatedAt = item.finishedAt ?? item.createdAt;
         if (item.kind === "image") {
@@ -65,6 +76,21 @@ export class RequestFeedbackService {
             }
             else if (item.finishedAt)
                 return;
+        }
+        else if (item.kind === "task") {
+            const audio = this.repo.listDocuments<{ sourceRowId?: number; status: string; createdAt: number; startedAt?: number; finishedAt?: number }>("audio-job").map(doc => doc.value).find(job => job.sourceRowId === item.sourceRowId);
+            if (audio) {
+                stage = ({ queued: "queued", running: "processing", queued_delivery: "awaiting_delivery", succeeded: "completed", failed: "failed", skipped: "failed", unknown: "unknown" } as Record<string, Stage>)[audio.status] ?? "unknown";
+                updatedAt = audio.finishedAt ?? audio.startedAt ?? audio.createdAt;
+            } else {
+                const rows = db.db.prepare("SELECT status,retry_after,updated_at FROM outbox WHERE group_id=? AND kind<>'request_progress' AND (request_source_row_id=? OR reply_to=?)").all(item.groupId, item.sourceRowId, source.msg_id) as Array<{ status: string; retry_after: number | null; updated_at: number }>;
+                if (rows.some(row => row.status === "outcome_unknown" || row.status === "failed" && row.retry_after === null)) stage = "unknown";
+                else if (rows.length && rows.every(row => row.status === "sent")) stage = "completed";
+                else if (rows.length) stage = "awaiting_delivery";
+                else if (item.finishedAt) stage = item.failed ? "failed" : "completed";
+                else stage = item.startedAt ? "processing" : "queued";
+                updatedAt = Math.max(updatedAt, ...rows.map(row => row.updated_at));
+            }
         }
         else {
             const task = db.db.prepare("SELECT branch_id,source_turn_id,status,updated_at FROM conversation_reply_tasks WHERE source_row_id=? AND group_id=? AND user_id=?").get(item.sourceRowId, item.groupId, item.userId) as {
@@ -140,7 +166,7 @@ export class RequestFeedbackService {
     }
     describe(groupId: string, userId: string, now = Date.now()): string {
         const list = this.list(groupId, userId, now);
-        return list.length ? "你在本群的请求进度：\n" + list.map(r => `${r.kind === "image" ? "图片" : "对话"}｜${LABELS[r.stage]}｜${TERMINAL.has(r.stage) ? "用时" : "已等"} ${r.elapsedSeconds} 秒`).join("\n") + "\n已完成结果只展示最近十分钟；不会重新执行请求。" : "你在本群没有进行中的请求或最近十分钟的完成记录。";
+        return list.length ? "你在本群的请求进度：\n" + list.map(r => `${r.kind === "image" ? "图片" : r.kind === "task" ? "任务" : "对话"}｜${LABELS[r.stage]}｜${TERMINAL.has(r.stage) ? "用时" : "已等"} ${r.elapsedSeconds} 秒`).join("\n") + "\n已完成结果只展示最近十分钟；不会重新执行请求。" : "你在本群没有进行中的请求或最近十分钟的完成记录。";
     }
     enqueueQuery(groupId: string, userId: string, now = Date.now()): void {
         if (!/^\d+$/.test(userId) || !this.allowed({ groupId, userId, sourceRowId: 0, kind: "conversation", createdAt: now }))
@@ -156,10 +182,10 @@ export class RequestFeedbackService {
                     this.repo.deleteDocument(TYPE, doc.key);
                     continue;
                 }
-                if (item.progressOutboxId || now - item.createdAt < 8000 || !this.allowed(item))
+                if (item.progressOutboxId || now - item.createdAt < 30000 || !this.allowed(item))
                     continue;
                 const status = this.snapshot(item, now);
-                if (!status || TERMINAL.has(status.stage))
+                if (!status || TERMINAL.has(status.stage) || status.stage === "awaiting_delivery" || status.stage === "waiting_user")
                     continue;
                 const outboxId = this.repo.sharedDb.enqueueOutbox(item.groupId, null, JSON.stringify({ sourceRowId: item.sourceRowId, expiresAt: now + 30000 }), "request_progress");
                 this.repo.saveDocument(TYPE, doc.key, { ...item, progressOutboxId: outboxId }, now);
@@ -185,14 +211,13 @@ export class RequestFeedbackService {
         if (!item || item.groupId !== row.group_id || item.progressOutboxId !== row.id || !this.allowed(item))
             throw new Error("request_progress_unavailable");
         const state = this.snapshot(item, now);
-        if (!state || TERMINAL.has(state.stage))
+        if (!state || TERMINAL.has(state.stage) || state.stage === "awaiting_delivery" || state.stage === "waiting_user")
             throw new Error("request_progress_finished");
         if (item.kind === "conversation") {
             const sent = this.repo.sharedDb.db.prepare("SELECT 1 FROM outbox o JOIN conversation_reply_tasks t ON o.branch_id=t.branch_id AND o.source_turn_id=t.source_turn_id WHERE t.source_row_id=? AND o.kind<>'request_progress' AND o.status IN ('sent','sending') LIMIT 1").get(item.sourceRowId);
             if (sent)
                 throw new Error("request_progress_finished");
         }
-        if(state.stage==="awaiting_delivery")return "结果已就绪，正在等待发送。";
         return state.stage === "queued" ? "还在排队，轮到你就处理。" : "还在处理这条，完成后直接回你。";
     }
 }

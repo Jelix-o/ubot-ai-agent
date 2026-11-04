@@ -14,6 +14,7 @@ export interface AudioJob {
   createdAt: number; status: AudioStatus; startedAt?: number; finishedAt?: number; day?: string;
   reservedSeconds?: number; chargedSeconds?: number; captionOutboxId?: number; outboxId?: number;
   captionAlreadySent?: boolean; progressOutboxId?: number; errorCode?: string;
+  sourceRowId?: number;
 }
 interface AudioLock { jobId: string; expiresAt: number }
 export const audioDay = (now: number) => new Date(now + 8*3600_000).toISOString().slice(0,10);
@@ -41,7 +42,8 @@ export class AudioGenerationService {
       if (jobs.filter(j => j.status === "queued").length >= 4) throw new Error("audio_queue_full");
       if (args.kind === "song" && jobs.some(j => j.kind === "song" && j.status !== "skipped" && (j.groupId === args.groupId && now-j.createdAt < 600_000 || j.userId === args.userId && now-j.createdAt < 300_000))) throw new Error("audio_cooldown");
       if (args.automatic && (isInteractionQuietHour(now) || !this.settings.get().automaticVoiceEnabled || jobs.some(j => j.groupId === args.groupId && j.kind === "speech" && now-j.createdAt < 300_000))) throw new Error("audio_cooldown");
-      const job: AudioJob = { id, groupId: args.groupId, userId: args.userId, kind: args.kind, text, automatic: args.automatic === true, createdAt: now, status: "queued", captionOutboxId: args.captionOutboxId, captionAlreadySent: args.captionAlreadySent };
+      const source = args.sourceKey ? this.repo.sharedDb.db.prepare("SELECT id FROM messages WHERE group_id=? AND user_id=? AND msg_id=? AND is_bot_msg=0").get(args.groupId, args.userId, args.sourceKey) as { id: number } | undefined : undefined;
+      const job: AudioJob = { id, groupId: args.groupId, userId: args.userId, kind: args.kind, text, automatic: args.automatic === true, createdAt: now, status: "queued", captionOutboxId: args.captionOutboxId, captionAlreadySent: args.captionAlreadySent, ...(source ? { sourceRowId: source.id } : {}) };
       this.save(job); return job;
     });
   }
@@ -100,11 +102,11 @@ export class AudioGenerationService {
       const progress = setTimeout(() => {
         this.repo.runAtomically(() => {
           const current = this.job(job.id);
-          if (!current || current.status !== "running" || current.automatic || current.progressOutboxId) return;
+          if (!current || current.status !== "running" || current.automatic || current.progressOutboxId || current.sourceRowId && this.repo.getDocument("request-feedback", String(current.sourceRowId), null)) return;
           try { this.allowed(current.groupId,current.userId,current.kind); } catch { return; }
           current.progressOutboxId = this.notice(job,job.kind === "song" ? "正在准备原创短歌，完成后会发字幕和音频。" : "语音还在准备，完成后会发来。","audio_progress"); this.save(current);
         });
-      }, 5000); progress.unref();
+      }, Math.max(0, 30000 - (this.now() - job.createdAt))); progress.unref();
       try {
         this.allowed(job.groupId,job.userId,job.kind);
         const audio = await this.provider.generate(this.settings.internal().apiKey!,job.kind,job.text!,this.controller.signal);

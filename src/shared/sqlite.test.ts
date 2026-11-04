@@ -268,6 +268,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 29, name: "add-message-execution-leases" },
       { version: 30, name: "add-image-generation-confirmations" },
       { version: 31, name: "add-natural-image-followups" },
+      { version: 32, name: "add-request-understanding" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -293,7 +294,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    Array.from({ length: 31 }, (_, i) => i + 1),
+    Array.from({ length: 32 }, (_, i) => i + 1),
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -1141,7 +1142,7 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   old.close();
   const upgraded = new SharedDb(dbPath);
   assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
-  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 31);
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 32);
   const columns = upgraded.db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string; dflt_value: string | null }>;
   assert.equal(columns.find(column => column.name === "publication_state")?.dflt_value, "'published'");
   const now = Date.now();

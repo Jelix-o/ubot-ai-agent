@@ -75,6 +75,8 @@ export interface NaturalImageRequestInput {
   promptText?: string;
   /** True only when the original platform event contained a real @bot segment. */
   hasTrustedBotMention: boolean;
+  /** Host-validated continuation of this member's live, explicitly addressed request. */
+  hasPendingAuthorization?: boolean;
   /** True only when the original platform event contained the matching reply segment. */
   hasTrustedReply: boolean;
   /** True only when replyMessageId belongs to a live generated-image receipt in this group. */
@@ -101,14 +103,15 @@ export function parseNaturalImageRequestForIntent(
   const hasTrustedReply = Boolean(input.message.replyMessageId && input.hasTrustedReply);
   const hasGeneratedReply = hasTrustedReply && input.replyIsGeneratedImage;
   const hasReference = hasAttachment || hasTrustedReply;
-  const isAuthorized = input.hasTrustedBotMention || hasGeneratedReply;
+  const canCreate = input.hasTrustedBotMention || input.hasPendingAuthorization === true;
+  const isAuthorized = canCreate || hasGeneratedReply;
 
   if (action === "chat" || action === "clarification") return undefined;
 
   if (action === "avatar_edit") {
     // A reply to a generated image can authorize its own edit, but cannot
     // authorize selecting somebody's avatar or creating a new image.
-    if (!input.hasTrustedBotMention) return undefined;
+    if (!canCreate) return undefined;
     if (details) {
       if (!details.avatarTargetText || details.missingFields?.includes("target")) return { kind: "clarification", reason: "missing_avatar_target" };
       if (details.missingFields?.includes("instruction")) return { kind: "clarification", reason: "missing_edit_instruction" };
@@ -146,7 +149,7 @@ export function parseNaturalImageRequestForIntent(
   }
 
   if (action === "generate") {
-    if (!input.hasTrustedBotMention) return undefined;
+    if (!canCreate) return undefined;
     if (details?.missingFields?.includes("instruction")) return { kind: "clarification", reason: "missing_prompt" };
     // Preserve the raw user wording for arbitrary requests, while removing
     // only a deterministic generation lead when it is present. The routing

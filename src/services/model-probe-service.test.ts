@@ -5,8 +5,8 @@ import { AiService, ImageIntentClassificationError } from "./ai-service.js";
 import { probeSystemModel } from "./model-probe-service.js";
 
 type Health = Awaited<ReturnType<AiService["checkHealth"]>>;
-type ImageIntentInput = Parameters<AiService["classifyImageIntent"]>[0];
-type ImageIntentResult = Awaited<ReturnType<AiService["classifyImageIntent"]>>;
+type ImageIntentInput = Parameters<AiService["classifyRequest"]>[0];
+type ImageIntentResult = Awaited<ReturnType<AiService["classifyRequest"]>>;
 
 async function withStubbedHealth(run: () => Promise<void>, health: Health | (() => Promise<Health>)): Promise<void> {
   const original = AiService.prototype.checkHealth;
@@ -22,12 +22,12 @@ async function withStubbedImageIntent(
   run: () => Promise<void>,
   classify: (input: ImageIntentInput) => Promise<ImageIntentResult>,
 ): Promise<void> {
-  const original = AiService.prototype.classifyImageIntent;
-  AiService.prototype.classifyImageIntent = classify;
+  const original = AiService.prototype.classifyRequest;
+  AiService.prototype.classifyRequest = classify;
   try {
     await run();
   } finally {
-    AiService.prototype.classifyImageIntent = original;
+    AiService.prototype.classifyRequest = original;
   }
 }
 
@@ -157,10 +157,11 @@ test("image intent probe verifies a forced native tool call", async () => {
     assert.equal(status.model, "router-model-v2");
   }, async input => {
     received = input;
-    return { action: "generate", model: "router-model-v2" };
+    return { action: "generate", relation: "new", sourceRowIds: [1], missingFields: [], modelId: "router", model: "router-model-v2" };
   });
 
   assert.deepEqual(received, {
+    sourceRowId: 1, candidates: [],
     sanitizedText: "生成一张蓝色圆形图标",
     facts: {
       hasTrustedBotMention: true,

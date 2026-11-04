@@ -2,6 +2,7 @@ import { validateImageIntentDetails, type ImageIntentDetails } from "./image-int
 import { parseMemeReply } from "./meme-reply-protocol.js";
 import { cleanReplyHistory } from "./reply-artifacts.js";
 import { normalizeImageIntentRouting } from "./image-intent-settings.js";
+import { REQUEST_UNDERSTANDING_INSTRUCTION, requestUnderstandingToolDefinition, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingInput } from "./request-understanding.js";
 import type { ImageIntentRoutingSettings } from "../types.js";
 import { instrumentCompletions, withModelOperation } from "./model-telemetry.js";
 import OpenAI from "openai";
@@ -50,8 +51,8 @@ const MAX_REPLY_REQUEST_TIMEOUT_MS = 300_000;
 const MAX_KNOWLEDGE_TOOL_ROUNDS = 2;
 const MAX_KNOWLEDGE_TOOL_CALLS = 4;
 const MAX_KNOWLEDGE_TOOL_ARGUMENT_CHARS = 8_000;
-export const IMAGE_INTENT_REQUEST_TIMEOUT_MS = 5_000;
-export const IMAGE_INTENT_MAX_COMPLETION_TOKENS = 128;
+export const IMAGE_INTENT_REQUEST_TIMEOUT_MS = 4_000;
+export const IMAGE_INTENT_MAX_COMPLETION_TOKENS = 512;
 const IMAGE_INTENT_TOOL_NAME = "route_image_intent";
 export const MAX_STATIC_HTML_REQUEST_CHARS = 4_000;
 export const STATIC_HTML_MAX_COMPLETION_TOKENS = 16_384;
@@ -452,6 +453,30 @@ export class AiService {
    * native tool call. This intentionally has no text fallback, no tool
    * execution, and no retry: any ambiguity belongs to the host application.
    */
+  async classifyRequest(input: RequestUnderstandingInput, signal?: AbortSignal): Promise<RequestUnderstanding> {
+    if (!this.imageIntentToolCallingEnabled) throw new ImageIntentClassificationError("unavailable");
+    const routing = this.imageIntentRouting;
+    const { controller, cleanup } = createCancellableTimeout(Math.min(4000, routing.timeoutMs));
+    try {
+      const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      const completion = await withModelOperation("request_intent", undefined, () => this.chatCompletions.create({
+        model: this.model, temperature: 0, max_tokens: 512, stream: false,
+        ...(routing.requestProfile === "deepseek" ? { thinking: { type: "disabled" } } : { reasoning_effort: "none" }),
+        messages: [
+          { role: "system", content: REQUEST_UNDERSTANDING_INSTRUCTION },
+          { role: "user", content: JSON.stringify(input) },
+        ],
+        tools: [{ type: "function", function: requestUnderstandingToolDefinition() }],
+        tool_choice: { type: "function", function: { name: "route_request" } }, parallel_tool_calls: false,
+      } as any, { signal: requestSignal, timeout: Math.min(4000, routing.timeoutMs), maxRetries: 0 }) as Promise<OpenAI.Chat.Completions.ChatCompletion>);
+      assertCompletionAllowed(completion.choices[0]);
+      const message = completion.choices[0]?.message;
+      const calls = message?.tool_calls;
+      if (completion.choices[0]?.finish_reason === "length" || message?.content || calls?.length !== 1 || calls[0]?.type !== "function" || calls[0].function.name !== "route_request") throw new Error("request_intent_invalid_response");
+      return { ...validateRequestUnderstanding(JSON.parse(calls[0].function.arguments), input), modelId: this.model, model: completion.model ?? this.model };
+    } finally { cleanup(); }
+  }
+
   async classifyImageIntent(input: ImageIntentRouterInput): Promise<ImageIntentClassification> {
     if (!this.imageIntentToolCallingEnabled) {
       throw new ImageIntentClassificationError("unavailable");
