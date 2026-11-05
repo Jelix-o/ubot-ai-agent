@@ -1570,6 +1570,127 @@ function unifiedReplay(t: test.TestContext, f: ReturnType<typeof conversationRep
   return { worker, inputs, run };
 }
 
+test("unified replay: a temporary writer conflict preserves the decision and answers a history question once", async t => {
+  const f = conversationReplay(t);
+  const other = openSharedDb(f.dataDir);
+  let locked = false;
+  let unlock: NodeJS.Timeout | undefined;
+  try {
+    const u = unifiedReplay(t, f, () => {
+      other.db.exec("BEGIN IMMEDIATE"); locked = true;
+      f.db.db.exec("PRAGMA busy_timeout=0");
+      unlock = setTimeout(() => { other.db.exec("COMMIT"); locked = false; }, 20);
+      return { action: "chat" };
+    });
+    const request = f.add("讲讲一个虚构王朝之后各国的兴衰，以及最后由谁统一");
+    const repo = (u.worker as any).requestIntents as RequestIntentRepository;
+    const complete = repo.complete.bind(repo);
+    const commits = t.mock.method(repo, "complete", complete);
+    await u.run(request);
+    await u.run(request);
+    assert.equal(commits.mock.callCount(), 2);
+    assert.equal(u.inputs.length, 1);
+    assert.equal(f.ai.calls.length, 1);
+    assert.equal(identityOutbox(f).length, 1);
+    assert.equal(repo.get(request.input.sourceRowId)?.result?.action, "chat");
+    (u.worker as any).metrics.flush();
+    assert.equal(readMetricsSummary(path.join(f.dataDir, "shared", "metrics")).counters.request_intent_save_retry, 1);
+  } finally { clearTimeout(unlock); if (locked) other.db.exec("ROLLBACK"); other.close(); }
+});
+
+test("unified replay: two save conflicts retry the same validated result exactly three times", async t => {
+  const f = conversationReplay(t);
+  const u = unifiedReplay(t, f, () => ({ action: "chat" }));
+  const request = f.add("解释一个虚构历史时期");
+  const repo = (u.worker as any).requestIntents as RequestIntentRepository;
+  const complete = repo.complete.bind(repo);
+  const results: RequestUnderstanding[] = [];
+  t.mock.method(repo, "complete", (source: number, token: string, result: RequestUnderstanding) => {
+    results.push(result);
+    if (results.length < 3) throw Object.assign(new Error("database is locked"), { errcode: results.length === 1 ? 517 : 6 });
+    return complete(source, token, result);
+  });
+  await u.run(request);
+  await u.run(request);
+  assert.equal(results.length, 3);
+  assert.ok(results.every(result => result === results[0]));
+  assert.equal(u.inputs.length, 1);
+  assert.equal(f.ai.calls.length, 1);
+  assert.equal(identityOutbox(f).length, 1);
+});
+
+test("unified replay: persistent save contention and restart never reclassify or execute an unknown task", async t => {
+  const f = conversationReplay(t);
+  const u = unifiedReplay(t, f, () => ({ action: "reminder", time: "明天", content: "测试事项" }));
+  const request = f.add("提醒我明天处理测试事项");
+  const repo = (u.worker as any).requestIntents as RequestIntentRepository;
+  const save = t.mock.method(repo, "complete", () => { throw Object.assign(new Error("database is locked"), { errcode: 5 }); });
+  await assert.rejects(u.run(request), /database is locked/);
+  assert.equal(save.mock.callCount(), 3);
+  assert.equal(identityOutbox(f).length, 0);
+  save.mock.restore();
+  const state = repo.get(request.input.sourceRowId);
+  assert.equal(state?.status, "classifying");
+  f.db.db.prepare("UPDATE request_intent_routes SET lease_expires_at=0 WHERE source_row_id=?").run(request.input.sourceRowId);
+  const restarted = unifiedReplay(t, f, () => { throw new Error("must not reclassify"); });
+  await restarted.run(request);
+  await restarted.run(request);
+  assert.equal(u.inputs.length, 1);
+  assert.equal(restarted.inputs.length, 0);
+  assert.equal(repo.get(request.input.sourceRowId)?.errorCode, "result_unknown");
+  assert.equal(f.db.db.prepare("SELECT COUNT(*) AS n FROM v3_scheduled_reminders").get()?.n, 0);
+  assert.equal(identityOutbox(f).length, 1);
+  assert.equal(identityOutbox(f)[0]?.text, "暂时没能处理这条请求，请稍后重发。");
+});
+
+test("unified replay: save retries stop on lease loss and never retry a non-lock error", async t => {
+  for (const scenario of ["lease lost", "non-lock failure"]) await t.test(scenario, async t => {
+    const f = conversationReplay(t);
+    const u = unifiedReplay(t, f, () => ({ action: "generate" }));
+    const request = f.add("画一只戴帽子的猫");
+    const repo = (u.worker as any).requestIntents as RequestIntentRepository;
+    const complete = repo.complete.bind(repo);
+    let count = 0;
+    t.mock.method(repo, "complete", (source: number, token: string, result: RequestUnderstanding) => {
+      count++;
+      if (scenario === "non-lock failure") throw new Error("test disk error");
+      if (count === 1) {
+        f.db.db.prepare("UPDATE request_intent_routes SET lease_expires_at=0 WHERE source_row_id=?").run(source);
+        throw Object.assign(new Error("database is locked"), { errcode: 5 });
+      }
+      return complete(source, token, result);
+    });
+    await assert.rejects(u.run(request), scenario === "lease lost" ? /image_intent_route_pending/ : /test disk error/);
+    assert.equal(count, scenario === "lease lost" ? 2 : 1);
+    assert.equal(u.inputs.length, 1);
+    assert.equal(identityOutbox(f).length, 0);
+    assert.equal(f.db.db.prepare("SELECT COUNT(*) AS n FROM image_requests").get()?.n, 0);
+  });
+});
+
+test("unified replay: a persisted task runs once across save retry, duplicate delivery and worker restart", async t => {
+  const f = conversationReplay(t);
+  const u = unifiedReplay(t, f, () => ({ action: "reminder", time: "明天", content: "测试事项" }));
+  const request = f.add("提醒我明天处理测试事项");
+  const execute = t.mock.method(f.bot, "handleUnderstoodAction", async () => undefined);
+  const repo = (u.worker as any).requestIntents as RequestIntentRepository;
+  const complete = repo.complete.bind(repo);
+  let attempts = 0;
+  t.mock.method(repo, "complete", (source: number, token: string, result: RequestUnderstanding) => {
+    if (++attempts === 1) throw Object.assign(new Error("database is locked"), { errcode: 5 });
+    return complete(source, token, result);
+  });
+  await u.run(request);
+  await u.run(request);
+  const restarted = unifiedReplay(t, f, () => { throw new Error("must not reclassify"); });
+  await restarted.run(request);
+  assert.equal(u.inputs.length, 1);
+  assert.equal(restarted.inputs.length, 0);
+  assert.equal(attempts, 2);
+  assert.equal(execute.mock.callCount(), 1);
+  assert.equal(f.db.db.prepare("SELECT execution_status FROM request_intent_routes WHERE source_row_id=?").get(request.input.sourceRowId)?.execution_status, "completed");
+});
+
 test("unified replay: a quoted long-text summary reaches chat with its ending, even after a saved wrong decision", async t => {
   const f = conversationReplay(t);
   const text = "一篇虚构的长故事。".repeat(100) + "结尾反转：所有铺垫只是为了邀请大家周末一起吃披萨。";
@@ -1787,8 +1908,17 @@ test("unified replay: style and caption invoke generation once and enqueue an ac
   } });
   const request = f.add("用电影反派的口吻做个图，台词：登场要靠实力。黑西装，霓虹雨夜。");
   const u = unifiedReplay(t, f, () => ({ action: "generate" }));
+  const repo = (u.worker as any).requestIntents as RequestIntentRepository;
+  const complete = repo.complete.bind(repo);
+  let saves = 0;
+  t.mock.method(repo, "complete", (source: number, token: string, result: RequestUnderstanding) => {
+    if (++saves === 1) throw Object.assign(new Error("database is locked"), { errcode: 5 });
+    return complete(source, token, result);
+  });
   await u.run(request);
   await u.run(request);
+  assert.equal(saves, 2);
+  assert.equal(u.inputs.length, 1);
   assert.equal(prompts.length, 1);
   assert.match(prompts[0]!, /登场要靠实力/);
   assert.match(prompts[0]!, /霓虹雨夜/);

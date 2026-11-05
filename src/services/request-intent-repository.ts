@@ -39,19 +39,24 @@ export class RequestIntentRepository {
     this.shared.db.prepare("UPDATE request_intent_routes SET status='unavailable',error_code='result_unknown',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE source_row_id=? AND status='classifying' AND lease_expires_at<=?").run(now, sourceRowId, now);
     return { state: this.get(sourceRowId)?.status === "classifying" ? "busy" : "resolved" };
   }
-  complete(sourceRowId: number, token: string, result: RequestUnderstanding, now = Date.now()): boolean {
-    this.shared.db.exec("SAVEPOINT request_intent_complete");
+  complete(sourceRowId: number, token: string, result: RequestUnderstanding, now?: number): boolean {
+    // Acquire the writer before reading evidence: a deferred read snapshot cannot
+    // be upgraded after ingress or another worker commits to the WAL.
+    this.shared.db.exec("BEGIN IMMEDIATE");
     try {
+      // busy_timeout may have waited for another writer. Never use the time from
+      // before that wait to authorize a lease that has since expired.
+      const completedAt = now ?? Date.now();
       const source = this.shared.db.prepare("SELECT text FROM messages WHERE id=?").get(sourceRowId) as { text: string } | undefined;
       if (!source?.text.trim() && result.sourceRowIds.some(id => id !== sourceRowId && this.shared.db.prepare("SELECT 1 FROM request_intent_evidence WHERE evidence_row_id=? AND source_row_id<>?").get(id, sourceRowId))) {
         result = { action: "chat", relation: "new", sourceRowIds: [sourceRowId], missingFields: [], modelId: "host", model: "host" };
       }
       const changed = Number(this.shared.db.prepare("UPDATE request_intent_routes SET status='classified',result_json=?,lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE source_row_id=? AND status='classifying' AND lease_token=? AND lease_expires_at>?")
-        .run(JSON.stringify(result), now, sourceRowId, token, now).changes) === 1;
+        .run(JSON.stringify(result), completedAt, sourceRowId, token, completedAt).changes) === 1;
       if (changed && !result.missingFields.length && result.action !== "clarify") this.consume(sourceRowId, result.sourceRowIds);
-      this.shared.db.exec("RELEASE request_intent_complete");
+      this.shared.db.exec("COMMIT");
       return changed;
-    } catch (error) { this.shared.db.exec("ROLLBACK TO request_intent_complete; RELEASE request_intent_complete"); throw error; }
+    } catch (error) { this.shared.db.exec("ROLLBACK"); throw error; }
   }
   fail(sourceRowId: number, token: string, now = Date.now()): void {
     this.shared.db.prepare("UPDATE request_intent_routes SET status='unavailable',error_code='unavailable',lease_token=NULL,lease_expires_at=NULL,updated_at=? WHERE source_row_id=? AND status='classifying' AND lease_token=? AND lease_expires_at>?").run(now, sourceRowId, token, now);

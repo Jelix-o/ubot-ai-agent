@@ -14,6 +14,7 @@ import { ModelTelemetryStore, setModelTelemetryStore, withModelOperation } from 
 import { BtSearchService } from "./services/bt-search-service.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { logError, logInfo, logWarn } from "./logger.js";
 import { openSharedDb, type SharedDb } from "./shared/sqlite.js";
 import { Metrics } from "./shared/metrics.js";
@@ -723,7 +724,10 @@ export class WorkerApp {
     if (saved?.result) {
       const { modelId, model, fallbackUsed, unavailable, ...decision } = saved.result;
       try { return retainQuotedSummaryContext({ ...validateRequestUnderstanding(decision, input), modelId, model, fallbackUsed, unavailable }, input); }
-      catch { return { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true }; }
+      catch {
+        logWarn("Request intent failed.", { sourceRowId: message.id, stage: "result_validation", errorCode: "request_intent_saved_result_invalid" });
+        return { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
+      }
     }
     let result: RequestUnderstanding;
     if (!message.text.trim() && !input.facts.attachmentCount && !input.candidates.length) {
@@ -733,21 +737,27 @@ export class WorkerApp {
     } else if (isNonExecutingRequest(message.text)) {
       result = { action: "chat", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host" };
     } else if (claim.state === "claimed") {
+      let stage = "model_call";
       try {
         const budget = AbortSignal.timeout(8000);
         const release = await this.requestIntentSemaphore.acquire(budget);
         try { result = await this.options.requestUnderstandingRouter!.classify(input, budget); }
         finally { release(); }
+        stage = "result_validation";
         const { modelId, model, fallbackUsed, unavailable, ...decision } = result;
         result = { ...validateRequestUnderstanding(decision, input), modelId, model, ...(fallbackUsed ? { fallbackUsed } : {}) };
         if (!modelId || !model) throw new Error("request_intent_invalid_model");
-      } catch {
+      } catch (error) {
+        const invalidResult = error instanceof Error && /^request_intent_invalid_[a-z_]+$/u.test(error.message);
+        const errorCode = invalidResult ? error.message : stage === "model_call" ? "request_intent_model_failed" : "request_intent_invalid_result";
+        logWarn("Request intent failed.", { sourceRowId: message.id, stage: invalidResult ? "result_validation" : stage, errorCode });
         const nonTask = /怎么|如何|教程|不要|不用|取消|他说|她说|说过|支持|会不会/u.test(message.text);
         const action = clearLocalImageAction(message.text) ?? (!message.text.trim() && rows.some(row => parseImages(row.images_json).length) ? "vision" : !nonTask && /提醒|搜索|查一下|查找|做个|生成|改图|朗读|唱首|总结|排行/u.test(message.text) ? "clarify" : "chat");
         result = { action, relation: message.text.trim() ? "new" : "follow_up", sourceRowIds: message.text.trim() ? [message.id] : [...rows.slice(-11).map(row => row.id), message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
         this.metrics.inc("request_intent_unavailable");
       }
     } else {
+      logWarn("Request intent failed.", { sourceRowId: message.id, stage: "lease", errorCode: saved?.errorCode ?? this.requestIntents.get(message.id)?.errorCode ?? "result_unknown" });
       result = { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true };
     }
     const explicitOpinions = explicitSelfFollowUp ? opinionContextCandidates(input) : [];
@@ -775,13 +785,37 @@ export class WorkerApp {
       } else if (result.action === "edit") result.missingFields = [...new Set([...result.missingFields, "reference" as const])];
     }
     if (claim.state === "claimed") {
-      if (!this.requestIntents.complete(message.id, claim.token, result)) throw new ImageIntentRoutePendingError();
+      if (!await this.persistRequestUnderstanding(message.id, claim.token, result)) throw new ImageIntentRoutePendingError();
     }
     logInfo("Request understood.", { sourceRowId: message.id, action: result.action, modelId: result.modelId, fallbackUsed: result.fallbackUsed === true, unavailable: result.unavailable === true,
       candidateRowIds: offered.map(row => row.id), selectedRowIds: result.sourceRowIds, opinionAnchorRowId: result.opinionAnchorRowId,
       mediaSourceRowIds: requestMediaSourceRowIds(result), evidenceCount: result.sourceRowIds.length });
     this.metrics.inc(`request_intent_${result.action}`);
     return this.requestIntents.get(message.id)?.result ?? result;
+  }
+
+  private async persistRequestUnderstanding(sourceRowId: number, token: string, result: RequestUnderstanding): Promise<boolean> {
+    const retryDelays = [50, 150];
+    for (let attempt = 1; ; attempt++) {
+      try {
+        if (!this.requestIntents.complete(sourceRowId, token, result)) {
+          this.metrics.inc("request_intent_lease_lost");
+          logWarn("Request intent failed.", { sourceRowId, stage: "lease", errorCode: "request_intent_lease_lost", attempt });
+          return false;
+        }
+      } catch (error) {
+        const sqliteCode = error && typeof error === "object" && "errcode" in error && typeof error.errcode === "number" ? error.errcode : undefined;
+        const locked = sqliteCode !== undefined && [5, 6].includes(sqliteCode & 0xff);
+        const retry = locked && attempt <= retryDelays.length;
+        this.metrics.inc(retry ? "request_intent_save_retry" : "request_intent_save_failed");
+        logWarn("Request intent failed.", { sourceRowId, stage: "database_save", errorCode: locked ? "request_intent_sqlite_busy" : "request_intent_save_failed", sqliteCode, attempt, retry });
+        if (!retry) throw error;
+        await delay(retryDelays[attempt - 1]);
+        continue;
+      }
+      logInfo("Request intent saved.", { sourceRowId, stage: "database_save", attempt });
+      return true;
+    }
   }
 
   private async handleUnderstoodRequest(message: IngressMessageRow, done: () => Promise<void>, handoff: (key: string) => Promise<void>, currentKey: string): Promise<void> {

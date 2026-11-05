@@ -847,7 +847,7 @@ export class BotApplication {
       await ask(prompts[understanding.missingFields[0]!]); return "waiting";
     }
     switch (understanding.action) {
-      case "clarify": await ask(understanding.opinionAnchorRowId ? "这几组图片一次看不完，告诉我要先看哪一组？" : understanding.unavailable ? "请求判别暂时不可用，这次没有执行任务。请补充要做的具体事情，或稍后再试。" : "你想让我处理刚才哪一部分？可以直接说要看的图或要做的事。"); return understanding.unavailable ? undefined : "waiting";
+      case "clarify": await ask(understanding.opinionAnchorRowId ? "这几组图片一次看不完，告诉我要先看哪一组？" : understanding.unavailable ? "暂时没能处理这条请求，请稍后重发。" : "你想让我处理刚才哪一部分？可以直接说要看的图或要做的事。"); return understanding.unavailable ? undefined : "waiting";
       case "request_status":
         if (group.interactionAssistanceEnabled && group.groupExperienceEnabled && this.requestFeedbackService) this.requestFeedbackService.enqueueQuery(group.groupId, String(event.user_id));
         else await ask("本群暂未开启请求进度查询。");
