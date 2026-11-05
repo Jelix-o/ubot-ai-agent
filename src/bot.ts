@@ -171,7 +171,7 @@ import type {
   SystemCommandConfig,
   TokenCostControlSettings,
 } from "./types.js";
-import { parseChatSummaryRequest } from "./utils/chat-summary-request.js";
+import { hasInlineSummaryContent, isBareChatSummaryRequest, isQuotedContentSummaryRequest, parseChatSummaryRequest } from "./utils/chat-summary-request.js";
 import { naturalChatRankingPeriod, parseChatRankingPeriod, type ChatRankingPeriod } from "./utils/chat-ranking-request.js";
 import type { ChatRankingService } from "./services/chat-ranking-service.js";
 import { parseGroupMessage } from "./utils/message-parser.js";
@@ -1758,6 +1758,8 @@ export class BotApplication {
     }
     const facts = this.assistanceFacts(event);
     if (isSystemCommandText(text, commands) || !facts.hasAtBot || facts.images.length > 0) return undefined;
+    if (hasInlineSummaryContent(facts.text) || isQuotedContentSummaryRequest(facts.text, Boolean(facts.replyMessageId))) return undefined;
+    if (!facts.replyMessageId && isBareChatSummaryRequest(facts.text)) return { request: null, now };
     // A time word and “分析” alone also occur in ordinary work/vision requests.
     // Only group-chat context or a short unambiguous summary request owns this lane.
     if (!/(?:群聊|群里|本群|聊天|消息|聊了|说了|上面|上边|前面|日报|每日总结|今日总结)/u.test(text) &&
@@ -2101,8 +2103,8 @@ export class BotApplication {
           const route = this.conversationContextRouter?.resolve({ sourceRowId: source.id, groupId: group.groupId, userId: source.user_id, sourceMessageId: source.msg_id, text: source.text });
           const receipts = await this.sendTextMessages(group.groupId, messages, [], route);
           this.groupInteractionService!.recordAmbientOutcome(latest, "queued");
-          await this.persistAssistantContext(route, parsed.text, receipts);
-          await this.maybeSendNormalChatMeme({ groupConfig: latest, userInput: source.text, tagId: reply.memeTagId ?? parsed.memeTagId, afterDeliveryId: receipts.at(-1)?.deliveryId });
+          const assistantTurnId = await this.persistAssistantContext(route, parsed.text, receipts);
+          await this.maybeSendNormalChatMeme({ groupConfig: latest, userInput: source.text, tagId: reply.memeTagId ?? parsed.memeTagId, afterDeliveryId: receipts.at(-1)?.deliveryId, conversationRoute: route, assistantTurnId });
         });
       } catch (error) { this.groupInteractionService.recordAmbientOutcome(group, "evaluation_failed"); logWarn("Ambient reply skipped.", { groupId: group.groupId, errorType: error instanceof Error ? error.name : typeof error }); }
       finally { this.automaticReplyControllers.delete(group.groupId); }
@@ -5016,7 +5018,7 @@ export class BotApplication {
       const deliveredReplyText = outgoingMessages.map((message, index) => index === 0 && outgoingMentionUserIds.length
         ? prefixAtMentions(outgoingMentionUserIds, message) : message).join("\n\n");
       const compactReply = (text: string) => text.replace(/[\p{P}\p{Z}\s]/gu, "");
-      await this.persistAssistantContext(conversationRoute, deliveredReplyText, receipts,
+      const assistantTurnId = await this.persistAssistantContext(conversationRoute, deliveredReplyText, receipts,
         stateSources && conversationRoute ? { value: compactReply(outgoingMessages.join("")) === compactReply(replyText) ? reply.conversationUpdate : undefined,
           route: conversationRoute, sources: stateSources, expectedRevision: conversationState.revision } : undefined);
       let audioQueued = false;
@@ -5038,6 +5040,8 @@ export class BotApplication {
           userInput: normalizedUserInput,
           tagId: reply.memeTagId ?? parsedMeme.memeTagId,
           afterDeliveryId: receipts.at(-1)?.deliveryId,
+          conversationRoute,
+          assistantTurnId,
         });
       }
 
@@ -5997,6 +6001,8 @@ export class BotApplication {
     userInput: string;
     tagId?: string;
     afterDeliveryId?: string;
+    conversationRoute?: ConversationRoute;
+    assistantTurnId?: number;
   }): Promise<void> {
     if (!this.memeLibraryService || !allowsEntertainmentMeme(args.userInput)) {
       return;
@@ -6017,10 +6023,22 @@ export class BotApplication {
         });
         return;
       }
+      let receipt: void | MessageReceipt;
       if (selection.assetId && this.transport.sendMemeGroupImage) {
-        await this.transport.sendMemeGroupImage(args.groupConfig.groupId, selection.assetId, args.afterDeliveryId);
+        receipt = await this.transport.sendMemeGroupImage(args.groupConfig.groupId, selection.assetId, args.afterDeliveryId);
         this.liveChatService.recordBotActivity(args.groupConfig.groupId);
-      } else await this.sendNormalChatMeme(args.groupConfig.groupId, selection.imageFile);
+      } else receipt = await this.sendNormalChatMeme(args.groupConfig.groupId, selection.imageFile);
+      if (receipt && args.conversationRoute && args.assistantTurnId !== undefined) {
+        const contextualTransport = this.transport as MessageTransport & {
+          bindConversationTurn?(receipts: MessageReceipt[], route: ConversationRoute, turnId: number): void;
+        };
+        if (receipt.deliveryId) contextualTransport.bindConversationTurn?.([receipt], args.conversationRoute, args.assistantTurnId);
+        const platformMessageId = receipt.platformMessageId ?? receipt.messageId;
+        if (platformMessageId) this.conversationContextRepository?.bindPlatformMessage({
+          groupId: args.groupConfig.groupId, platformMessageId, topicId: args.conversationRoute.topicId,
+          branchId: args.conversationRoute.branchId, turnId: args.assistantTurnId, direction: "assistant", createdAt: Date.now(),
+        });
+      }
       logInfo("Sent normal chat meme.", {
         groupId: args.groupConfig.groupId,
         reason: result.reason,

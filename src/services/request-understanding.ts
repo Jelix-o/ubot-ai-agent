@@ -1,4 +1,5 @@
 import type { ImageIntentDetails, ImageIntentRouterInput } from "./image-intent-router-plugin.js";
+import { hasInlineSummaryContent, isQuotedContentSummaryRequest } from "../utils/chat-summary-request.js";
 
 export const REQUEST_ACTIONS = ["chat", "vision", "generate", "edit", "avatar_edit", "web_lookup", "knowledge_lookup", "bt_search", "html_preview", "reminder", "chat_summary", "chat_ranking", "speech", "song", "request_status", "clarify"] as const;
 export type RequestAction = typeof REQUEST_ACTIONS[number];
@@ -116,8 +117,20 @@ export function retainExplicitFollowUpContext(result: RequestUnderstanding, inpu
     sourceRowIds, ...(action !== result.action ? { missingFields: [] } : {}) }, mediaIds);
 }
 
+export function retainQuotedSummaryContext(result: RequestUnderstanding, input: RequestUnderstandingInput): RequestUnderstanding {
+  if (["chat_summary", "chat", "vision", "clarify"].includes(result.action) &&
+      (hasInlineSummaryContent(input.sanitizedText) || isQuotedContentSummaryRequest(input.sanitizedText, input.facts.hasTrustedReply))) {
+    const quotes = input.candidates.filter(candidate => candidate.quoted);
+    const mediaIds = quotes.filter(candidate => candidate.attachmentCount > 0).map(candidate => candidate.id);
+    return withMediaSourceRowIds({ ...result, action: mediaIds.length ? "vision" : "chat", relation: input.facts.hasTrustedReply ? "follow_up" : "new",
+      sourceRowIds: [...new Set([...quotes.map(candidate => candidate.id), ...result.sourceRowIds, input.sourceRowId])].slice(0, 12),
+      missingFields: [] }, mediaIds);
+  }
+  return result;
+}
+
 export function retainRequestContext(result: RequestUnderstanding, input: RequestUnderstandingInput): RequestUnderstanding {
-  return retainExplicitFollowUpContext(retainImplicitVisualContext(result, input), input);
+  return retainQuotedSummaryContext(retainExplicitFollowUpContext(retainImplicitVisualContext(result, input), input), input);
 }
 
 export function isNonExecutingRequest(text: string): boolean {
@@ -134,6 +147,7 @@ export const REQUEST_UNDERSTANDING_INSTRUCTION = [
   "‘用某种口吻做个图，台词是……’、‘你能生成一张蓝鲸图片吗’都是 generate，台词和风格是画面要求，不能退成文案聊天。有图也不必然是改图；用户要求另画新图仍是 generate。",
   "能力询问、教程、评价、否定、仅转述别人的要求都选 chat，不创建任务。‘不想聊了’等情绪表达是聊天内容，不是停止任务或生图指令。",
   "当前请求优先。引用是明确锚点；独立问题不续接无关旧图。没有明确引用时，自动图片只选本人最近两分钟最后一条有效图。",
+  "引用消息后说‘总结一下’‘概括上面那段’，是在总结引用内容，选择 chat（引用图片则 vision）；只有明确要求总结本群某个时间段才选 chat_summary。",
   "只@时，结合 candidates 中本人尚未得到回应的前文；图片后发一句心情再@，选 vision 并同时选图片和那句话。有相关文字无图片可选 chat。没有前文则 chat，不发明任务。",
   "‘我上面说的对吗’等明确自指追问必须选 opinionAnchorRowId；动作可以是 chat，但 relation 不能因此丢弃前文。多个观点候选时必须选其中一个，不得编造或遗漏锚点。",
   "围绕观点选图时使用 mediaSourceRowIds：观点前最近图片优先，必要时加入观点后最近一条，最多两条消息。资讯图和表情图都保留来源顺序，不能仅因后一张是表情就丢掉主图。",

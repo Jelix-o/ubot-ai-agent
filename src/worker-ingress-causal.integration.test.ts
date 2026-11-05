@@ -1391,6 +1391,7 @@ interface TestBotOptions {
   imageGeneration?: ConstructorParameters<typeof BotApplication>[38];
   imageLedger?: ConstructorParameters<typeof BotApplication>[44];
   imageArchive?: ConstructorParameters<typeof BotApplication>[42];
+  memeLibraryService?: ConstructorParameters<typeof BotApplication>[37];
 }
 
 function createBot(
@@ -1482,7 +1483,7 @@ function createBot(
     undefined,
     undefined,
     recentGroupEvidenceService,
-    undefined, options.imageGeneration, undefined, undefined,
+    options.memeLibraryService, options.imageGeneration, undefined, undefined,
     options.btSearchService,
     options.imageArchive, undefined, options.imageLedger,
   );
@@ -1506,7 +1507,7 @@ class ConversationReplayAi extends CapturingAiService {
   }
 }
 
-function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"], imagePipeline?: TestBotOptions["imagePipeline"], extra: Pick<TestBotOptions, "imageGeneration" | "imageLedger"> = {}) {
+function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"], imagePipeline?: TestBotOptions["imagePipeline"], extra: Pick<TestBotOptions, "imageGeneration" | "imageLedger" | "memeLibraryService"> = {}) {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "huixian-replay-"));
   const db = openSharedDb(dataDir), repository = new ConversationContextRepository(db);
   const transport = gated ? new GatedWorkerTransport(db) : new WorkerTransport(db);
@@ -1568,6 +1569,89 @@ function unifiedReplay(t: test.TestContext, f: ReturnType<typeof conversationRep
   };
   return { worker, inputs, run };
 }
+
+test("unified replay: a quoted long-text summary reaches chat with its ending, even after a saved wrong decision", async t => {
+  const f = conversationReplay(t);
+  const text = "一篇虚构的长故事。".repeat(100) + "结尾反转：所有铺垫只是为了邀请大家周末一起吃披萨。";
+  const quote = f.add(text, "20002", { passive: true });
+  const u = unifiedReplay(t, f, () => ({ action: "chat_summary", relation: "new", missingFields: ["period"] }));
+  const request = f.add("总结一下", USER_ID, { replyToMessageId: quote.id });
+  await u.run(request);
+  assert.equal(f.ai.calls.length, 1);
+  assert.equal(f.identity().replyContext?.text, text);
+  assert.ok((f.identity().replyContext?.text.length ?? 0) > 500);
+  assert.ok(!identityOutbox(f).some(row => /可以说|想看今天/u.test(row.text)));
+  const saved = f.add("概括上面那段", USER_ID, { replyToMessageId: quote.id });
+  const intents = new RequestIntentRepository(f.db);
+  const claim = intents.claim(saved.input.sourceRowId);
+  assert.ok(claim.state === "claimed");
+  assert.ok(intents.complete(saved.input.sourceRowId, claim.token, { action: "chat_summary", relation: "new", sourceRowIds: [saved.input.sourceRowId], missingFields: [], modelId: "judge", model: "judge" }));
+  await u.run(saved);
+  assert.equal(f.ai.calls.length, 2);
+  assert.equal(f.identity().replyContext?.text, text);
+  await u.run(saved);
+  assert.equal(f.ai.calls.length, 2, "a retry must not send another summary");
+  await u.run(f.add("总结一下：会议决定周五验收，周末发布。"));
+  assert.equal(f.ai.calls.length, 3, "inline content must also avoid group-summary usage");
+  assert.match(f.ai.calls.at(-1)!.userInput, /周五验收/u);
+});
+
+test("unified replay: missing, retracted and cross-group summary quotes ask for the quote", async t => {
+  const f = conversationReplay(t);
+  const gone = f.add("被撤回的正文", "20002", { passive: true });
+  f.db.markRetracted(GROUP_ID, gone.id, Date.now());
+  const elsewhere = f.add("另一个群的正文", "20002", { groupId: "99999", passive: true });
+  const u = unifiedReplay(t, f, () => ({ action: "chat_summary" }));
+  for (const id of ["missing-quote", gone.id, elsewhere.id]) {
+    await u.run(f.add("总结一下", USER_ID, { replyToMessageId: id }));
+    assert.equal(f.ai.calls.length, 0);
+    assert.match(identityOutbox(f).at(-1)?.text ?? "", /引用|读不到|重新/u);
+    assert.doesNotMatch(identityOutbox(f).at(-1)?.text ?? "", /可以说/u);
+  }
+});
+
+test("unified replay: text and accompanying meme quotes share history despite chat/new", async t => {
+  const f = conversationReplay(t, {}, false, undefined, undefined, { memeLibraryService: {
+    async selectBlacklistedAtImage() { return undefined; },
+    async claimNormalChatImage() { return { reason: "sent_candidate", matchedTagIds: [], selection: { imageFile: "reaction.png", assetId: "reaction-asset" } }; },
+  } });
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new" }));
+  const first = f.add("两个人都参加活动但没有交流，是否一定是不感兴趣？");
+  f.ai.replies.push({ text: "不能这样推断，也可能还没找到合适的话题。" });
+  await u.run(first);
+  const parent = f.db.db.prepare("SELECT id,delivery_id,turn_id FROM outbox WHERE kind='text' ORDER BY id DESC LIMIT 1").get() as { id: number; delivery_id: string; turn_id: number };
+  const memeId = (f.db.db.prepare("SELECT id FROM outbox WHERE kind='meme_image' ORDER BY id DESC LIMIT 1").get() as { id: number }).id;
+  f.ack();
+  f.db.ackOutboxDelivery(memeId, `receipt-${memeId}`);
+  assert.equal(f.repository.getMessageContext(GROUP_ID, `receipt-${memeId}`)?.turnId, parent.turn_id);
+  for (const receipt of [`receipt-${parent.id}`, `receipt-${memeId}`]) {
+    await u.run(f.add("那如果换成三个人呢", USER_ID, { replyToMessageId: receipt }));
+    const call = f.ai.calls.at(-1)!;
+    assert.ok(call.history.some(turn => turn.content.includes("参加活动")));
+    assert.ok(call.history.some(turn => turn.content.includes("找到合适的话题")));
+    assert.match(f.repository.getRouteBySourceRowId((f.db.db.prepare("SELECT MAX(id) AS id FROM messages").get() as { id: number }).id)?.routeReason ?? "", /^explicit-reply(?:-fork)?$/u);
+  }
+  assert.equal((f.db.db.prepare("SELECT platform_message_id FROM conversation_turns WHERE id=?").get(parent.turn_id) as { platform_message_id: string }).platform_message_id, `receipt-${parent.id}`);
+});
+
+test("unified replay: legacy unbound meme quotes recover the unique original answer after reopening the repository", async t => {
+  const f = conversationReplay(t);
+  const u = unifiedReplay(t, f, () => ({ action: "chat", relation: "new" }));
+  const first = f.add("去图书馆的两个人都没有借书，能说明没兴趣吗？");
+  await u.run(first);
+  const meme = await f.transport.runWithRequestContext(first.input.sourceRowId, () => f.transport.sendMemeGroupImage(GROUP_ID, "legacy-asset"));
+  const memeId = Number(meme.deliveryId!.split(":")[1]);
+  f.ack();
+  assert.equal(f.db.db.prepare("SELECT 1 FROM conversation_message_context WHERE platform_message_id=?").get(`receipt-${memeId}`), undefined);
+  const restored = new ConversationContextRepository(f.db);
+  assert.equal(restored.getMessageContext(GROUP_ID, `receipt-${memeId}`)?.direction, "assistant");
+  assert.equal(restored.getMessageContext("99999", `receipt-${memeId}`), undefined);
+  await u.run(f.add("那如果换成三个人呢", USER_ID, { replyToMessageId: `receipt-${memeId}` }));
+  assert.ok(f.ai.calls.at(-1)!.history.some(turn => turn.content.includes("图书馆")));
+  f.db.markRetracted(GROUP_ID, `receipt-${memeId}`, Date.now());
+  assert.equal(restored.getMessageContext(GROUP_ID, `receipt-${memeId}`), undefined);
+  assert.equal(restored.orchestration.reference(GROUP_ID, `receipt-${memeId}`), undefined);
+});
 
 test("unified replay: an image, emotion text and bare @ reach vision together without a second resolver", async t => {
   const localized: MessageImageInput[] = [];

@@ -122,9 +122,12 @@ export class WorkerTransport implements MessageTransport {
   }
 
   async sendMemeGroupImage(groupId: string, assetId: string, afterDeliveryId?: string): Promise<MessageReceipt> {
-    const previous = afterDeliveryId ? this.db.db.prepare("SELECT batch_id FROM outbox WHERE delivery_id=? AND group_id=?")
-      .get(afterDeliveryId, groupId) as { batch_id: string | null } | undefined : undefined;
-    const id = this.enqueueOutbox(groupId, null, assetId, "meme_image", undefined, undefined, undefined, undefined,
+    const previous = afterDeliveryId ? this.db.db.prepare("SELECT batch_id,topic_id,branch_id,source_turn_id,turn_id FROM outbox WHERE delivery_id=? AND group_id=? AND kind='text'")
+      .get(afterDeliveryId, groupId) as { batch_id: string | null; topic_id: string | null; branch_id: string | null; source_turn_id: number | null; turn_id: number | null } | undefined : undefined;
+    const context: OutboxContext | undefined = previous?.topic_id && previous.branch_id && previous.turn_id !== null
+      ? { topicId: previous.topic_id, branchId: previous.branch_id, turnId: previous.turn_id, sourceTurnId: previous.source_turn_id ?? undefined }
+      : undefined;
+    const id = this.enqueueOutbox(groupId, null, assetId, "meme_image", context, undefined, undefined, undefined,
       previous?.batch_id ? { batchId: previous.batch_id, delayBeforeMs: 0 } : undefined);
     return { deliveryId: `outbox:${id}` };
   }

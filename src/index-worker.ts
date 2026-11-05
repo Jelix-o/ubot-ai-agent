@@ -1,6 +1,6 @@
 import { RequestFeedbackService } from "./services/request-feedback-service.js";
 import { RequestIntentRepository } from "./services/request-intent-repository.js";
-import { clearLocalImageAction, imageDetailsFromUnderstanding, isExplicitSelfFollowUp, isNonExecutingRequest, opinionContextCandidates, requestMediaSourceRowIds, retainRequestContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
+import { clearLocalImageAction, imageDetailsFromUnderstanding, isExplicitSelfFollowUp, isNonExecutingRequest, opinionContextCandidates, requestMediaSourceRowIds, retainQuotedSummaryContext, retainRequestContext, validateRequestUnderstanding, type RequestUnderstanding, type RequestUnderstandingRouter, type RequestUnderstandingInput } from "./services/request-understanding.js";
 import { ChatRankingService } from "./services/chat-ranking-service.js";
 import { ReminderInteractionService } from "./services/reminder-interaction-service.js";
 import { V3StateRepository } from "./services/v3-state-repository.js";
@@ -722,7 +722,7 @@ export class WorkerApp {
     };
     if (saved?.result) {
       const { modelId, model, fallbackUsed, unavailable, ...decision } = saved.result;
-      try { return { ...validateRequestUnderstanding(decision, input), modelId, model, fallbackUsed, unavailable }; }
+      try { return retainQuotedSummaryContext({ ...validateRequestUnderstanding(decision, input), modelId, model, fallbackUsed, unavailable }, input); }
       catch { return { action: "clarify", relation: "new", sourceRowIds: [message.id], missingFields: [], modelId: "host", model: "host", unavailable: true }; }
     }
     let result: RequestUnderstanding;

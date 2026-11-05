@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseChatSummaryRequest } from "./chat-summary-request.js";
+import { isBareChatSummaryRequest, isQuotedContentSummaryRequest, parseChatSummaryRequest } from "./chat-summary-request.js";
+
+test("quoted content summaries are distinct from explicit group-history windows", () => {
+  for (const text of ["总结一下", "概括上面那段", "总结上面聊天", "总结这段今天下午的会议方案"]) {
+    assert.equal(isQuotedContentSummaryRequest(text, true), true, text);
+    assert.equal(isQuotedContentSummaryRequest(text, false), false, text);
+  }
+  for (const text of ["#总结", "总结上午聊天", "总结最近半小时", "今天群里聊了什么", "总结上午", "画个图"]) {
+    assert.equal(isQuotedContentSummaryRequest(text, true), false, text);
+  }
+  assert.equal(isBareChatSummaryRequest("请总结一下！"), true);
+  assert.equal(isBareChatSummaryRequest("总结一下：这是一段正文"), false);
+});
 
 test("live report aliases default to today without capturing work reports or creative requests", () => {
   for (const text of ["看看群聊日报", "今天的群聊日报", "每日总结", "查看今日总结", "总结一下群聊", "总结一下今天群聊", "今天群里聊了什么"]) {

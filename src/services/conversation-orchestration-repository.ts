@@ -34,7 +34,9 @@ export class ConversationOrchestrationRepository {
     // valid same-group quote anchor even when another member opted out.
     const bot = this.sharedDb.db.prepare("SELECT text FROM outbox WHERE group_id = ? AND platform_message_id = ? AND status = 'sent' AND kind = 'text' LIMIT 1")
       .get(groupId, messageId) as { text: string } | undefined;
-    return bot ? { messageId, text: bot.text, images: [] } : undefined;
+    if (bot) return { messageId, text: bot.text, images: [] };
+    const meme = this.sharedDb.getMemeConversationAnchor(groupId, messageId);
+    return meme ? { messageId, text: meme.content, images: [] } : undefined;
   }
 
   getResolution(sourceRowId: number): ContextResolution | undefined {

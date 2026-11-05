@@ -87,6 +87,19 @@ test("ambiguous opinions require a selected anchor and oversized image groups cl
   assert.deepEqual(requestMediaSourceRowIds(oversized), []);
 });
 
+test("a quoted summary corrects a group-summary misclassification without losing its source", () => {
+  const quoted: RequestUnderstandingInput = { ...input, sanitizedText: "[BOT_MENTION] 总结一下",
+    facts: { ...input.facts, hasTrustedReply: true }, candidates: [{ id: 1, text: "长文开头", attachmentCount: 0, quoted: true }] };
+  const wrong: RequestUnderstanding = { action: "chat_summary", relation: "new", sourceRowIds: [3], missingFields: ["period"], modelId: "judge", model: "judge" };
+  const corrected = retainRequestContext(wrong, quoted);
+  assert.equal(corrected.action, "chat");
+  assert.equal(corrected.relation, "follow_up");
+  assert.deepEqual(corrected.sourceRowIds, [1, 3]);
+  assert.deepEqual(corrected.missingFields, []);
+  assert.equal(retainRequestContext(wrong, { ...quoted, sanitizedText: "总结最近半小时聊天" }).action, "chat_summary");
+  assert.equal(retainRequestContext(wrong, { ...quoted, facts: { ...quoted.facts, hasTrustedReply: false } }).action, "chat_summary");
+});
+
 test("legacy single-image decisions normalize to the media array", () => {
   const valid = { action: "vision", relation: "follow_up", sourceRowIds: [1, 2, 3], mediaSourceRowId: 1, missingFields: [] };
   assert.deepEqual(validateRequestUnderstanding(valid, input).mediaSourceRowIds, [1]);

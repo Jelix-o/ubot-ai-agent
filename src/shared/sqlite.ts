@@ -3052,6 +3052,26 @@ export class SharedDb {
     return this.db.prepare("SELECT * FROM outbox WHERE id = ?").get(Number(match[1])) as OutboxRow | undefined;
   }
 
+  /** An accompanying meme is another receipt for the same answer, including pre-fix deliveries. */
+  getMemeConversationAnchor(groupId: string, messageId: string): {
+    topic_id: string; branch_id: string; turn_id: number; content: string; created_at: number;
+  } | undefined {
+    if (this.isRetracted(groupId, messageId)) return undefined;
+    const rows = this.db.prepare(`
+      SELECT DISTINCT t.topic_id,t.branch_id,t.id AS turn_id,t.content,m.sent_at AS created_at
+      FROM outbox m
+      LEFT JOIN outbox p ON p.group_id=m.group_id AND p.request_source_row_id=m.request_source_row_id
+        AND m.request_source_row_id IS NOT NULL AND p.kind='text' AND p.status='sent' AND p.turn_id IS NOT NULL
+      JOIN conversation_turns t ON t.id=COALESCE(m.turn_id,p.turn_id) AND t.role='assistant'
+      JOIN conversation_branches b ON b.branch_id=t.branch_id AND b.group_id=m.group_id
+      WHERE m.group_id=? AND m.platform_message_id=? AND m.kind='meme_image' AND m.status='sent'
+        AND t.topic_id=COALESCE(m.topic_id,p.topic_id) AND t.branch_id=COALESCE(m.branch_id,p.branch_id)
+        AND NOT EXISTS (SELECT 1 FROM retracted r WHERE r.msg_key=m.group_id || ':' || t.platform_message_id)
+      LIMIT 2
+    `).all(groupId, messageId) as Array<{ topic_id: string; branch_id: string; turn_id: number; content: string; created_at: number }>;
+    return rows.length === 1 ? rows[0] : undefined;
+  }
+
   private syncOutboxConversationContext(row: OutboxRow, createdAt: number): void {
     if (!row.topic_id || !row.branch_id || !row.platform_message_id) {
       return;

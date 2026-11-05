@@ -172,13 +172,17 @@ export class ConversationContextRepository {
   }
 
   getMessageContext(groupId: string, platformMessageId: string): MessageContextBinding | undefined {
+    if (this.sharedDb.isRetracted(groupId, platformMessageId.trim())) return undefined;
     const row = this.sharedDb.db
       .prepare(
         `SELECT * FROM conversation_message_context
           WHERE group_id = ? AND platform_message_id = ?`,
       )
       .get(groupId, platformMessageId.trim()) as BindingRow | undefined;
-    return row ? toBinding(row) : undefined;
+    if (row) return toBinding(row);
+    const meme = this.sharedDb.getMemeConversationAnchor(groupId, platformMessageId.trim());
+    return meme ? { groupId, platformMessageId: platformMessageId.trim(), topicId: meme.topic_id,
+      branchId: meme.branch_id, turnId: meme.turn_id, direction: "assistant", createdAt: meme.created_at } : undefined;
   }
 
   getActiveRoute(groupId: string, userId: string): ActiveConversationRoute | undefined {

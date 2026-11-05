@@ -5993,6 +5993,21 @@ test("ordinary members query live summaries with a true mention or configured co
   assert.equal(f.groupConfigService.groups[0]!.dailyReportEnabled,false);
 });
 
+test("summary usage is shown only for a bare request without a quote or content", async () => {
+  const f = createApp();
+  const mention = (text: string, reply?: string) => createEvent([
+    ...(reply ? [{ type: "reply" as const, data: { id: reply } }] : []),
+    { type: "at", data: { qq: "12345" } }, { type: "text", data: { text } },
+  ]);
+  await f.app.handleGroupMessage(mention("总结一下"));
+  assert.match(f.transport.sent[0]?.text ?? "", /可以说/);
+  assert.equal(f.aiService.calls.length, 0);
+  assert.equal(await f.app.isChatSummaryMessage(mention("总结上面聊天", "quote")), false);
+  assert.equal(await f.app.isChatSummaryMessage(mention("总结上午聊天", "quote")), true);
+  await f.app.handleGroupMessage(mention("总结一下：项目完成，明天开始验收。"));
+  assert.equal(f.aiService.calls.length, 1);
+});
+
 test("live summary coalesces concurrent group queries and rechecks switches before delivery", async t => {
   const f=createApp(),gate=deferred(),started=deferred();
   const original=f.dailyReportService.buildChatSummary.bind(f.dailyReportService);

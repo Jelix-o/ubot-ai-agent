@@ -44,6 +44,27 @@ const SUMMARY_KEYWORDS = [
 ];
 const RECENT_WINDOW_MESSAGE_COUNT = 60;
 
+export function isBareChatSummaryRequest(input: string): boolean {
+  return /^(?:请|帮我)?(?:总结|汇总|概括|归纳|回顾)(?:一下|下)?[吧呢？?。！!]*$/u.test(normalizeInput(input));
+}
+
+export function hasInlineSummaryContent(input: string): boolean {
+  return /(?:总结|汇总|概括|归纳|回顾)(?:一下|下|这段(?:内容|话|文字))?\s*[:：]\s*\S/u.test(input);
+}
+
+/** Only the current request may specify a group-history window, never its quoted text. */
+export function isQuotedContentSummaryRequest(input: string, hasReply: boolean): boolean {
+  const text = normalizeInput(input.replace(/\[BOT_MENTION\]/gu, ""));
+  if (!hasReply || text.startsWith("#") || !hasSummaryIntent(text)) return false;
+  const request = parseChatSummaryRequest(text);
+  const explicitGroupWindow = request && request.mode !== "recent" && (
+    request.mode === "relative_window" || request.mode === "custom_range" ||
+    /群聊|群里|本群|聊天|消息|记录|聊了|说了/u.test(text) ||
+    /^(?:请|帮我)?(?:总结|汇总|回顾)(?:一下|下)?(?:今天|今日|昨天|昨晚)?(?:上午|下午|中午|晚上|白天|早上)[吧呢？?。！!]*$/u.test(text)
+  );
+  return !explicitGroupWindow;
+}
+
 const PERIOD_DEFINITIONS: PeriodDefinition[] = [
   {
     key: "凌晨",
