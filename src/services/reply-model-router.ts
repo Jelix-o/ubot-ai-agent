@@ -11,7 +11,7 @@ import { LlmSemaphore, LlmSemaphoreTimeoutError } from "./llm-semaphore.js";
 import { defaultReplyRouting, type SystemSettingsStore } from "./system-settings-store.js";
 import { withModelOperation } from "./model-telemetry.js";
 
-export type ReplyOperation = "chat" | "html" | "auxiliary";
+export type ReplyOperation = "chat" | "html" | "auxiliary" | "lookup_planning";
 type Gate = <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 export function retryableModelFailure(error: unknown): boolean {
   if (error instanceof CircuitOpenError || error instanceof StaticHtmlOutputTruncatedError || error instanceof ReplyOutputTruncatedError) return true;
@@ -58,8 +58,8 @@ export class ReplyModelRouter {
       if (options.vision && !resolveProviderCapabilities(model, this.policy?.getProviderCapabilityOverrides(protocol)).vision) return [];
       return [model];
     });
-    const totalMs = kind === "auxiliary" ? 10_000 : kind === "html" ? routing.htmlTotalTimeoutMs : routing.chatTotalTimeoutMs;
-    const attemptMs = kind === "auxiliary" ? 4_000 : kind === "html" ? routing.htmlAttemptTimeoutMs : routing.chatAttemptTimeoutMs;
+    const totalMs = kind === "lookup_planning" ? 20_000 : kind === "auxiliary" ? 10_000 : kind === "html" ? routing.htmlTotalTimeoutMs : routing.chatTotalTimeoutMs;
+    const attemptMs = kind === "lookup_planning" ? 8_000 : kind === "auxiliary" ? 4_000 : kind === "html" ? routing.htmlAttemptTimeoutMs : routing.chatAttemptTimeoutMs;
     const deadline = Date.now() + totalMs;
     let cursor = 0;
     let fallbackReason: string | undefined;

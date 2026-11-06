@@ -26,6 +26,9 @@ export const CONTEXT_RESOLVER_INSTRUCTION = [
   "selectedMessageIds 只选与当前问题直接相关的消息，保留双方原意和来源；最多 24 条。不要挑选无关旁听消息。",
   "resolvedInput 保留当前请求，补充必要主题/槽位，不能把群友意见或旧机器人推测改写成已核实事实；不要扩充用户没要的任务。",
   '另输出 "lookupRequired":true/false；需要联网时输出 "lookupQuery":"简短关键词，不要照抄长问句"、"lookupSubject":"问题中原有的作品/产品完整名称及版本，无明确对象则省略"、"lookupFallbackQueries":["更短的主题关键词","只保留作品/产品原名"]。备用词最多两条、逐步放宽；主查询保留对象和核心主题，不堆砌核心、结果是什么等问句词。这与 intent 独立，explain/confirm/challenge 也可能需要查资料。',
+  '联网规划同时输出 lookupAliases（最多三个候选拼写/中英文别名，不能更改版本；来源未证实前只是猜测）、lookupFreshness=current|recent|all_time、lookupTopic=general|news。当前时间由输入 now 提供；赛程保留年份及赛事，诉讼要寻找裁定和公告，所有冠军的检索词包含当前年份，核验到最近已结束届次；未要求逐届列出时按队伍去重、同队更名归并。主词简短，至少生成一条不同的备用查询；必要时使用同一实体的英文检索。',
+  "名称疑似错字或音近字时，不要只重复原写法：lookupSubject 和 resolvedInput 保留用户原名，lookupAliases 提供可能正确的名称及官方英文候选，至少一条备用查询用于核查候选身份。别名在材料确认前只是候选，不能直接宣称用户指的就是它。实体有可靠英文别名时，备用查询优先保留一条英文关键词，不要全部只缩短原文。",
+  "追问只继承相关主体，resolvedInput 和检索词聚焦这次新问的内容。先问诉讼、再问行业新闻和机构调研时，应查询该公司的新闻与调研，不把上次的诉讼、法院要求继续作为本次必需词。",
   "新作品、新产品、近期事件、具体作品的剧情/战役/版本/发布信息，以及针对外部事实的核实或质疑，应 lookupRequired=true，不要求用户说最新或联网。保留作品原名、数字和版本，不能用旧作品替换陌生的新作品。",
   "闲聊、玩笑、稳定常识、翻译、写作、纯看图、群友身份或画像问题 lookupRequired=false。只有当前问题及其明确锚定的主题可进入检索词，不包含无关群聊或个人资料。",
 ].join("\n");
@@ -44,7 +47,7 @@ export class ContextResolver {
     if (lockedAnchor && !fallback.lookupRequired && !isFactCheck(input.text) && !quotedFactQuestion) return fallback;
     if (!this.model) return fallback;
     const data = {
-      ...input, text: input.text.slice(0, 4_000),
+      ...input, now: new Date().toISOString(), text: input.text.slice(0, 4_000),
       ...(input.reference ? { reference: { ...input.reference, text: input.reference.text.slice(0, 2_000), images: undefined, hasImages: input.reference.images.length > 0 } } : {}),
       candidates: input.candidates.map(candidate => ({ ...candidate, lastUserInput: candidate.lastUserInput.slice(0, 800), lastReply: candidate.lastReply.slice(0, 1_200) })),
       messages: input.messages.map(message => ({ ...message, text: message.text.slice(0, 500) })),
@@ -62,6 +65,9 @@ export class ContextResolver {
           : parsed.intent === "lookup" || fallback.lookupRequired ? true : undefined,
         lookupQuery: typeof parsed.lookupQuery === "string" ? parsed.lookupQuery
           : fallback.lookupQuery || parsed.resolvedInput,
+        lookupAliases: Array.isArray(parsed.lookupAliases) ? parsed.lookupAliases.filter((s: unknown) => typeof s === "string").slice(0,3) : undefined,
+        lookupFreshness: ["current","recent","all_time"].includes(parsed.lookupFreshness) ? parsed.lookupFreshness : undefined,
+        lookupTopic: ["general","news"].includes(parsed.lookupTopic) ? parsed.lookupTopic : undefined,
         lookupSubject: typeof parsed.lookupSubject === "string" ? parsed.lookupSubject : undefined,
         lookupFallbackQueries: Array.isArray(parsed.lookupFallbackQueries) ? parsed.lookupFallbackQueries : undefined,
       });

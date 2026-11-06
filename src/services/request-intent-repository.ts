@@ -96,6 +96,26 @@ export class RequestIntentRepository {
   followUpCandidates(message: IngressMessageRow): IngressMessageRow[] {
     return this.listCandidates(message, true);
   }
+  /** Completed searches remain readable; they never authorize replaying a task. */
+  lookupHistory(message: IngressMessageRow): Array<{ row: IngressMessageRow; assistantReply: string }> {
+    const rows = this.shared.db.prepare(`SELECT m.* FROM messages m JOIN request_intent_routes q ON q.source_row_id=m.id
+      WHERE m.group_id=? AND m.user_id=? AND m.id<? AND m.created_at BETWEEN ? AND ?
+      AND m.is_bot_msg=0 AND (m.processable=1 OR m.drop_reason='rate_limited') AND q.status='classified'
+      AND (q.execution_status='completed' OR EXISTS (SELECT 1 FROM conversation_message_routes r JOIN outbox o
+        ON o.branch_id=r.branch_id AND o.source_turn_id=r.turn_id WHERE r.source_row_id=m.id AND o.status='sent' AND o.kind='text' AND o.sent_at<=?))
+      ORDER BY m.id DESC`).iterate(message.group_id, message.user_id, message.id, message.created_at - 600000, message.created_at, message.created_at);
+    const result: Array<{ row: IngressMessageRow; assistantReply: string }> = [];
+    for (const value of rows) {
+      const row = value as unknown as IngressMessageRow;
+      if (this.shared.isRetracted(row.group_id, row.msg_id) || this.get(row.id)?.result?.action !== "web_lookup") continue;
+      const replies = this.shared.db.prepare(`SELECT o.text,o.platform_message_id FROM outbox o JOIN conversation_message_routes r
+        ON r.branch_id=o.branch_id AND r.turn_id=o.source_turn_id WHERE r.source_row_id=? AND o.status='sent'
+        AND o.sent_at<=? AND o.kind='text' ORDER BY o.id`).all(row.id, message.created_at) as Array<{ text: string; platform_message_id?: string }>;
+      result.push({ row, assistantReply: replies.filter(item => !item.platform_message_id || !this.shared.isRetracted(row.group_id, item.platform_message_id)).map(item => item.text).join("\n").slice(0, 1200) });
+      if (result.length === 6) break;
+    }
+    return result.reverse();
+  }
   consume(sourceRowId: number, evidenceIds: number[]): void {
     for (const evidenceId of evidenceIds) if (evidenceId !== sourceRowId) this.shared.db.prepare("INSERT OR IGNORE INTO request_intent_evidence(source_row_id,evidence_row_id) VALUES(?,?)").run(sourceRowId, evidenceId);
   }

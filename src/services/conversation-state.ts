@@ -23,6 +23,9 @@ export interface ContextResolution {
   lookupQuery?: string;
   lookupSubject?: string;
   lookupFallbackQueries?: string[];
+  lookupAliases?: string[];
+  lookupFreshness?: "current" | "recent" | "all_time";
+  lookupTopic?: "general" | "news";
   intent: ConversationIntent;
   relation: "new" | "follow_up" | "supplement";
   resolvedInput: string;
@@ -69,6 +72,9 @@ export interface ReplyPlan {
   lookupQuery?: string;
   lookupSubject?: string;
   lookupFallbackQueries?: string[];
+  lookupAliases?: string[];
+  lookupFreshness?: "current" | "recent" | "all_time";
+  lookupTopic?: "general" | "news";
   action: "reply" | "clarify" | "tool";
   intent: ConversationIntent;
   explanation: "on_request" | "requested";

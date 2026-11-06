@@ -7,6 +7,8 @@ type SentenceUnit = {
 };
 
 export interface ReplyFormatBudget {
+  compactList?: boolean;
+  preserveListDuplicates?: boolean;
   maxChars: number;
   maxTotalChars: number;
   maxMessages: number;
@@ -28,6 +30,18 @@ export function formatReplyMessages(
     return [];
   }
 
+  if (budget?.compactList) {
+    const names = sanitized.split(/[，,、]/u).map(item => item.trim()).filter(Boolean);
+    const items = budget.preserveListDuplicates ? names : [...new Set(names)];
+    const messages: string[] = [];
+    let current = "";
+    for (const item of items) {
+      if (current && current.length + item.length + 2 > behavior.maxChars) { messages.push(current + "，"); current = ""; }
+      current += (current ? "，" : "") + item;
+    }
+    if (current) messages.push(current);
+    return messages.slice(0, behavior.maxMessages);
+  }
   const maxChars = behavior.maxChars;
   const maxMessages = shouldAllowBurstMessages(sanitized, behavior)
     ? behavior.maxMessages

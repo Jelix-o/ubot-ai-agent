@@ -174,7 +174,7 @@ async function startLegacyBot(): Promise<BotApplication> {
     },
     systemSettingsStore,
     undefined,
-    new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl }),
+    new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl, serperApiKey: config.serperApiKey }),
     new GroupTranscriptService(),
     atmosphere,
     undefined,

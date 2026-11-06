@@ -77,6 +77,7 @@ export function loadConfig(): AppConfig {
     openAiBaseUrl,
     openAiApiKey,
     openAiModel,
+    serperApiKey: optionalEnv("SERPER_API_KEY"),
     realtimeSearchUrl: optionalEnv("REALTIME_SEARCH_URL") ?? "http://127.0.0.1:8088",
     dataDir,
     htmlPreviewPublicBaseUrl: optionalEnv("HTML_PREVIEW_PUBLIC_BASE_URL") ?? "https://preview.9958.uk",

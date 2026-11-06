@@ -6,6 +6,9 @@ export interface LookupDecision {
   lookupQuery?: string;
   lookupSubject?: string;
   lookupFallbackQueries?: string[];
+  lookupAliases?: string[];
+  lookupFreshness?: "current" | "recent" | "all_time";
+  lookupTopic?: "general" | "news";
 }
 
 // These are transformations of supplied material, not requests for fresh facts.

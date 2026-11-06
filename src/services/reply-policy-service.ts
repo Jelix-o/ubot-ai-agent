@@ -35,6 +35,8 @@ const HUIXIAN_DETAILED_REPLY_BUDGET: ReplyFormatBudget = {
   preferredMaxMessages: 2,
 };
 
+export const isCompactListRequest = (text: string): boolean => /(?:只要|仅要|只列|仅列|只需|只给)/u.test(text) && /队名|名字|名称|名单|列表|分隔|逗号/u.test(text);
+
 const EXPLICIT_SHORT_REQUEST = /(?:一句话|一两句|简短|简单说|别展开|少废话)/u;
 const EXPLICIT_DETAILED_REQUEST = /(?:详细|展开|完整|全面|深入|具体(?:说|讲|解释|分析)?|(?:给|做|写|出).{0,8}(?:方案|计划|步骤|排查|实现|代码|对比|复盘))/u;
 
@@ -54,6 +56,9 @@ export class ReplyPolicyService {
       lookupRequired: resolution.lookupRequired ?? (resolution.intent === "lookup" ? true : undefined),
       lookupQuery: resolution.lookupQuery || resolution.resolvedInput,
       lookupSubject: resolution.lookupSubject,
+      lookupAliases: resolution.lookupAliases,
+      lookupFreshness: resolution.lookupFreshness,
+      lookupTopic: resolution.lookupTopic,
       lookupFallbackQueries: resolution.lookupFallbackQueries,
     });
     if (resolution.intent === "image" && resolution.lookupRequired === false) {
@@ -91,6 +96,10 @@ export class ReplyPolicyService {
     plan: ReplyPlan,
   ): ReplyFormatBudget | undefined {
     if (skill.id !== "huixian") return undefined;
+    if (isCompactListRequest(userInput)) return { compactList: true, preserveListDuplicates: /逐届|每届|按年|逐年|按赛季|按届/u.test(userInput), maxChars: 2000, maxTotalChars: 8000, maxMessages: 4, preferredMaxMessages: 1 };
+    if ((plan.lookupRequired || plan.intent === "lookup") && /赛程|总结|名单|所有|完整|进展/u.test(userInput)) {
+      return { maxChars: 1500, maxTotalChars: 3000, maxMessages: 3, preferredMaxMessages: 1 };
+    }
     if (EXPLICIT_SHORT_REQUEST.test(userInput.replace(/\s+/gu, " ").trim())) {
       return { maxChars: 160, maxTotalChars: 160, maxMessages: 1, preferredMaxMessages: 1 };
     }
@@ -107,7 +116,7 @@ export class ReplyPolicyService {
   ): string {
     return [
       "本轮回复计划（只决定当前任务，不改变人格）：",
-      formatInstruction(plan, options),
+      options.formatBudget?.compactList ? "严格按用户要求只输出完整名称列表，以中文逗号分隔；不附解释、截至说明或来源，不拆开英文名称。同一队伍或实体只列一次，已证实的同队更名合并为一个名称；用户明确要求逐届列出时才按届次重复。同一俱乐部旗下的不同夺冠战队必须分别保留，不能当成更名合并；队伍名称优先使用夺冠时期名称或确证为同一队的通用名称。完整覆盖范围未能核实时，应明确缺失范围，不能把部分名单冒充全集。" : formatInstruction(plan, options),
       plan.anchor?.kind === "explicit_reply"
         ? "本轮是对已恢复引用消息的回应；直接围绕引用和当前短句接话，不要求用户复述引用内容。"
         : undefined,

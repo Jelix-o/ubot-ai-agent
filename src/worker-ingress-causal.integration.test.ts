@@ -1507,6 +1507,40 @@ class ConversationReplayAi extends CapturingAiService {
   }
 }
 
+test("unified lookup replay retains an answered company through an elliptical follow-up and preserves query planning", async t => {
+  const f = conversationReplay(t);
+  // Network behavior has its own backend tests; this replay exercises routing and delivery.
+  f.bot.understoodConversationUnavailable = async () => undefined;
+  const u = unifiedReplay(t, f, input => ({ action: "web_lookup", relation: "new", sourceRowIds: [input.sourceRowId] }));
+  const first = f.add("Orion 半导体最新官司进展");
+  f.ai.replies.push({ text: "目前找到的是该公司的行业报道" });
+  f.ai.resolve = data => ({ intent: "lookup", relation: "new", resolvedInput: data.text, lookupRequired: true,
+    lookupQuery: "Orion court ruling", lookupSubject: "Orion", lookupFallbackQueries: ["Orion lawsuit"], lookupFreshness: "recent", lookupTopic: "news" });
+  await u.run(first); f.ack();
+  assert.equal(f.repository.orchestration.getResolution(first.input.sourceRowId)?.lookupQuery, "Orion court ruling");
+  f.add("无关的群内插话", "20002", { passive: true });
+  const second = f.add("对应的行业新闻、机构调研拉出来总结一下");
+  f.ai.resolve = data => ({ intent: "lookup", relation: "follow_up", resolvedInput: "总结 Orion 半导体的最新行业新闻和机构调研",
+    topicCandidateId: data.candidates.find((candidate: any) => candidate.ownerUserId === USER_ID)?.id,
+    lookupRequired: true, lookupQuery: "Orion semiconductor industry research", lookupSubject: "Orion",
+    lookupAliases: ["Orion semiconductor"], lookupFreshness: "recent", lookupTopic: "news", lookupFallbackQueries: ["Orion research report", "Orion semiconductor news"] });
+  await u.run(second);
+  const offered = u.inputs.at(-1)!.candidates.find(item => item.id === first.input.sourceRowId);
+  assert.equal(offered?.readOnly, true);
+  assert.match(offered?.assistantReply ?? "", /行业报道/);
+  const original = f.repository.getRouteBySourceRowId(first.input.sourceRowId)!;
+  const route = f.repository.getRouteBySourceRowId(second.input.sourceRowId)!;
+  assert.equal(route.branchId, original.branchId);
+  const resolution = f.repository.orchestration.getResolution(second.input.sourceRowId)!;
+  assert.equal(resolution.lookupQuery, "Orion semiconductor industry research");
+  assert.deepEqual(resolution.lookupFallbackQueries, ["Orion research report", "Orion semiconductor news"]);
+  assert.match(resolution.resolvedInput, /Orion/);
+  assert.equal(resolution.clarification, undefined);
+  f.db.markRetracted(GROUP_ID, "receipt-1", second.input.nowMs);
+  const history = new RequestIntentRepository(f.db).lookupHistory(f.db.db.prepare("SELECT * FROM messages WHERE id=?").get(second.input.sourceRowId) as any);
+  assert.equal(history.find(item => item.row.id === first.input.sourceRowId)?.assistantReply, "");
+});
+
 function conversationReplay(t: test.TestContext, overrides: Partial<GroupBotConfig> = {}, gated = false, groupMemoryStore?: TestBotOptions["groupMemoryStore"], imagePipeline?: TestBotOptions["imagePipeline"], extra: Pick<TestBotOptions, "imageGeneration" | "imageLedger" | "memeLibraryService"> = {}) {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "huixian-replay-"));
   const db = openSharedDb(dataDir), repository = new ConversationContextRepository(db);

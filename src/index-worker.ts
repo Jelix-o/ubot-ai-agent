@@ -714,11 +714,15 @@ export class WorkerApp {
         rows.push(row);
       }
     }
+    const lookupHistory = policy.includeRecent && message.text.trim() && !parsed.replyMessageId && !policy.excludedUserIds.includes(message.user_id)
+      ? this.requestIntents.lookupHistory(message) : [];
+    for (const { row } of lookupHistory) if (!rows.some(item => item.id === row.id)) rows.push(row);
+    rows.sort((a,b) => a.id-b.id);
     const offered = saved?.result ? rows.filter(row => saved.result!.sourceRowIds.includes(row.id)) : rows.slice(-12);
     const input: RequestUnderstandingInput = {
       sourceRowId: message.id, sanitizedText: sourceText(message),
       facts: { hasTrustedBotMention: parsed.hasAtBot, hasTrustedReply: Boolean(parsed.replyMessageId), replyIsGeneratedImage: this.isAvailableGeneratedImageReply(message.group_id, parsed.replyMessageId), attachmentCount: parseImages(message.images_json).length },
-      candidates: offered.map(row => ({ id: row.id, text: sourceText(row).slice(0, 500), attachmentCount: parseImages(row.images_json).length, ...(row.msg_id === parsed.replyMessageId ? { quoted: true } : {}) })),
+      candidates: offered.map(row => ({ id: row.id, text: sourceText(row).slice(0, 500), attachmentCount: parseImages(row.images_json).length, ...(lookupHistory.some(item => item.row.id === row.id) ? { readOnly: true, assistantReply: policy.excludedUserIds.length ? undefined : lookupHistory.find(item => item.row.id === row.id)?.assistantReply } : {}), ...(row.msg_id === parsed.replyMessageId ? { quoted: true } : {}) })),
       ...(pending || saved?.result?.continuesPending ? { pendingRequest: { action: (pending?.result ?? saved!.result!).action, missingFields: (pending?.result ?? saved!.result!).missingFields, sourceRowIds: (pending?.result ?? saved!.result!).sourceRowIds } } : {}),
     };
     if (saved?.result) {
@@ -1678,7 +1682,7 @@ async function buildBotApp(
     },
     systemSettingsStore,
     undefined,
-    new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl }),
+    new RealtimeLookupService({ searchUrl: config.realtimeSearchUrl, serperApiKey: config.serperApiKey }),
     new GroupTranscriptService(),
     atmosphere,
     undefined,

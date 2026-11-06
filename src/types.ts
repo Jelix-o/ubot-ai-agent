@@ -240,6 +240,8 @@ export type RealtimeLookupKind = "weather" | "stock" | "web";
 export type RealtimeLookupStatus = "ok" | "needs_location" | "unavailable";
 
 export interface RealtimeLookupSource {
+  publishedAt?: string;
+  backend?: string;
   name: string;
   url: string;
 }
@@ -252,6 +254,8 @@ export interface RealtimeLookupResult {
   sources: RealtimeLookupSource[];
   failureReason?: string;
   searchDiagnostics?: {
+    backends?: string[];
+    fallbackReason?: string;
     attempts: number;
     engineErrors: number;
     candidateCount: number;
@@ -599,6 +603,7 @@ export interface AppConfig {
   openAiApiKey: string;
   openAiModel: string;
   realtimeSearchUrl: string;
+  serperApiKey?: string;
   dataDir: string;
   /** Public origin deliberately separate from the authenticated admin host. */
   htmlPreviewPublicBaseUrl: string;

@@ -1526,14 +1526,14 @@ export class BotApplication {
       candidates,
       messages,
     });
-    const needsSemanticContext = !understanding && !/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(input.text.trim()) &&
+    const needsSemanticContext = (!understanding || understanding.action === "web_lookup") && !/^(?:你好|嗨|在吗|早|晚安|谢谢|好的)[!！?？。\s]*$/u.test(input.text.trim()) &&
       !bareOpinionRequest &&
       (!input.replyToMessageId || hasReadableReference(reference)) &&
-      (candidates.length > 0 || Boolean(reference) || /(?:上面|刚才|这个|那个|所以|看图|展开|继续)/u.test(input.text));
+      (understanding?.action === "web_lookup" || candidates.length > 0 || Boolean(reference) || /(?:上面|刚才|这个|那个|所以|看图|展开|继续)/u.test(input.text));
     const resolver = new ContextResolver(this.aiService.resolveConversationContext && needsSemanticContext ? async (instruction, data, resolverSignal) => {
       const router = await this.getReplyRouter();
       if (router) {
-        const session = await router.begin(group, "auxiliary", { signal: resolverSignal, gate: this.backgroundLlmGate });
+        const session = await router.begin(group, understanding?.action === "web_lookup" ? "lookup_planning" : "auxiliary", { signal: resolverSignal, gate: this.backgroundLlmGate });
         return (await session.run((service, routedSignal) => service.resolveConversationContext?.({ instruction, data, signal: routedSignal }) ?? Promise.resolve(""))).value;
       }
       const execute = () => this.aiService.resolveConversationContext!({ instruction, data, signal: resolverSignal });
@@ -1557,16 +1557,25 @@ export class BotApplication {
     }
     if (understanding) {
       const evidence = store.sourceEvidence(input.groupId, understanding.sourceRowIds, input.sourceRowId, excluded);
+      const priorEvidence = evidence.filter(item => item.msg_id !== input.sourceMessageId && item.user_id === input.userId);
+      const lookupFollowUp = understanding.action === "web_lookup" && understanding.relation !== "new" && priorEvidence.length > 0;
+      const priorContext = lookupFollowUp ? repository.getMessageContext(input.groupId, priorEvidence.at(-1)!.msg_id) : undefined;
+      if (lookupFollowUp && resolution.anchor?.kind === "none") {
+        const restoredInput = [priorEvidence.map(item => item.text).join("\n"), input.text].join("\n");
+        resolution = { ...resolution, resolvedInput: restoredInput, lookupQuery: restoredInput, relation: "follow_up",
+          ...(priorContext ? { topicCandidateId: priorContext.branchId, anchor: { kind: "explicit_follow_up", messageIds: priorEvidence.map(item => item.msg_id), topicCandidateId: priorContext.branchId } } : {}) };
+      }
       resolution = {
+        ...resolution,
         intent: understanding.action === "vision" ? "image" : understanding.action === "web_lookup" ? "lookup" : "chat",
-        relation: understanding.relation,
-        resolvedInput: input.text.trim() || evidence.map(item => item.text).filter(Boolean).join("\n") || "请结合我刚发的图片回应",
-        selectedMessageIds: evidence.map(item => item.msg_id), mediaSourceMessageIds: [],
+        relation: understanding.action === "web_lookup" ? resolution.relation : understanding.relation,
+        resolvedInput: (understanding.action === "web_lookup" ? resolution.resolvedInput : input.text.trim()) || evidence.map(item => item.text).filter(Boolean).join("\n") || "请结合我刚发的图片回应",
+        selectedMessageIds: [...new Set([...resolution.selectedMessageIds, ...evidence.map(item => item.msg_id)])], mediaSourceMessageIds: [],
         ...(understanding.opinionAnchorRowId ? { opinionAnchorRowId: understanding.opinionAnchorRowId } : {}), needsMoreContext: false,
         source: understanding.modelId === "host" ? "rules" : "model",
         lookupRequired: understanding.action === "web_lookup",
-        ...(understanding.action === "web_lookup" ? { lookupQuery: requestExecutionText(understanding.input, [input.text, ...evidence.map(item => item.text)].filter(Boolean).join("\n")) } : {}),
-        anchor: { kind: "none", messageIds: evidence.map(item => item.msg_id) },
+        ...(understanding.action === "web_lookup" ? { lookupQuery: resolution.lookupQuery || requestExecutionText(understanding.input, [input.text, ...evidence.map(item => item.text)].filter(Boolean).join("\n")) } : {}),
+        anchor: resolution.anchor?.kind !== "none" ? resolution.anchor : { kind: "none", messageIds: evidence.map(item => item.msg_id) },
       };
     }
     if (input.replyToMessageId && !hasReadableReference(reference)) {
@@ -4767,7 +4776,7 @@ export class BotApplication {
         : Promise.resolve([]),
       visualImagePersonQuery || targetedMemberProfileRequested
         ? Promise.resolve(undefined)
-        : this.resolveRealtimeLookup(groupConfig, replyPlan),
+        : this.resolveRealtimeLookup(groupConfig, replyPlan, userInput.trim()),
     ]);
     const realtimeLookupMs = Date.now() - realtimeLookupStartedAt;
     const visibleSubjectUserIds = new Set(memberProfileTargetUserId ? [memberProfileTargetUserId] : [userId, ...relatedUserIds]);
@@ -5143,6 +5152,7 @@ export class BotApplication {
   private async resolveRealtimeLookup(
     groupConfig: GroupBotConfig,
     plan: ReplyPlan,
+    currentQuestion = plan.resolvedInput,
   ): Promise<RealtimeLookupResult | undefined> {
     if (!this.isCapabilityEnabled("realtime_lookup") || !this.realtimeLookupService || groupConfig.onlineLookupEnabled !== true) {
       return undefined;
@@ -5163,6 +5173,12 @@ export class BotApplication {
       const startedAt = Date.now();
       const result = await this.realtimeLookupService.lookup({
         text,
+        ...(intent === "web" ? {
+          ...(currentQuestion !== text ? { question: currentQuestion } : {}),
+          ...(plan.lookupAliases?.length ? { lookupAliases: plan.lookupAliases } : {}),
+          ...(plan.lookupFreshness ? { lookupFreshness: plan.lookupFreshness } : {}),
+          ...(plan.lookupTopic === "news" ? { lookupTopic: plan.lookupTopic } : {}),
+        } : {}),
         ...(!detected ? { intent } : {}),
         ...(intent === "web" && plan.lookupSubject ? { lookupSubject: plan.lookupSubject } : {}),
         ...(intent === "web" && plan.lookupFallbackQueries?.length ? { lookupFallbackQueries: plan.lookupFallbackQueries } : {}),
