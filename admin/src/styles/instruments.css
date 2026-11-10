@@ -1,0 +1,336 @@
+/* Dense operational instruments: data, status, filters and inspection panels. */
+
+.page-heading,
+.section-head,
+.heading-actions,
+.page-actions,
+.toolbar,
+.filter-bar,
+.bulk-bar {
+  align-items: center;
+}
+
+.page-heading h1 {
+  color: var(--ink-strong);
+  font-size: 26px;
+  font-weight: 730;
+  line-height: 1.2;
+}
+
+.page-heading p,
+.section-head p,
+.section-intro p {
+  color: var(--ink-muted);
+}
+
+.section-head h2,
+.section-head h3,
+.section-intro h2 {
+  color: var(--ink-strong);
+}
+
+.metric-grid {
+  gap: 12px;
+}
+
+.metric-card,
+.metric-tile,
+.stat-card,
+.health-mini,
+.coverage-grid > div,
+.task-summary,
+.summary-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--edge), var(--e1);
+}
+
+.metric-card::before,
+.metric-tile::before,
+.stat-card::before,
+.health-mini::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--blue), color-mix(in oklch, var(--lime) 70%, var(--blue)));
+  content: "";
+}
+
+.metric-card strong,
+.metric-tile strong,
+.stat-card .stat-num,
+.health-mini strong {
+  color: var(--ink-strong);
+}
+
+.metric-card small,
+.metric-tile small,
+.stat-card .stat-label,
+.health-mini small {
+  color: var(--ink-muted);
+}
+
+.table-container,
+.table-wrap,
+.model-table,
+.memory-table-wrap,
+.command-list,
+.task-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  scrollbar-color: color-mix(in oklch, var(--ink-muted) 44%, transparent) transparent;
+}
+
+.data-table,
+.memory-table,
+.model-table table,
+.task-table,
+.table-wrap table {
+  min-width: 680px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.data-table th,
+.data-table td,
+.memory-table th,
+.memory-table td,
+.model-table th,
+.model-table td,
+.task-table th,
+.task-table td,
+.table-wrap th,
+.table-wrap td {
+  min-height: var(--row-h);
+  padding: 11px var(--cell-px);
+  border-bottom-color: var(--line);
+  vertical-align: middle;
+}
+
+.data-table th,
+.memory-table th,
+.model-table th,
+.task-table th,
+.table-wrap th {
+  height: 42px;
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  font-weight: 720;
+  text-transform: uppercase;
+}
+
+.data-table td,
+.memory-table td,
+.model-table td,
+.task-table td,
+.table-wrap td {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.data-table td small,
+.memory-table td small,
+.model-table td small,
+.task-table td small,
+.table-wrap td small {
+  color: var(--ink-muted);
+}
+
+.list-row,
+.member-card,
+.asset-card,
+.account-row,
+.task-row,
+.group-row,
+.routing-fallback-row,
+.dedup-row,
+.audit-row,
+.tag-row {
+  border-radius: var(--r-sm);
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.list-row:hover,
+.member-card:hover,
+.asset-card:hover,
+.account-row:hover,
+.task-row:hover,
+.group-row:hover,
+.routing-fallback-row:hover,
+.dedup-row:hover,
+.audit-row:hover,
+.tag-row:hover {
+  background: var(--hover-bg);
+  box-shadow: var(--e1), var(--edge);
+}
+
+.table-row,
+.command-row,
+.task-item {
+  border-color: var(--line);
+}
+
+.table-row:hover,
+.table-row.active,
+.command-row:hover,
+.task-item:hover {
+  background: var(--hover-bg);
+}
+
+.filter-bar,
+.toolbar,
+.model-toolbar,
+.command-toolbar,
+.task-filter-bar,
+.audit-filter-bar {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--surface-soft) 78%, var(--surface));
+  box-shadow: var(--edge);
+}
+
+.filter-bar .input,
+.filter-bar .select,
+.toolbar .input,
+.toolbar .select,
+.model-toolbar .input,
+.model-toolbar .select {
+  min-height: var(--control-h-sm);
+}
+
+.save-bar,
+.save-footer {
+  border-color: color-mix(in oklch, var(--blue) 19%, var(--line));
+  background: color-mix(in oklch, var(--blue-soft) 34%, var(--surface));
+  box-shadow: var(--e2), var(--edge);
+}
+
+.save-bar .muted,
+.save-footer .muted {
+  color: var(--ink-muted);
+}
+
+.status-dot,
+.pulse-dot {
+  border-color: color-mix(in oklch, currentColor 18%, transparent);
+}
+
+.status-dot.on,
+.status-dot.ok {
+  color: var(--lime-ink);
+}
+
+.status-dot.failed,
+.status-dot.danger,
+.error-text,
+.health-text.failed {
+  color: var(--red-ink);
+}
+
+.loading-state,
+.spinner {
+  border-color: color-mix(in oklch, var(--blue) 18%, var(--line));
+  border-top-color: var(--blue);
+}
+
+.qq-avatar,
+.persona-mark,
+.source-icon,
+.stat-icon-wrap {
+  border: 1px solid color-mix(in oklch, var(--blue) 19%, var(--line));
+  background: color-mix(in oklch, var(--blue-soft) 62%, var(--surface));
+  color: var(--blue-hover);
+  box-shadow: var(--edge);
+}
+
+.stat-icon-wrap.amber {
+  background: color-mix(in oklch, var(--amber-soft) 78%, var(--surface));
+  color: var(--warning);
+}
+
+.stat-icon-wrap.purple {
+  background: color-mix(in oklch, var(--violet) 12%, var(--surface));
+  color: var(--violet);
+}
+
+.stat-icon-wrap.red {
+  background: color-mix(in oklch, var(--red-soft) 80%, var(--surface));
+  color: var(--red-ink);
+}
+
+.chart-wrap,
+.editor-preview,
+.preview-frame,
+.image-preview,
+.audio-preview {
+  border-color: var(--line);
+  border-radius: var(--r-md);
+  background: var(--groove);
+  box-shadow: inset 0 1px 2px rgb(var(--shade) / 0.06), var(--edge);
+}
+
+.image-preview img,
+.editor-preview img,
+.asset-preview img {
+  border-radius: var(--r-sm);
+}
+
+.details-panel,
+details {
+  border-color: var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--surface-soft) 70%, var(--surface));
+}
+
+details summary {
+  color: var(--ink);
+  font-weight: 670;
+}
+
+@media (max-width: 820px) {
+  .page-heading h1 {
+    font-size: 23px;
+  }
+
+  .filter-bar,
+  .toolbar,
+  .model-toolbar,
+  .command-toolbar,
+  .task-filter-bar,
+  .audit-filter-bar {
+    padding: 8px;
+  }
+
+  .data-table th,
+  .data-table td,
+  .memory-table th,
+  .memory-table td,
+  .model-table th,
+  .model-table td,
+  .task-table th,
+  .task-table td,
+  .table-wrap th,
+  .table-wrap td {
+    padding-inline: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .list-row,
+  .member-card,
+  .asset-card,
+  .account-row,
+  .task-row,
+  .group-row,
+  .routing-fallback-row,
+  .dedup-row,
+  .audit-row,
+  .tag-row {
+    transition: none;
+  }
+}

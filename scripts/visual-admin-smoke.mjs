@@ -420,8 +420,28 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     // Vue resolves the login route. From this point forward, errors are real
     // authenticated-console regressions and fail the visual smoke test.
     authenticated = true;
-    await desktop.locator(".app-shell").waitFor();
+    await desktop.locator(".console-shell").waitFor();
     await desktop.getByText("已配置群", { exact: true }).waitFor();
+    await assertFullBleedConsole(desktop, "desktop overview");
+    const themeToggle = desktop.getByRole("button", { name: "切换主题" });
+    await themeToggle.click();
+    await desktop.locator("[data-smoke='theme-dark']").click();
+    await desktop.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+    await assertNoHorizontalOverflow(desktop, "dark theme overview");
+    await desktop.screenshot({ path: path.join(screenshotDir, "overview-dark-desktop.png"), fullPage: true });
+    await themeToggle.click();
+    await desktop.locator("[data-smoke='theme-light']").click();
+    await desktop.waitForFunction(() => document.documentElement.dataset.theme === "light");
+    const commandTrigger = desktop.getByRole("button", { name: "搜索页面、成员、记忆" });
+    await commandTrigger.focus();
+    await desktop.keyboard.press("Control+K");
+    const commandDialog = desktop.getByRole("dialog", { name: "搜索控制台" });
+    await commandDialog.waitFor();
+    await desktop.keyboard.press("Escape");
+    await commandDialog.waitFor({ state: "detached" });
+    if (!await commandTrigger.evaluate(button => document.activeElement === button)) {
+      throw new Error("Command dialog did not restore focus to its trigger.");
+    }
     await assertNoHorizontalOverflow(desktop, "desktop overview");
     await desktop.screenshot({ path: path.join(screenshotDir, "overview-desktop.png"), fullPage: true });
 
@@ -541,7 +561,7 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await assertNoHorizontalOverflow(desktop, "desktop group interactions");
     await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-desktop.png"), fullPage: true });
     await desktop.setViewportSize({ width: 375, height: 812 });
-    await desktop.waitForFunction(() => document.querySelector("aside.sidebar")?.getBoundingClientRect().right <= 0);
+    await desktop.waitForFunction(() => document.querySelector("aside.console-rail")?.getBoundingClientRect().right <= 0);
     await assertNoHorizontalOverflow(desktop, "mobile group interactions");
     await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-mobile.png"), fullPage: true });
     await desktop.setViewportSize({ width: 1440, height: 1000 });
@@ -650,15 +670,19 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await assertNoHorizontalOverflow(desktop, "desktop meme library");
     await desktop.screenshot({ path: path.join(screenshotDir, "memes-desktop.png"), fullPage: true });
     await desktop.setViewportSize({ width: 390, height: 844 });
-    await desktop.waitForFunction(() => document.querySelector("aside.sidebar")?.getBoundingClientRect().right <= 0);
+    await desktop.waitForFunction(() => document.querySelector("aside.console-rail")?.getBoundingClientRect().right <= 0);
     await assertNoHorizontalOverflow(desktop, "mobile meme library");
     await desktop.screenshot({ path: path.join(screenshotDir, "memes-mobile.png"), fullPage: true });
 
     await desktop.setViewportSize({ width: 390, height: 844 });
     await desktop.goto(`${baseUrl}/`, { waitUntil: "networkidle" });
-    await desktop.locator(".app-shell").waitFor();
+    await desktop.locator(".console-shell").waitFor();
     await desktop.getByLabel("打开导航").click();
-    await desktop.locator("aside.sidebar.open[aria-label='工作区导航']").waitFor();
+    await desktop.locator("aside.console-rail.open[aria-label='工作区导航']").waitFor();
+    await desktop.keyboard.press("Escape");
+    await desktop.waitForFunction(() => !document.querySelector("aside.console-rail")?.classList.contains("open"));
+    await desktop.getByLabel("打开导航").click();
+    await desktop.locator("aside.console-rail.open[aria-label='工作区导航']").waitFor();
     await assertNoHorizontalOverflow(desktop, "mobile overview");
     await desktop.screenshot({ path: path.join(screenshotDir, "overview-mobile.png"), fullPage: true });
 
@@ -687,4 +711,27 @@ async function assertNoHorizontalOverflow(page, label) {
   if (dimensions.scrollWidth > dimensions.clientWidth + 1) {
     throw new Error(`${label} has horizontal overflow (${dimensions.scrollWidth}px > ${dimensions.clientWidth}px).`);
   }
+}
+
+async function assertFullBleedConsole(page, label) {
+  const layout = await page.evaluate(() => {
+    const stage = document.querySelector(".console-stage");
+    const shell = document.querySelector(".console-shell");
+    if (!(stage instanceof HTMLElement) || !(shell instanceof HTMLElement)) return null;
+    const stageBox = stage.getBoundingClientRect();
+    const shellBox = shell.getBoundingClientRect();
+    return {
+      stageLeft: stageBox.left,
+      shellLeft: shellBox.left,
+      shellTop: shellBox.top,
+      shellWidth: shellBox.width,
+      viewportWidth: document.documentElement.clientWidth,
+      shellBorderTop: getComputedStyle(shell).borderTopWidth,
+    };
+  });
+  if (!layout) throw new Error(`${label} is missing the full-bleed console shell.`);
+  if (Math.abs(layout.stageLeft) > 1 || Math.abs(layout.shellLeft) > 1 || Math.abs(layout.shellTop) > 1 || Math.abs(layout.shellWidth - layout.viewportWidth) > 1) {
+    throw new Error(`${label} unexpectedly has an outer device frame.`);
+  }
+  if (layout.shellBorderTop !== "0px") throw new Error(`${label} unexpectedly has an outer shell border.`);
 }

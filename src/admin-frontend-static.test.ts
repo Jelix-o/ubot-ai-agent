@@ -32,6 +32,52 @@ test("admin presents a single memory workspace without candidate routes", async 
   assert.doesNotMatch(api, /CandidateListResponse|pendingCandidateCount|type:\s*"candidate"/);
 });
 
+test("admin uses a full-bleed pearl console shell without a device frame", async () => {
+  const [shell, tokens, layout, materials, components, instruments, login, entry] = await Promise.all([
+    readAdmin(path.join("components", "ConsoleShell.vue")),
+    readAdmin(path.join("styles", "tokens.css")),
+    readAdmin(path.join("styles", "layout.css")),
+    readAdmin(path.join("styles", "materials.css")),
+    readAdmin(path.join("styles", "components.css")),
+    readAdmin(path.join("styles", "instruments.css")),
+    readAdmin(path.join("views", "LoginView.vue")),
+    readAdmin("main.ts"),
+  ]);
+
+  assert.match(shell, /console-stage/);
+  assert.match(shell, /console-shell/);
+  assert.match(shell, /console-rail/);
+  assert.match(shell, /group-picker/);
+  assert.match(shell, /command-trigger/);
+  assert.match(shell, /m-rail/);
+  assert.match(shell, /m-pill/);
+  assert.match(shell, /m-float/);
+  assert.doesNotMatch(shell, /class="app-shell"/);
+  assert.match(tokens, /--blue:\s*#236de9/);
+  assert.match(tokens, /--lime:\s*#82dd2d/);
+  assert.match(tokens, /Copyright \(c\) 2026 wbr664393425-lgtm/);
+  assert.match(layout, /Full-bleed console layout/);
+  assert.match(layout, /\.console-shell/);
+  assert.match(layout, /@media \(max-width: 820px\)/);
+  assert.doesNotMatch(layout, /\.app-frame|\.stage\s*\{/);
+  assert.match(materials, /Pearl Glass materials/);
+  assert.match(materials, /\.m-rail/);
+  assert.match(materials, /\.m-pill/);
+  assert.match(materials, /\.m-float/);
+  assert.match(materials, /\.m-surface/);
+  assert.match(materials, /\.m-groove/);
+  assert.match(components, /Controls and compound UI primitives/);
+  assert.match(instruments, /Dense operational instruments/);
+  assert.match(login, /login-shell/);
+  assert.match(login, /login-brief/);
+  assert.doesNotMatch(login, /background:\s*#000/);
+  assert.match(entry, /styles\/materials\.css/);
+  assert.match(entry, /styles\/components\.css/);
+  assert.match(entry, /styles\/instruments\.css/);
+  assert.match(entry, /styles\/layout\.css/);
+  assert.match(entry, /styles\/pages\.css/);
+});
+
 test("admin exposes a dedicated tool-capable image intent model configuration", async () => {
   const [settings, api, health, analytics] = await Promise.all([
     readAdmin(path.join("views", "SettingsView.vue")),

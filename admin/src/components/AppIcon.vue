@@ -20,6 +20,10 @@ defineProps<{
     <path v-else-if="name === 'tasks'" d="M7 5h12M7 12h12M7 19h12M3.5 5l.8.8L5.8 4.3M3.5 12l.8.8 1.5-1.5M3.5 19l.8.8 1.5-1.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
     <path v-else-if="name === 'audit'" d="M6 3.8h9l3 3V20a1.2 1.2 0 0 1-1.2 1.2H6A1.2 1.2 0 0 1 4.8 20V5A1.2 1.2 0 0 1 6 3.8Zm9 0v3h3M8 10h6M8 14h7M8 18h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
     <path v-else-if="name === 'theme'" d="M12 3v2.5M12 18.5V21M4.22 4.22l1.77 1.77M18.01 18.01l1.77 1.77M3 12h2.5M18.5 12H21M4.22 19.78l1.77-1.77M18.01 5.99l1.77-1.77M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+    <path v-else-if="name === 'menu'" d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+    <path v-else-if="name === 'chevronLeft'" d="m14.5 5-7 7 7 7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+    <path v-else-if="name === 'chevronRight'" d="m9.5 5 7 7-7 7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+    <path v-else-if="name === 'chevronDown'" d="m5 9 7 7 7-7" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
     <path v-else-if="name === 'check'" d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
     <path v-else d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
   </svg>

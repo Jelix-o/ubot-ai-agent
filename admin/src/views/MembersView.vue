@@ -911,11 +911,11 @@ useRefreshEvents({ refresh: () => void refreshMembers() });
   flex-shrink: 0;
 }
 
-.badge-owner { background: #fef3c7; color: #b45309; }
+.badge-owner { background: var(--amber-soft); color: var(--warning); }
 .badge-admin { background: var(--accent-soft); color: var(--accent-strong); border: 1px solid color-mix(in oklch, var(--accent) 25%, var(--line)); }
 .badge-member { background: var(--surface-soft); color: var(--muted); border: 1px solid var(--line); }
 
-:root[data-theme="dark"] .badge-owner { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+:root[data-theme="dark"] .badge-owner { background: var(--amber-soft); color: var(--warning); }
 :root[data-theme="dark"] .badge-admin { background: var(--accent-soft); color: var(--accent-strong); }
 
 .qq-row {

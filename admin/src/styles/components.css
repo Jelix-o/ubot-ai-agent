@@ -1,0 +1,288 @@
+/* Controls and compound UI primitives for the Pearl Glass system. */
+
+.btn,
+.ghost-btn,
+.icon-btn {
+  min-height: var(--control-h);
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.btn {
+  padding: 0 14px;
+  color: #fff;
+}
+
+.btn:active:not(:disabled),
+.ghost-btn:active:not(:disabled),
+.icon-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.ghost-btn {
+  padding: 0 12px;
+  color: var(--ink);
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-h);
+  padding: 0;
+  color: var(--ink-muted);
+}
+
+.icon-btn .app-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.link-btn {
+  min-height: var(--control-h-sm);
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  color: var(--blue-hover);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.link-btn.danger,
+.link-btn.danger-link {
+  color: var(--red-ink);
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  min-height: var(--control-h);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+  outline: none;
+  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.input,
+.select {
+  padding: 0 11px;
+}
+
+.textarea {
+  min-height: 90px;
+  padding: 9px 11px;
+  resize: vertical;
+}
+
+.select {
+  padding-right: 31px;
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--ink-subtle);
+}
+
+.field,
+.stack-form > label,
+.editor-form > label,
+.form-grid > label,
+.settings-form > label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.field > small,
+.field small,
+label > small {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.tag,
+.role-badge,
+.asset-status,
+.memory-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.switch,
+.switch-card,
+.policy-toggle,
+.target-row,
+.field-option,
+.default-control {
+  border-radius: var(--r-sm);
+}
+
+.switch-card,
+.policy-toggle {
+  border-color: var(--line);
+  box-shadow: var(--edge);
+}
+
+.switch-card:hover,
+.policy-toggle:hover {
+  border-color: var(--line-strong);
+}
+
+.switch-toggle input:focus-visible + .switch-slider,
+.switch input:focus-visible + .switch-slider,
+.policy-toggle input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.switch-slider {
+  border: 1px solid color-mix(in oklch, var(--line-strong) 80%, transparent);
+}
+
+.switch-toggle input:checked + .switch-slider,
+.switch input:checked + .switch-slider {
+  border-color: color-mix(in oklch, var(--blue) 55%, transparent);
+  background: var(--blue);
+}
+
+.tabs,
+.config-tabs,
+.purpose-tabs,
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.tabs > button,
+.config-tabs > button,
+.purpose-tabs > button,
+.view-toggle > button {
+  min-height: var(--control-h-sm);
+  padding: 0 10px;
+  border-radius: var(--r-xs);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.tabs > button:hover,
+.config-tabs > button:hover,
+.purpose-tabs > button:hover,
+.view-toggle > button:hover {
+  color: var(--ink);
+}
+
+.tabs > button.active,
+.config-tabs > button.active,
+.purpose-tabs > button.active,
+.view-toggle > button.active {
+  background: var(--surface-raised);
+  box-shadow: var(--e1), var(--edge-strong);
+  color: var(--blue-hover);
+}
+
+.pagination,
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.pagination .ghost-btn,
+.pager .ghost-btn {
+  min-height: var(--control-h-sm);
+}
+
+.admin-dialog {
+  border-radius: var(--r-lg);
+}
+
+.admin-dialog-head,
+.modal-header {
+  min-height: 58px;
+  padding: 15px 18px;
+  border-bottom-color: var(--line);
+}
+
+.admin-dialog-head h2,
+.modal-header h2 {
+  color: var(--ink-strong);
+  font-size: 15px;
+  font-weight: 730;
+}
+
+.admin-dialog-body,
+.modal-body {
+  padding: 18px;
+}
+
+.admin-dialog-footer,
+.modal-footer {
+  min-height: 58px;
+  padding: 11px 18px;
+  border-top-color: var(--line);
+}
+
+@media (max-width: 620px) {
+  .btn,
+  .ghost-btn {
+    min-height: 38px;
+  }
+
+  .tabs,
+  .config-tabs,
+  .purpose-tabs,
+  .view-toggle {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .tabs > button,
+  .config-tabs > button,
+  .purpose-tabs > button,
+  .view-toggle > button {
+    flex: 1 0 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .ghost-btn,
+  .icon-btn,
+  .link-btn,
+  .input,
+  .select,
+  .textarea {
+    transition: none;
+  }
+}
