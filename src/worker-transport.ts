@@ -5,8 +5,7 @@ import { logInfo } from "./logger.js";
 import { BT_FORWARD_FALLBACK_TEXT, serializeForwardNodes, type ForwardMessageNode } from "./forward-message.js";
 import { ConversationReplyEnvelopeError } from "./services/conversation-state.js";
 import { hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
-import type { SharedDb } from "./shared/sqlite.js";
-import type { OutboxContext } from "./shared/sqlite.js";
+import type { OutboxDeliveryPurpose, OutboxContext, SharedDb } from "./shared/sqlite.js";
 import type { ConversationRoute } from "./services/conversation-context-repository.js";
 import type { ForwardAutoRecallOptions, MessageReceipt, MessageTransport, TransportHealthStatus } from "./bot.js";
 import type {
@@ -91,7 +90,11 @@ export class WorkerTransport implements MessageTransport {
 
   // ---- outbox-based sending ----
 
-  async sendGroupMessage(groupId: string, text: string): Promise<MessageReceipt | undefined> {
+  async sendGroupMessage(
+    groupId: string,
+    text: string,
+    options?: { replyToMessageId?: string; deliveryPurpose?: OutboxDeliveryPurpose },
+  ): Promise<MessageReceipt | undefined> {
     const route = this.routeStorage.getStore() ?? this.conversationRoute;
     // A routed text send is a user-facing conversation reply. Do not persist
     // private reply-envelope fields even when a caller bypasses BotApplication.
@@ -99,7 +102,18 @@ export class WorkerTransport implements MessageTransport {
     if (route && hasUnsafeReplyArtifacts(text, input?.text)) {
       throw new ConversationReplyEnvelopeError();
     }
-    const id = this.enqueueOutbox(groupId, route?.sourceMessageId ?? null, text, "text", this.outboxContext(), undefined, undefined, undefined, this.batchStorage.getStore());
+    const id = this.enqueueOutbox(
+      groupId,
+      options?.replyToMessageId ?? route?.sourceMessageId ?? null,
+      text,
+      "text",
+      this.outboxContext(),
+      undefined,
+      undefined,
+      undefined,
+      this.batchStorage.getStore(),
+      options?.deliveryPurpose ?? "chat",
+    );
     logInfo("Worker enqueued group message to outbox.", { outboxId: id, groupId });
     return { deliveryId: `outbox:${id}` };
   }

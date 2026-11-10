@@ -18,7 +18,13 @@ import {
   NapCatActionOutcomeUnknownError,
   NapCatReverseServer,
 } from "./napcat-reverse-server.js";
-import { openSharedDb, type OutboxRow, type SharedDb } from "./shared/sqlite.js";
+import {
+  openSharedDb,
+  type OutboxDeliveryPurpose,
+  type OutboxRow,
+  type OutboxSuppressionReason,
+  type SharedDb,
+} from "./shared/sqlite.js";
 import { resolveV3RuntimeState } from "./services/v3-runtime-state.js";
 import { hasUnsafeReplyArtifacts } from "./services/reply-artifacts.js";
 import { Metrics } from "./shared/metrics.js";
@@ -54,6 +60,10 @@ const RETRACTED_TTL_MS = 24 * 60 * 60 * 1000;
 const BOT_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EMITTER_POLL_MS = 400;
 const EMITTER_BATCH_SIZE = 20;
+
+function isOutboxDeliveryPurpose(value: unknown): value is OutboxDeliveryPurpose {
+  return value === "chat" || value === "scheduled" || value === "mute_ack";
+}
 
 /**
  * OneBot timestamps describe the source event, but are not a retention
@@ -617,6 +627,9 @@ export class IngressApp {
     await Promise.all([...byGroup.values()].map(async groupRows => {
     for (const row of groupRows) {
       try {
+        if (await this.suppressOutboxForCurrentGroupPolicy(row)) {
+          continue;
+        }
         if (row.kind === "audio_caption" || row.kind === "audio_progress") {
           const notice = JSON.parse(row.text) as { jobId: string };
           const job = this.v3State?.getDocument<AudioJob | null>("audio-job",notice.jobId,null);
@@ -686,6 +699,62 @@ export class IngressApp {
         });
       }
     }
+    }));
+  }
+
+  /**
+   * The Worker may have enqueued a reply before a group was muted or disabled.
+   * Recheck the live V3 group configuration immediately before the one-way QQ
+   * send so that durable queued rows cannot escape the new policy.
+   */
+  private async suppressOutboxForCurrentGroupPolicy(row: OutboxRow): Promise<boolean> {
+    let reason: OutboxSuppressionReason | undefined;
+    if (!isOutboxDeliveryPurpose(row.delivery_purpose)) {
+      reason = "invalid_delivery_purpose";
+    } else if (this.v3State) {
+      const group = this.v3State.getGroup(row.group_id);
+      if (!group) {
+        reason = "group_unavailable";
+      } else if (group.enabled === false) {
+        reason = "group_disabled";
+      } else if (row.delivery_purpose === "mute_ack" && group.botMuted !== true) {
+        // A #闭嘴 acknowledgement must not appear after a later #说话.
+        reason = "stale_mute_ack";
+      } else if (group.botMuted === true && row.delivery_purpose !== "scheduled" && row.delivery_purpose !== "mute_ack") {
+        reason = "group_muted";
+      }
+    }
+    if (!reason) return false;
+
+    const result = this.sharedDb.suppressOutboxDelivery(row.id, reason);
+    if (!result.suppressed) return true;
+    await this.removeSuppressedGeneratedImageFiles(result.generatedImagePaths);
+    this.metrics.inc("outbox_policy_suppressed", result.outboxIds.length);
+    this.metrics.inc(`outbox_policy_suppressed_${reason}`, result.outboxIds.length);
+    logInfo("Outbox delivery suppressed by current group policy.", {
+      outboxId: row.id,
+      outboxIds: result.outboxIds,
+      groupId: row.group_id,
+      kind: row.kind,
+      deliveryPurpose: row.delivery_purpose,
+      reason,
+    });
+    // The row was claimed before this check. Even if another code path already
+    // terminalized it, never continue to a second QQ action from this pass.
+    return true;
+  }
+
+  private async removeSuppressedGeneratedImageFiles(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+    const root = path.join(this.options.dataDir, "generated-images");
+    await Promise.all(paths.map(async filePath => {
+      try {
+        const resolved = await resolveGeneratedImageFile(root, filePath);
+        await rm(resolved, { force: true });
+      } catch {
+        // A missing or unsafe path must never broaden a policy cancellation
+        // into a filesystem deletion outside the managed staging directory.
+      }
     }));
   }
 

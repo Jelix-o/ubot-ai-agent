@@ -22,7 +22,7 @@ import { ScheduledReminderService } from "../dist/services/scheduled-reminder-se
 import { V3StateRepository } from "../dist/services/v3-state-repository.js";
 
 const TEST_STATE_KEY = "0".repeat(64);
-const GROUP_ID = "866209871";
+const GROUP_ID = "1000000001";
 const USERNAME = "smoke-admin";
 const PASSWORD = "smoke-password";
 const IMAGE_PREVIEW_SMOKE_PNG = Buffer.from(
@@ -83,7 +83,7 @@ try {
   // Browser checks use loopback connections and disposable credentials so
   // layout/save checks run without production data or upstream calls.
   if (useLayoutFixture) {
-    await groupConfigService.updateManualIdentity(GROUP_ID, "2458031445", { names: ["外包仔", "外包仙人"], note: "前端开发" });
+    await groupConfigService.updateManualIdentity(GROUP_ID, "20001", { names: ["成员甲"], note: "低频参与冒烟" });
     const now = new Date().toISOString();
     await settingsStore.update({
       models: [
@@ -183,7 +183,7 @@ try {
     audioGenerationService,
     adminOperationLogService: operations,
     async getTransportHealthStatus() { return { ok: true, detail: "smoke transport" }; },
-    async listGroupMembers() { return [{ user_id: 2458031445, card: "外包仔", nickname: "原昵称", role: "member" }]; },
+    async listGroupMembers() { return [{ user_id: 20001, card: "成员甲", nickname: "成员甲", role: "member" }]; },
   });
   await server.start();
   const raw = server.server;
@@ -489,36 +489,67 @@ async function verifyBrowserExperience(baseUrl, screenshotDir) {
     await desktop.screenshot({ path: path.join(screenshotDir, "image-preview-dialog-desktop.png"), fullPage: true });
     await imageDialog.getByRole("button", { name: "关闭详情" }).click();
 
-    await desktop.goto(`${baseUrl}/groups?tab=capabilities`, { waitUntil: "networkidle" });
-    const ambient = desktop.getByRole("checkbox", { name: /^读空气/ });
-    const poke = desktop.getByRole("checkbox", { name: /^回戳/ });
-    const experience = desktop.getByRole("checkbox", { name: /^群聊体验增强/ });
-    const personalReminders = desktop.getByRole("checkbox", { name: /^个人一次性提醒/ });
-    const assistance = desktop.getByRole("checkbox", { name: /^交互辅助/ });
-    if(await assistance.isChecked()) throw new Error("Interaction assistance must default off.");
-    if (await ambient.isChecked() || await poke.isChecked()) throw new Error("Group interactions must default off.");
-    if (await experience.isChecked() || await personalReminders.isChecked()) throw new Error("New experience controls must default off.");
-    await ambient.check();
-    await poke.check();
-    await experience.check();
-    await personalReminders.check();
-    await assistance.check();
-    await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).fill("900");
-    await desktop.getByRole("spinbutton", { name: "回戳概率（%）" }).fill("40");
     const saveGroup = async () => {
       const saved = desktop.waitForResponse(response => response.url().includes(`/api/groups/${GROUP_ID}/config`) && response.request().method() === "PATCH" && response.ok());
       await desktop.getByRole("button", { name: "保存配置", exact: true }).first().click();
       await saved;
     };
+
+    await desktop.goto(`${baseUrl}/groups?tab=reply`, { waitUntil: "networkidle" });
+    const ambient = desktop.getByRole("checkbox", { name: /^读空气（主动接话）/ });
+    if (await ambient.isChecked()) throw new Error("Read-air must default off.");
+    await desktop.getByLabel("参与方式").selectOption("selected_members");
+    await ambient.check();
+    await saveGroup();
+
+    await desktop.goto(`${baseUrl}/groups?tab=permissions`, { waitUntil: "networkidle" });
+    const lowFrequencyMembers = desktop.locator(".multi-tag-select").first();
+    await lowFrequencyMembers.locator(".tag-search-input").fill("20001");
+    await lowFrequencyMembers.getByRole("button", { name: "成员甲 / 20001 低频参与冒烟", exact: true }).click();
+    await saveGroup();
+
+    await desktop.goto(`${baseUrl}/groups?tab=reply`, { waitUntil: "networkidle" });
+    await ambient.uncheck();
     await saveGroup();
     await desktop.reload({ waitUntil: "networkidle" });
-    if (!await ambient.isChecked() || !await poke.isChecked() || await desktop.getByRole("spinbutton", { name: "主动插话冷却（秒）" }).inputValue() !== "900") throw new Error("Interaction controls did not persist.");
+    if (await ambient.isChecked() || await desktop.getByLabel("参与方式").inputValue() !== "selected_members") throw new Error("Read-air must not alter selected-member participation.");
+    await desktop.getByText("静音后只保留已启用的日报、节日倒计时和管理员普通定时提醒；授权管理员发送精确 #说话 恢复。", { exact: true }).waitFor();
+
+    await desktop.goto(`${baseUrl}/groups?tab=permissions`, { waitUntil: "networkidle" });
+    await lowFrequencyMembers.getByText(/20001/).waitFor();
+    await desktop.getByText(/该机制与读空气独立；关闭读空气后，已配置成员仍可低频参与。/).waitFor();
+
+    await desktop.goto(`${baseUrl}/groups?tab=capabilities`, { waitUntil: "networkidle" });
+    const poke = desktop.getByRole("checkbox", { name: /^戳一戳回戳/ });
+    const experience = desktop.getByRole("checkbox", { name: /^群聊体验增强/ });
+    const personalReminders = desktop.getByRole("checkbox", { name: /^个人一次性提醒/ });
+    const assistance = desktop.getByRole("checkbox", { name: /^交互辅助/ });
+    if(await assistance.isChecked()) throw new Error("Interaction assistance must default off.");
+    if (await poke.isChecked()) throw new Error("Poke-back must default off.");
+    if (await experience.isChecked() || await personalReminders.isChecked()) throw new Error("New experience controls must default off.");
+    await poke.check();
+    await experience.check();
+    await personalReminders.check();
+    await assistance.check();
+    await desktop.getByRole("spinbutton", { name: "被戳后回戳概率（%）" }).fill("0");
+    await desktop.getByText("仅控制机器人被戳后的回戳；0% 表示永不回戳，不影响读空气、指定成员低频参与或普通回复。", { exact: true }).waitFor();
+    await saveGroup();
+    await desktop.reload({ waitUntil: "networkidle" });
+    if (!await poke.isChecked() || await desktop.getByRole("spinbutton", { name: "被戳后回戳概率（%）" }).inputValue() !== "0") throw new Error("Poke-back controls did not persist.");
     if (!await experience.isChecked() || !await personalReminders.isChecked()) throw new Error("Experience and personal reminder controls did not persist.");
     if(!await assistance.isChecked()) throw new Error("Interaction assistance control did not persist.");
     await assertNoHorizontalOverflow(desktop, "desktop group interactions");
     await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-desktop.png"), fullPage: true });
-    await ambient.uncheck();
+    await desktop.setViewportSize({ width: 375, height: 812 });
+    await desktop.waitForFunction(() => document.querySelector("aside.sidebar")?.getBoundingClientRect().right <= 0);
+    await assertNoHorizontalOverflow(desktop, "mobile group interactions");
+    await desktop.screenshot({ path: path.join(screenshotDir, "group-interactions-mobile.png"), fullPage: true });
+    await desktop.setViewportSize({ width: 1440, height: 1000 });
     await poke.uncheck();
+    await saveGroup();
+
+    await desktop.goto(`${baseUrl}/groups?tab=reply`, { waitUntil: "networkidle" });
+    await desktop.getByLabel("参与方式").selectOption("mentions_only");
     await saveGroup();
 
     await desktop.goto(baseUrl + "/interactions", { waitUntil:"networkidle" });

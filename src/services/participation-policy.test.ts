@@ -42,12 +42,12 @@ test("participation policy observes ambient messages without soliciting a reply"
   });
 });
 
-test("participation policy keeps explicit mentions above the muted ambient rule", () => {
+test("participation policy gives muted state precedence over explicit mentions", () => {
   const decision = decide({ hasAtBot: true, groupMuted: true });
 
-  assert.equal(decision.action, "reply");
-  assert.equal(decision.reason, "direct_mention");
-  assert.equal(decision.score, 1);
+  assert.equal(decision.action, "observe");
+  assert.equal(decision.reason, "muted_observation");
+  assert.equal(decision.score, 0);
 });
 
 test("participation policy routes explicit memory requests as auditable tasks", () => {
@@ -65,9 +65,22 @@ test("participation policy routes explicit memory requests as auditable tasks", 
 test("participation policy treats an already-verified bot reply as an explicit conversation", () => {
   const decision = decide({ hasReply: true, groupMuted: true });
 
-  assert.equal(decision.action, "reply");
-  assert.equal(decision.reason, "explicit_reply");
-  assert.equal(decision.score, 0.98);
+  assert.equal(decision.action, "observe");
+  assert.equal(decision.reason, "muted_observation");
+  assert.equal(decision.score, 0);
+});
+
+test("participation policy does not route commands or explicit memory tasks while muted", () => {
+  const command = decide({ text: "#状态", isCommand: true, groupMuted: true });
+  const memory = decide({
+    text: "请记住我喜欢简洁回答",
+    hasAtBot: true,
+    isExplicitMemoryRequest: true,
+    groupMuted: true,
+  });
+
+  assert.equal(command.reason, "muted_observation");
+  assert.equal(memory.reason, "muted_observation");
 });
 
 test("participation policy routes only conversation commands into the reply path", () => {

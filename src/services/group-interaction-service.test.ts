@@ -97,3 +97,18 @@ test("only genuine fresh targeted pokes pass probability, durable dedup and sepa
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE kind='poke'").get()?.n, 3);
   assert.equal(new GroupInteractionService(db, "999", () => 0.25).queuePoke({ ...event, time: event.time + 120 }, group, now + 120_000), false);
 });
+
+test("zero poke probability disables only poke replies", t => {
+  const { service, add, db } = fixture(t);
+  add(1); add(2); add(3);
+  const noPokes = { ...group, pokeReplyProbabilityPercent: 0 };
+  const event: GroupPokeEvent = {
+    post_type: "notice", notice_type: "notify", sub_type: "poke", group_id: 100,
+    user_id: 1, target_id: 999, self_id: 999, time: now / 1000,
+  };
+
+  assert.equal(service.queuePoke(event, noPokes, now), false);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE kind = 'poke'").get()?.n, 0);
+  assert.equal(service.ambientCandidate(noPokes, now).length, 3);
+  assert.equal(service.claimAutomaticReply({ ...noPokes, participationMode: "selected_members" }, false, now, ["selected"]), true);
+});

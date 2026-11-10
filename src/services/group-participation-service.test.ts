@@ -54,7 +54,7 @@ test("group participation service uses persisted system defaults only when the g
   assert.equal(decision.reason, "keyword_trigger");
 });
 
-test("group participation service preserves muted and verified-reply precedence", async () => {
+test("group participation service gives muted state precedence over every reply trigger", async () => {
   const service = createService(group({
     botMuted: true,
     triggerKeywords: [{ keyword: "会仙", enabled: true }],
@@ -66,8 +66,8 @@ test("group participation service preserves muted and verified-reply precedence"
 
   assert.equal(mutedKeyword.action, "observe");
   assert.equal(mutedKeyword.reason, "muted_observation");
-  assert.equal(directMention.reason, "direct_mention");
-  assert.equal(verifiedReply.reason, "explicit_reply");
+  assert.equal(directMention.reason, "muted_observation");
+  assert.equal(verifiedReply.reason, "muted_observation");
 });
 
 test("explicit memory request parsing remains explicit and reusable by participation routing", () => {

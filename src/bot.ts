@@ -21,6 +21,7 @@ import { BtSearchError, parseBtSearchRequest, type BtSearchRuntime } from "./ser
 import { btHelp, btEmptyResultMessage, escapeBtText, renderBtForwardNodes } from "./services/bt-search-renderer.js";
 import { BT_FORWARD_FALLBACK_TEXT, sendForwardOrFallback, type ForwardMessageNode } from "./forward-message.js";
 import { NapCatActionOutcomeUnknownError } from "./napcat-action-errors.js";
+import type { OutboxDeliveryPurpose } from "./shared/sqlite.js";
 import os from "node:os";
 
 import { logError, logInfo, logWarn } from "./logger.js";
@@ -386,7 +387,10 @@ export interface MessageTransport {
   sendGroupMessageBatch?(groupId: string, texts: string[]): Promise<MessageReceipt[]>;
   sendMemeGroupImage?(groupId: string, assetId: string, afterDeliveryId?: string): Promise<void | MessageReceipt>;
   sendGroupPoke?(groupId: string, userId: string): Promise<void>;
-  sendGroupMessage(groupId: string, text: string, options?: { replyToMessageId?: string }): Promise<void | MessageReceipt>;
+  sendGroupMessage(groupId: string, text: string, options?: {
+    replyToMessageId?: string;
+    deliveryPurpose?: OutboxDeliveryPurpose;
+  }): Promise<void | MessageReceipt>;
   sendGroupForwardMessage?(groupId: string, nodes: ForwardMessageNode[], options?: ForwardAutoRecallOptions): Promise<void | MessageReceipt>;
   /** Persists a recall after a direct transport receives a real platform receipt. */
   scheduleMessageRecall?(groupId: string, platformMessageId: string, policy: MessageRecallPolicy): Promise<void> | void;
@@ -807,6 +811,11 @@ export class BotApplication {
       includeRecent: Boolean(group && !excludedUserIds.includes(String(event.user_id))), excludedUserIds };
   }
 
+  /** Worker preflight guard: muted messages still reach the passive report recorder, never a feature lane. */
+  async isGroupMuted(groupId: string): Promise<boolean> {
+    return (await this.groupConfigService.getGroup(groupId))?.botMuted === true;
+  }
+
   async isLocallyRoutableRequest(event: NapcatGroupMessageEvent): Promise<boolean> {
     const text = parseGroupMessage(event.message, this.botQq).text;
     if (parseExplicitMemoryRequest(text)) return true;
@@ -937,7 +946,22 @@ export class BotApplication {
 
     const parsedMessage = parseGroupMessage(event.message, this.botQq);
     const commandText = extractCommandText(event.message);
+    // Muting is a hard response boundary. Keep only passive report collection
+    // and the exact, authorized recovery command ahead of every command,
+    // routing, ranking, preview, or model path.
+    if (groupConfig.botMuted === true) {
+      if (isExactMuteRecoveryMessage(event.message) &&
+          await this.isAdmin(groupConfig, userId, event.sender?.role)) {
+        await this.handleMuteCommand(groupConfig, event, UNMUTE_COMMAND);
+      } else {
+        await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
+      }
+      return;
+    }
+
     const runtimeCommands = await this.getRuntimeCommands();
+    const muteCommand = matchRuntimeCommand(commandText, runtimeCommands, "mute");
+
     // Status reads must not interrupt a running reply or mutate continuation state.
     if (!this.isBlacklistedUser(groupConfig,userId) && await this.handlePersonalStatus(groupConfig,event,commandText,runtimeCommands)) return;
     if(!this.isBlacklistedUser(groupConfig,userId) && await this.handleRequestStatus(groupConfig,event,commandText,this.assistanceFacts(event).hasAtBot,runtimeCommands))return;
@@ -984,13 +1008,13 @@ export class BotApplication {
       const match = matchCommandPrefix(commandText, [configuredCommand.primary, ...configuredCommand.aliases, ...(editOnly ? ["#改图"] : [])], configuredCommand.primary)!;
       const modelRead = configuredCommand.id === "model" && /^(?:状态|列表)?$/.test(match.suffix.trim());
       if (!modelRead && !(await this.canUseRuntimeCommand(configuredCommand, groupConfig, event))) {
-        if (!groupConfig.botMuted) await this.sendText(groupId, "你没有使用这条指令的权限");
+        await this.sendText(groupId, "你没有使用这条指令的权限");
         return;
       }
     }
 
     if (editOnly) {
-      if (groupConfig.botMuted !== true && !this.isBlacklistedUser(groupConfig, userId)) {
+      if (!this.isBlacklistedUser(groupConfig, userId)) {
         await this.handleImageGenerationCommand(groupConfig, event, commandText.replace(/^#改图\s*/u, ""), signal, true, parsedMessage, {
           sourceRowId: options.imageRequestSourceRowId,
           triggerSource: "command",
@@ -1002,7 +1026,7 @@ export class BotApplication {
 
     const btCommand = matchBtCommand(commandText, runtimeCommands);
     if (btCommand) {
-      if (btCommand.enabled && groupConfig.botMuted !== true && !this.isBlacklistedUser(groupConfig, userId)) {
+      if (btCommand.enabled && !this.isBlacklistedUser(groupConfig, userId)) {
         await this.handleBtSearchCommand(groupConfig, btCommand, signal);
       }
       return;
@@ -1032,7 +1056,7 @@ export class BotApplication {
 
     const memeSelector=groupConfig.interactionAssistanceEnabled ? naturalMemeSelector(commandText,this.assistanceFacts(event).hasAtBot) : undefined;
     if(memeSelector!==undefined && (!groupConfig.groupExperienceEnabled || !this.memeLibraryService?.listTags)){
-      if(!groupConfig.botMuted)await this.sendText(groupId,"本群表情功能当前未启用，请联系管理员检查群聊体验和图库设置。");
+      await this.sendText(groupId,"本群表情功能当前未启用，请联系管理员检查群聊体验和图库设置。");
       return;
     }
     if (await this.handleMemeCollection(groupConfig, event, parsedMessage, memeSelector === undefined ? commandText : "#表情 "+memeSelector)) return;
@@ -1059,7 +1083,6 @@ export class BotApplication {
 
     this.recordGroupTranscriptMessage(groupConfig, event, parsedMessage, commandText, runtimeCommands);
 
-    const muteCommand = matchRuntimeCommand(commandText, runtimeCommands, "mute");
     if (muteCommand) {
       await this.handleMuteCommand(groupConfig, event, muteCommand.rewrittenText);
       return;
@@ -1126,41 +1149,6 @@ export class BotApplication {
     const opsAlertCommand = matchRuntimeCommand(commandText, runtimeCommands, "ops_alert");
     if (opsAlertCommand) {
       await this.handleOpsAlertCommand(groupConfig, event, opsAlertCommand.rewrittenText);
-      return;
-    }
-
-    if (groupConfig.botMuted === true) {
-      const dailyReportCommand = matchRuntimeCommand(commandText, runtimeCommands, "daily_report");
-      if (dailyReportCommand) {
-        if (!this.isCapabilityEnabled("daily_reports")) {
-          await this.rejectCapability(groupId, "daily_reports");
-          return;
-        }
-        await this.handleDailyReportCommand(groupConfig, event, dailyReportCommand.rewrittenText);
-        return;
-      }
-
-      const holidayCountdownCommand = matchRuntimeCommand(commandText, runtimeCommands, "holiday_countdown");
-      if (holidayCountdownCommand) {
-        if (!this.isCapabilityEnabled("holiday_countdown")) {
-          await this.rejectCapability(groupId, "holiday_countdown");
-          return;
-        }
-        await this.handleHolidayCountdownCommand(groupConfig, event, holidayCountdownCommand.rewrittenText);
-        return;
-      }
-
-      const scheduledReminderCommand = matchRuntimeCommand(commandText, runtimeCommands, "scheduled_reminder");
-      if (scheduledReminderCommand) {
-        if (!this.isCapabilityEnabled("scheduled_reminders")) {
-          await this.rejectCapability(groupId, "scheduled_reminders");
-          return;
-        }
-        await this.handleScheduledReminderCommand(groupConfig, event, scheduledReminderCommand.rewrittenText);
-        return;
-      }
-
-      await this.recordDailyReportMessage(groupConfig, event, parsedMessage);
       return;
     }
 
@@ -2263,7 +2251,7 @@ export class BotApplication {
               useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
               members: await this.safeListGroupMembers(groupConfig.groupId),
             });
-            await this.sendText(groupConfig.groupId, report);
+            await this.sendText(groupConfig.groupId, report, undefined, "scheduled");
             await this.dailyReportService.markSent(groupConfig.groupId, now, report);
           });
           logInfo("Sent daily group report.", {
@@ -2302,7 +2290,7 @@ export class BotApplication {
             const message = await this.holidayCountdownService.buildCountdownMessage(now, {
               useAiQuip: tokenCostControl.dailyReportAiQuipEnabled,
             });
-            await this.sendText(groupConfig.groupId, message);
+            await this.sendText(groupConfig.groupId, message, undefined, "scheduled");
             await this.holidayCountdownService.markSent(groupConfig.groupId, now);
           });
           logInfo("Sent holiday countdown.", {
@@ -2351,7 +2339,7 @@ export class BotApplication {
             const message = await this.scheduledReminderService.buildReminderMessage(task, {
               useAiRewrite: tokenCostControl.scheduledReminderAiRewriteEnabled,
             });
-            await this.sendText(task.groupId, message);
+            await this.sendText(task.groupId, message, undefined, "scheduled");
             await this.scheduledReminderService.markSent(task.id, message, now);
           });
           logInfo("Sent scheduled reminder.", {
@@ -3079,7 +3067,7 @@ export class BotApplication {
         this.getEnabledGroupConfigs(),
         this.getTransportHealthStatus(),
       ]);
-      const enabledGroups = groups.filter((group) => group.opsAlertsEnabled === true);
+      const enabledGroups = groups.filter((group) => group.opsAlertsEnabled === true && group.botMuted !== true);
 
       if (options.includeStartup && !this.opsAlertState.startupSent) {
         this.opsAlertState.startupSent = true;
@@ -3257,7 +3245,11 @@ export class BotApplication {
     if (commandText === MUTE_COMMAND) {
       await this.groupConfigService.updateBotMuted(groupId, true);
       await this.logAdminOperation(groupId, userId, "闭嘴", undefined, "机器人进入静默模式");
-      await this.sendText(groupId, "机器人已闭嘴，只保留总结、日报、节假日和定时任务能力");
+      await this.sendText(groupId, "机器人已静音。", undefined, "mute_ack");
+      return;
+    }
+
+    if (commandText !== UNMUTE_COMMAND) {
       return;
     }
 
@@ -5884,7 +5876,10 @@ export class BotApplication {
     message: string;
     ignoreCooldown?: boolean;
   }): Promise<void> {
-    if (args.groups.length === 0) {
+    const eligibleGroups = args.groups.filter(group =>
+      group.enabled !== false && group.opsAlertsEnabled === true && group.botMuted !== true,
+    );
+    if (eligibleGroups.length === 0) {
       return;
     }
 
@@ -5895,7 +5890,7 @@ export class BotApplication {
     }
 
     const textByGroup = new Map<string, string>();
-    for (const group of args.groups) {
+    for (const group of eligibleGroups) {
       textByGroup.set(
         group.groupId,
         `【运维告警】${args.message}`,
@@ -5933,7 +5928,7 @@ export class BotApplication {
     }
 
     this.opsAlertState.sendFailureAlertActive = true;
-    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled === true);
+    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled === true && group.botMuted !== true);
     await this.sendOpsAlertToGroups({
       groups,
       type: "send-failure",
@@ -5956,7 +5951,7 @@ export class BotApplication {
       return;
     }
 
-    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled === true);
+    const groups = (await this.getEnabledGroupConfigs()).filter((group) => group.opsAlertsEnabled === true && group.botMuted !== true);
     await this.sendOpsAlertToGroups({
       groups,
       type: "send-recovered",
@@ -5965,9 +5960,17 @@ export class BotApplication {
     });
   }
 
-  private async sendText(groupId: string, text: string, replyToMessageId?: string): Promise<MessageReceipt | undefined> {
+  private async sendText(
+    groupId: string,
+    text: string,
+    replyToMessageId?: string,
+    deliveryPurpose: OutboxDeliveryPurpose = "chat",
+  ): Promise<MessageReceipt | undefined> {
     try {
-      const receipt = await this.transport.sendGroupMessage(groupId, text, replyToMessageId ? { replyToMessageId } : undefined);
+      const receipt = await this.transport.sendGroupMessage(groupId, text, {
+        ...(replyToMessageId ? { replyToMessageId } : {}),
+        deliveryPurpose,
+      });
       this.liveChatService.recordBotActivity(groupId);
       await this.handleSendSuccessRecovery();
       return receipt ?? undefined;
@@ -6502,6 +6505,12 @@ function extractCommandText(message: NapcatGroupMessageEvent["message"]): string
     })
     .join(" ")
     .trim();
+}
+
+function isExactMuteRecoveryMessage(message: NapcatGroupMessageEvent["message"]): boolean {
+  if (typeof message === "string") return message === UNMUTE_COMMAND;
+  if (message.some(segment => typeof segment !== "string" && segment.type !== "text")) return false;
+  return message.map(segment => typeof segment === "string" ? segment : segment.data?.text ?? "").join("") === UNMUTE_COMMAND;
 }
 
 /**

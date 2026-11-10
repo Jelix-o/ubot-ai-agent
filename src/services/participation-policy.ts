@@ -69,6 +69,9 @@ export class ParticipationPolicy {
     if (!hasContent) {
       return this.result("ignore", "empty_message", 0, signals);
     }
+    if (input.groupMuted) {
+      return this.result("observe", "muted_observation", 0, signals);
+    }
     if (input.isCommand) {
       return input.isConversationCommand
         ? this.result("reply", "conversation_command", 1, signals)
@@ -82,9 +85,6 @@ export class ParticipationPolicy {
     }
     if (input.hasReply) {
       return this.result("reply", "explicit_reply", 0.98, signals);
-    }
-    if (input.groupMuted) {
-      return this.result("observe", "muted_observation", 0, signals);
     }
     if (input.keywordTriggered) {
       return this.result("reply", "keyword_trigger", 0.82, signals);

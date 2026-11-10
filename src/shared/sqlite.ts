@@ -51,6 +51,22 @@ export interface InflightRow {
   merged_reply: string | null;
 }
 
+/** Why an outbox row is permitted to reach QQ. Unknown values fail closed. */
+export type OutboxDeliveryPurpose = "chat" | "scheduled" | "mute_ack";
+
+export type OutboxSuppressionReason =
+  | "group_unavailable"
+  | "group_disabled"
+  | "group_muted"
+  | "stale_mute_ack"
+  | "invalid_delivery_purpose";
+
+export interface OutboxSuppressionResult {
+  suppressed: boolean;
+  outboxIds: number[];
+  generatedImagePaths: string[];
+}
+
 export interface OutboxRow {
   batch_id?: string | null;
   delay_before_ms?: number;
@@ -58,6 +74,7 @@ export interface OutboxRow {
   group_id: string;
   reply_to: string | null;
   kind: string;
+  delivery_purpose: OutboxDeliveryPurpose;
   text: string;
   forward_payload_json?: string | null;
   image_preview_id?: string | null;
@@ -401,6 +418,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   group_id TEXT NOT NULL,
   reply_to TEXT,
   kind TEXT NOT NULL DEFAULT 'text',
+  delivery_purpose TEXT NOT NULL DEFAULT 'chat'
+    CHECK (delivery_purpose IN ('chat', 'scheduled', 'mute_ack')),
   text TEXT NOT NULL,
   forward_payload_json TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -1452,6 +1471,19 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     `);
     },
   },
+  {
+    version: 33,
+    name: "add-outbox-delivery-purpose",
+    apply: db => {
+      const columns = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+      if (!columns.some(column => column.name === "delivery_purpose")) {
+        // Existing rows predate purpose provenance. Treat them as chat so a
+        // muted group never accidentally receives a legacy queued reply.
+        db.exec("ALTER TABLE outbox ADD COLUMN delivery_purpose TEXT NOT NULL DEFAULT 'chat' CHECK (delivery_purpose IN ('chat', 'scheduled', 'mute_ack'))");
+      }
+      db.exec("UPDATE outbox SET delivery_purpose = 'chat' WHERE delivery_purpose IS NULL OR delivery_purpose NOT IN ('chat', 'scheduled', 'mute_ack')");
+    },
+  },
 ];
 
 const MAX_OUTBOX_DELIVERY_ATTEMPTS = 3;
@@ -2335,6 +2367,7 @@ export class SharedDb {
     autoRecall?: OutboxAutoRecallPolicy,
     imagePreviewId?: string,
     timing?: { batchId: string; delayBeforeMs: number },
+    deliveryPurpose: OutboxDeliveryPurpose = "chat",
   ): number {
     if (imagePreviewId && (kind !== "generated_image" || !this.db.prepare(
       "SELECT id FROM image_previews WHERE id = ? AND group_id = ? AND status = 'available' AND publication_state = 'published' AND expires_at > ?",
@@ -2346,8 +2379,9 @@ export class SharedDb {
         `INSERT INTO outbox
            (group_id, reply_to, kind, text, status, topic_id, branch_id,
             source_turn_id, turn_id, created_at, forward_payload_json,
-            auto_recall_after_ms, auto_recall_deadline_ms, image_preview_id, batch_id, delay_before_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            auto_recall_after_ms, auto_recall_deadline_ms, image_preview_id, batch_id, delay_before_ms,
+            delivery_purpose)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         groupId,
@@ -2366,6 +2400,7 @@ export class SharedDb {
         imagePreviewId ?? null,
         timing?.batchId ?? null,
         Math.max(0, Math.min(3500, timing?.delayBeforeMs ?? 0)),
+        normalizeOutboxDeliveryPurpose(deliveryPurpose),
       );
     const id = Number(result.lastInsertRowid);
     this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${id}`, id);
@@ -2383,6 +2418,7 @@ export class SharedDb {
     imagePath: string;
     imagePreviewId: string;
     context?: OutboxContext;
+    deliveryPurpose?: OutboxDeliveryPurpose;
     now?: number;
   }): GeneratedImageRequestOutbox {
     const requestId = input.requestId.trim();
@@ -2436,8 +2472,8 @@ export class SharedDb {
       const inserted = this.db.prepare(
         `INSERT INTO outbox
            (group_id, reply_to, kind, text, status, topic_id, branch_id,
-            source_turn_id, turn_id, created_at, image_preview_id)
-         VALUES (?, NULL, 'generated_image', ?, ?, ?, ?, ?, ?, ?, ?)`,
+            source_turn_id, turn_id, created_at, image_preview_id, delivery_purpose)
+         VALUES (?, NULL, 'generated_image', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         groupId,
         imagePath,
@@ -2448,6 +2484,7 @@ export class SharedDb {
         input.context?.turnId ?? null,
         now,
         imagePreviewId,
+        normalizeOutboxDeliveryPurpose(input.deliveryPurpose),
       );
       const outboxId = Number(inserted.lastInsertRowid);
       this.db.prepare("UPDATE outbox SET delivery_id = ? WHERE id = ?").run(`outbox:${outboxId}`, outboxId);
@@ -2712,6 +2749,72 @@ export class SharedDb {
     this.db.prepare(`UPDATE outbox SET status='failed', retry_after=NULL, updated_at=?
       WHERE batch_id IS NOT NULL AND status IN ('pending','preparing') AND EXISTS
       (SELECT 1 FROM outbox prior WHERE prior.batch_id=outbox.batch_id AND prior.id<outbox.id AND prior.status='failed' AND prior.retry_after IS NULL)`).run(now);
+  }
+
+  /**
+   * Terminally drops a claimed delivery when the group policy changed after a
+   * Worker queued it. Batch siblings are cancelled together so a suppressed
+   * first bubble cannot leave a later bubble permanently blocked behind it.
+   */
+  suppressOutboxDelivery(
+    id: number,
+    reason: OutboxSuppressionReason,
+    now = Date.now(),
+  ): OutboxSuppressionResult {
+    return this.withImmediateTransaction(() => {
+      const target = this.db.prepare(
+        "SELECT id, batch_id FROM outbox WHERE id = ?",
+      ).get(id) as { id: number; batch_id: string | null } | undefined;
+      if (!target) return { suppressed: false, outboxIds: [], generatedImagePaths: [] };
+
+      const rows = this.db.prepare(
+        target.batch_id
+          ? `SELECT id, kind, text FROM outbox
+               WHERE (id = ? OR batch_id = ?)
+                 AND status IN ('preparing', 'pending', 'sending', 'failed')
+               ORDER BY id`
+          : `SELECT id, kind, text FROM outbox
+               WHERE id = ?
+                 AND status IN ('preparing', 'pending', 'sending', 'failed')`,
+      ).all(...(target.batch_id ? [id, target.batch_id] : [id])) as Array<{
+        id: number;
+        kind: string;
+        text: string;
+      }>;
+      if (rows.length === 0) return { suppressed: false, outboxIds: [], generatedImagePaths: [] };
+
+      const ids = rows.map(row => row.id);
+      const placeholders = ids.map(() => "?").join(",");
+      this.db.prepare(
+        `UPDATE outbox
+            SET status = 'cancelled', retry_after = NULL, updated_at = ?
+          WHERE id IN (${placeholders})
+            AND status IN ('preparing', 'pending', 'sending', 'failed')`,
+      ).run(now, ...ids);
+
+      const suppressionCode = `delivery_suppressed_${reason}`;
+      this.db.prepare(
+        `UPDATE image_requests
+            SET status = 'failed', error_code = ?, completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE outbox_id IN (${placeholders})
+            AND status IN ('queued', 'delivery_unknown')`,
+      ).run(suppressionCode, now, now, ...ids);
+      this.db.prepare(
+        `UPDATE image_previews
+            SET status = 'deleted', prompt = NULL, prompt_summary = '',
+                deleted_at = COALESCE(deleted_at, ?), updated_at = ?
+          WHERE id IN (SELECT image_preview_id FROM outbox WHERE id IN (${placeholders}))
+            AND status = 'available'`,
+      ).run(now, now, ...ids);
+
+      return {
+        suppressed: true,
+        outboxIds: ids,
+        generatedImagePaths: rows
+          .filter(row => row.kind === "generated_image")
+          .map(row => row.text),
+      };
+    });
   }
 
   markOutboxFailed(id: number, retryAfterMs: number | null = 2_000): void {
@@ -3161,6 +3264,14 @@ function parseOutboxDeliveryId(value: string): number | undefined {
   }
   const id = Number(match[1]);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+function normalizeOutboxDeliveryPurpose(value: OutboxDeliveryPurpose | undefined): OutboxDeliveryPurpose {
+  const purpose = value ?? "chat";
+  if (purpose === "chat" || purpose === "scheduled" || purpose === "mute_ack") {
+    return purpose;
+  }
+  throw new Error("outbox_delivery_purpose_invalid");
 }
 
 function messageExecutionLeaseFromRow(row: {

@@ -232,6 +232,12 @@ export class WorkerApp {
         if (this.sharedDb.isRetracted(message.group_id, message.msg_id)) {
           return `${message.group_id}:retracted`;
         }
+        // Muted groups still flow through BotApplication once so the daily
+        // report store can passively retain the message. They never enter
+        // feature-specific queues, classifiers, or participation routing.
+        if (await this.options.botApp.isGroupMuted(message.group_id)) {
+          return `${message.group_id}:muted`;
+        }
         // Blacklisted messages must not create a participation audit or a
         // conversation route. BotApplication still owns command precedence,
         // daily-report recording, and the fixed image response.
@@ -371,6 +377,15 @@ export class WorkerApp {
     // including the blacklist fast path.
     if (this.sharedDb.isRetracted(message.group_id, message.msg_id)) {
       logInfo("Skipped retracted message.", { groupId: message.group_id, msgId: message.msg_id });
+      await done();
+      return;
+    }
+
+    // Recheck after queueing: a group may have been muted while this message
+    // waited behind another key. BotApplication owns the authorized #说话
+    // recovery and passive daily-report collection.
+    if (await this.options.botApp.isGroupMuted(message.group_id)) {
+      await this.runWithRequestContext(message.id, () => this.options.botApp.handleGroupMessage(this.buildEvent(message)));
       await done();
       return;
     }

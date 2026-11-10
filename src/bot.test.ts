@@ -70,7 +70,7 @@ import type {
 } from "./types.js";
 
 class FakeTransport implements MessageTransport {
-  readonly sent: Array<{ groupId: string; text: string }> = [];
+  readonly sent: Array<{ groupId: string; text: string; deliveryPurpose?: "chat" | "scheduled" | "mute_ack" }> = [];
   readonly forwards: Array<{ groupId: string; nodes: ForwardMessageNode[]; options?: ForwardAutoRecallOptions }> = [];
   readonly scheduledRecalls: Array<{ groupId: string; platformMessageId: string; policy: NonNullable<ForwardAutoRecallOptions["autoRecall"]> }> = [];
   sendForwardError?: Error;
@@ -107,11 +107,19 @@ class FakeTransport implements MessageTransport {
   healthStatus = { ok: true, detail: "测试传输层已连接" };
   imageResolutionCalls = 0;
 
-  async sendGroupMessage(groupId: string, text: string): Promise<{ messageId: string }> {
+  async sendGroupMessage(
+    groupId: string,
+    text: string,
+    options?: { replyToMessageId?: string; deliveryPurpose?: "chat" | "scheduled" | "mute_ack" },
+  ): Promise<{ messageId: string }> {
     if (this.sendGroupMessageError && !(this.allowOpsAlertWhenSendFails && text.includes("【运维告警】"))) {
       throw this.sendGroupMessageError;
     }
-    this.sent.push({ groupId, text });
+    this.sent.push({
+      groupId,
+      text,
+      ...(options?.deliveryPurpose ? { deliveryPurpose: options.deliveryPurpose } : {}),
+    });
     this.outbound.push({ kind: "text", groupId });
     return { messageId: String(this.nextSentMessageId++) };
   }
@@ -209,8 +217,12 @@ class FakeImagePipeline {
 class DraftWorkerTransport extends FakeTransport {
   discardCalls = 0;
 
-  override async sendGroupMessage(groupId: string, text: string): Promise<{ messageId: string; deliveryId: string }> {
-    const receipt = await super.sendGroupMessage(groupId, text);
+  override async sendGroupMessage(
+    groupId: string,
+    text: string,
+    options?: { replyToMessageId?: string; deliveryPurpose?: "chat" | "scheduled" | "mute_ack" },
+  ): Promise<{ messageId: string; deliveryId: string }> {
+    const receipt = await super.sendGroupMessage(groupId, text, options);
     return { ...receipt, deliveryId: "outbox:1" };
   }
 
@@ -1428,7 +1440,7 @@ test("BT respects group silence, blacklist, command disabling and configured ren
   assert.equal(count, 2);
   assert.equal(aiService.calls.length, 0);
   assert.equal(transport.sent.length, 2);
-  assert.equal(dailyReportService.recorded.length, 0);
+  assert.equal(dailyReportService.recorded.length, 1, "muting retains passive daily-report evidence only");
   assert.deepEqual(conversationStore.turnsByKey, {});
 });
 
@@ -3090,7 +3102,7 @@ test("admin mute suppresses normal replies until unmuted", async () => {
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
   assert.equal(groupConfigService.groups[0]?.botMuted, true);
-  assert.match(transport.sent[0]?.text ?? "", /已闭嘴/);
+  assert.deepEqual(transport.sent, [{ groupId: "67890", text: "机器人已静音。", deliveryPurpose: "mute_ack" }]);
 
   await app.handleGroupMessage(
     createEvent([
@@ -3109,6 +3121,8 @@ test("admin mute suppresses normal replies until unmuted", async () => {
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#说话" } }], 99999));
   assert.equal(groupConfigService.groups[0]?.botMuted, false);
+  assert.equal(transport.sent[1]?.text, "机器人已恢复说话");
+  assert.equal(transport.sent[1]?.deliveryPurpose, "chat");
 
   await app.handleGroupMessage(
     createEvent([
@@ -3119,6 +3133,26 @@ test("admin mute suppresses normal replies until unmuted", async () => {
 
   assert.equal(aiService.calls.length, 1);
   assert.equal(transport.sent.at(-1)?.text, "AI reply");
+});
+
+test("muted bot accepts only an exact authorized recovery command", async () => {
+  const { app, transport, groupConfigService } = createApp();
+
+  await app.handleGroupMessage(createEvent("#闭嘴", 99999));
+  await app.handleGroupMessage(createEvent("#说话", 20001));
+  await app.handleGroupMessage(createEvent("#说话 现在", 99999));
+  await app.handleGroupMessage(createEvent(" #说话", 99999));
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } },
+    { type: "text", data: { text: "#说话" } },
+  ], 99999));
+
+  assert.equal(groupConfigService.groups[0]?.botMuted, true);
+  assert.equal(transport.sent.length, 1);
+
+  await app.handleGroupMessage(createEvent("#说话", 99999));
+  assert.equal(groupConfigService.groups[0]?.botMuted, false);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["机器人已静音。", "机器人已恢复说话"]);
 });
 
 test("mute command requires admin permission", async () => {
@@ -3153,7 +3187,7 @@ test("admin status command summarizes current group controls", async () => {
           holidayCountdownEnabled: true,
           holidayCountdownTime: "09:30",
           scheduledRemindersEnabled: true,
-          botMuted: true,
+          botMuted: false,
           blacklistedUserIds: ["30001"],
         },
       ],
@@ -3166,7 +3200,7 @@ test("admin status command summarizes current group controls", async () => {
 
     const status = transport.sent.at(-1)?.text ?? "";
     assert.match(status, /机器人状态：群 67890/);
-    assert.match(status, /说话：已闭嘴/);
+    assert.match(status, /说话：正常/);
     assert.match(status, /当前技能：assistant（assistant）/);
     assert.match(status, /实时对话：2 人，倒计时 45 秒/);
     assert.match(status, /权限：后台账号绑定优先/);
@@ -3231,16 +3265,14 @@ test("health command requires admin permission", async () => {
   assert.match(transport.sent[0]?.text ?? "", /没有查看机器人健康检查的权限/);
 });
 
-test("operation log command lists recent admin operations while muted", async () => {
+test("muted bot does not expose operation logs", async () => {
   const { app, transport, adminOperationLogService } = createApp();
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#操作日志" } }], 99999));
 
-  const logMessage = transport.sent.at(-1)?.text ?? "";
   assert.equal(adminOperationLogService.entries.length, 1);
-  assert.match(logMessage, /最近管理员操作：/);
-  assert.match(logMessage, /99999 闭嘴/);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["机器人已静音。"]);
 });
 
 test("operation log command requires admin permission", async () => {
@@ -3251,7 +3283,7 @@ test("operation log command requires admin permission", async () => {
   assert.match(transport.sent[0]?.text ?? "", /没有查看机器人操作日志的权限/);
 });
 
-test("admin server command reports runtime details while muted", async () => {
+test("muted bot does not expose server details", async () => {
   const transport = new FakeTransport();
   transport.healthStatus = { ok: true, detail: "测试传输层已连接" };
   const { app } = createApp({ transport });
@@ -3259,17 +3291,7 @@ test("admin server command reports runtime details while muted", async () => {
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#服务器" } }], 99999));
 
-  const status = transport.sent.at(-1)?.text ?? "";
-  assert.match(status, /服务器状态：/);
-  assert.match(status, /主机：/);
-  assert.match(status, /Node：/);
-  assert.match(status, /进程运行：/);
-  assert.match(status, /系统运行：/);
-  assert.match(status, /CPU：/);
-  assert.match(status, /内存：/);
-  assert.match(status, /进程内存：/);
-  assert.match(status, /工作目录：/);
-  assert.match(status, /NapCat：正常，测试传输层已连接/);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["机器人已静音。"]);
 });
 
 test("server command requires admin permission", async () => {
@@ -3280,20 +3302,14 @@ test("server command requires admin permission", async () => {
   assert.match(transport.sent[0]?.text ?? "", /没有查看服务器状态的权限/);
 });
 
-test("admin ops alert command manages current group setting while muted", async () => {
+test("muted bot does not allow ops alert configuration changes", async () => {
   const { app, transport, groupConfigService } = createApp();
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#闭嘴" } }], 99999));
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 状态" } }], 99999));
-  assert.match(transport.sent.at(-1)?.text ?? "", /运维告警：已关闭/);
-
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 开启" } }], 99999));
-  assert.equal(groupConfigService.groups[0]?.opsAlertsEnabled, true);
-  assert.match(transport.sent.at(-1)?.text ?? "", /已开启当前群运维告警/);
-
-  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#告警 关闭" } }], 99999));
   assert.equal(groupConfigService.groups[0]?.opsAlertsEnabled, false);
-  assert.match(transport.sent.at(-1)?.text ?? "", /已关闭当前群运维告警/);
+  assert.deepEqual(transport.sent.map((message) => message.text), ["机器人已静音。"]);
 });
 
 test("ops alert command requires admin permission", async () => {
@@ -3695,6 +3711,19 @@ test("selected-member chat wins over read-air at the same deadline and retains i
   assert.equal(f.runtime.aiService.calls[1]?.userInput, "午饭有什么推荐 4");
   const restarted = new GroupInteractionService(f.db, "12345");
   assert.equal(restarted.claimAutomaticReply(f.group, false, f.base + 600_000, ["4"]), false);
+});
+
+test("disabling read-air skips its model check while selected-member participation remains active", async t => {
+  const f = await automaticCompatibilityFixture(t);
+  f.group.ambientReplyEnabled = false;
+  await f.add(1, 20001, f.base + 10_000);
+
+  await withMockedNow(f.base + 30_000, () => f.tick("both"));
+
+  assert.equal(f.evaluations(), 0);
+  assert.equal(f.runtime.aiService.calls.length, 1);
+  assert.equal(f.runtime.transport.sent.length, 1);
+  assert.match(f.runtime.transport.sent[0]?.text ?? "", /接住这个话题$/u);
 });
 
 test("a direct mention supersedes a selected-member reply still being generated", async t => {
@@ -6046,6 +6075,49 @@ test("Worker handles member summary requests before image classification without
   assert.match(String(rows[0]!.text),/今天聊天总结/);
 });
 
+test("Worker keeps muted messages out of feature queues and model preflights", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "worker-muted-"));
+  const db = new SharedDb(path.join(root, "state.db"));
+  const groupConfigService = new FakeGroupConfigService([{
+    groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"],
+    switcherUserIds: ["99999"], liveChatUserIds: [], dailyReportEnabled: true, botMuted: true,
+  }]);
+  const f = createApp({
+    groupConfigService,
+    systemSettingsStore: new SystemSettingsStore(path.join(root, "settings.json")),
+    messageTransport: new WorkerTransport(db),
+  });
+  let classified = 0;
+  const worker = new WorkerApp({
+    dataDir: root,
+    sharedDb: db,
+    botApp: f.app,
+    consumerKey: "worker:muted",
+    isBlacklistedUser: async () => false,
+    imageIntentRouter: {
+      async isConfigured() { return true; },
+      async classify() { classified++; return { action: "generate", modelId: "test", model: "test" }; },
+    },
+  });
+  t.after(async () => { await worker.stop(); await f.app.stop(); db.close(); await rm(root, { recursive: true, force: true }); });
+
+  const text = "帮我画一只会飞的猫";
+  db.insertMessage({
+    groupId: "67890", userId: "20001", selfId: "12345", msgId: "muted-worker", msgTime: Date.now(), text,
+    imagesJson: "[]", canonicalSegmentsJson: JSON.stringify([{ type: "at", qq: "12345" }, { type: "text", text }]),
+    hasAtBot: true, isBotMsg: false, createdAt: Date.now(),
+  });
+  worker.start();
+  const deadline = Date.now() + 4_000;
+  while (f.dailyReportService.recorded.length === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+
+  assert.equal(f.dailyReportService.recorded.length, 1);
+  assert.equal(classified, 0);
+  assert.equal(f.aiService.calls.length, 0);
+  assert.equal(db.db.prepare("SELECT count(*) n FROM conversation_branches").get()!.n, 0);
+  assert.equal(db.db.prepare("SELECT count(*) n FROM outbox").get()!.n, 0);
+});
+
 test("member ranking requests use the local configurable entry without AI, history or report changes", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ranking-entry-")); t.after(() => rm(root, { recursive: true, force: true }));
   const settings = new SystemSettingsStore(path.join(root, "settings.json")), f = createApp({ systemSettingsStore: settings });
@@ -6085,7 +6157,7 @@ test("Worker routes member ranking ahead of image classification and conversatio
   assert.deepEqual(db.db.prepare("SELECT kind FROM outbox ORDER BY id").all().map(row => row.kind), ["text", "image"]);
 });
 
-test("muted bot still allows chat summary and report reminder commands", async () => {
+test("muted bot suppresses summaries and manual scheduled commands", async () => {
   const { app, transport, aiService, dailyReportService } = createApp({
     groupConfigService: new FakeGroupConfigService([
       {
@@ -6116,11 +6188,28 @@ test("muted bot still allows chat summary and report reminder commands", async (
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#定时任务 状态" } }], 99999));
 
   assert.equal(aiService.calls.length, 0);
-  assert.equal(dailyReportService.summaries.length, 1);
-  assert.match(transport.sent[0]?.text ?? "", /总结/);
-  assert.match(transport.sent[1]?.text ?? "", /群聊日报/);
-  assert.match(transport.sent[2]?.text ?? "", /节假日倒计时/);
-  assert.match(transport.sent[3]?.text ?? "", /定时任务总开关/);
+  assert.equal(dailyReportService.summaries.length, 0);
+  assert.equal(transport.sent.length, 0);
+});
+
+test("muted bot retains daily-report evidence without handling an interactive message", async () => {
+  const dailyReportService = new FakeDailyReportService();
+  const { app, transport, aiService } = createApp({
+    dailyReportService,
+    groupConfigService: new FakeGroupConfigService([{
+      groupId: "67890", currentSkillId: "assistant", allowedSkillIds: ["assistant"],
+      switcherUserIds: ["99999"], liveChatUserIds: [], dailyReportEnabled: true, botMuted: true,
+    }]),
+  });
+
+  await app.handleGroupMessage(createEvent([
+    { type: "at", data: { qq: "12345" } }, { type: "text", data: { text: " 帮我查一下这个图片" } },
+  ], 20001));
+
+  assert.equal(aiService.calls.length, 0);
+  assert.equal(transport.sent.length, 0);
+  assert.equal(dailyReportService.recorded.length, 1);
+  assert.match(dailyReportService.recorded[0]?.text ?? "", /帮我查一下这个图片/);
 });
 
 test("skill command explains that only Huixian is enabled", async () => {
@@ -6329,7 +6418,7 @@ test("disabled conversation command disables built-in clear alias", async () => 
   assert.equal(transport.sent.length, 0);
 });
 
-test("runtime mute command supports configured primary and alias", async () => {
+test("runtime mute command accepts its configured mute alias but muted recovery requires exact #说话", async () => {
   const groupConfigService = new FakeGroupConfigService([
     {
       groupId: "67890",
@@ -6360,9 +6449,14 @@ test("runtime mute command supports configured primary and alias", async () => {
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#安静" } }], 99999));
   assert.equal(groupConfigService.groups[0]?.botMuted, true);
-  assert.match(transport.sent.at(-1)?.text ?? "", /机器人已闭嘴/);
+  assert.equal(transport.sent.at(-1)?.text, "机器人已静音。");
+  assert.equal(transport.sent.at(-1)?.deliveryPurpose, "mute_ack");
 
   await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#恢复" } }], 99999));
+  assert.equal(groupConfigService.groups[0]?.botMuted, true);
+  assert.equal(transport.sent.length, 1);
+
+  await app.handleGroupMessage(createEvent([{ type: "text", data: { text: "#说话" } }], 99999));
   assert.equal(groupConfigService.groups[0]?.botMuted, false);
   assert.match(transport.sent.at(-1)?.text ?? "", /机器人已恢复说话/);
 });
@@ -8121,6 +8215,7 @@ test("sends scheduled daily report once tick condition is met", async () => {
   );
 
   assert.equal(transport.sent.at(-1)?.text, "18:00 群聊日报\n今日消息 12 条");
+  assert.equal(transport.sent.at(-1)?.deliveryPurpose, "scheduled");
   assert.equal(dailyReportService.marked.length, 1);
   assert.equal(dailyReportService.marked[0]?.renderedText, "18:00 群聊日报\n今日消息 12 条");
   assert.equal(dailyReportService.reports[0]?.useAiQuip, false);
@@ -8194,7 +8289,8 @@ test("V3 authorizes a QQ sender through its bound backend account while keeping 
   assert.equal(adminOperationLogService.entries[0]?.operatorAccountId, "admin-id");
   assert.equal(adminOperationLogService.entries[0]?.operatorUsername, "admin");
   assert.match(transport.sent[0]?.text ?? "", /#管理员 已退休/);
-  assert.match(transport.sent[2]?.text ?? "", /没有查看服务器状态的权限/);
+  assert.equal(transport.sent[1]?.text, "机器人已静音。");
+  assert.equal(transport.sent.length, 2);
 });
 
 test("creates scheduled reminder through natural bot mention and sends due reminders", async () => {
@@ -8461,6 +8557,7 @@ test("sends scheduled holiday countdown once tick condition is met", async () =>
   ).runHolidayCountdownTick(new Date("2026-04-15T01:00:00.000Z"));
 
   assert.equal(transport.sent.at(-1)?.text, "节假日倒计时\n1. 劳动节：还有 16 天");
+  assert.equal(transport.sent.at(-1)?.deliveryPurpose, "scheduled");
   assert.equal(holidayCountdownService.marked.length, 1);
   assert.equal(holidayCountdownService.messages[0]?.useAiQuip, false);
 });

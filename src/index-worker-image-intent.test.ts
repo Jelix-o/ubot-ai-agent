@@ -34,6 +34,7 @@ test("Worker classifies a trusted mention once and passes only the locally mater
 
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isImageGenerationCommand() { return false; },
@@ -355,6 +356,7 @@ test("Worker keeps explicit image commands ahead of the configured intent router
   const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isImageGenerationCommand(text: string) { return text.trim().startsWith("#生图"); },
@@ -419,6 +421,7 @@ test("Worker stages slow natural routing without blocking or corrupting a newer 
   const handled: string[] = [];
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isImageGenerationCommand(text: string) { return text.trim().startsWith("#生图"); },
@@ -540,6 +543,7 @@ test("Worker sends uncertainty to conversation without blocking the member image
   const handled: Array<{ messageId: string; options: Record<string, unknown> | undefined }> = [];
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isImageGenerationCommand(text: string) { return text.trim().startsWith("#生图"); },
@@ -915,6 +919,7 @@ function createChatBot(input: {
 }): BotApplication {
   return {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isImageGenerationCommand() { return false; },

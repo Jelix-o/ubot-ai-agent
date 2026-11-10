@@ -269,6 +269,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
       { version: 30, name: "add-image-generation-confirmations" },
       { version: 31, name: "add-natural-image-followups" },
       { version: 32, name: "add-request-understanding" },
+      { version: 33, name: "add-outbox-delivery-purpose" },
     ],
   );
   const tables = first.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
@@ -294,7 +295,7 @@ test("versioned migrations are recorded once and provision V3 authority tables",
   const second = new SharedDb(dbPath);
   assert.deepEqual(
     second.listSchemaMigrations().map((migration) => migration.version),
-    Array.from({ length: 32 }, (_, i) => i + 1),
+    Array.from({ length: 33 }, (_, i) => i + 1),
     "reopening must not apply or record the same migration twice",
   );
   second.close();
@@ -913,6 +914,60 @@ test("old outbox schema without retry_after is migrated without losing rows", (t
   db.close();
 });
 
+test("delivery-purpose migration fails closed for legacy rows and persists explicit purposes", (t) => {
+  const dbPath = tempDb(t);
+  const before = new SharedDb(dbPath);
+  const legacyId = before.enqueueOutbox("g", null, "legacy reply");
+  before.db.exec("DELETE FROM schema_migrations WHERE version >= 33");
+  before.db.exec("ALTER TABLE outbox DROP COLUMN delivery_purpose");
+  before.close();
+
+  const upgraded = new SharedDb(dbPath);
+  const legacy = upgraded.db.prepare("SELECT delivery_purpose FROM outbox WHERE id = ?").get(legacyId) as {
+    delivery_purpose: string;
+  };
+  assert.equal(legacy.delivery_purpose, "chat");
+  const scheduledId = upgraded.enqueueOutbox("g", null, "report", "text", undefined, undefined, undefined, undefined, undefined, "scheduled");
+  const muteAckId = upgraded.enqueueOutbox("g", null, "muted", "text", undefined, undefined, undefined, undefined, undefined, "mute_ack");
+  const purposes = upgraded.db.prepare(
+    "SELECT id, delivery_purpose FROM outbox WHERE id IN (?, ?) ORDER BY id",
+  ).all(scheduledId, muteAckId) as Array<{ id: number; delivery_purpose: string }>;
+  assert.deepEqual(purposes.map(row => ({ ...row })), [
+    { id: scheduledId, delivery_purpose: "scheduled" },
+    { id: muteAckId, delivery_purpose: "mute_ack" },
+  ]);
+  assert.equal(upgraded.listSchemaMigrations().filter(migration => migration.version === 33).length, 1);
+  upgraded.close();
+});
+
+test("policy suppression terminalizes a claimed batch and generated image request", (t) => {
+  const db = new SharedDb(tempDb(t));
+  const first = db.enqueueOutbox("g", null, "first", "text", undefined, undefined, undefined, undefined, {
+    batchId: "policy-batch",
+    delayBeforeMs: 0,
+  });
+  const second = db.enqueueOutbox("g", null, "second", "text", undefined, undefined, undefined, undefined, {
+    batchId: "policy-batch",
+    delayBeforeMs: 1500,
+  });
+  const claimed = db.claimOutbox(10)[0]!;
+  assert.equal(claimed.id, first);
+  const result = db.suppressOutboxDelivery(claimed.id, "group_muted", 42_000);
+  assert.equal(result.suppressed, true);
+  assert.deepEqual(result.outboxIds, [first, second]);
+  const rows = db.db.prepare("SELECT id, status, retry_after FROM outbox ORDER BY id").all() as Array<{
+    id: number;
+    status: string;
+    retry_after: number | null;
+  }>;
+  assert.deepEqual(rows.map(row => ({ ...row })), [
+    { id: first, status: "cancelled", retry_after: null },
+    { id: second, status: "cancelled", retry_after: null },
+  ]);
+  assert.equal(db.claimOutbox(10, 60_000).length, 0);
+  db.close();
+});
+
 test("voice retirement migration terminalizes unsent legacy voice outbox rows", (t) => {
   const dbPath = tempDb(t);
   const first = new SharedDb(dbPath);
@@ -1142,7 +1197,7 @@ test("image editing and image-request migrations upgrade v4.1.12 archives", t =>
   old.close();
   const upgraded = new SharedDb(dbPath);
   assert.equal(upgraded.db.prepare("SELECT text FROM outbox WHERE id = ?").get(id)?.text, "pending text");
-  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 32);
+  assert.equal(upgraded.listSchemaMigrations().at(-1)?.version, 33);
   const columns = upgraded.db.prepare("PRAGMA table_info(image_previews)").all() as Array<{ name: string; dflt_value: string | null }>;
   assert.equal(columns.find(column => column.name === "publication_state")?.dflt_value, "'published'");
   const now = Date.now();

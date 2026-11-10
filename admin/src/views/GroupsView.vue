@@ -74,8 +74,6 @@ const capabilities = [
   { key: "personalRemindersEnabled", label: "个人一次性提醒", detail: "成员可用 #提醒 设置本人提醒；每人五条，每群五十条，不影响管理员定时任务。" },
   { key: "audioReplyEnabled", label: "语音回复", detail: "启用独立音频服务后支持点播及偶尔语音；需要超级管理员开通。" },
   { key: "singingEnabled", label: "原创短歌", detail: "按主题生成 15–30 秒原创歌曲；需要超级管理员开通。" },
-  { key: "ambientReplyEnabled", label: "读空气", detail: "只接新出现的话题；每 30 秒检查，至少三条消息、两位成员。默认关闭。" },
-  { key: "pokeReplyEnabled", label: "回戳", detail: "收到群内戳一戳时概率戳回。默认关闭。" },
   { key: "onlineLookupEnabled", label: "自动查询实时资料", detail: "回答需要最新资料的问题时查询网络。" },
   { key: "visionEnabled", label: "图片理解", detail: "理解群聊中提供的图片。" },
   { key: "ambientGroupContextEnabled", label: "短时群聊语境", detail: "使用近期群聊上下文组织回复。" },
@@ -501,16 +499,22 @@ watch(() => app.groupId, () => {
             <div class="section-intro"><h2>回复规则</h2><p>设置机器人在当前群的参与方式。</p></div>
             <div class="field-grid">
               <label class="switch-line wide"><span><strong>显示并启用该群</strong><small>停用后机器人不再处理当前群的消息。</small></span><input v-model="form.enabled" :disabled="readonly" type="checkbox" /></label>
-              <label class="switch-line wide"><span><strong>机器人静音</strong><small>保留群配置，暂停机器人发言。</small></span><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /></label>
+              <label class="switch-line wide"><span><strong>机器人静音</strong><small>静音后只保留已启用的日报、节日倒计时和管理员普通定时提醒；授权管理员发送精确 #说话 恢复。</small></span><input v-model="form.botMuted" :disabled="readonly" type="checkbox" /></label>
               <section class="group-model-settings wide" aria-labelledby="group-model-title">
                 <div class="group-model-heading"><h3 id="group-model-title">群聊模型</h3><span v-if="app.role !== 'super_admin'" class="model-readonly-note">仅超级管理员可修改</span></div>
                 <div class="group-model-effective"><span>实际生效模型</span><strong>{{ currentReplyModelLabel }}</strong><code v-if="currentReplyModelId">{{ currentReplyModelId }}</code></div>
                 <div class="group-model-fields"><label>模型来源<select v-model="form.replyModelSource" class="select" :disabled="readonly || app.role !== 'super_admin'"><option value="global">跟随统一默认</option><option value="override">指定模型</option></select></label><label v-if="form.replyModelSource !== 'global'">指定模型<select v-model="form.replyModelMode" class="select" :disabled="readonly || !hasReplyModels || app.role !== 'super_admin'"><option v-if="!hasReplyModels" value="">请先启用对话模型</option><option v-for="model in replyModels" :key="model.id" :value="model.id">{{ model.label }} · {{ model.id }}</option></select></label></div>
                 <p class="group-model-help">{{ form.replyModelSource === 'global' ? '统一默认更新后，本群自动跟随。' : '仅替换本群主模型，备用顺序和超时设置仍跟随系统配置。' }}</p>
               </section>
-              <label>参与方式<select v-model="form.participationMode" class="select" :disabled="readonly"><option value="mentions_only">仅在 @ / 引用时回复</option><option value="mentions_and_keywords">@ / 引用 + 关键词</option><option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option></select></label>
+              <label>参与方式<select v-model="form.participationMode" class="select" :disabled="readonly"><option value="mentions_only">仅在 @ / 引用时回复</option><option value="mentions_and_keywords">@ / 引用 + 关键词</option><option value="selected_members">@ / 引用 + 关键词 + 指定成员低频参与</option></select><small v-if="form.participationMode === 'selected_members'">指定成员低频参与与读空气独立；关闭读空气后，已配置成员仍可低频参与。</small></label>
               <label>实时对话延迟<input v-model.number="form.liveChatDelaySeconds" class="input" type="number" min="0" :disabled="readonly || form.participationMode !== 'selected_members'" /><small>单位为秒，仅指定成员低频参与时生效。</small></label>
               <label>当前人格<div class="fixed-persona">{{ form.currentSkillId || '尚未设置' }}</div><small>人格内容在「内容与表达」工作区维护。</small></label>
+              <fieldset class="automation-settings wide">
+                <legend>主动发言</legend>
+                <label class="switch-line"><span><strong>读空气（主动接话）</strong><small>关闭后，不再根据普通群聊主动接话；不影响 @、引用、关键词或指定成员低频参与。</small></span><input v-model="form.ambientReplyEnabled" :disabled="readonly" type="checkbox" /></label>
+                <label class="automation-field">主动插话冷却（秒）<input v-model.number="form.ambientReplyCooldownSeconds" class="input" type="number" min="600" max="86400" :disabled="readonly || !form.ambientReplyEnabled" /></label>
+                <p class="automation-help">读空气免打扰：北京时间 01:00–07:00；机器人发言后 60 秒内不插话，每分钟最多判断一次。</p>
+              </fieldset>
             </div>
           </section>
           <section class="panel group-config-card">
@@ -524,22 +528,25 @@ watch(() => app.groupId, () => {
         </template>
         <section v-else-if="activeTab === 'capabilities'" class="panel group-config-card">
           <div class="section-intro"><h2>能力开关</h2><p>为当前群选择需要的能力，保存后生效。</p></div>
-          <div class="form-grid">
-            <label>主动插话冷却（秒）<input v-model.number="form.ambientReplyCooldownSeconds" class="input" type="number" min="600" max="86400" :disabled="readonly || !form.ambientReplyEnabled" /></label>
-            <label>回戳概率（%）<input v-model.number="form.pokeReplyProbabilityPercent" class="input" type="number" min="0" max="100" :disabled="readonly || !form.pokeReplyEnabled" /></label>
-            <label>同成员回戳冷却（秒）<input v-model.number="form.pokeReplyUserCooldownSeconds" class="input" type="number" min="10" max="86400" :disabled="readonly || !form.pokeReplyEnabled" /></label>
-            <label>同群回戳冷却（秒）<input v-model.number="form.pokeReplyGroupCooldownSeconds" class="input" type="number" min="10" max="86400" :disabled="readonly || !form.pokeReplyEnabled" /></label>
-          </div>
-          <p class="muted">读空气免打扰：北京时间 01:00–07:00；机器人发言后 60 秒内不插话，每分钟最多判断一次。静音与停用会同时暂停读空气和回戳。</p>
+          <fieldset class="poke-settings">
+            <legend>戳一戳回戳</legend>
+            <label class="switch-line"><span><strong>戳一戳回戳</strong><small>收到群内戳一戳时，按设置的概率戳回。</small></span><input v-model="form.pokeReplyEnabled" :disabled="readonly" type="checkbox" /></label>
+            <div class="form-grid poke-fields">
+              <label>被戳后回戳概率（%）<input v-model.number="form.pokeReplyProbabilityPercent" class="input" type="number" min="0" max="100" :disabled="readonly || !form.pokeReplyEnabled" /></label>
+              <label>同成员回戳冷却（秒）<input v-model.number="form.pokeReplyUserCooldownSeconds" class="input" type="number" min="10" max="86400" :disabled="readonly || !form.pokeReplyEnabled" /></label>
+              <label>同群回戳冷却（秒）<input v-model.number="form.pokeReplyGroupCooldownSeconds" class="input" type="number" min="10" max="86400" :disabled="readonly || !form.pokeReplyEnabled" /></label>
+            </div>
+            <p class="automation-help">仅控制机器人被戳后的回戳；0% 表示永不回戳，不影响读空气、指定成员低频参与或普通回复。</p>
+          </fieldset>
           <div class="capability-list">
             <label v-for="capability in capabilities" :key="capability.key" class="switch-line"><span><strong>{{ capability.label }}</strong><small>{{ capability.detail }}</small></span><input v-model="form[capability.key]" :disabled="readonly || app.role !== 'super_admin' && ['audioReplyEnabled','singingEnabled'].includes(capability.key)" type="checkbox" /></label>
           </div>
-          <p class="muted">日报、节日倒计时和定时提醒在「排程」中配置。</p>
+          <p class="muted">日报、节日倒计时和管理员定时提醒在「排程」中配置。</p>
         </section>
         <section v-else-if="activeTab === 'permissions'" class="panel group-config-card">
           <div class="section-intro"><h2>成员权限</h2><p>成员身份、备注和隐私退出在成员详情中维护。</p></div>
           <div class="field-grid">
-            <label class="wide">低频参与成员<MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" /><small>需先将参与方式设置为指定成员低频参与。</small></label>
+            <label class="wide">低频参与成员<MultiTagSelect v-model="form.liveChatUserIds" :options="memberSelectOptions" :disabled="readonly || form.participationMode !== 'selected_members'" placeholder="搜索成员昵称或 QQ" /><small>需先将参与方式设置为指定成员低频参与。该机制与读空气独立；关闭读空气后，已配置成员仍可低频参与。</small></label>
             <label class="wide">黑名单成员<MultiTagSelect v-model="blacklistedUserIds" :options="memberSelectOptions" :disabled="readonly" placeholder="搜索成员昵称或 QQ" /></label>
           </div>
         </section>
@@ -736,7 +743,7 @@ watch(() => app.groupId, () => {
       </form>
       <aside v-if="activeTab !== 'schedule'" class="panel config-summary">
         <h2>群配置摘要</h2><div class="summary-group"><span class="summary-icon"><AppIcon name="users" /></span><div><strong>{{ app.currentGroup?.groupName || '群 ' + app.groupId }}</strong><small>{{ app.groupId }}</small></div></div>
-        <dl><div><dt>群状态</dt><dd><span class="tag" :class="{ danger: form.enabled === false || form.botMuted }">{{ form.enabled === false ? "已停用" : form.botMuted ? "已静音" : "已启用" }}</span></dd></div><div><dt>回复模型</dt><dd>{{ currentReplyModelLabel }}</dd></div><div><dt>参与方式</dt><dd>{{ form.participationMode === 'selected_members' ? '指定成员低频参与' : form.participationMode === 'mentions_and_keywords' ? '@ / 引用 + 关键词' : '@ / 引用' }}</dd></div><div><dt>关键词</dt><dd>{{ form.triggerKeywords?.filter(item => item.enabled && item.keyword.trim()).length || 0 }} 个已启用</dd></div><div><dt>能力</dt><dd>{{ capabilities.filter(item => form[item.key]).length }} / {{ capabilities.length }} 项已启用</dd></div><div><dt>定时任务</dt><dd>{{ reminders.filter(item => item.enabled).length }} 个已启用</dd></div></dl>
+        <dl><div><dt>群状态</dt><dd><span class="tag" :class="{ danger: form.enabled === false || form.botMuted }">{{ form.enabled === false ? "已停用" : form.botMuted ? "已静音" : "已启用" }}</span></dd></div><div><dt>回复模型</dt><dd>{{ currentReplyModelLabel }}</dd></div><div><dt>参与方式</dt><dd>{{ form.participationMode === 'selected_members' ? '指定成员低频参与' : form.participationMode === 'mentions_and_keywords' ? '@ / 引用 + 关键词' : '@ / 引用' }}</dd></div><div class="summary-automation"><dt>自动发言</dt><dd><span v-if="form.botMuted" class="summary-muted">已静音，以上群消息触发项均暂停；仅排程保留。</span><span>读空气：{{ form.ambientReplyEnabled ? '开' : '关' }}</span><span>指定成员低频参与：{{ form.participationMode === 'selected_members' && form.liveChatUserIds.length > 0 ? '已启用' : '未启用' }}</span><span>回戳：{{ form.pokeReplyEnabled ? `开（${form.pokeReplyProbabilityPercent}%）` : '关' }}</span></dd></div><div><dt>关键词</dt><dd>{{ form.triggerKeywords?.filter(item => item.enabled && item.keyword.trim()).length || 0 }} 个已启用</dd></div><div><dt>其他能力</dt><dd>{{ capabilities.filter(item => form[item.key]).length }} / {{ capabilities.length }} 项已启用</dd></div><div><dt>定时任务</dt><dd>{{ reminders.filter(item => item.enabled).length }} 个已启用</dd></div></dl>
         <p class="summary-note">{{ dirty ? '摘要包含当前尚未保存的修改。' : '仅显示当前群的实际配置。' }}</p>
       </aside>
     </div>
@@ -1673,6 +1680,13 @@ dd {
 .group-config-card .switch-line { display:flex; justify-content:space-between; align-items:center; padding:14px 0; border-bottom:1px solid var(--line); gap:20px; }
 .switch-line strong { font-weight:600; font-size:14px; }
 .switch-line small { margin-top:4px; }
+.automation-settings,.poke-settings { min-width:0; margin:4px 0 0; border:1px solid var(--line); border-radius:7px; padding:0 16px 16px; }
+.automation-settings legend,.poke-settings legend { padding:0 7px; color:var(--text); font-size:14px; font-weight:600; }
+.automation-settings .switch-line,.poke-settings .switch-line { min-width:0; }
+.automation-field { display:grid; gap:7px; min-width:0; margin-top:16px; }
+.automation-help { margin:12px 0 0; color:var(--muted); font-size:12px; font-weight:400; line-height:1.65; overflow-wrap:anywhere; }
+.poke-fields { grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin-top:16px; }
+.poke-fields label { display:grid; gap:7px; min-width:0; }
 .keyword-list { gap:0; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
 .keyword-header,.keyword-row { display:grid; grid-template-columns:minmax(0,1fr) 80px 48px; gap:12px; padding:11px 14px; align-items:center; }
 .keyword-header { background:var(--surface-soft); color:var(--muted); font-size:12px; }
@@ -1688,6 +1702,9 @@ dd {
 .config-summary dl { display:grid; grid-template-columns:1fr; gap:18px; margin:22px 0; }
 .config-summary dl div { display:flex; gap:15px; justify-content:space-between; font-size:12px; align-items:center; }
 .config-summary dd { text-align:right; margin:0; font-weight:500; max-width:65%; overflow-wrap:anywhere; }
+.config-summary .summary-automation { align-items:flex-start; }
+.summary-automation dd { display:grid; gap:5px; }
+.summary-muted { color:var(--danger); font-weight:600; }
 .summary-note { border-top:1px solid var(--line); padding-top:18px; font-size:12px; color:var(--muted); line-height:1.7; }
 .save-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0; }
 .save-bar > div { display:flex; gap:10px; }
@@ -1707,8 +1724,8 @@ dd {
 .reminder-form-actions { grid-column:3 / -1; justify-content:flex-end; }
 .reminder-add { box-shadow:none; }
 .schedule-effect { font-size:12px; font-weight:500; }
-@media(max-width:1100px) { .config-layout { grid-template-columns:minmax(0,1fr) 250px; gap:16px; } .field-grid { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:1100px) { .config-layout { grid-template-columns:minmax(0,1fr) 250px; gap:16px; } .field-grid,.poke-fields { grid-template-columns:minmax(0,1fr); } }
 @media(max-width:900px) { .config-layout { grid-template-columns:minmax(0,1fr); } .config-summary { position:static; } .config-summary dl { grid-template-columns:repeat(2,minmax(0,1fr)); } .schedule-layout,.date-rule-panel { grid-template-columns:minmax(0,1fr); } .schedule-column { border-right:0; padding-right:0; } .schedule-rules { grid-column:auto; } .schedule-head,.reminder-card-head { flex-wrap:wrap; gap:15px; } .reminder-rule-card { grid-template-columns:minmax(0,1fr); } }
-@media(max-width:600px) { .page-heading { flex-direction:column; gap:14px; } .page-heading h1 { font-size:24px; } .heading-actions { width:100%; justify-content:space-between; } .config-tabs { gap:0; justify-content:space-between; } .config-tabs button { padding-inline:13px; } .group-config-card,.config-summary,.reminders-card { padding:18px; } .config-summary dl { grid-template-columns:1fr; } .keyword-header,.keyword-row { grid-template-columns:minmax(0,1fr) 60px 32px; padding:10px; gap:8px; } .keyword-row { font-size:12px; } .reminder-main-fields,.reminder-form.editing .reminder-main-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .reminder-topic { grid-column:1 / -1; } .reminder-form-actions { grid-column:1 / -1; } .save-bar { align-items:flex-start; flex-direction:column; } .save-bar > div { width:100%; justify-content:flex-end; } }
+@media(max-width:600px) { .page-heading { flex-direction:column; gap:14px; } .page-heading h1 { font-size:24px; } .heading-actions { width:100%; justify-content:space-between; } .config-tabs { gap:0; justify-content:space-between; } .config-tabs button { padding-inline:13px; } .group-config-card,.config-summary,.reminders-card { padding:18px; } .automation-settings,.poke-settings { padding-inline:12px; } .config-summary dl { grid-template-columns:1fr; } .keyword-header,.keyword-row { grid-template-columns:minmax(0,1fr) 60px 32px; padding:10px; gap:8px; } .keyword-row { font-size:12px; } .reminder-main-fields,.reminder-form.editing .reminder-main-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .reminder-topic { grid-column:1 / -1; } .reminder-form-actions { grid-column:1 / -1; } .save-bar { align-items:flex-start; flex-direction:column; } .save-bar > div { width:100%; justify-content:flex-end; } }
 
 </style>

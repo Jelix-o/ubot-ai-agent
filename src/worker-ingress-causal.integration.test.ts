@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -299,6 +299,123 @@ test("Ingress emitter allows only one claim-and-delivery pass at a time", async 
   assert.equal((queueDb.db.prepare("SELECT COUNT(*) AS count FROM outbox WHERE status = 'sent'").get() as { count: number }).count, 2);
 });
 
+test("Ingress applies current mute policy to queued deliveries, batches, and generated images", async (t) => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), "ingress-mute-policy-"));
+  const readApiPort = await reservePort();
+  const restoreEnvironment = setRequiredEnvironment(readApiPort);
+  const queueDb = openSharedDb(dataDir);
+  const state = new V3StateRepository(queueDb, { stateEncryptionKey: TEST_STATE_KEY });
+  state.markCutover();
+  state.saveCapabilityPolicy({
+    version: 1,
+    enabledCapabilities: [...REQUIRED_V3_RUNTIME_CAPABILITIES],
+    updatedAt: new Date().toISOString(),
+  });
+  state.saveGroups({ groups: [
+    { ...groupConfig, botMuted: true },
+    { ...groupConfig, groupId: "disabled-group", enabled: false },
+    { ...groupConfig, groupId: "speaking-group", botMuted: false },
+  ] });
+  const transport = new FakeNapCatTransport();
+  const ingress = new IngressApp({
+    botQq: BOT_QQ,
+    dataDir,
+    metricsDir: path.join(dataDir, "shared", "metrics"),
+    stateEncryptionKey: TEST_STATE_KEY,
+  }, transport);
+  t.after(async () => {
+    await ingress.stop();
+    queueDb.close();
+    restoreEnvironment();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const enqueue = (
+    groupId: string,
+    text: string,
+    kind: string,
+    purpose: "chat" | "scheduled" | "mute_ack",
+    timing?: { batchId: string; delayBeforeMs: number },
+  ) => queueDb.enqueueOutbox(groupId, null, text, kind, undefined, undefined, undefined, undefined, timing, purpose);
+  const batchFirst = enqueue(GROUP_ID, "batch text", "text", "chat", { batchId: "mute-batch", delayBeforeMs: 0 });
+  const batchSibling = enqueue(GROUP_ID, "batch image", "image", "chat", { batchId: "mute-batch", delayBeforeMs: 2000 });
+  const mutedImage = enqueue(GROUP_ID, "ordinary.png", "image", "chat");
+  const mutedForward = enqueue(GROUP_ID, "fallback", "forward", "chat");
+  const allowedSchedule = enqueue(GROUP_ID, "daily report", "text", "scheduled");
+  const allowedMuteAck = enqueue(GROUP_ID, "机器人已静音。", "text", "mute_ack");
+  const disabledSchedule = enqueue("disabled-group", "disabled schedule", "text", "scheduled");
+  const unavailableSchedule = enqueue("unconfigured-group", "unconfigured schedule", "text", "scheduled");
+  const staleMuteAck = enqueue("speaking-group", "stale mute ack", "text", "mute_ack");
+
+  const stagedRoot = path.join(dataDir, "generated-images");
+  const generatedPath = path.join(stagedRoot, "muted.png");
+  const generatedBytes = Buffer.from(REPLAY_IMAGE_DATA_URL.split(",")[1]!, "base64");
+  mkdirSync(stagedRoot, { recursive: true });
+  writeFileSync(generatedPath, generatedBytes);
+  const requests = new ImageRequestRepository(queueDb);
+  const { request } = requests.claim({
+    groupId: GROUP_ID,
+    sourceMessageId: "muted-generated-image",
+    creatorUserId: USER_ID,
+    requestKind: "generation",
+    triggerSource: "natural",
+  });
+  assert.ok(requests.beginSubmission(request.id));
+  assert.ok(requests.recordGenerated({
+    id: request.id,
+    stagedFilePath: generatedPath,
+    modelId: "fixture-image",
+    model: "fixture-image",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: generatedBytes.byteLength,
+  }));
+  const archive = new ImagePreviewArchiveService({
+    sharedDb: queueDb,
+    rootDir: path.join(dataDir, "image-previews"),
+    stagedRoot,
+  });
+  const preview = await archive.archive({
+    groupId: GROUP_ID,
+    creatorUserId: USER_ID,
+    sourceMessageId: request.sourceMessageId,
+    prompt: "private test prompt",
+    filePath: generatedPath,
+    modelId: "fixture-image",
+    model: "fixture-image",
+    fallbackUsed: false,
+    mimeType: "image/png",
+    byteSize: generatedBytes.byteLength,
+    publicationState: "pending",
+  });
+  const generated = queueDb.enqueueGeneratedImageOutboxForRequest({
+    requestId: request.id,
+    groupId: GROUP_ID,
+    imagePath: generatedPath,
+    imagePreviewId: preview.id,
+  });
+
+  const emitter = ingress as unknown as { runEmitterSafely(): Promise<void>; metrics: { snapshot(): { counters: Record<string, number> } } };
+  await emitter.runEmitterSafely();
+
+  const rows = queueDb.db.prepare("SELECT id, status FROM outbox ORDER BY id").all() as Array<{ id: number; status: string }>;
+  const statusById = new Map(rows.map(row => [row.id, row.status]));
+  for (const id of [batchFirst, batchSibling, mutedImage, mutedForward, generated.outboxId, disabledSchedule, unavailableSchedule, staleMuteAck]) {
+    assert.equal(statusById.get(id), "cancelled", `outbox ${id} must reach a terminal cancelled state`);
+  }
+  assert.equal(statusById.get(allowedSchedule), "sent");
+  assert.equal(statusById.get(allowedMuteAck), "sent");
+  assert.deepEqual(transport.sent.map(row => row.text), ["daily report", "机器人已静音。"]);
+  assert.equal(requests.get(request.id)?.status, "failed");
+  assert.equal(queueDb.db.prepare("SELECT status FROM image_previews WHERE id = ?").get(preview.id)?.status, "deleted");
+  assert.equal(existsSync(generatedPath), false);
+  const counters = emitter.metrics.snapshot().counters;
+  assert.equal(counters.outbox_policy_suppressed_group_muted, 5);
+  assert.equal(counters.outbox_policy_suppressed_group_disabled, 1);
+  assert.equal(counters.outbox_policy_suppressed_group_unavailable, 1);
+  assert.equal(counters.outbox_policy_suppressed_stale_mute_ack, 1);
+});
+
 test("Ingress startup failure cleans up transport, timers, read API, and its database", async (t) => {
   const dataDir = mkdtempSync(path.join(os.tmpdir(), "ingress-startup-failure-"));
   const readApiPort = await reservePort();
@@ -377,6 +494,7 @@ test("WorkerApp stop drains active messages before its shared database is closed
   });
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted(): Promise<boolean> { return false; },
     async handleGroupMessage(): Promise<void> {
       markHandlerStarted();
       await handlerGate;
@@ -726,6 +844,7 @@ test("Ingress preserves an in-line structured @ through SQLite before Worker rep
   const received: NapcatGroupMessageEvent[] = [];
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async getNaturalImageRequest() { return undefined; },
@@ -813,6 +932,7 @@ test("raw CQ-looking text stays non-authoritative through ingress while #改图 
   }> = [];
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async getNaturalImageRequest(event: NapcatGroupMessageEvent, facts: {

@@ -75,6 +75,18 @@ test("admin exposes a dedicated Huixian persona editor instead of a skills marke
   assert.match(profileAsset, /不编造身体、位置、照片、线下经历或已完成的操作/);
 });
 
+test("group settings separate ambient replies, selected-member participation, poke probability, and mute scope", async () => {
+  const groups = await readAdmin(path.join("views", "GroupsView.vue"));
+
+  assert.match(groups, /读空气（主动接话）/);
+  assert.match(groups, /不影响 @、引用、关键词或指定成员低频参与/);
+  assert.match(groups, /低频参与成员/);
+  assert.match(groups, /被戳后回戳概率（%）/);
+  assert.match(groups, /0% 表示永不回戳，不影响读空气、指定成员低频参与或普通回复/);
+  assert.match(groups, /只保留已启用的日报、节日倒计时和管理员普通定时提醒/);
+  assert.match(groups, /已静音，以上群消息触发项均暂停；仅排程保留/);
+});
+
 test("runtime documentation and release packaging do not carry retired personas", async () => {
   const [packageLinux, verifier, deployer, windowsPack, huixian, commands] = await Promise.all([
     readFile(path.join(repoRoot, "scripts", "package-linux-release.sh"), "utf8"),
@@ -148,6 +160,23 @@ test("admin manages HTML preview metadata without embedding generated page conte
   assert.match(server, /html_preview_delete/);
   assert.match(server, /page\.items\.map\(formatHtmlPreviewForAdmin\)/);
   assert.match(server, /generated HTML/);
+});
+
+test("group settings keep automatic reply mechanisms distinct and explain strict mute", async () => {
+  const groups = await readAdmin(path.join("views", "GroupsView.vue"));
+
+  assert.match(groups, /读空气（主动接话）/);
+  assert.match(groups, /关闭后，不再根据普通群聊主动接话；不影响 @、引用、关键词或指定成员低频参与。/);
+  assert.match(groups, /指定成员低频参与与读空气独立；关闭读空气后，已配置成员仍可低频参与。/);
+  assert.match(groups, /戳一戳回戳/);
+  assert.match(groups, /被戳后回戳概率（%）/);
+  assert.match(groups, /0% 表示永不回戳，不影响读空气、指定成员低频参与或普通回复。/);
+  assert.match(groups, /静音后只保留已启用的日报、节日倒计时和管理员普通定时提醒；授权管理员发送精确 #说话 恢复。/);
+  assert.match(groups, /已静音，以上群消息触发项均暂停；仅排程保留。/);
+  assert.match(groups, /<fieldset class="automation-settings wide">/);
+  assert.match(groups, /<fieldset class="poke-settings">/);
+  assert.doesNotMatch(groups, /{ key: "ambientReplyEnabled", label: "读空气"/);
+  assert.doesNotMatch(groups, /{ key: "pokeReplyEnabled", label: "回戳"/);
 });
 
 test("admin exposes private generated-image previews beside HTML previews", async () => {

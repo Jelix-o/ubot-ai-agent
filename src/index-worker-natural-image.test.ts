@@ -39,6 +39,7 @@ test("Worker routes only canonical bot mentions into per-member natural image qu
 
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async isSystemCommand() { return false; },
@@ -300,6 +301,7 @@ test("Worker routes explicit image commands through the image queue and preserve
 
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async getNaturalImageRequest() { return undefined; },
@@ -412,6 +414,7 @@ test("Worker records natural image outcomes from ledger status without content f
   const repository = new ImageRequestRepository(db);
   const bot = {
     getBotQq: () => BOT_QQ,
+    async isGroupMuted() { return false; },
     async getBtCommand() { return undefined; },
     async getHtmlPreviewRequest() { return undefined; },
     async getNaturalImageRequestForIntent() { return { kind: "generate", prompt: "unused" }; },
