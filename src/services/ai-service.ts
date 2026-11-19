@@ -570,7 +570,7 @@ export class AiService {
         "Return a single JSON object, without fences. The text field is the natural reply for the user; all other fields are internal metadata and must not appear in text.",
         'Schema: {"text":"reply","stateUpdate":{"knownFacts":[{"userId":"QQ","text":"user supplied condition","sourceMessageIds":["real id"]}],"coveredPoints":["new points actually explained"],"questions":[{"key":"stable short key","userId":"QQ","text":"question","status":"open|answered|skipped"}],"conclusion":{"text":"current judgment","evidenceIds":["real id"],"revisionReason":"only if changed"},"mediaObservations":[{"sourceMessageId":"actual image message id","text":"visible observation"}]},"review":{"repeatsAnswered":false,"reasksKnown":false,"unsupportedReversal":false}}',
         "Only report evidence supplied in this request. Keep metadata compact; do not fabricate user conditions, image observations or message ids. Conclusions are judgments, never confirmed diagnoses. Do not reproduce old advice in coveredPoints. A question answered in the current input must be marked answered. Each question key is scoped to its recipient.",
-        "Review the reply against the delivered conversation state before returning. Fix repetition, unnecessary explanations, repeated questions and unsupported reversals. Do not output internal reasoning.",
+        "Review the reply against the delivered conversation state before returning. Fix repetition, unnecessary explanations, repeated questions and unsupported reversals. Also check that the tone fits this turn: avoid recycled openings, persona jokes, generic comfort and forced closing questions. Preserve facts and requested quotations. Do not output internal reasoning.",
       ].join("\n") : undefined,
     ].filter((item): item is string => Boolean(item)).join("\n\n") || undefined;
     const messages = buildChatMessages(skill, cleanReplyHistory(history), userInput, images, identityContext, replyScenarioInstruction);
@@ -1749,7 +1749,9 @@ export function buildChatMessages(
   identityContext?: AiIdentityContext,
   scenarioInstruction?: string,
 ): ChatMessage[] {
-  const exampleMessages =
+  // Huixian examples are labelled fictional style references in the system
+  // prompt, not delivered conversation turns or evidence about this member.
+  const exampleMessages = skill.id === "huixian" ? [] :
     skill.exampleExchanges?.flatMap((example) => [
       {
         role: "user" as const,
@@ -1956,6 +1958,7 @@ export function buildSystemPrompt(
       ? [
           "",
           "Target chat examples:",
+          "Fictional examples show rhythm and judgment, not facts about this group or scripts to copy. Adjacent exchanges may continue a mini conversation. Follow the current request and reply budget; do not reuse an example's joke, conditions or closing question just because the topic is similar.",
           ...skill.exampleExchanges.flatMap((example, index) => [
             `${index + 1}. User: ${example.user}`,
             `   Assistant: ${example.assistant}`,

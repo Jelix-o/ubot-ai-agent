@@ -104,7 +104,8 @@ test("packaged Huixian baseline contains the same managed conversation policy as
   const profile = JSON.parse(await readFile(path.resolve("assets/huixian-profile.json"), "utf8")) as SkillDefinition;
   assert.deepEqual(upgradeHuixianConversationProfile(profile), profile);
   assert.ok(profile.systemPrompt.includes(huixianConversationMarker(profile.name)));
-  assert.ok(profile.styleRules.some(rule => rule.includes("180 个可见字符内")));
+  assert.ok(profile.styleRules.some(rule => rule.includes("篇幅与气泡数量以本轮回复计划为准")));
+  assert.doesNotMatch(JSON.stringify(profile), /180 个可见字符内|10–30 字/);
   assert.equal(profile.exampleExchanges?.some(example => example.user === "玩了十几年还是紧张"), false);
   assert.equal(profile.exampleExchanges?.some(example => example.user === "我把把 carry"), false);
 });
@@ -147,7 +148,7 @@ test("the prior conversation revision removes release-owned few-shot scenes and 
   });
 });
 
-test("the r4 migration replaces deployed r3 brevity rules without overwriting administrator content", async () => {
+test("the current migration replaces deployed r3 brevity rules without overwriting administrator content", async () => {
   await withRepository(async (repository, db) => {
     const r3DefaultRule = "默认先直接回答、给判断或接梗；只有用户追问为什么、要求展开，或明确任务确有需要时才解释。";
     const old = huixianProfile({
@@ -158,7 +159,7 @@ test("the r4 migration replaces deployed r3 brevity rules without overwriting ad
       exampleExchanges: [{ user: "暗号", assistant: "保留自定义示例" }],
     });
     await repository.saveHuixianProfile(old, "admin:before-r4");
-    repository.setMeta("huixian_conversation_policy_revision", PREVIOUS_HUIXIAN_CONVERSATION_REVISION);
+    repository.setMeta("huixian_conversation_policy_revision", "conversation-policy-2026-10-20-r3");
 
     assert.deepEqual(repository.upgradeHuixianConversationProfileOnce(), { applied: true, revision: HUIXIAN_CONVERSATION_REVISION });
     const next = (await repository.getHuixianProfile())!;
@@ -170,10 +171,41 @@ test("the r4 migration replaces deployed r3 brevity rules without overwriting ad
     assert.ok(next.systemPrompt.includes(huixianConversationMarker(old.name)));
     assert.ok(next.styleRules.includes("管理员自己的规则"));
     assert.equal(next.styleRules.includes(r3DefaultRule), false);
-    assert.ok(next.styleRules.some(rule => rule.includes("180 个可见字符内")));
+    assert.ok(next.styleRules.some(rule => rule.includes("篇幅与气泡数量以本轮回复计划为准")));
     assert.ok(next.exampleExchanges?.some(example => example.assistant === "保留自定义示例"));
     const snapshot = db.db.prepare("SELECT profile_json FROM v3_character_profile_revisions WHERE changed_by = ?").get(`snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`) as { profile_json: string };
     assert.deepEqual(JSON.parse(snapshot.profile_json), old);
+  });
+});
+
+test("r4 Dafeiyu upgrade replaces only release wording, preserves edits and snapshots exact settings", async () => {
+  await withRepository(async (repository, db) => {
+    const profile = JSON.parse(await readFile("assets/huixian-profile.json", "utf8")) as SkillDefinition;
+    const old = {
+      ...profile, name: "大肥鱼·自定义", temperature: 0.41,
+      systemPrompt: "保留开头\n日常通常回复 1–3 个短气泡，每句以 10–30 字为目标，像群友自然说话，不为了字数机械截断。复杂问题先给结论，再给必要依据、步骤和约束，沿用系统本轮的长答预算。\n【大肥鱼对话策略：2026-10-20-r4】\n当前对话风格由下方受管理的 styleRules 统一定义；默认短答，明确要求详细或指定篇幅时再展开，准确性与必要风险提醒继续有效。\n保留结尾",
+      styleRules: ["默认短答：普通接话先给结论、判断或接梗，通常 1 到 3 句、180 个可见字符内；上限不是要写满的目标。", "日常 1–3 个短气泡，每句以 10–30 字为目标，自然表达，不机械截断。", "管理员喜欢简洁"],
+      exampleExchanges: [
+        { user: "大肥鱼，在干嘛？", assistant: "在认真研究怎么把摸鱼变成一项正经工作。" },
+        { user: "管理员新增", assistant: "在认真研究怎么把摸鱼变成一项正经工作。" },
+      ],
+    };
+    const group = { ...groupConfig("10001"), ambientReplyEnabled: true, participationMode: "mentions_and_keywords" as const };
+    repository.saveGroup(group);
+    await repository.saveHuixianProfile(old);
+    repository.setMeta("huixian_conversation_policy_revision", PREVIOUS_HUIXIAN_CONVERSATION_REVISION);
+    assert.equal(repository.upgradeHuixianConversationProfileOnce().applied, true);
+    const next = (await repository.getHuixianProfile())!;
+    assert.doesNotMatch(JSON.stringify(next), /180 个可见字符内|10–30 字|2026-10-20-r4/);
+    assert.match(next.systemPrompt, /保留开头[\s\S]*保留结尾/);
+    for (const key of ["name", "temperature", "knowledge", "maxContextTurns", "maxReplyMessages", "maxTotalReplyChars"] as const) assert.deepEqual(next[key], old[key]);
+    assert.ok(next.exampleExchanges?.some(example => example.user === "管理员新增"));
+    assert.equal(next.exampleExchanges?.some(example => example.user === "大肥鱼，在干嘛？"), false);
+    assert.deepEqual(repository.getGroup("10001"), group);
+    const snapshot = db.db.prepare("SELECT profile_json FROM v3_character_profile_revisions WHERE changed_by = ?").get(`snapshot:before:${HUIXIAN_CONVERSATION_REVISION}`) as { profile_json: string };
+    assert.deepEqual(JSON.parse(snapshot.profile_json), old);
+    assert.deepEqual(upgradeHuixianConversationProfile(next), next);
+    assert.equal(repository.upgradeHuixianConversationProfileOnce().applied, false);
   });
 });
 

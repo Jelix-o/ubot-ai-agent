@@ -4406,6 +4406,55 @@ test("ambient group context can be disabled per group", async () => {
   assert.equal(aiService.calls[0]?.identityContext?.ambientGroupContext, undefined);
 });
 
+test("recent expression uses only acknowledged causal replies, survives restart and excludes other topics and opted-out authors", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "bot-recent-expression-"));
+  const file = path.join(root, "state.db");
+  let db = new SharedDb(file);
+  let contexts = new ConversationContextRepository(db);
+  t.after(async () => { db.close(); await rm(root, { recursive: true, force: true }); });
+  let seq = 7400;
+  const question = (text: string, parent?: ConversationRoute, groupId = "67890", userId = "20001") => {
+    const id = String(++seq), now = Date.now();
+    const source = db.insertMessage({ groupId, userId, selfId: "12345", msgId: id, msgTime: now, createdAt: now, text, imagesJson: "[]", hasAtBot: true, isBotMsg: false });
+    return contexts.saveMessageRoute({ sourceRowId: source, groupId, userId, sourceMessageId: id, content: text, createdAt: now,
+      routeReason: parent ? "same-user-follow-up" : "new-topic", branchId: parent?.branchId, topicId: parent?.topicId });
+  };
+  const answer = (route: ConversationRoute, texts: string[], sent: number, groupId = "67890") => {
+    const ids = texts.map(text => db.enqueueOutbox(groupId, route.sourceMessageId, text, "text", { topicId: route.topicId, branchId: route.branchId, sourceTurnId: route.turnId }));
+    contexts.appendAssistantTurn({ topicId: route.topicId, branchId: route.branchId, parentTurnId: route.turnId, content: texts.join("\n\n"), createdAt: Date.now(), deliveryId: `outbox:${ids[0]}`, deliveryIds: ids.map(id => `outbox:${id}`) });
+    ids.slice(0, sent).forEach(id => db.ackOutboxDelivery(id, `receipt-${id}`, Date.now()));
+    ids.slice(sent).forEach(id => db.markOutboxFailed(id, null));
+  };
+  const first = question("今天想歇一会");
+  answer(first, ["第一句真的发出", "第二句没有发出"], 1);
+  const failed = question("继续聊聊", first);
+  answer(failed, ["整条失败的草稿"], 0);
+  const other = question("新话题"); answer(other, ["另一分支的段子"], 1);
+  const foreign = question("别的群", undefined, "77777"); answer(foreign, ["跨群段子"], 1, "77777");
+  const current = question("那就先歇会吧", failed);
+  db.close(); db = new SharedDb(file); contexts = new ConversationContextRepository(db);
+  const f = createApp({ conversationContextRepository: contexts as never, messageTransport: new WorkerTransport(db) });
+  const event = (route: ConversationRoute, text: string) => createEvent([{ type: "at", data: { qq: "12345" } }, { type: "text", data: { text } }], 20001, 67890, Number(route.sourceMessageId));
+  await f.app.handleGroupMessage(event(current, "那就先歇会吧"), undefined, current);
+  const instruction = f.aiService.calls[0]?.scenarioInstruction ?? "";
+  const reference = JSON.parse(instruction.split("\n").find(line => line.startsWith('{"recentAssistantReplies":'))!);
+  assert.deepEqual(reference.recentAssistantReplies, ["第一句真的发出"]);
+  assert.doesNotMatch(instruction, /第二句没有发出|整条失败的草稿|另一分支的段子|跨群段子/);
+  const isolated = question("换个全新话题");
+  await f.app.handleGroupMessage(event(isolated, "换个全新话题"), undefined, isolated);
+  assert.doesNotMatch(f.aiService.calls[1]?.scenarioInstruction ?? "", /recentAssistantReplies/);
+  f.groupConfigService.groups[0]!.memoryDisabledUserIds = ["20001"];
+  const excluded = question("再接上刚才的话", current);
+  await f.app.handleGroupMessage(event(excluded, "再接上刚才的话"), undefined, excluded);
+  assert.doesNotMatch(f.aiService.calls.at(-1)?.scenarioInstruction ?? "", /recentAssistantReplies/);
+  f.groupConfigService.groups[0]!.memoryDisabledUserIds = [];
+  contexts.orchestration.deliveredText = () => { throw new Error("receipt_read_unavailable"); };
+  const unavailable = question("再聊刚才的事", current);
+  await f.app.handleGroupMessage(event(unavailable, "再聊刚才的事"), undefined, unavailable);
+  assert.deepEqual(f.aiService.calls.at(-1)?.history, []);
+  assert.doesNotMatch(f.aiService.calls.at(-1)?.scenarioInstruction ?? "", /recentAssistantReplies|第一句真的发出|第二句没有发出/);
+});
+
 test("removes messages already present in causal history from ambient group context", async () => {
   const route: ConversationRoute = {
     topicId: "topic-1",

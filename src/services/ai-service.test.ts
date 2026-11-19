@@ -764,6 +764,16 @@ test("buildSystemPrompt omits legacy runtime task state", () => {
   assert.doesNotMatch(prompt, /实时对话：已开启|监听 2 人|季博神（QQ 20002）|提醒喝水|2026-07-30/);
 });
 
+test("Huixian examples remain labelled style references rather than delivered history", () => {
+  const profile = { ...skill, id: "huixian", name: "大肥鱼" };
+  const messages = buildChatMessages(profile, [{ role: "assistant", content: "真正发过的话", groupId: "g", timestamp: new Date().toISOString() }], "当前问题");
+  assert.equal(messages.length, 3);
+  assert.match(String(messages[0]?.content), /Fictional examples show rhythm and judgment/);
+  assert.match(String(messages[0]?.content), /最近状态不太好/);
+  assert.equal(messages[1]?.content, "真正发过的话");
+  assert.equal(messages[2]?.content, "当前问题");
+});
+
 test("buildChatMessages injects examples before conversation history", () => {
   const history: ConversationTurn[] = [
     {

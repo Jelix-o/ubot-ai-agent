@@ -4356,6 +4356,10 @@ export class BotApplication {
         });
         causalHistory = cleanReplyHistory(causalHistory);
       } catch (error) {
+        // A failed receipt/exclusion check must not leave the raw, unfiltered
+        // branch available to either reply generation or expression reference.
+        causalHistory = [];
+        conversationStateHistory = [];
         logWarn("Conversation history read failed closed; using current message only.", {
           topicId: conversationRoute.topicId,
           branchId: conversationRoute.branchId,
@@ -4711,6 +4715,11 @@ export class BotApplication {
       !targetedMemberProfileRequested ? replyPolicy.instruction(replyPlan, conversationState, {
         formatBudget: replyFormatBudget,
         explicitReplyLength: Boolean(explicitReplyLengthPlan),
+        // causalHistory has already passed exclusion and actual-receipt checks.
+        // Isolated/visual/profile requests must not borrow expression from elsewhere.
+        recentAssistantReplies: orchestration && !visualImagePersonQuery
+          ? causalHistory.filter(turn => turn.role === "assistant" && turn.deliveryId?.startsWith("outbox:"))
+              .map(turn => turn.content) : undefined,
       }) : undefined, memeTags.length ? memeReplyInstruction(memeTags) : undefined]
       .filter((instruction): instruction is string => Boolean(instruction))
       .join("\n\n");
